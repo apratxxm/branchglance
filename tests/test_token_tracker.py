@@ -4661,6 +4661,7 @@ def test_question_option_queue_is_same_origin_validated_and_labeled_queued(monke
     policies["Codex"] = replace(policies["Codex"], send=True, send_origin="provider_env")
     monkeypatch.setattr(provider_policy, "POLICIES", MappingProxyType(policies))
     queued = []
+    monkeypatch.setattr(server, "_is_collected_codex_thread", lambda thread: True)
     monkeypatch.setattr(server, "queue_codex_message", lambda thread, message: queued.append((thread, message)))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     worker = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -4725,6 +4726,7 @@ def test_open_endpoint_accepts_only_thread_ids():
 
 def test_open_endpoint_checks_host_and_supplied_browser_origin_without_launching_app(monkeypatch):
     launched = []
+    monkeypatch.setattr(server, "_is_collected_codex_thread", lambda thread: True)
     monkeypatch.setattr(server.os, "startfile", lambda target: launched.append(target), raising=False)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     worker = threading.Thread(target=httpd.serve_forever, daemon=True)

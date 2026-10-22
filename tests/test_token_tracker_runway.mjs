@@ -560,7 +560,7 @@ assert.equal(modelSnapshot.providers[0].chats[0].modelChangeAt,ago(1));
 assert.equal(modelSnapshot.providers[0].chats[0].activity.kind,'using_tool');
 assert.equal(modelSnapshot.providers[0].chats[0].trackerUpdate,declaredPhase,'the live merge retains the declared tracker phase');
 assert.equal(modelSnapshot.providers[0].chats[0].trackerUpdateAt,ago(1),'the live merge retains the phase observation time');
-T.applyLive(modelSnapshot,{generatedAt:ago(0),chats:[{key:'Codex:root',executionStatus:'unavailable',executionSource:'unavailable',executionObservedAt:null,executionSince:null,executionCompactionStartedAt:null,executionTerminalAt:null,executionActivity:null}]});
+T.applyLive(modelSnapshot,{generatedAt:ago(0),chats:[{key:'Codex:root',id:'root',provider:'Codex',executionStatus:'unavailable',executionSource:'unavailable',executionObservedAt:null,executionSince:null,executionCompactionStartedAt:null,executionTerminalAt:null,executionActivity:null}]});
 assert.equal(modelSnapshot.providers[0].chats[0].executionStatus,'unavailable');
 assert.equal(modelSnapshot.providers[0].chats[0].executionSince,null,'live explicit nulls invalidate prior execution clocks');
 const liveIdentitySnapshot={...snapshot,providers:[{name:'Codex',connected:true,chats:[{...root}]}]};
