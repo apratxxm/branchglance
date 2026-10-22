@@ -9,7 +9,8 @@ const reviewPage=fs.readFileSync(new URL("../token_tracker/static/runway_review.
 const reviewScript=fs.readFileSync(new URL("../token_tracker/static/runway_review.js",import.meta.url),"utf8");
 const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector)?.[2]||"";
 assert.match(page,/window\.__TOKEN_TRACKER_RUNWAY__=true/);
-assert.doesNotMatch(page,/Active work|Show hidden|data-action="pin"/);
+assert.doesNotMatch(page,/Active work|data-action="pin"/);
+assert.match(page,/id="hidden-chats-toggle"[^>]*data-action="show-hidden"/);
 assert.match(page,/id="sync-age"[^>]*data-action="refresh"[^>]*aria-label="Refresh usage"/);
 assert.match(page,/id="monitor-toggle"[^>]*aria-label="Move to next monitor"/);
 assert.match(page,/id="window-recenter"[^>]*aria-label="Recenter widget"/);
@@ -740,7 +741,7 @@ assert.equal(T.resetView(provider,"weekly").countdown,"22h 13m","weekly countdow
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000+3*86400+7260}},"weekly").countdown,"3d 2h","weekly countdowns show day/hour remaining for distant targets");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000-1}},"weekly").countdown,"due");
 assert.equal(T.resetView({...provider,weekly:{percent:78},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").countdown,"");
-assert.equal(T.watcherPopoverHTML('Codex'),'<button class="ghost" data-action="reset-settings">Reset action settings</button>');
+assert.equal(T.watcherPopoverHTML('Codex'),'<p class="policy-notice" data-policy-warning hidden></p><button class="ghost" data-action="reset-settings">Reset action settings</button>');
 assert.equal(T.watcherTone(null,'Codex').tip,'');
 const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
 assert.equal(staleQuota.measured,false);assert.equal(staleQuota.leftLabel,"");assert.equal(staleQuota.day,"");assert.equal(staleQuota.time,"");assert.equal(staleQuota.countdown,"");assert.equal(staleQuota.stale,"");
