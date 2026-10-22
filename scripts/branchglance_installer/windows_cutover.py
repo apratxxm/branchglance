@@ -26,6 +26,8 @@ class WindowsCutoverAdapter:
         self.expected_target, self.expected_workdir, self.product_root = expected_target, expected_workdir, product_root
         self.launcher_pid = None
         self.pending_app_pid = None
+        self.launch_pending = False
+        self.instance_mutex_held = False
         self.branch_pid = None
         self.branch_handle = None
         self.control_port = control_port
@@ -122,7 +124,12 @@ class WindowsCutoverAdapter:
 
     def start_branchglance(self):
         launcher = self.product_root.parent / "Programs" / "Branchglance" / "Branchglance.exe"
-        process = subprocess.Popen([str(launcher)], cwd=launcher.parent, close_fds=True)
+        self.launch_pending = True
+        try:
+            process = subprocess.Popen([str(launcher)], cwd=launcher.parent, close_fds=True)
+        except BaseException:
+            self.launch_pending = False
+            raise
         self.launcher_pid = process.pid
         self.pending_app_pid = None
         self.branch_pid = None
@@ -176,6 +183,7 @@ class WindowsCutoverAdapter:
                 if self.branch_handle:
                     self.kernel.CloseHandle(self.branch_handle)
                 self.branch_handle, self.branch_pid = handle, int(who["pid"])
+                self.launch_pending = False
                 return who
             except (OSError, KeyError, TypeError, ValueError, SafetyError) as exc:
                 last_error = exc
@@ -190,6 +198,10 @@ class WindowsCutoverAdapter:
             if state == WAIT_OBJECT_0:
                 return False
             raise OSError(ctypes.get_last_error(), "Cannot determine verified Branchglance process state")
+        if self.launch_pending or self.pending_app_pid is not None:
+            raise SafetyError("Branchglance launch is pending but its process is not verified")
+        if self.instance_mutex_held:
+            return False
         if self.pending_app_pid is None:
             try:
                 self.identity()
