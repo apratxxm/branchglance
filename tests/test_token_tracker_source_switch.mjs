@@ -23,7 +23,7 @@ function boot(initialStorage={}) {
     return nodes.get(selector);
   };
   const segment=name=>{
-    const dot={hidden:true},flags=new Set(),attrs={"aria-pressed":name==="Codex"?"true":"false"};
+    const dot={hidden:true,attrs:{},setAttribute(k,v){this.attrs[k]=String(v);}},flags=new Set(),attrs={"aria-pressed":name==="Codex"?"true":"false"};
     return {dataset:{source:name,action:"source"},dot,flags,attrs,setAttribute(k,v){attrs[k]=String(v);},getAttribute(k){return attrs[k]??null;},
       classList:{toggle(flag,on){on?flags.add(flag):flags.delete(flag);},add(){},remove(){}},querySelector(){return dot;},closest(){return this;}};
   };
@@ -107,11 +107,22 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(T.state.sourceAttention.size,0);assert.equal(T.notch.autoExpanded,false);
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",{status:"needs-input",pendingQuestion:"Proceed?",pendingQuestionAt:ago(0),executionStatus:"idle"})]}));
   assert.equal(T.state.source,"Codex","attention never auto-switches the source");
-  assert.ok(T.state.sourceAttention.has("Claude"));assert.equal(segments[1].dot.hidden,false,"the Claude segment shows the attention dot");assert.equal(segments[0].dot.hidden,true);
+  assert.ok(T.state.sourceAttention.has("Claude"));assert.equal(segments[1].dot.attrs["aria-hidden"],"false","the Claude segment shows the attention dot");assert.equal(segments[0].dot.attrs["aria-hidden"],"true");
   assert.equal(T.notch.autoExpanded,true,"the normal reveal starts for hidden-source work");
-  T.setSource("Claude");assert.equal(T.state.sourceAttention.has("Claude"),false,"viewing the source clears the flag");assert.equal(segments[1].dot.hidden,true);
+  T.setSource("Claude");assert.equal(T.state.sourceAttention.has("Claude"),false,"viewing the source clears the flag");assert.equal(segments[1].dot.attrs["aria-hidden"],"true");
   T.render(snapshotOf({codex:[codexChat("c1",running({activeRunStartedAt:ago(0)}))],claude:[claudeChat("s1")]}));
   assert.ok(T.state.sourceAttention.has("Codex"),"the symmetric case flags Codex while Claude is selected");
+}
+
+// The runway Show hidden toggle restores explicitly hidden active chats.
+{
+  const {T,node}=boot({tokenTrackerRunwayHiddenChats:JSON.stringify(["Codex:c1"])});
+  T.render(snapshotOf({codex:[codexChat("c1",running())],policy:policies(true,false)}));
+  assert.doesNotMatch(node("#chat-list").innerHTML,/Codex c1/);
+  const button={dataset:{action:"show-hidden"},closest:()=>button};
+  T.handleClick({target:button});
+  assert.equal(T.state.showHidden,true);
+  assert.match(node("#chat-list").innerHTML,/Codex c1/);
 }
 
 // A new question on an already-running hidden session is a separate transition.
@@ -123,7 +134,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({status:"needs-input",pendingQuestion:"Continue?",pendingQuestionAt:ago(0),pendingQuestionId:"q-1"}))]}));
   assert.equal(T.state.source,"Codex");
   assert.ok(T.state.sourceAttention.has("Claude"));
-  assert.equal(segments[1].dot.hidden,false,"the question transition sets the hidden provider dot");
+  assert.equal(segments[1].dot.attrs["aria-hidden"],"false","the question transition sets the hidden provider dot");
   assert.equal(T.notch.autoExpanded,true,"the question transition reveals despite the unchanged run");
 }
 
@@ -137,7 +148,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({status:"needs-input",pendingQuestion:"Continue?",pendingQuestionAt:ago(0),pendingQuestionId:"q-2"}))]}));
   assert.equal(T.state.liveRecoveryPending,false);
   assert.ok(T.state.sourceAttention.has("Claude"),"recovery does not swallow a new question");
-  assert.equal(segments[1].dot.hidden,false);
+  assert.equal(segments[1].dot.attrs["aria-hidden"],"false");
   assert.equal(T.notch.autoExpanded,true,"the recovered question reveals");
 }
 

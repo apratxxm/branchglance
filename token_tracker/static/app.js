@@ -31,7 +31,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
   hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,
-  source:loadSource(), sourceAttention:new Set(), sourceBase:new Map() };
+  source:loadSource(), sourceAttention:new Set(), sourceBase:new Map(), sourceSwitching:false, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
 const quotaBootstrap={provider:{name:'Codex'},metadata:null,fetchError:null,unsupported:false};
@@ -1063,7 +1063,7 @@ const inWindow = (chat, days) => Date.now()-chat.latest<=days*86400000;
 function visibleRoots(forest, days=state.windowDays) {
   const query=parseQuery(state.query);
   const byLatest=[...forest.roots].sort((a,b)=>b.latest-a.latest);
-  if(RUNWAY)return byLatest.filter(chat=>(PHONE||!state.hiddenChats.has(chat.key))&&[chat,...chat.descendants].some(runwayVisibleActive)&&(!query.active||[chat,...chat.descendants].some(c=>matchesQuery(c,query))));
+  if(RUNWAY)return byLatest.filter(chat=>(PHONE||state.showHidden||!state.hiddenChats.has(chat.key))&&[chat,...chat.descendants].some(runwayVisibleActive)&&(!query.active||[chat,...chat.descendants].some(c=>matchesQuery(c,query))));
   const keep=chat=>query.active ? [chat,...chat.descendants].some(c=>matchesQuery(c,query)) : state.pins.has(chat.key)||(RUNWAY&&state.showHidden&&state.hiddenChats.has(chat.key))||inWindow(chat,days);
   return byLatest.filter(chat=>(!RUNWAY||state.showHidden||!state.hiddenChats.has(chat.key))&&keep(chat));
 }
@@ -1233,6 +1233,23 @@ function stripExit(el, entry) {
 /* ---------- keyed DOM patching (falls back to innerHTML without a real DOM, e.g. tests) ---------- */
 const realDom = node => Boolean(node&&node.children&&typeof document.createElement==="function");
 function attrString(attrs) { return Object.entries(attrs||{}).filter(([,v])=>v!=null).map(([k,v])=>' '+k+'="'+esc(v)+'"').join(""); }
+function syncPatchedAttributes(current,next) {
+  const oldEvent=current.getAttribute?.('data-model-change-at'),newEvent=next.getAttribute?.('data-model-change-at');
+  if(RUNWAY&&!PHONE&&oldEvent&&newEvent&&oldEvent!==newEvent&&current.matches?.('.runway-model-name.model-changed')&&next.matches?.('.runway-model-name.model-changed')){current.classList.remove('model-changed');void current.offsetWidth;}
+  const message=current.matches?.('.runway-message-indicator')&&next.matches?.('.runway-message-indicator');
+  const sameMessage=message&&current.getAttribute('data-message-at')===next.getAttribute('data-message-at');
+  if(message&&!sameMessage&&state.runwaySnapshotPainted)runwayMotionOnce(current,'message-arrived','runway-message-dot-arrival','.runway-message-dots i:nth-child(3)');
+  for(const attr of [...current.attributes])if(!next.hasAttribute(attr.name))current.removeAttribute(attr.name);
+  for(const attr of [...next.attributes]){
+    if(sameMessage&&attr.name==='style')continue;
+    if(current.getAttribute(attr.name)!==attr.value)current.setAttribute(attr.name,attr.value);
+  }
+}
+function animateInsertedMessageBadges(el) {
+  if(!RUNWAY||PHONE||!state.runwaySnapshotPainted||state.sourceSwitching)return;
+  const messages=[...(el.matches?.('.runway-message-indicator')?[el]:[]),...(el.querySelectorAll?.('.runway-message-indicator')||[])];
+  for(const message of messages)runwayMotionOnce(message,'message-arrived','runway-message-dot-arrival','.runway-message-dots i:nth-child(3)');
+}
 // Patch recorded text in place so polling does not replace the focused agent action.
 function runwayPatchContent(el, html) {
   if(!realDom(el)){el.innerHTML=html;return;}
@@ -1245,13 +1262,9 @@ function runwayPatchContent(el, html) {
       for(const next of wanted){
         const slot=next.nodeType===1?next.dataset?.runwaySlot:null;
         let current=slot?[...parent.children].find(node=>node.dataset?.runwaySlot===slot):cursor;
-        if(!current){current=next.cloneNode(true);parent.insertBefore(current,cursor);}
+        if(!current){current=next.cloneNode(true);parent.insertBefore(current,cursor);animateInsertedMessageBadges(current);}
         else {if(current.nodeType!==next.nodeType||current.nodeName!==next.nodeName){const replacement=next.cloneNode(true);parent.replaceChild(replacement,current);current=replacement;}else {
-          if(next.nodeType===1){
-            const oldEvent=current.getAttribute?.('data-model-change-at'),newEvent=next.getAttribute?.('data-model-change-at');
-            if(RUNWAY&&!PHONE&&oldEvent&&newEvent&&oldEvent!==newEvent&&current.matches?.('.runway-model-name.model-changed')&&next.matches?.('.runway-model-name.model-changed')){current.classList.remove('model-changed');void current.offsetWidth;}
-            for(const attr of [...current.attributes])if(!next.hasAttribute(attr.name))current.removeAttribute(attr.name);for(const attr of [...next.attributes])if(current.getAttribute(attr.name)!==attr.value)current.setAttribute(attr.name,attr.value);
-          }
+          if(next.nodeType===1)syncPatchedAttributes(current,next);
           patch(current,next);
         }if(current!==cursor)parent.insertBefore(current,cursor);}
         cursor=current.nextSibling;
@@ -1261,14 +1274,11 @@ function runwayPatchContent(el, html) {
     }
     for(let i=0;i<wanted.length;i++) {
       const next=wanted[i];let current=parent.childNodes[i];
-      if(!current){parent.appendChild(next.cloneNode(true));continue;}
+      if(!current){current=next.cloneNode(true);parent.appendChild(current);animateInsertedMessageBadges(current);continue;}
       if(current.nodeType!==next.nodeType||current.nodeName!==next.nodeName){parent.replaceChild(next.cloneNode(true),current);continue;}
       if(next.nodeType===3){if(current.nodeValue!==next.nodeValue)current.nodeValue=next.nodeValue;continue;}
       if(next.nodeType!==1)continue;
-      const oldEvent=current.getAttribute?.('data-model-change-at'),newEvent=next.getAttribute?.('data-model-change-at');
-      if(RUNWAY&&!PHONE&&oldEvent&&newEvent&&oldEvent!==newEvent&&current.matches?.('.runway-model-name.model-changed')&&next.matches?.('.runway-model-name.model-changed')){current.classList.remove('model-changed');void current.offsetWidth;}
-      for(const attr of [...current.attributes])if(!next.hasAttribute(attr.name))current.removeAttribute(attr.name);
-      for(const attr of [...next.attributes])if(current.getAttribute(attr.name)!==attr.value)current.setAttribute(attr.name,attr.value);
+      syncPatchedAttributes(current,next);
       patch(current,next);
     }
     while(parent.childNodes.length>wanted.length)parent.lastChild.remove();
@@ -1348,11 +1358,35 @@ function clearRunwayArrival(el) {
   el._runwayArrivalEnd=null;el.classList?.remove('runway-row-enter');
 }
 function runwayArrivalEnter(el) {
-  if(!el||reducedMotion())return;
+  if(!el||reducedMotion()||state.sourceSwitching)return;
   clearRunwayArrival(el);el.classList.add('runway-row-enter');
   const finish=event=>{if(event&& (event.target!==el||event.animationName!=='runway-row-arrival'))return;clearRunwayArrival(el);};
   el._runwayArrivalEnd=finish;el.addEventListener?.('animationend',finish);
   el._runwayArrivalTimer=setTimeout(()=>finish(),350);
+}
+function runwayMotionOnce(el,className,animationName,targetSelector=null) {
+  if(!el||reducedMotion())return;
+  el._runwayMotionHandlers||=new Map();
+  const previous=el._runwayMotionHandlers.get(className);if(previous){el.removeEventListener?.('animationend',previous.finish);el.removeEventListener?.('animationcancel',previous.cancel);}
+  el.classList?.remove(className);void el.offsetWidth;
+  const pending=targetSelector?new Set(el.querySelectorAll?.(targetSelector)||[]):null;
+  if(pending&&!pending.size){el._runwayMotionHandlers.delete(className);return;}
+  let cancel;
+  const finish=event=>{
+    if(event?.animationName!==animationName)return;
+    if(pending){if(!pending.has(event.target))return;pending.delete(event.target);if(pending.size)return;}
+    el.classList?.remove(className);el.removeEventListener?.('animationend',finish);el.removeEventListener?.('animationcancel',cancel);el._runwayMotionHandlers.delete(className);
+  };
+  cancel=event=>{if(event?.animationName!==animationName)return;el.classList?.remove(className);el.removeEventListener?.('animationend',finish);el.removeEventListener?.('animationcancel',cancel);el._runwayMotionHandlers.delete(className);};
+  el._runwayMotionHandlers.set(className,{finish,cancel});el.addEventListener?.('animationend',finish);el.addEventListener?.('animationcancel',cancel);el.classList?.add(className);
+}
+function runwayExit(el) {
+  if(!el)return;
+  if(reducedMotion()||el.getClientRects&&el.getClientRects().length===0){el.remove();return;}
+  el._leaving=true;clearRunwayArrival(el);el.classList?.add('runway-exit');
+  const finish=event=>{if(event?.animationName!=='runway-row-exit')return;el.removeEventListener?.('animationend',finish);el.removeEventListener?.('animationcancel',finish);el.remove();if(COMPACT)scheduleNotchSize();};
+  el.addEventListener?.('animationend',finish);el.addEventListener?.('animationcancel',finish);
+  setTimeout(()=>{if(el.isConnected)finish({animationName:'runway-row-exit'});},250);
 }
 function renderResets(providers) {
   const node=$("#resets"),weeklyNode=REFINED?$("#weekly-resets"):null;if(!node)return;
@@ -1670,7 +1704,8 @@ function runwayTelemetryHTML(chat,agent=false) {
   const directionText=runwayMessageDirection(chat);
   const statusCode=runwayWaiting(chat)?'needs-input':effectiveStatus;
   const messageCapable=Boolean(agent&&chat.parentId),hasRecentMessage=currentEvidence&&messageCapable&&runwayAgentHasNewMessage(chat);
-  const messageContents=hasRecentMessage?'<span data-runway-slot="message" class="runway-message-indicator" title="Recent message'+(directionText?' · '+directionText:'')+' · visible for 10 seconds" aria-label="Recent message'+(directionText?' · '+directionText:'')+'">'+ICON.message+'<span class="runway-message-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>':'';
+  const messageAge=hasRecentMessage?runwayMessageAge(chat):null,messageAt=hasRecentMessage?stamp(chat.latestMessageAt):0;
+  const messageContents=hasRecentMessage?'<span data-runway-slot="message" class="runway-message-indicator" data-message-at="'+messageAt+'" style="--message-age:-'+Math.max(0,messageAge||0)+'ms" title="Recent message'+(directionText?' · '+directionText:'')+' · visible for 10 seconds" aria-label="Recent message'+(directionText?' · '+directionText:'')+'">'+ICON.message+'<span class="runway-message-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>':'';
   const phoneMessageSlot=messageCapable?'<span class="runway-message-slot">'+messageContents+'</span>':'';
   const messageLane='<span data-runway-slot="message-lane" class="runway-message-slot">'+messageContents+'</span>';
   const childDotTone=runwayWaiting(chat)?'attn':runwayRunning(chat)?'live':tone;
@@ -1868,8 +1903,14 @@ function updateChatEl(el, chat, query) {
     const next=rollup(chat).key,prevState=el.dataset.state;
     if(RUNWAY)runwayPatchContent(row,html);else row.innerHTML=html;row._html=html;syncBreath(row);
     if(!RUNWAY&&prevState&&prevState!==next&&!reducedMotion()){row.classList.remove("changed");void row.offsetWidth;row.classList.add("changed");}
+    if(RUNWAY&&REFINED&&prevState&&prevState!==next)runwayMotionOnce(el,'state-changed','runway-status-change');
     el.dataset.state=next;
   }
+  const previousQuestionToken=el.dataset.questionToken;
+  const questionToken=RUNWAY&&runwayWaiting(chat)?questionDismissToken(chat):'';
+  if(RUNWAY&&REFINED&&state.runwaySnapshotPainted&&previousQuestionToken!==undefined&&questionToken&&previousQuestionToken!==questionToken)
+    runwayMotionOnce(el,'question-arrived','runway-question-arrival','.runway-refined-title>.r-title,.runway-refined-title>.runway-agent-name,.runway-refined-status .runway-state-glyph');
+  if(RUNWAY)el.dataset.questionToken=questionToken;
   row.title=chat.title||"";
   const open=!RUNWAY&&state.open.has(chat.key);
   if(!RUNWAY)row.setAttribute("aria-expanded",String(open));
@@ -1891,14 +1932,14 @@ function updateChatEl(el, chat, query) {
     if(tray.dataset.previewExpanded!==String(expanded)){tray.dataset.previewExpanded=String(expanded);tray.className="tray "+(expanded?"runway-expanded":"runway-collapsed");}
     const summary=traySummaryHTML(chat);
     if(sum.firstElementChild._html!==summary){runwayPatchContent(sum.firstElementChild,summary);sum.firstElementChild._html=summary;}
-    patchKeyed(full.firstElementChild,expanded?trayEntries(chat,query):[],{enter:el=>{if(state.runwaySnapshotPainted)runwayArrivalEnter(el);}});
+  patchKeyed(full.firstElementChild,expanded?trayEntries(chat,query):[],{enter:el=>{if(state.runwaySnapshotPainted)runwayArrivalEnter(el);},exit:runwayExit});
     return;
   }
   if(tray.dataset.mode!==mode){tray.dataset.mode=mode;if(tray._init)void tray.offsetHeight;tray.className="tray "+mode;}
   tray._init=true;
   const summary=traySummaryHTML(chat);
   if(sum.firstElementChild._html!==summary){sum.firstElementChild.innerHTML=summary;sum.firstElementChild._html=summary;}
-  patchKeyed(full.firstElementChild,mode==="active"||full.firstElementChild.children.length?trayEntries(chat,query):[]);
+    patchKeyed(full.firstElementChild,mode==="active"||full.firstElementChild.children.length?trayEntries(chat,query):[],{exit:runwayExit});
 }
 // Attention per source, independent of which forest is on screen. A new run or waiting question in an
 // unselected source flags that segment (never switches); selecting the source clears the flag.
@@ -1929,7 +1970,7 @@ function updateSourceSwitch() {
     segment.classList?.toggle?.('has-attention',flagged);
     const label=name+(flagged?' (needs attention)':'');
     if(segment.getAttribute?.('aria-label')!==label)segment.setAttribute?.('aria-label',label);
-    const dot=segment.querySelector?.('.source-dot');if(dot&&dot.hidden!==!flagged)dot.hidden=!flagged;
+    const dot=segment.querySelector?.('.source-dot');dot?.setAttribute?.('aria-hidden',String(!flagged));
   }
   const body=document.body;if(body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
 }
@@ -1942,7 +1983,15 @@ function setSource(name) {
   if(state.popover)closePopover({restoreFocus:false});
   closeRunwayDetails();state.lastOrder=null;
   const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
-  renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);
+  const list=$('#chat-list');
+  if(list&&!reducedMotion()){
+    list.classList.remove('source-switching');void list.offsetWidth;
+    const finish=event=>{if(event.animationName!=='source-list-crossfade')return;list.classList.remove('source-switching');list.removeEventListener?.('animationend',finish);list.removeEventListener?.('animationcancel',finish);};
+    list.addEventListener?.('animationend',finish);list.addEventListener?.('animationcancel',finish);list.classList.add('source-switching');
+  }
+  state.sourceSwitching=true;
+  try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);}
+  finally{state.sourceSwitching=false;}
   updateSourceSwitch();
 }
 function renderChats(providers) {
@@ -1961,7 +2010,7 @@ function renderChats(providers) {
     if(PHONE)renderRunwayCounts(counts);
     else {
     notch.counts=counts;
-    const activeRoots=forest.roots.filter(chat=>!state.hiddenChats.has(chat.key));
+    const activeRoots=forest.roots.filter(chat=>state.showHidden||!state.hiddenChats.has(chat.key));
     // Trigger reveals for active lifecycle transitions and new parent messages,
     // not for every transcript or token update on an already-running chat.
       const evidenceFresh=runwayCurrentEvidenceFresh();
@@ -1991,7 +2040,7 @@ function renderChats(providers) {
       if(evidenceFresh)for(const item of workItems)if(item.questionId){if(state.seenQuestions.size>500)state.seenQuestions.clear();state.seenQuestions.add(item.questionId);}
       syncNotch(activeCount+otherActive,workItems);
       updateSourceSwitch();
-    const available=activeCount>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
+    const available=activeCount>0||state.hiddenChats.size>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
     const header=$('#chats-head'),searchToggle=$('#search-toggle');
     if(header)header.hidden=!available;if(searchToggle)searchToggle.hidden=!available;
     if(!available){state.query='';state.searchOpen=false;const input=$('#chat-search');if(input)input.value='';header?.classList?.remove('searching');}
@@ -2012,8 +2061,15 @@ function renderChats(providers) {
     if(list.innerHTML!==html)list.innerHTML=html;
     return;
   }
-  if(!roots.length){const noActive=RUNWAY&&!PHONE&&!notch.active,html=noActive?'':emptyHTML(forest,providers);if(list._empty!==html){[...list.children].forEach(el=>clearRunwayArrival(el));list.innerHTML=html;list._empty=html;}state.lastOrder=[];return;}
-  if(list._empty){list.innerHTML="";list._empty=null;}
+  if(!roots.length){
+    const noActive=RUNWAY&&!PHONE&&!notch.active,html=noActive?'':emptyHTML(forest,providers);
+    if(list._empty!==html){
+      for(const el of [...list.children])if(el.classList.contains('chat')){if(!el._leaving)runwayExit(el);}else el.remove();
+      if(html)list.insertAdjacentHTML?.('beforeend',html);list._empty=html;
+    }
+    state.lastOrder=[];return;
+  }
+  if(list._empty!==null&&list._empty!==undefined){for(const el of [...list.children])if(!el.classList.contains('chat'))el.remove();list._empty=null;}
   [...list.children].forEach(el=>{if(!el.classList.contains("chat"))el.remove();});
   // Search auto-opens nothing; a subagent match is visible in the always-on tray and outlined there.
   const byKey=new Map(roots.map(c=>[c.key,c]));
@@ -2021,12 +2077,12 @@ function renderChats(providers) {
   // Keep established rows stable while the user points, focuses, or reads a question.
   const focused=list.contains?.(document.activeElement),readingQuestion=Boolean(state.popover&&state.popover.dataset?.action==='runway-question');
   if((state.pointerInList||focused||readingQuestion)&&state.lastOrder){const kept=state.lastOrder.filter(k=>byKey.has(k));order=[...kept,...order.filter(k=>!kept.includes(k))];}
-  const existing=new Map([...list.children].map(el=>[el.dataset.key,el]));
+  const existing=new Map([...list.children].filter(el=>!el._leaving).map(el=>[el.dataset.key,el]));
   const scroller=RUNWAY?list.closest?.('.layout'):list;
   const scrollTopBefore=scroller?.scrollTop||0,scrollRect=scroller?.getBoundingClientRect?.();
   const anchor=[...existing].find(([key,el])=>byKey.has(key)&&(()=>{const rect=el.getBoundingClientRect?.();return rect&&(!scrollRect||rect.bottom>scrollRect.top);})())?.[1];
   const anchorTop=anchor?.getBoundingClientRect?.().top;
-  for(const [k,el] of existing)if(!byKey.has(k)){clearRunwayArrival(el);el.remove();}
+  for(const [k,el] of existing)if(!byKey.has(k))runwayExit(el);
   let prev=null;
   for(const k of order) {
     let el=existing.get(k);
@@ -2034,7 +2090,7 @@ function renderChats(providers) {
     if(!el){el=document.createElement("div");el.className="chat";el.dataset.key=k;
       el.innerHTML=(RUNWAY?'<div class="row"></div>':'<button class="row" data-action="toggle-chat" data-key="'+esc(k)+'"></button>')+'<div class="l2"><div class="l2-in"></div></div><div class="tray"><div class="tray-sum"><div class="tray-clip"></div></div><div class="tray-full"><div class="tray-clip"></div></div></div>';}
     updateChatEl(el,byKey.get(k),query);
-    if(fresh&&RUNWAY&&!PHONE&&state.runwaySnapshotPainted)runwayArrivalEnter(el);
+    if(fresh&&RUNWAY&&!PHONE&&state.runwaySnapshotPainted&&!state.sourceSwitching)runwayArrivalEnter(el);
     const next=prev?prev.nextSibling:list.firstChild;
     if(next!==el)list.insertBefore(el,next);
     prev=el;
@@ -2134,18 +2190,36 @@ function renderTitle(providers) {
   age.className="sync-age"+(seconds>=60?" t-attn":"");
 }
 const PHASES={waiting_for_exhaustion:"waiting for limit",armed_waiting_for_reset:"armed for reset",reset_observed_sending:"sending",needs_login:"sign-in expired",blocked_weekly:"held · weekly used",greeting_sent:"greeting sent",keepalive_scheduled:"scheduled",greeting_verifying:"verifying"};
+function applyIdentityPayload(payload) {
+  state.policyWarnings=Array.isArray(payload?.policyWarnings)?payload.policyWarnings.filter(value=>typeof value==='string'&&value.trim()).map(value=>value.trim().slice(0,160)):[];
+  return state.policyWarnings;
+}
+function policyWarningHTML() {
+  const warning=esc(state.policyWarnings.join(' · '));
+  return '<p class="policy-notice" data-policy-warning'+(warning?'':' hidden')+'>'+warning+'</p>';
+}
+async function loadIdentityPolicyWarnings(anchor) {
+  try {
+    const response=await fetch('/api/identity',{cache:'no-store'});
+    if(!response.ok)return;
+    applyIdentityPayload(await response.json());
+    const pop=$('#popover');if(!pop||pop.hidden||state.popover!==anchor)return;
+    const note=pop.querySelector?.('[data-policy-warning]');
+    if(note){note.textContent=state.policyWarnings.join(' · ');note.hidden=!state.policyWarnings.length;}
+  } catch {}
+}
 function watcherPopoverHTML(name) {
   const watcher=state.watcher,w=watcher?.providers?.[name];
-  if(!watcher||!w)return (RUNWAY?'':'<dl class="pop-facts"><dt>phase</dt><dd>unavailable</dd></dl>')+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
+  if(!watcher||!w)return (RUNWAY?'':'<dl class="pop-facts"><dt>phase</dt><dd>unavailable</dd></dl>')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
   const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
   const phase=!watcher.enabled?"off":!watcher.running?"stopped":PHASES[w.phase]||w.phase||(RUNWAY?"":"watching");
   const err=watcher.persistenceError||w.lastPollError||w.lastError;
-  if(RUNWAY){const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';}
+  if(RUNWAY){const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';}
   return '<dl class="pop-facts"><dt>phase</dt><dd>'+esc(phase)+'</dd><dt>next</dt><dd>'+(next?dayWord(next*1000)+" "+clock(next*1000):"—")+'</dd>'+ 
     '<dt>last</dt><dd>'+(last?clock(last)+(verified?' <span class="t-live">✓ verified</span>':" unverified"):"—")+'</dd><dt>fails</dt><dd'+(w.failedAttempts?' class="t-err"':'')+'>'+(w.failedAttempts||0)+'</dd>'+ 
     (err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>'+
     (err&&watcher.logPath?'<button class="ghost" data-action="copy" data-copy="'+esc(watcher.logPath)+'">'+ICON.copy+ICON.check+'log</button>':'')+
-    '<button class="ghost" data-action="reset-settings">Reset action settings</button>';
+    policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
 }
 function openPopover(html, anchor) {
   const pop=$("#popover");if(!pop)return;
@@ -2663,7 +2737,7 @@ function handleClick(event) {
   else if(action==="toggle-agent-details"){const was=state.agentDetails.has(key);if(RUNWAY)closeRunwayDetails();was?state.agentDetails.delete(key):state.agentDetails.add(key);if(RUNWAY)renderStripNow();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="analytics"){state.analyticsOpen=!state.analyticsOpen;if(state.snapshot)renderAnalytics(state.snapshot);return;}
   else if(action==="window"){setWindow(Number(button.dataset.days));if(RUNWAY)queueSelectionRefresh();}
-  else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);html?openPopover(html,button):closePopover();}return;}
+  else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);if(html){openPopover(html,button);if(RUNWAY)void loadIdentityPolicyWarnings(button);}else closePopover();}return;}
   else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(api?.open_reset_actions)api.open_reset_actions();else window.open?.("/reset_actions.html","_blank","noopener");return;}
   else if(action==="search"){openSearch(!state.searchOpen);}
   else if(action==="search-close"){openSearch(false);}
@@ -2696,7 +2770,7 @@ window.__tokenTrackerTest={state,render,tick,renderChats,renderStrip,renderReset
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   if(!PHONE)loadAvatars();
   document.addEventListener("click",handleClick);
