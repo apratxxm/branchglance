@@ -1,0 +1,57 @@
+"""User-attended Branchglance cutover commands. Never terminates an existing process."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT))
+
+from branchglance_installer.app import Native, Paths
+from branchglance_installer.cutover import Cutover
+from branchglance_installer.lifecycle import Lifecycle
+from branchglance_installer.windows_cutover import WindowsCutoverAdapter, migrate_state_copy
+from token_tracker.product import local_app_data
+
+
+def main(argv=None, *, native_factory=None, adapter_factory=None) -> int:
+    parser = argparse.ArgumentParser(description="Plan, run, or roll back the user-attended Branchglance cutover")
+    parser.add_argument("command", choices=("plan", "run", "recover", "rollback"))
+    parser.add_argument("--old-pid", type=int, required=True,
+                        help="inventoried pythonw PID; inspected read-only and never terminated")
+    parser.add_argument("--old-target", type=Path, required=True)
+    parser.add_argument("--old-workdir", type=Path, required=True)
+    parser.add_argument("--desktop-shortcut", type=Path,
+                        default=Path.home() / "Desktop" / "Token Tracker.lnk")
+    args = parser.parse_args(argv)
+    old_link = args.desktop_shortcut.resolve()
+    renamed = old_link.with_name("Token Tracker (old).lnk")
+    appdata = local_app_data()
+    root = appdata / "Branchglance"
+    adapter = (adapter_factory or WindowsCutoverAdapter)(args.old_pid, old_link, renamed, args.old_target.resolve(),
+                                                         args.old_workdir.resolve(), root)
+    operation = Cutover(adapter, appdata / "TokenTracker", root, args.old_target.resolve(),
+                        args.old_workdir.resolve(), migrate_state_copy,
+                        replace=getattr(getattr(adapter, "file_system", None), "replace", None) or os.replace)
+    if args.command == "plan":
+        result = operation.plan()
+    else:
+        paths = Paths.for_user()
+        native = (native_factory or Native.real)(paths)
+        with Lifecycle(native.mutex, native.control, native.processes, operation.recover) as lifecycle:
+            if args.command == "run":
+                result = operation.run(release_instance=lifecycle.release_instance)
+            elif args.command == "recover":
+                result = operation.recover()
+            else:
+                result = operation.rollback()
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

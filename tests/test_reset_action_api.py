@@ -220,7 +220,7 @@ def test_provider_policy_endpoint_returns_raw_public_policy(api):
     _, port = api
     status, payload = request(port, "/api/provider-policy")
     assert status == 200 and payload == provider_policy.public_policies()
-    assert set(payload) == {"schemaVersion", "generation", "providers"}
+    assert set(payload) == {"schemaVersion", "generation", "providers", "origin", "policyFile", "warnings"}
 
 
 def test_http_configuration_persists_until_fresh_available_reset_then_dispatches_once(tmp_path, monkeypatch):

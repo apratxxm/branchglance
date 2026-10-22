@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 from collections.abc import Mapping
 
+from . import product
 from .codex_client import CodexAppServer, CodexUnavailable
 from .providers import ClaudeDesktopProvider, _usage_percent
 from .claude_cache import usage_info
@@ -152,11 +153,7 @@ def classify_send_failure(result: dict[str, Any]) -> str:
 
 
 def _runtime_dir() -> Path:
-    override = os.environ.get("BRANCHGLANCE_STATE_ROOT", "").strip()
-    if override:
-        return Path(override)
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    return base / "TokenTracker"
+    return product.state_root()
 
 
 def _find_executable(name: str) -> str | None:
