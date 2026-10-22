@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Reset action settings · Token Tracker</title>
+  <link rel="stylesheet" href="/fonts/localfonts.css">
+  <link rel="stylesheet" href="/reset_actions.css">
+</head>
+<body>
+  <main class="settings">
+    <header><div><p class="eyebrow">TOKEN TRACKER</p><h1>Reset action</h1></div><button id="refresh" class="quiet" type="button">Refresh</button></header>
+    <p class="intro">Choose what happens when a genuine quota reset is detected.</p>
+    <fieldset id="modes">
+      <legend>After a reset</legend>
+      <label class="mode"><input type="radio" name="mode" value="greet"><span><b>Show greeting</b><small id="greet-help">Keep the current greeting behavior.</small></span></label>
+      <label class="mode"><input type="radio" name="mode" value="continue"><span><b>Continue selected chats once</b><small id="continue-help">Queue the exact message “continue” for the next genuine reset.</small></span></label>
+    </fieldset>
+    <p id="permission" class="message" role="status" aria-live="polite"></p>
+    <section id="picker" hidden>
+      <label class="search-label" for="search">Select chats <span id="selected-count">0 selected</span></label>
+      <input id="search" type="search" placeholder="Search chats" autocomplete="off">
+      <div id="threads" class="threads" aria-live="polite"></div>
+    </section>
+    <section id="last-run" class="last-run" hidden></section>
+    <p class="note">This is a one-shot action for the next genuine quota reset. Saving only arms it; it never sends immediately. A queued chat has not necessarily started.</p>
+    <p id="message" class="message" role="status" aria-live="polite"></p>
+    <footer><button id="cancel" class="quiet" type="button">Cancel</button><button id="save" class="primary" type="button">Save action</button></footer>
+  </main>
+  <script src="/reset_actions.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Runway preview review</title>
+  <style>
+    :root{color-scheme:dark;font:14px/1.45 "Segoe UI",sans-serif;background:#101114;color:#e9e9eb}
+    *{box-sizing:border-box}body{margin:0;padding:20px;min-width:320px}
+    h1{font-size:20px;margin:0 0 4px}p{margin:0;color:#a6a7ac}
+    .toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:18px 0}
+    label{display:flex;align-items:center;gap:7px;color:#c5c5c9}
+    select,button{font:inherit;color:inherit;background:#202126;border:1px solid #393a42;border-radius:6px;padding:6px 9px}
+    button{cursor:pointer}button[aria-pressed="true"]{border-color:#7b8cff;color:#c5ceff}
+    .notice{min-height:22px;color:#ffd176}
+    .board{display:flex;align-items:flex-start;flex-wrap:wrap;gap:18px;overflow:auto;padding:1px 1px 12px}
+    .frame-card{flex:0 0 auto;background:#17181c;border:1px solid #34353d;border-radius:9px;padding:10px}
+    .frame-head{display:flex;justify-content:space-between;gap:10px;margin-bottom:8px;color:#d8d8dc}
+    .frame-head small{color:#999ba2}
+    .frame-tools{display:flex;align-items:center;gap:8px;margin:0 0 8px;color:#a6a7ac;font-size:12px}
+    .frame-tools output{min-height:1em}
+    iframe{display:block;box-sizing:content-box;border:1px solid #393a42;border-radius:4px;background:#0a0a0a}
+    .empty{padding:20px;color:#a6a7ac}
+  </style>
+</head>
+<body>
+  <h1>Runway preview review</h1>
+  <p>Deterministic Codex fixtures in real same-origin browser frames.</p>
+  <div class="toolbar">
+    <label>Scenario <select id="scenario">
+      <option value="idle">Idle · quotas only</option>
+      <option value="normal">Normal activity</option>
+      <option value="question">Pending question</option>
+      <option value="agents">Many agents</option>
+      <option value="single-agent">One new agent</option>
+      <option value="agents-23">23 agents · message states</option>
+      <option value="missing">Missing and stale data</option>
+      <option value="compacting">Compacting</option>
+    </select></label>
+    <label>Frame size <select id="size">
+      <option value="default">Work-area cap · 680 × 560</option>
+      <option value="compact">Narrow work area · 300 × 560</option>
+      <option value="wide">Wide work area · 900 × 560</option>
+    </select></label>
+    <button id="paired" type="button" aria-pressed="true">Wire / color board</button>
+    <span class="notice" id="notice" aria-live="polite">Illustrative data · no actions sent</span>
+  </div>
+  <div class="board" id="board"></div>
+  <script src="runway_review.js"></script>
+</body>
+</html>
