@@ -491,6 +491,47 @@ def test_idle_parent_and_intermediate_anchor_survive_for_active_grandchild(tmp_p
     assert chats["grandchild"]["parentId"] == "middle"
 
 
+@pytest.mark.parametrize("catalog_available", [False, True])
+@pytest.mark.parametrize("with_prior_descendants", [False, True])
+def test_descendant_discovery_requires_available_archive_eligibility(tmp_path, monkeypatch, catalog_available, with_prior_descendants):
+    now = 1_800_000_000.0
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    child = _make_runtime_thread(tmp_path, "child", "running", parent="root", now=now - 2)
+    grandchild = _make_runtime_thread(tmp_path, "grandchild", "running", parent="child", now=now - 1)
+    if with_prior_descendants:
+        providers._LIVE_INDEX.update({
+            "Codex:" + identity: {
+                "id": identity, "path": str(path), "parentId": parent,
+                "status": "running", "statusSource": "transcript", "lastValidAt": _stamp(now - 1),
+            }
+            for identity, path, parent in [("child", child, "root"), ("grandchild", grandchild, "child")]
+        })
+    _create_identity_db(tmp_path, [
+        _identity_record("root"),
+        _identity_record("child", str(child), parent="root", archived=int(not catalog_available)),
+        _identity_record("grandchild", str(grandchild), parent="child"),
+    ])
+    if not catalog_available:
+        def unavailable_catalog(*_args, **_kwargs):
+            raise sqlite3.OperationalError("catalog unavailable")
+        monkeypatch.setattr(providers.sqlite3, "connect", unavailable_catalog)
+
+    chats = {row["id"]: row for row in CodexProvider()._with_agents([
+        {"id": "root", "status": "running", "tokens": 0},
+    ])}
+
+    if catalog_available:
+        assert set(chats) == {"root", "child", "grandchild"}
+        assert chats["child"]["status"] == chats["grandchild"]["status"] == "running"
+        assert chats["child"]["parentId"] == "root"
+        assert chats["grandchild"]["parentId"] == "child"
+    else:
+        assert set(chats) == {"root"}, "archive-unverified descendants must not be shown or counted"
+        assert chats["root"]["tokens"] == 0
+
+
 @pytest.mark.parametrize("with_parent", [False, True])
 def test_offline_normalized_rows_never_promote_app_observations_and_expire(tmp_path, monkeypatch, with_parent):
     fixed_now = [1_800_000_000.0]
@@ -722,6 +763,84 @@ def test_async_question_keeps_fresh_execution_tool_evidence(tmp_path, monkeypatc
     assert state["executionActivity"]["files"] == ["src/app.js"]
 
 
+@pytest.mark.parametrize("delayed_terminal", [
+    {"type": "event_msg", "payload": {"type": "task_complete"}},
+    {"type": "event_msg", "payload": {"type": "task_failed"}},
+    {"type": "response_item", "payload": {"type": "message", "role": "assistant", "channel": "final"}},
+])
+def test_delayed_lifecycle_records_cannot_resurrect_execution_across_polls(tmp_path, monkeypatch, delayed_terminal):
+    now = 1_800_000_060.0
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    path = _rollout(tmp_path / "delayed-lifecycle.jsonl", [
+        _record("event_msg", _stamp(now - 100), {"type": "task_started"}),
+        _record("event_msg", _stamp(now - 10), {"type": "task_complete"}),
+    ])
+    first = providers._codex_rollout_state(str(path))
+    assert first["executionStatus"] == "idle"
+    assert first["executionTerminalAt"] == _stamp(now - 10)
+
+    with path.open("a", encoding="utf-8") as handle:
+        for record in [
+            {**delayed_terminal, "timestamp": _stamp(now - 50)},
+            _record("event_msg", _stamp(now - 20), {"type": "task_started"}),
+            _record("response_item", _stamp(now - 1), {
+                "type": "function_call", "name": "read_file", "call_id": "delayed-read",
+                "arguments": json.dumps({"path": "src/app.js"}),
+            }),
+        ]:
+            handle.write(json.dumps(record) + "\n")
+
+    second = providers._codex_rollout_state(str(path))
+    assert second["executionStatus"] == "idle"
+    assert second["executionTerminalAt"] == first["executionTerminalAt"]
+    assert second["executionObservedAt"] == _stamp(now - 10)
+    assert second["executionActivity"] is None
+    assert providers._codex_execution_projection(second, "running", True, _stamp(now), now)["executionStatus"] == "idle"
+
+
+@pytest.mark.parametrize("unqualified_offset", [-6, -5])
+def test_user_message_clears_blocker_and_requires_work_after_resume_boundary(tmp_path, monkeypatch, unqualified_offset):
+    now = 1_800_000_060.0
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    path = _rollout(tmp_path / "user-clears-blocker.jsonl", [
+        _record("event_msg", _stamp(now - 20), {"type": "task_started"}),
+        _record("response_item", _stamp(now - 10), {
+            "type": "function_call", "name": "request_user_input", "call_id": "blocking-ask",
+            "arguments": json.dumps({"questions": [{"question": "Choose?"}]}),
+        }),
+    ])
+    waiting = providers._codex_rollout_state(str(path))
+    assert waiting["executionStatus"] == "waiting" and waiting["question"] == "Choose?"
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("event_msg", _stamp(now - 5), {
+            "type": "user_message", "message": "Continue",
+        })) + "\n")
+    cleared = providers._codex_rollout_state(str(path))
+    assert cleared["question"] is None
+    assert cleared["executionStatus"] == "unknown"
+    assert cleared["executionObservedAt"] is None and cleared["executionActivity"] is None
+    assert providers._codex_execution_projection(cleared, "running", True, _stamp(now), now)["executionStatus"] == "unavailable"
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("response_item", _stamp(now + unqualified_offset), {
+            "type": "function_call", "name": "read_file", "call_id": "before-resume",
+        })) + "\n")
+    assert providers._codex_rollout_state(str(path))["executionStatus"] == "unknown"
+
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("response_item", _stamp(now - 1), {
+            "type": "function_call", "name": "read_file", "call_id": "after-resume",
+            "arguments": json.dumps({"path": "src/app.js"}),
+        })) + "\n")
+    resumed = providers._codex_rollout_state(str(path))
+    assert resumed["question"] is None
+    assert resumed["executionStatus"] == "running"
+    assert resumed["executionSince"] == _stamp(now - 5)
+    assert resumed["executionObservedAt"] == _stamp(now - 1)
+    assert resumed["executionActivity"]["kind"] == "reading"
+
+
 def test_resolved_blocking_question_clears_wait_without_inventing_running_state(tmp_path, monkeypatch):
     now = 1_800_000_060.0
     monkeypatch.setattr(providers.time, "time", lambda: now)
@@ -921,4 +1040,3 @@ def test_meta_cache_reloads_ownership_after_same_path_replacement(tmp_path, monk
     second = {row["id"] for row in provider._with_agents([])}
     assert "replacement-child-with-longer-id" in second
     assert "first-child" not in second
-

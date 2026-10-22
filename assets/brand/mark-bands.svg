@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" role="img" aria-labelledby="title desc">
+  <title id="title">Branchglance bands mark concept</title>
+  <desc id="desc">A shared spine connects three stacked lane endpoints.</desc>
+  <path d="M12 3H6a2.5 2.5 0 0 0-2.5 2.5v5A2.5 2.5 0 0 0 6 13h6M3.5 8H12" fill="none" stroke="#B9AEFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="12" cy="3" r="1.5" fill="#89B6FF"/>
+  <circle cx="12" cy="8" r="1.5" fill="#B9AEFF"/>
+  <circle cx="12" cy="13" r="1.5" fill="#89B6FF"/>
+</svg>
