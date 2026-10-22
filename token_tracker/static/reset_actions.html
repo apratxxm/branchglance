@@ -15,6 +15,12 @@
       <label class="mode"><input type="radio" name="mode" value="greet"><span><b>Show greeting</b><small id="greet-help">Keep the current greeting behavior.</small></span></label>
       <label class="mode"><input type="radio" name="mode" value="continue"><span><b>Continue selected chats once</b><small id="continue-help">Queue the exact message “continue” for the next genuine reset.</small></span></label>
     </fieldset>
+    <section id="claude-collection" class="claude-collection" aria-labelledby="claude-heading">
+      <div><h2 id="claude-heading">Claude Code</h2><p id="claude-status" class="message" role="status" aria-live="polite">Checking status…</p></div>
+      <p id="claude-explanation" class="note" hidden>Enabling adds Branchglance hooks to Claude Code settings (with a backup) and reads Claude session activity locally.</p>
+      <p id="claude-readonly-note" class="note" hidden>Open settings from the Branchglance widget to change this.</p>
+      <button id="claude-toggle" class="quiet" type="button" disabled>Checking…</button>
+    </section>
     <p id="permission" class="message" role="status" aria-live="polite"></p>
     <section id="picker" hidden>
       <label class="search-label" for="search">Select chats <span id="selected-count">0 selected</span></label>
