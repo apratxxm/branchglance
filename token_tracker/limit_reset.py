@@ -152,6 +152,9 @@ def classify_send_failure(result: dict[str, Any]) -> str:
 
 
 def _runtime_dir() -> Path:
+    override = os.environ.get("BRANCHGLANCE_STATE_ROOT", "").strip()
+    if override:
+        return Path(override)
     base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     return base / "TokenTracker"
 

@@ -1601,24 +1601,33 @@ function runwayStatusDot(status,tone) {
   return '<svg class="runway-status-dot" width="8" height="8" viewBox="0 0 8 8" role="img" aria-label="'+esc(status)+'" title="'+esc(status)+'"><circle cx="4" cy="4" r="3.2"/></svg>';
 }
 // Orchestration job titles ("# [Project] Luna · task — long goal (continue #2)") become "Luna · task".
+// Codex titles a thread with its whole first prompt; keep only the first line/heading.
+function runwayFirstLine(title) {
+  return String(title||'').trim().split(/\r?\n|\s#{2,}\s|\s(?:Goal|Stage):\s/)[0].trim();
+}
+function runwayCapTitle(title,max=72) {
+  const text=runwayFirstLine(title);
+  return text.length>max?text.slice(0,max-1).trimEnd()+'…':text;
+}
 function runwayJobTitle(title) {
-  const match=/^#?\s*\[[^\]]{1,40}\]\s*(Luna|Sol|Haiku|Opus|Sonnet|Builder|Engineer|Scout)\s*·\s*(.+)$/i.exec(String(title||'').trim());
+  // '?' covers briefs whose '·'/'—' were lost to a non-UTF-8 pipe.
+  const match=/^#?\s*\[[^\]]{1,40}\]\s*(Luna|Sol|Haiku|Opus|Sonnet|Builder|Engineer|Scout)\s*[·?•|:]\s*(.+)$/i.exec(runwayFirstLine(title));
   if(!match)return null;
-  const task=match[2].split(/\s+[—–]\s+|\s+-\s+|\s*\((?:continue|retry)\b/i)[0].trim();
-  return task?match[1]+' · '+task:null;
+  const task=match[2].split(/\s+[—–?]\s+|\s+-\s+|\s*\((?:continue|retry)\b/i)[0].trim();
+  return task?match[1]+' · '+runwayCapTitle(task,40):null;
 }
 function runwayTitle(chat,agent=false) {
   const job=runwayJobTitle(chat.title)||(agent?runwayJobTitle(chat.agentName):null);
   let title=String(agent?agentLabel(chat):chat.title||'Untitled');
   if(job)return job;
-  if(!agent)return title;
+  if(!agent)return runwayCapTitle(title)||'Untitled';
   const project=runwayWorkspaceLeaf(chat.workspace||chat.root?.workspace);
   title=title.replace(/^\[(?:Memoir|Token Tracker)\]\s+(?:Builder|Engineer|Scout)\s*[·:—-]\s*/i,'');
   for(const role of ['sol','luna']) {
     const prefix=project+' '+role+' ';
     if(project&&title.toLowerCase().startsWith(prefix.toLowerCase()))title=title.slice(prefix.length).replace(/^(?:builder|engineer|scout)\s*[·:—-]?\s*/i,'');
   }
-  return title||String(chat.title||'Untitled');
+  return runwayCapTitle(title||chat.title)||'Untitled';
 }
 function runwayTelemetryHTML(chat,agent=false) {
   const currentEvidence=runwayCurrentEvidenceFresh();

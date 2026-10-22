@@ -520,6 +520,10 @@ assert.equal(T.runwayTitle({...root,title:'# [Orchestrator] Luna · positioning 
 assert.equal(T.runwayTitle({...root,title:'[Orchestrator] Sol · review providers-diff - adversarial review (continue #2)'},true),'Sol · review providers-diff');
 assert.equal(T.runwayTitle({...root,title:'[Orchestrator] Luna · frozen-probe (retry #2)'}),'Luna · frozen-probe');
 assert.equal(T.runwayTitle({...root,title:'Fix the [Orchestrator] widget'}),'Fix the [Orchestrator] widget');
+assert.equal(T.runwayTitle({...root,title:'# [Orchestrator] Luna ? frozen-probe ? prove whether Orchestrator can ship as a frozen single-folder Windows build ## Outcome Evidence for one decision'}),'Luna · frozen-probe');
+assert.equal(T.runwayTitle({...root,title:'# [Orchestrator] Luna · ui fixes (continue)\nGoal: fix the 7 review findings\n\nDelta: long body'}),'Luna · ui fixes');
+assert.equal(T.runwayTitle({...root,title:'Plain first line\n## Outcome\nlong body text'}),'Plain first line');
+assert.ok(T.runwayTitle({...root,title:'x'.repeat(300)}).length<=72);
 assert.equal(T.runwayModelLabel({...root,model:'Codex'}),'');
 assert.doesNotMatch(T.rowHTML({...root,model:'Codex'}),/Model not recorded|data-runway-slot="model"/);
 assert.match(T.rowHTML({...root,model:'gpt-6-luna'}),/title="gpt-6-luna"><span class="runway-model-name">6 Luna/);
