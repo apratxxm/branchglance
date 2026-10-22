@@ -63,9 +63,9 @@ _TOOL_CATEGORIES = {
 
 
 def _hook_data_root() -> str:
-    """Inline dev/frozen root until product.py owns the shared path contract."""
-    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
-    return os.path.join(base, "Branchglance")
+    """The shared hook root from product.py (the same path in dev and frozen processes)."""
+    from . import product
+    return str(product.hook_data_root())
 
 
 def data_dir() -> str:

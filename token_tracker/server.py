@@ -89,11 +89,13 @@ def _is_collected_codex_thread(thread: str) -> bool:
 
 
 def _identity_payload() -> dict:
+    """UI-facing identity (product.identity() plus policy summary). Cutover never trusts
+    this unauthenticated route; it uses the control channel's authenticated health."""
     try:
-        from .limit_reset import _runtime_dir
-        state_root = str(_runtime_dir())
+        from . import product
+        who = product.identity()
     except Exception:
-        state_root = None
+        who = {"product": PRODUCT, "build": BUILD, "pid": os.getpid(), "stateRoot": None, "policyWarnings": []}
     try:
         from .provider_policy import public_policies
         policies = public_policies()
@@ -103,8 +105,7 @@ def _identity_payload() -> dict:
                                  for row in policies["providers"]}}
     except Exception:
         summary = None
-    return {"product": PRODUCT, "build": BUILD, "pid": os.getpid(), "stateRoot": state_root,
-            "providerPolicies": summary}
+    return dict(who, providerPolicies=summary)
 
 
 def _without_codex_thread_ids(value):

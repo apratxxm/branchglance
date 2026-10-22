@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import socket
 import threading
 import time
@@ -19,7 +20,88 @@ from PIL import Image, ImageDraw
 
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
-from . import reset_delivery
+from . import product, reset_delivery
+
+
+_WAIT_OBJECT_0 = 0x0
+_WAIT_ABANDONED = 0x80
+_WAIT_TIMEOUT = 0x102
+
+
+def claim_instance_mutex(name: str | None = None) -> tuple[object | None, str]:
+    """Try to own the per-session single-instance mutex, without waiting.
+
+    Opening an existing mutex says nothing about ownership (another process
+    may only hold a handle), so ownership is decided by a zero-time wait.
+    Returns ``(handle, status)`` where status is ``acquired``, ``abandoned``
+    (the previous owner died while holding it: we now own it and must recover),
+    ``busy`` (a live owner: another Branchglance or the installer) or ``failed``.
+    The handle is returned only when the mutex is owned.
+    """
+    name = name or product.INSTANCE_MUTEX_NAME
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except (AttributeError, OSError):
+        return None, "acquired"  # not Windows: no named-mutex facility
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+    kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    try:
+        handle = product.create_secured_mutex(name)
+    except (AttributeError, OSError):
+        return None, "failed"
+    if not handle:
+        return None, "failed"
+    result = kernel32.WaitForSingleObject(handle, 0)
+    if result == _WAIT_OBJECT_0:
+        return handle, "acquired"
+    if result == _WAIT_ABANDONED:
+        return handle, "abandoned"
+    kernel32.CloseHandle(handle)
+    return None, "busy" if result == _WAIT_TIMEOUT else "failed"
+
+
+def acquire_instance_mutex(name: str | None = None) -> tuple[object | None, bool]:
+    """``(handle, owned)`` view of :func:`claim_instance_mutex`; abandoned counts as owned."""
+    handle, status = claim_instance_mutex(name)
+    return (handle, True) if status in ("acquired", "abandoned") else (None, False)
+
+
+def recover_abandoned_instance() -> None:
+    """The previous instance died holding the mutex: discard what only it could have cleaned up."""
+    logging.getLogger(__name__).warning("Previous Branchglance instance ended without releasing its lock; recovering")
+    with suppress(OSError):
+        product.control_nonce_path().unlink()
+
+
+def show_message(title: str, text: str) -> None:
+    """Visible, blocking notice for failures that happen before any window exists."""
+    logging.getLogger(__name__).error("%s: %s", title, text)
+    try:
+        ctypes.windll.user32.MessageBoxW(None, text, title, 0x40)  # MB_OK | MB_ICONINFORMATION
+    except (AttributeError, OSError):
+        pass
+
+
+_LineReader = product.LineReader
+CONTROL_REPLY_LIMIT = product.CONTROL_REPLY_LIMIT
+
+
+def _control_request(line: str, timeout: float = 0.6) -> str | None:
+    """One line out, one line back, against the control port. None on any failure."""
+    return product.control_request(line, port=CONTROL_PORT, timeout=timeout)
+
+
+def control_command(command: str, nonce: str | None = None, timeout: float = 0.6) -> str | None:
+    """Authenticated command to this session's app (see :func:`product.control_command`)."""
+    nonce = read_control_nonce() if nonce is None else nonce
+    return product.control_command(command, nonce, port=CONTROL_PORT, timeout=timeout)
+
+
+def read_control_nonce() -> str | None:
+    return product.read_nonce_file(product.control_nonce_path())
 
 
 def _warm_snapshot() -> None:
@@ -29,9 +111,19 @@ def _warm_snapshot() -> None:
         logging.getLogger(__name__).exception("Token Tracker snapshot warmup failed")
 
 
+class _StartupCancelled(Exception):
+    """A shutdown (maintenance-exit) was accepted before startup finished."""
+
+
 HTTP_HOST = "127.0.0.1"
+_INSTANCE_HANDLE = None
 HTTP_PORT = 8765
 CONTROL_PORT = 8766
+# A just-closed instance can leave the listening ports unavailable for a moment
+# (TIME_WAIT); retry a bounded number of times, then fail visibly.
+BIND_RETRY_ATTEMPTS = 20
+BIND_RETRY_DELAY = 0.25
+CONTROL_LINE_LIMIT = 160
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 PM_NOREMOVE = 0x0000
@@ -743,6 +835,18 @@ class WidgetApp:
         self.minimized = False
         self.control = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         _claim_address(self.control)
+        self.nonce_path: Path | None = product.control_nonce_path()
+        self._nonce: str | None = None
+        self.maintenance_exit_requested = False
+        # Startup and shutdown are serialized: each startup step checks for a
+        # requested shutdown and acquires its resource under this lock, and
+        # quit() marks the app quitting under the same lock before releasing
+        # whatever exists. A shutdown accepted mid-startup cancels the rest.
+        self._lifecycle = threading.RLock()
+        self._shutdown_requested = threading.Event()
+        self._maintenance_thread: threading.Thread | None = None
+        self._policy_notice_shown = False
+        self._webview_storage: Path | None = None
         # Reopen where the user left it: last normal bounds plus the maximized flag.
         self.window_state_path = _window_state_path()
         self.bounds: dict | None = _load_window_bounds(self.window_state_path)
@@ -1374,28 +1478,142 @@ class WidgetApp:
 
     @staticmethod
     def notify_existing() -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
-            client.settimeout(0.4)
-            try:
-                client.connect((HTTP_HOST, CONTROL_PORT))
-                client.sendall(b"show")
-                return True
-            except OSError:
-                return False
+        """Focus a running Branchglance, but only after it proves who it is.
 
-    def start_http(self) -> None:
-        try:
-            self.server = _ExclusiveHTTPServer((HTTP_HOST, HTTP_PORT), Handler)
-        except OSError:
-            self.server = None
-            return
+        The listener must prove it holds this session's control nonce (see
+        :func:`control_command`); self-reported identity fields are not enough,
+        and an unverified listener is never sent the nonce or a command.
+        """
+        return control_command("show") == "ok"
+
+    def start_http(self) -> bool:
+        """Bind the UI server, retrying briefly. Failure is reported, never swallowed."""
+        self.server = None
+        for attempt in range(max(1, BIND_RETRY_ATTEMPTS)):
+            try:
+                self.server = _ExclusiveHTTPServer((HTTP_HOST, HTTP_PORT), Handler)
+                break
+            except OSError:
+                if attempt + 1 < BIND_RETRY_ATTEMPTS:
+                    time.sleep(BIND_RETRY_DELAY)
+        if self.server is None:
+            return False
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         # The first transcript scan is the slow cold path; build it before the page asks.
         threading.Thread(target=_warm_snapshot, name="token-snapshot-warmup", daemon=True).start()
+        return True
+
+    def _write_control_nonce(self) -> None:
+        nonce = secrets.token_hex(32)
+        path = self.nonce_path
+        if path is None:
+            self._nonce = nonce
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+        temporary.write_text(nonce, encoding="ascii")
+        os.replace(temporary, path)
+        self._nonce = nonce
+
+    def _remove_control_nonce(self) -> None:
+        # Only the instance that wrote the nonce may remove it; a loser of the
+        # control-port race must never delete the winner's file.
+        written, self._nonce = self._nonce, None
+        if written is not None and self.nonce_path is not None:
+            with suppress(OSError):
+                self.nonce_path.unlink()
+
+    def handle_control_command(self, line: str) -> str:
+        """Answer an unauthenticated one-line request. Only read-only identity is served this way."""
+        if line.split() == ["identity"]:
+            return json.dumps(product.identity(), separators=(",", ":"))
+        return "error"
+
+    def _request_maintenance_exit(self) -> None:
+        # Cancel any remaining startup work synchronously, then quit on a thread
+        # (quit waits for an in-progress startup step and releases what it made).
+        thread = threading.Thread(target=self.quit, name="maintenance-exit", daemon=True)
+        self._maintenance_thread = thread
+        thread.start()
+        self.maintenance_exit_requested = True
+        self._shutdown_requested.set()
+
+    def _execute_control(self, command: str) -> None:
+        if command == "show":
+            self.show()
+        elif command == "maintenance-exit":
+            self._request_maintenance_exit()
+
+    def serve_control_connection(self, connection: socket.socket) -> None:
+        """One exchange per connection: identity, or hello + authenticated command."""
+        reader = _LineReader(connection, CONTROL_LINE_LIMIT)
+        first = reader.line()
+        if not first:
+            return
+        parts = first.split()
+        if len(parts) != 2 or parts[0] != "hello":
+            connection.sendall(self.handle_control_command(first).encode("utf-8") + b"\n")
+            return
+        client_challenge, nonce = parts[1], self._nonce
+        if not product.valid_challenge(client_challenge) or not nonce:
+            connection.sendall(b"denied\n")
+            return
+        server_challenge = product.new_challenge()
+        hello = dict(product.identity(), protocol=product.CONTROL_PROTOCOL, challenge=server_challenge,
+                     proof=product.control_mac(nonce, "server", client_challenge, server_challenge))
+        connection.sendall(json.dumps(hello, separators=(",", ":")).encode("utf-8") + b"\n")
+        second = reader.line()
+        parts = second.split() if second else []
+        if len(parts) != 2 or parts[0] not in product.CONTROL_COMMANDS:
+            connection.sendall(b"error\n")
+            return
+        who = product.identity()
+        health_parts = (str(who["pid"]), who["build"], who["stateRoot"])
+        signed_parts = (parts[0], *health_parts) if parts[0] == "health" else (parts[0],)
+        expected = product.control_mac(nonce, "client", client_challenge, server_challenge, *signed_parts)
+        if self._nonce != nonce or not product.control_mac_matches(expected, parts[1]):
+            connection.sendall(b"denied\n")
+            return
+        if parts[0] == "health":
+            proof = product.control_mac(nonce, "server", client_challenge, server_challenge, "health", *health_parts)
+            response = {"identity": who, "proof": proof}
+            connection.sendall(json.dumps(response, separators=(",", ":")).encode("utf-8") + b"\n")
+            return
+        if parts[0] == "maintenance-exit":
+            connection.sendall(b"ok\n")
+            self._request_maintenance_exit()
+            return
+        self._execute_control(parts[0])
+        connection.sendall(b"ok\n")
 
     def start_control(self) -> None:
-        self.control.bind((HTTP_HOST, CONTROL_PORT))
+        for attempt in range(max(1, BIND_RETRY_ATTEMPTS)):
+            try:
+                self.control.bind((HTTP_HOST, CONTROL_PORT))
+                break
+            except OSError:
+                if attempt + 1 >= BIND_RETRY_ATTEMPTS:
+                    raise
+                with suppress(OSError):
+                    self.control.close()
+                self.control = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                _claim_address(self.control)
+                time.sleep(BIND_RETRY_DELAY)
         self.control.listen(2)
+        self._write_control_nonce()
+
+        slots = threading.BoundedSemaphore(8)
+
+        def serve(connection: socket.socket) -> None:
+            try:
+                with connection:
+                    # A silent client only ever stalls its own handler thread.
+                    connection.settimeout(1.0)
+                    self.serve_control_connection(connection)
+            except OSError:
+                pass
+            finally:
+                slots.release()
 
         def listen() -> None:
             while True:
@@ -1407,15 +1625,10 @@ class WidgetApp:
                     if self.quitting or self.control.fileno() == -1:
                         return
                     continue
-                with connection:
-                    try:
-                        # A silent client must not block later "show" requests.
-                        connection.settimeout(1.0)
-                        command = connection.recv(32).decode("ascii", errors="ignore")
-                    except OSError:
-                        continue
-                if command == "show":
-                    self.show()
+                if not slots.acquire(blocking=False):
+                    connection.close()
+                    continue
+                threading.Thread(target=serve, args=(connection,), name="control-client", daemon=True).start()
 
         threading.Thread(target=listen, daemon=True).start()
 
@@ -1599,12 +1812,17 @@ class WidgetApp:
         try:
             self.start_control()
             return True
-        except OSError:
-            # Lost a simultaneous-launch race: surface the winner instead of
-            # crashing with a bind traceback.
+        except OSError as exc:
+            # Another process holds the control port. The single-instance mutex
+            # makes a second Branchglance unlikely here, so surface the owner
+            # instead of crashing with a bind traceback.
             with suppress(OSError):
                 self.control.close()
-            self.notify_existing()
+            self._remove_control_nonce()
+            if not self.notify_existing():
+                show_message(product.PRODUCT, "Branchglance could not start because its control port "
+                             f"({CONTROL_PORT}) is in use by another program. If the older Token Tracker "
+                             f"is running, quit it from its tray icon and start Branchglance again.\n\n{exc}")
             return False
 
     @staticmethod
@@ -2171,6 +2389,12 @@ class WidgetApp:
                     self._notch_thread.start()
 
     def quit(self, *_args) -> None:
+        self._shutdown_requested.set()
+        # Wait out any in-progress startup step; once quitting is set under the
+        # lock no further startup resource is acquired, so the cleanup below
+        # sees everything that exists.
+        with self._lifecycle:
+            self.quitting = True
         self._cancel_active_compact_drag()
         with self._notch_lock:
             self.quitting = True
@@ -2191,6 +2415,7 @@ class WidgetApp:
                 self.server.server_close()
         with suppress(OSError):
             self.control.close()
+        self._remove_control_nonce()
         if self.window:
             with suppress(Exception):
                 self.window.destroy()
@@ -2242,11 +2467,79 @@ class WidgetApp:
             self.reset_actions_window = None
             return False
 
+    def _startup_step(self, action):
+        """Run one startup acquisition unless a shutdown was requested; serialized with quit()."""
+        with self._lifecycle:
+            if self.quitting or self._shutdown_requested.is_set():
+                raise _StartupCancelled
+            return action()
+
+    def _finish_cancelled_startup(self) -> None:
+        thread = self._maintenance_thread
+        if thread is not None:
+            thread.join(10)  # quit() releases everything acquired before the cancellation
+        else:
+            self.quit()
+
+    def _tray_ready(self, icon) -> None:
+        """pystray setup hook: show the icon, then report startup policy problems once."""
+        icon.visible = True
+        warnings = product.startup_policy_warnings()
+        if warnings and not self._policy_notice_shown:
+            self._policy_notice_shown = True
+            text = "Provider settings problem: " + "; ".join(warnings)
+            with suppress(Exception):
+                icon.notify(text[:250], product.PRODUCT)
+
+    def _start_tray(self) -> None:
+        inspection_menu = pystray.Menu(
+            self._inspection_hotkey_menu_item("ctrl_shift_t", "Ctrl+Shift+T"),
+            self._inspection_hotkey_menu_item("ctrl_alt_t", "Ctrl+Alt+T"),
+            self._inspection_hotkey_menu_item("off", "Off"),
+        )
+        menu = pystray.Menu(
+            pystray.MenuItem("Show / hide", self.toggle, default=True),
+            pystray.MenuItem("Inspection shortcut", inspection_menu),
+            pystray.MenuItem("Refresh", self.show),
+            pystray.MenuItem("Quit", self.quit),
+        )
+        self.tray = pystray.Icon("token-tracker", self.icon_image(), "Token Tracker", menu)
+        tray = self.tray
+        threading.Thread(target=lambda: tray.run(setup=self._tray_ready), daemon=True).start()
+
     def run(self) -> None:
+        # Installed storage must not be redirected (junctions into TokenTracker or
+        # the legacy WebView2 profile); refuse before anything is written.
+        try:
+            product.validate_storage()
+            self._webview_storage = product.prepare_webview_storage(product.webview_storage_path())
+        except product.StorageRedirectedError as exc:
+            show_message(product.PRODUCT, "Branchglance did not start because its data folder is "
+                         f"redirected to another location, which it will not modify:\n\n{exc}")
+            return
         if not self.claim_instance():
             return
-        self.start_http()
-        self.limit_reset.start()
+        try:
+            self._run_claimed()
+        except _StartupCancelled:
+            self._finish_cancelled_startup()
+
+    def _run_claimed(self) -> None:
+        if not self._startup_step(self.start_http):
+            with suppress(OSError):
+                self.control.close()
+            self._remove_control_nonce()
+            show_message(product.PRODUCT, "Branchglance could not start because its page server port "
+                         f"({HTTP_PORT}) is in use by another program. If the older Token Tracker "
+                         "is running, quit it from its tray icon and start Branchglance again.")
+            return
+        self._startup_step(self.limit_reset.start)
+        self._startup_step(self._create_main_window)
+        self._startup_step(self._start_tray)
+        storage = self._startup_step(lambda: self._webview_storage)
+        webview.start(gui="edgechromium", debug=False, private_mode=False, storage_path=str(storage))
+
+    def _create_main_window(self) -> None:
         window_width, window_height, x, y = self.initial_bounds()
         self.window = webview.create_window(
             "Token Tracker",
@@ -2288,30 +2581,30 @@ class WidgetApp:
         if self._recenter_on_start:
             self.window.events.loaded += self._recenter_after_start
         self.window.events.loaded += self._mark_window_loaded
-        inspection_menu = pystray.Menu(
-            self._inspection_hotkey_menu_item("ctrl_shift_t", "Ctrl+Shift+T"),
-            self._inspection_hotkey_menu_item("ctrl_alt_t", "Ctrl+Alt+T"),
-            self._inspection_hotkey_menu_item("off", "Off"),
-        )
-        menu = pystray.Menu(
-            pystray.MenuItem("Show / hide", self.toggle, default=True),
-            pystray.MenuItem("Inspection shortcut", inspection_menu),
-            pystray.MenuItem("Refresh", self.show),
-            pystray.MenuItem("Quit", self.quit),
-        )
-        self.tray = pystray.Icon("token-tracker", self.icon_image(), "Token Tracker", menu)
-        threading.Thread(target=self.tray.run, daemon=True).start()
-        webview.start(gui="edgechromium", debug=False, private_mode=False)
 
 
 def main(argv=None) -> None:
-    parser = argparse.ArgumentParser(description="Run the Token Tracker widget")
+    # The very first action: own (or be refused) the single-instance mutex.
+    handle, status = claim_instance_mutex()
+    if status == "busy":
+        if not WidgetApp.notify_existing():
+            show_message(product.PRODUCT, "Branchglance is already running, or is being updated. "
+                         "Wait a moment and try again; if it keeps happening, quit it from the tray icon.")
+        return
+    if status == "failed":
+        show_message(product.PRODUCT, "Branchglance could not check whether it is already running, "
+                     "so it did not start. Try again in a moment.")
+        return
+    if status == "abandoned":
+        recover_abandoned_instance()
+    global _INSTANCE_HANDLE
+    _INSTANCE_HANDLE = handle  # held until the process exits
+    product.set_app_user_model_id()
+    parser = argparse.ArgumentParser(description="Run the Branchglance widget")
     parser.add_argument("--background", action="store_true", help="start hidden in the tray")
     parser.add_argument("--recenter", action="store_true",
                         help="recenter the widget once on startup")
     args = parser.parse_args(argv)
-    if WidgetApp.notify_existing():
-        return
     WidgetApp(start_hidden=args.background, recenter_on_start=args.recenter).run()
 
 

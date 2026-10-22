@@ -30,6 +30,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
+from . import product
 from .phone_push import PhonePushService
 
 
@@ -57,8 +58,7 @@ _LOG = logging.getLogger("token_tracker.phone")
 
 
 def _state_path() -> Path:
-    root = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-    return Path(root) / "TokenTracker" / "phone-state.json"
+    return product.phone_state_path()
 
 
 def _b64url(raw: bytes) -> str:

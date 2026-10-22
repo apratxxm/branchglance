@@ -573,6 +573,8 @@ def test_recenter_cli_is_opt_in_and_consumed_once(monkeypatch):
             launches.append((self.start_hidden, self.recenter_on_start))
 
     monkeypatch.setattr(widget, "WidgetApp", StubWidgetApp)
+    monkeypatch.setattr(widget, "claim_instance_mutex", lambda name=None: (None, "acquired"))
+    monkeypatch.setattr(widget.product, "set_app_user_model_id", lambda *a: True)
     widget.main([])
     widget.main(["--background", "--recenter"])
     assert launches == [(False, False), (True, True)]

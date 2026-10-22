@@ -500,6 +500,8 @@ def test_frozen_build_refuses_install_until_launcher_supports_hook(env, monkeypa
     """G5: no hook commands that nothing can run."""
     settings, data_dir = env
     monkeypatch.setattr(sys, "frozen", True, raising=False)
+    # The real launcher now relays --claude-hook; force the pre-capability state.
+    monkeypatch.setattr(installer, "_launcher_supports_hook", lambda: False)
     with pytest.raises(installer.HookInstallError, match="launcher cannot run the Claude hook"):
         installer.install(settings, CMD, data_dir)
     assert not settings.exists() and not (data_dir / claude_hook.CONSENT_NAME).exists()
@@ -511,11 +513,20 @@ def test_frozen_build_refuses_install_until_launcher_supports_hook(env, monkeypa
 
 def test_launcher_capability_defaults_to_false_without_product_flag(monkeypatch):
     import types
-    monkeypatch.setitem(sys.modules, "token_tracker.product", types.SimpleNamespace())
+    import token_tracker
+    from token_tracker import product
+    assert product.CLAUDE_HOOK_LAUNCHER is True  # the shipped launcher relays --claude-hook
+
+    def stub(module):
+        # `from . import product` resolves the package attribute before sys.modules.
+        monkeypatch.setitem(sys.modules, "token_tracker.product", module)
+        monkeypatch.setattr(token_tracker, "product", module, raising=False)
+
+    stub(types.SimpleNamespace())
     assert installer._launcher_supports_hook() is False
-    monkeypatch.setitem(sys.modules, "token_tracker.product", types.SimpleNamespace(CLAUDE_HOOK_LAUNCHER="yes"))
+    stub(types.SimpleNamespace(CLAUDE_HOOK_LAUNCHER="yes"))
     assert installer._launcher_supports_hook() is False
-    monkeypatch.setitem(sys.modules, "token_tracker.product", types.SimpleNamespace(CLAUDE_HOOK_LAUNCHER=True))
+    stub(types.SimpleNamespace(CLAUDE_HOOK_LAUNCHER=True))
     assert installer._launcher_supports_hook() is True
 
 
