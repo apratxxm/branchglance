@@ -29,6 +29,16 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 .sync-age{font:11px var(--mono);padding:2px 3px}
 #sync-age{min-width:28px;height:24px;display:inline-grid;place-items:center}
 #monitor-toggle{width:52px;min-width:52px;max-width:52px;flex:none}
+/* Source switch: two segments in the controls band; the dot marks attention in the unselected source. */
+:root{--claude:#e39a72;--source-dot:#ffd24a}
+.source-switch{display:inline-flex;align-items:center;flex:none;height:22px;margin:0 2px;padding:1px;border-radius:7px;background:#1a1a1a}
+.source-seg{position:relative;height:20px;padding:0 7px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:600 11px var(--sans);letter-spacing:0}
+.source-seg:hover{color:var(--ink)}
+.source-seg[aria-pressed="true"]{background:#2e2e2e;color:var(--ink)}
+.source-seg[data-source="Claude"][aria-pressed="true"]{color:var(--claude)}
+.source-dot{position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--source-dot)}
+body[data-source="Claude"] .meter i:not(.t-attn):not(.t-err){background:var(--claude)}
+.q-plain{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px}
 body:not(.phone) #sync-age.is-loading::before{content:"";width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sync-spin .8s linear infinite}
 .icon-btn,.sync-age,.window-controls button{border:0;background:transparent;color:var(--muted);border-radius:6px}
 body:not(.phone) .icon-btn,body:not(.phone) .window-controls button{width:22px;height:24px;display:grid;place-items:center}

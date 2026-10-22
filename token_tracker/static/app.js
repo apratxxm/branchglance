@@ -11,10 +11,12 @@ function loadDismissed() { try { const list=JSON.parse(localStorage.getItem("tok
 function saveDismissed() { while(state.dismissed.size>200)state.dismissed.delete(state.dismissed.values().next().value);try{localStorage.setItem("tokenTrackerDismissed",JSON.stringify([...state.dismissed]));}catch{} }
 const WINDOWS=RUNWAY?[1,7,30]:[1,2,5,7];
 function loadWindow() { try { const days=Number(localStorage.getItem(RUNWAY?"tokenTrackerRunwayWindow":"tokenTrackerWindow")); return WINDOWS.includes(days)?days:1; } catch { return 1; } }
+const SOURCES=["Codex","Claude"],SOURCE_KEY="branchglanceSource";
+function loadSource() { try { const value=localStorage.getItem(SOURCE_KEY); return SOURCES.includes(value)?value:"Codex"; } catch { return "Codex"; } }
 function loadHiddenChats() {
   try {
     const list=JSON.parse(localStorage.getItem('tokenTrackerRunwayHiddenChats')||'[]');
-    return new Set(Array.isArray(list)?list.filter(key=>typeof key==='string'&&key.startsWith('Codex:')):[]);
+    return new Set(Array.isArray(list)?list.filter(key=>typeof key==='string'&&/^(?:Codex|Claude):[^:]+(?::[^:]+)*$/.test(key)):[]);
   } catch { return new Set(); }
 }
 function saveHiddenChats() { try { localStorage.setItem('tokenTrackerRunwayHiddenChats',JSON.stringify([...state.hiddenChats])); } catch {} }
@@ -28,7 +30,8 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   snapshotCache:null,snapshotCacheInvalid:false,watcherFetchError:null,watcherAcceptedSequence:new Map(),
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
-  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, providerPolicyGeneration:null };
+  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,
+  source:loadSource(), sourceAttention:new Set(), sourceBase:new Map() };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
 const quotaBootstrap={provider:{name:'Codex'},metadata:null,fetchError:null,unsupported:false};
@@ -165,7 +168,7 @@ async function syncWidgetLock() {
   const initial=!widgetLock.known;
   try{
     const result=await window.pywebview?.api?.get_widget_lock?.();if(!applyWidgetLock(result))return null;
-    if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:Boolean(chat.parentId)})));}
+    if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:Boolean(chat.parentId),waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null})));}
     return result;
   }catch{return null;}
 }
@@ -356,7 +359,8 @@ function syncCompactNotch(count,items) {
     const previous=notch.workStates.get(key);
     const restarted=Boolean(previous?.active&&previous.runStartedAt&&item.runStartedAt&&previous.runStartedAt!==item.runStartedAt);
     const messageArrived=Boolean(item.subagent&&item.latestMessageDirection&&["parent-to-agent","agent-to-parent","agent-to-agent"].includes(item.latestMessageDirection)&&item.latestMessageAt&&previous&&(!previous.latestMessageAt||item.latestMessageAt>previous.latestMessageAt));
-    if(!previous||!previous.active||restarted||messageArrived)newWork=true;
+    const questionArrived=Boolean(item.waiting&&(!previous?.waiting||previous.questionToken!==item.questionToken));
+    if(!previous||!previous.active||restarted||messageArrived||questionArrived)newWork=true;
   }
   const nextStates=new Map(current);for(const [key,item] of notch.workStates)if(!current.has(key))nextStates.set(key,{...item,active:false});
   notch.workStates=nextStates;notch.activeKeys=activeKeys;notch.active=fresh?count:0;
@@ -388,7 +392,8 @@ function syncNotch(count,items=[]) {
     const previous=notch.workStates.get(key);
     const restarted=Boolean(previous?.active&&previous.runStartedAt&&item.runStartedAt&&previous.runStartedAt!==item.runStartedAt);
     const messageArrived=Boolean(item.subagent&&item.latestMessageDirection&&["parent-to-agent","agent-to-parent","agent-to-agent"].includes(item.latestMessageDirection)&&item.latestMessageAt&&previous&&(!previous.latestMessageAt||item.latestMessageAt>previous.latestMessageAt));
-    if(!previous||!previous.active||restarted||messageArrived)newWork=true;
+    const questionArrived=Boolean(item.waiting&&(!previous?.waiting||previous.questionToken!==item.questionToken));
+    if(!previous||!previous.active||restarted||messageArrived||questionArrived)newWork=true;
   }
   const nextStates=new Map(current);
   for(const [key,item] of notch.workStates)if(!current.has(key))nextStates.set(key,{...item,active:false});
@@ -737,6 +742,22 @@ function coldPenalty(chat) {
   const context=safeNumber(chat.contextTokens);
   return context==null?null:Math.round(context*(1-CACHED_RATE));
 }
+// Resume command per provider. Claude offers one only for a resumable CLI session; never a Codex command.
+function resumeCommand(chat) {
+  if(chat?.provider==="Claude"){
+    if(chat.resumable!==true)return "";
+    const id=typeof chat.sessionId==="string"&&chat.sessionId?chat.sessionId:String(chat.id||"");
+    const match=/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?::[A-Za-z0-9_-]+)?$/i.exec(id);
+    return match?"claude --resume "+match[1]:"";
+  }
+  return "codex resume "+chat.id;
+}
+const isCodexChat = chat => chat?.provider==="Codex";
+// Read-only choice list for sources that cannot be answered through Codex.
+function plainOptionsHTML(options) {
+  const opts=Array.isArray(options)?options:[];
+  return opts.length?'<ol class="q-plain">'+opts.map(text=>'<li>'+esc(text)+'</li>').join('')+'</ol>':'';
+}
 // Choices can be copied/opened, or queued as a normal Codex message for the next turn.
 // Queueing does not resolve the pending structured question.
 function optionsHTML(options, thread) {
@@ -756,11 +777,11 @@ const runwayWaiting = chat => !chat.telemetryUnavailable&&!runwayTerminated(chat
 function runwayExecutionView(chat) {
   if(!RUNWAY||runwayWaiting(chat)||runwayTerminated(chat)||chat.telemetryUnavailable||stamp(chat.executionTerminalAt))return null;
   const status=normalizeStatus(chat.executionStatus),source=chat.executionSource;
-  if(!['running','compacting'].includes(status)||!['transcript','app'].includes(source))return null;
+  if(!['running','compacting'].includes(status)||!['transcript','app','hook'].includes(source))return null;
   const observed=stamp(chat.executionObservedAt),age=Date.now()-observed;
   if(!observed||age<0||age>150000)return null;
   return {status,since:status==='compacting'?chat.executionCompactionStartedAt:chat.executionSince,
-    activity:source==='transcript'&&chat.executionActivity&&typeof chat.executionActivity==='object'?chat.executionActivity:null,source};
+    activity:(source==='transcript'||source==='hook')&&chat.executionActivity&&typeof chat.executionActivity==='object'?chat.executionActivity:null,source};
 }
 const runwayEffectiveStatus = chat => {
   const execution=runwayExecutionView(chat);
@@ -778,8 +799,8 @@ function runwayActivityEvidence(chat) {
     if(status==='unavailable'||source==='unavailable')return {status:'unavailable',activity:null};
     if(!['running','compacting','waiting'].includes(status))return {status,activity:null};
     const observed=stamp(chat.executionObservedAt),age=Date.now()-observed;
-    if(!['transcript','app'].includes(source)||!observed||age<0||age>150000||stamp(chat.executionTerminalAt))return {status:'stale',activity:null};
-    return {status,activity:source==='transcript'&&chat.executionActivity&&typeof chat.executionActivity==='object'?chat.executionActivity:null};
+    if(!['transcript','app','hook'].includes(source)||!observed||age<0||age>150000||stamp(chat.executionTerminalAt))return {status:'stale',activity:null};
+    return {status,activity:(source==='transcript'||source==='hook')&&chat.executionActivity&&typeof chat.executionActivity==='object'?chat.executionActivity:null};
   }
   if(chat.telemetryUnavailable||chat.activityUnavailable)return {status:'unavailable',activity:null};
   const status=normalizeStatus(chat.status);
@@ -959,15 +980,19 @@ function syncProviderPolicyGeneration(snapshot) {
     state.providerPolicyGeneration=generation;
   }
 }
+// Sources the switch can offer: visible chat providers under policy, in a fixed order.
+function sourceNames(snapshot) { const visible=visibleProviderNames(snapshot);return SOURCES.filter(name=>visible.has(name)); }
+function effectiveSource(snapshot) { const names=sourceNames(snapshot);return names.includes(state.source)?state.source:(names[0]||"Codex"); }
+const runwaySource = snapshot => RUNWAY&&!PHONE?[effectiveSource(snapshot)]:["Codex"];
 function providersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=(snapshot?.providers||[]);
-  const names=RUNWAY?["Codex"]:(snapshot?.enabledProviders||["Codex"]);
+  const names=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
   return names.filter(name=>visible.has(name)).map(name=>available.find(p=>p.name===name)||{name,connected:false,chats:[]});
 }
 // Chat providers plus providers shown only as quota meters (reset block and alerts).
 function limitProvidersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=snapshot?.providers||[];
-  const enabled=RUNWAY?["Codex"]:(snapshot?.enabledProviders||["Codex"]);
+  const enabled=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
   const names=[...enabled,...(RUNWAY?[]:(snapshot?.limitProviders||[]).filter(name=>!enabled.includes(name)))].filter(name=>visible.has(name));
   return [...new Set(names)].map(name=>available.find(provider=>provider.name===name)||{name,connected:false,limitsOnly:!enabled.includes(name),chats:[]});
 }
@@ -1126,7 +1151,7 @@ function attentionItems(forest, providers, watcher=state.watcher, now=Date.now()
     if(isAsking(chat)) {
       const since=stamp(chat.attentionSince)||stamp(chat.pendingQuestionAt)||stamp(chat.updatedAt);
       const dismiss=questionDismissToken(chat);
-      if(!state.dismissed.has(dismiss))items.push({key:"ask:"+chat.key,kind:"ask",tone:"attn",label:"Needs you",title:pathTitle(chat),fact:since?ageShort(since):"",line2:chat.pendingQuestion||"",options:chat.pendingOptions||[],thread:chat.id,target,sub,dismiss,sort:since||now});
+      if(!state.dismissed.has(dismiss))items.push({key:"ask:"+chat.key,kind:"ask",tone:"attn",label:"Needs you",title:pathTitle(chat),fact:since?ageShort(since):"",line2:chat.pendingQuestion||"",options:chat.pendingOptions||[],thread:isCodexChat(chat)?chat.id:null,target,sub,dismiss,sort:since||now});
       continue;
     }
     // Only a positively observed resolved chat clears its prompt history.
@@ -1136,13 +1161,13 @@ function attentionItems(forest, providers, watcher=state.watcher, now=Date.now()
       clearResolvedQuestionDismissals(chat);
     if(recentFail(chat)) {
       const dismiss="failed:"+chat.key+":"+chat.updatedAt;
-      if(!state.dismissed.has(dismiss))items.push({key:"failed:"+chat.key,kind:"failed",tone:"err",label:chat.stateDetail==="interrupted"?"Stopped":"Failed",title:pathTitle(chat),fact:ageShort(stamp(chat.updatedAt)),tip:chat.failureReason||chat.stateDetail||"",target,sub,...(RUNWAY?{thread:chat.id}:{}),dismiss,sort:-stamp(chat.updatedAt)});
+      if(!state.dismissed.has(dismiss))items.push({key:"failed:"+chat.key,kind:"failed",tone:"err",label:chat.stateDetail==="interrupted"?"Stopped":"Failed",title:pathTitle(chat),fact:ageShort(stamp(chat.updatedAt)),tip:chat.failureReason||chat.stateDetail||"",target,sub,...(RUNWAY&&isCodexChat(chat)?{thread:chat.id}:{}),dismiss,sort:-stamp(chat.updatedAt)});
     }
     const pct=safeNumber(chat.contextPercent);
     if(pct!=null&&pct>=90&&now-chat.latest<ACTIVE_WINDOW_MS) {
       const dismiss="context:"+chat.key+":"+(chat.compactions||0);
       const left=safeNumber(chat.contextWindow)!=null&&safeNumber(chat.contextTokens)!=null?fmt(Math.max(0,chat.contextWindow-chat.contextTokens))+" left":"";
-      if(!state.dismissed.has(dismiss))items.push({key:"context:"+chat.key,kind:"context",tone:"err",label:"Usage",labelMono:Math.round(pct)+"%",title:pathTitle(chat),fact:left,target,sub,...(RUNWAY?{thread:chat.id}:{}),dismiss,sort:-pct});
+      if(!state.dismissed.has(dismiss))items.push({key:"context:"+chat.key,kind:"context",tone:"err",label:"Usage",labelMono:Math.round(pct)+"%",title:pathTitle(chat),fact:left,target,sub,...(RUNWAY&&isCodexChat(chat)?{thread:chat.id}:{}),dismiss,sort:-pct});
     }
     if(!RUNWAY&&!chat.parentId) {
       const warmth=warmthView(chat),penalty=coldPenalty(chat);
@@ -1170,13 +1195,13 @@ function askHTML(item) {
     const expanded=state.expandedQuestions.has(item.key);
     const summary='<button class="runway-question-toggle" data-action="toggle-question" data-question="'+esc(item.key)+'" aria-expanded="'+expanded+'"><span class="runway-question-title">'+(item.line2?richText(item.line2):'Waiting for your input')+'</span><span class="runway-expand-label">'+(expanded?'Hide':'Details')+'</span></button>';
     if(!expanded)return '<div class="runway-question">'+summary+'</div>';
-    const open='<button class="q-open" data-action="open" data-thread="'+esc(item.thread)+'" title="Open this chat in Codex">'+ICON.open+'<span>Open in Codex</span>'+ICON.check+'</button>';
-    const choices=(item.options||[]).length?optionsHTML(item.options,item.thread):open;
+    const open=item.thread?'<button class="q-open" data-action="open" data-thread="'+esc(item.thread)+'" title="Open this chat in Codex">'+ICON.open+'<span>Open in Codex</span>'+ICON.check+'</button>':'';
+    const choices=item.thread?((item.options||[]).length?optionsHTML(item.options,item.thread):open):plainOptionsHTML(item.options);
     return '<div class="runway-question">'+summary+'<div class="runway-question-detail"><div class="runway-question-full">'+(item.line2?richText(item.line2):'Waiting for your input')+'</div>'+choices+'</div></div>';
   }
-  const open='<button class="q-open" data-action="open" data-thread="'+esc(item.thread)+'" title="Open this chat in Codex">'+ICON.open+'<span>'+(item.options?.length?"Open":"Answer")+'</span>'+ICON.check+'</button>';
+  const open=item.thread?'<button class="q-open" data-action="open" data-thread="'+esc(item.thread)+'" title="Open this chat in Codex">'+ICON.open+'<span>'+(item.options?.length?"Open":"Answer")+'</span>'+ICON.check+'</button>':'';
   const question='<div class="si-q si-ask"><span class="si-qt">'+(item.line2?richText(item.line2):'Waiting for your input')+'</span>'+(item.options?.length?'':open)+'</div>';
-  return question+(item.options?.length?'<div class="si-opts">'+optionsHTML(item.options,item.thread)+'</div>':'');
+  return question+(item.options?.length?'<div class="si-opts">'+(item.thread?optionsHTML(item.options,item.thread):plainOptionsHTML(item.options))+'</div>':'');
 }
 function renderStrip(items) {
   const node=$("#strip");if(!node)return;
@@ -1338,7 +1363,7 @@ function renderResets(providers) {
     const markup=(key)=>providers.map((p,i)=>{
       const id="r"+i+"-"+key;
       return '<div class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
-        (key==="fiveHour"&&!PHONE?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
+        (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
         '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>left</i>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit remaining" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
@@ -1347,7 +1372,7 @@ function renderResets(providers) {
     else node.innerHTML=providers.map((p,i)=>["fiveHour","weekly"].map(key=>{
       const id="r"+i+"-"+key;
       return '<div class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
-        (key==="fiveHour"&&!PHONE?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
+        (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
         '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>left</i>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit remaining" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
@@ -1370,7 +1395,7 @@ function renderResets(providers) {
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;
   const provider=providers.find(p=>p.name==="Codex"),watcher=state.watcher,w=watcher?.providers?.Codex;
-  if(!watcher||!w){node.textContent="";node.className="greeter-status muted";return;}
+  if(!provider||!watcher||!w){node.textContent="";node.className="greeter-status muted";return;}
   const error=watcher.persistenceError||w.lastPollError||w.lastError;
   const attempted=stamp(w.lastAttemptAt||w.lastTriggerAt);
   let label;
@@ -1691,6 +1716,10 @@ function runwayTelemetryHTML(chat,agent=false) {
 function runwayQuestionPopover(chat) {
   if(!runwayCurrentEvidenceFresh()||chat?.telemetryUnavailable)return '';
   if(!chat||!runwayWaiting(chat)||!chat.pendingQuestion)return '';
+  if(!PHONE&&!isCodexChat(chat)){
+    const command=resumeCommand(chat);
+    return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close question" title="Close question">×</button><div class="runway-question-full">'+richText(chat.pendingQuestion)+'</div>'+plainOptionsHTML(chat.pendingOptions)+(command?'<button class="q-open" data-action="copy" data-copy="'+esc(command)+'" title="'+esc(command)+'">'+ICON.copy+'<span>Copy resume command</span>'+ICON.check+'</button>':'')+'</div>';
+  }
   const choices=PHONE?((chat.pendingOptions||[]).length?'<ul class="phone-question-options">'+chat.pendingOptions.map(option=>'<li>'+esc(option)+'</li>').join('')+'</ul>':''):((chat.pendingOptions||[]).length?optionsHTML(chat.pendingOptions,chat.id):'<button class="q-open" data-action="open" data-thread="'+esc(chat.id)+'" title="Open this chat in Codex">'+ICON.open+'<span>Open in Codex to answer</span>'+ICON.check+'</button>');
   return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close question" title="Close question">×</button><div class="runway-question-full">'+richText(chat.pendingQuestion)+'</div>'+choices+'</div>';
 }
@@ -1739,14 +1768,14 @@ function agentRowEntry(agent, query) {
   const st=ownState(agent),stats=agentStats(agent),fin=noteLiveness(agent,stats.live);
   const tip=["context "+(safeNumber(agent.contextPercent)==null?"—":Math.round(agent.contextPercent)+"%"),ageShort(agent.latest)+(agent.latest&&ageShort(agent.latest)!=="now"?" ago":""),agent.reasoningEffort?"effort "+agent.reasoningEffort:null,"click to copy resume"].filter(Boolean).join(" · ");
   return {key:agent.key,cls:"ag"+(stats.live?" is-live":" is-done")+(isAsking(agent)?" asks":"")+(query.active&&matchesQuery(agent,query)?" match":""),
-    attrs:{role:"button",tabindex:"0","data-action":"copy","data-copy":"codex resume "+agent.id,"data-sub":agent.key,title:tip},
+    attrs:{role:"button",tabindex:"0","data-action":resumeCommand(agent)?"copy":null,"data-copy":resumeCommand(agent)||null,"data-sub":agent.key,title:tip},
     html:'<span class="ag-1">'+glyphHTML(st)+'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span><span class="ag-model" title="'+esc(agent.model||"")+'">'+esc(agentModelLabel(agent))+'</span><span class="ag-state t-'+(st.wordTone||st.tone)+'">'+esc(st.word)+'</span>'+ICON.check+'</span>'+
       '<span class="ag-2">'+statStripHTML(stats,{live:stats.live,fin})+'</span>'+
       (agent.pendingQuestion?'<span class="ag-q">'+richText(agent.pendingQuestion)+'</span>':'')};
 }
 function denseRowEntry(agent) {
   const stats=agentStats(agent);
-  return {key:agent.key,cls:"ag dense",attrs:{role:"button",tabindex:"0","data-action":"copy","data-copy":"codex resume "+agent.id,"data-sub":agent.key,title:modelLabel(agent)+" · "+(stats.tools??"—")+" tools · "+(stats.files??"—")+" files"},
+  return {key:agent.key,cls:"ag dense",attrs:{role:"button",tabindex:"0","data-action":resumeCommand(agent)?"copy":null,"data-copy":resumeCommand(agent)||null,"data-sub":agent.key,title:modelLabel(agent)+" · "+(stats.tools??"—")+" tools · "+(stats.files??"—")+" files"},
     html:'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span>'+(stats.tokens==null&&!stats.tools?'<span class="s s-time">'+esc(modelLabel(agent))+'</span>':'<span class="s s-tok"><b>'+fmt(stats.tokens)+'</b> <i>tok</i></span>'+filesHTML(stats)+'<span class="s s-time">'+(stats.run==null?"—":"ran "+runSpan(stats.run))+'</span>')};
 }
 function trayEntries(chat, query) {
@@ -1776,8 +1805,8 @@ function traySummaryHTML(chat) {
 
 /* ---------- layer 2 ---------- */
 function blockerHTML(chat) {
-  const resume='<button class="chip" data-action="copy" data-copy="codex resume '+esc(chat.id)+'" title="Copy resume command">codex resume '+esc(String(chat.id).slice(0,4))+'…'+ICON.copy+ICON.check+'</button>';
-  if(isAsking(chat))return '<div class="blk t-attn"><span class="blk-text">'+(chat.pendingQuestion?richText(chat.pendingQuestion):'<span class="t-attn">Needs you</span>')+optionsHTML(chat.pendingOptions,chat.id)+'</span>'+resume+'</div>';
+  const command=resumeCommand(chat),resume=command?'<button class="chip" data-action="copy" data-copy="'+esc(command)+'" title="Copy resume command">'+esc(command.slice(0,command.length-String(chat.id).length)+String(chat.id).slice(0,4))+'…'+ICON.copy+ICON.check+'</button>':'';
+  if(isAsking(chat))return '<div class="blk t-attn"><span class="blk-text">'+(chat.pendingQuestion?richText(chat.pendingQuestion):'<span class="t-attn">Needs you</span>')+(isCodexChat(chat)?optionsHTML(chat.pendingOptions,chat.id):plainOptionsHTML(chat.pendingOptions))+'</span>'+resume+'</div>';
   if(chat.status==="failed")return '<div class="blk t-'+(recentFail(chat)?"err":"mute")+'"><span class="blk-text">'+esc(chat.failureReason||chat.stateDetail||"failed")+'</span>'+resume+'</div>';
   if(chat.dataError)return '<div class="blk t-mute"><span class="blk-text">'+esc(chat.dataError)+'</span></div>';
   if(chat.status==="unknown")return '<div class="blk t-mute"><span class="blk-text">status unavailable</span></div>';
@@ -1808,7 +1837,7 @@ function panelHTML(chat) {
     '<div class="meta">'+esc(meta)+'</div>'+
     '<div class="l2-foot"><span class="path" title="'+esc(chat.workspace||"")+'"><bdi>'+esc(chat.workspace||"")+'</bdi></span>'+
     '<button class="ghost" data-action="pin" data-key="'+esc(chat.key)+'" aria-pressed="'+pinned+'">'+(pinned?"Unpin":"Pin")+'</button>'+
-    '<button class="ghost" data-action="copy" data-copy="codex resume '+esc(chat.id)+'" title="Copy codex resume '+esc(chat.id)+'">'+ICON.copy+ICON.check+'resume</button></div>';
+    (resumeCommand(chat)?'<button class="ghost" data-action="copy" data-copy="'+esc(resumeCommand(chat))+'" title="Copy '+esc(resumeCommand(chat))+'">'+ICON.copy+ICON.check+'resume</button>':'')+'</div>';
 }
 
 /* ---------- chat list ---------- */
@@ -1871,6 +1900,51 @@ function updateChatEl(el, chat, query) {
   if(sum.firstElementChild._html!==summary){sum.firstElementChild.innerHTML=summary;sum.firstElementChild._html=summary;}
   patchKeyed(full.firstElementChild,mode==="active"||full.firstElementChild.children.length?trayEntries(chat,query):[]);
 }
+// Attention per source, independent of which forest is on screen. A new run or waiting question in an
+// unselected source flags that segment (never switches); selecting the source clears the flag.
+function trackSourceAttention(name, items, selected, fresh) {
+  const base=state.sourceBase.get(name)||new Map();
+  if(!fresh)return;
+  let newWork=false;
+  for(const item of items){
+    if(!item.active)continue;
+    const previous=base.get(item.key);
+    const restarted=Boolean(previous?.active&&previous.runStartedAt&&item.runStartedAt&&previous.runStartedAt!==item.runStartedAt);
+    const questionArrived=Boolean(item.waiting&&(!previous?.waiting||previous.questionToken!==item.questionToken));
+    if(!previous||!previous.active||restarted||questionArrived)newWork=true;
+  }
+  state.sourceBase.set(name,new Map(items.map(item=>[item.key,{active:item.active,runStartedAt:item.runStartedAt,waiting:item.waiting,questionToken:item.questionToken}])));
+  if(selected||!items.some(item=>item.active))state.sourceAttention.delete(name);
+  else if(newWork)state.sourceAttention.add(name);
+}
+function updateSourceSwitch() {
+  if(!RUNWAY||PHONE)return;
+  const group=$('#source-switch');if(!group)return;
+  const names=state.snapshot?sourceNames(state.snapshot):[],visible=names.length>=2,current=state.snapshot?effectiveSource(state.snapshot):state.source;
+  if(group.hidden!==!visible)group.hidden=!visible;
+  const segments=[...(document.querySelectorAll?.('#source-switch [data-source]')||[])];
+  for(const segment of segments){
+    const name=segment.dataset?.source,pressed=String(name===current),flagged=visible&&name!==current&&state.sourceAttention.has(name);
+    if(segment.getAttribute?.('aria-pressed')!==pressed)segment.setAttribute?.('aria-pressed',pressed);
+    segment.classList?.toggle?.('has-attention',flagged);
+    const label=name+(flagged?' (needs attention)':'');
+    if(segment.getAttribute?.('aria-label')!==label)segment.setAttribute?.('aria-label',label);
+    const dot=segment.querySelector?.('.source-dot');if(dot&&dot.hidden!==!flagged)dot.hidden=!flagged;
+  }
+  const body=document.body;if(body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
+}
+function setSource(name) {
+  if(!RUNWAY||PHONE||!SOURCES.includes(name)||!state.snapshot)return;
+  if(!sourceNames(state.snapshot).includes(name)||effectiveSource(state.snapshot)===name)return;
+  state.source=name;
+  try{localStorage.setItem(SOURCE_KEY,name);}catch{}
+  state.sourceAttention.delete(name);
+  if(state.popover)closePopover({restoreFocus:false});
+  closeRunwayDetails();state.lastOrder=null;
+  const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
+  renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);
+  updateSourceSwitch();
+}
 function renderChats(providers) {
   scheduleNotchSize();
   const previousForest=state.forest,forest=buildForest(providers);stabilizeRunwayForest(forest,previousForest);
@@ -1891,16 +1965,32 @@ function renderChats(providers) {
     // Trigger reveals for active lifecycle transitions and new parent messages,
     // not for every transcript or token update on an already-running chat.
       const evidenceFresh=runwayCurrentEvidenceFresh();
-      const workItems=activeRoots.flatMap(chat=>[chat,...chat.descendants]).map(chat=>({
+      const itemsOf=roots=>roots.flatMap(chat=>[chat,...chat.descendants]).map(chat=>({
         key:chat.key,active:evidenceFresh&&runwayActive(chat)&&!chat.telemetryUnavailable&&chat.statusSource!=='unavailable',subagent:Boolean(chat.parentId),
+        waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,questionId:runwayWaiting(chat)?chat.key+'|'+(chat.pendingQuestionId??chat.questionId??chat.pendingQuestion??''):null,
       runStartedAt:stamp(chat.activeRunStartedAt)||(chat.telemetryUnavailable?notch.workStates.get(chat.key)?.runStartedAt:0),latestMessageAt:stamp(chat.latestMessageAt),latestMessageDirection:chat.latestMessageDirection,
     }));
-      const activeCount=evidenceFresh?activeRoots.filter(chat=>[chat,...chat.descendants].some(item=>runwayActive(item)&&!item.telemetryUnavailable&&item.statusSource!=='unavailable')).length:0;
+      const activeIn=roots=>evidenceFresh?roots.filter(chat=>[chat,...chat.descendants].some(item=>runwayActive(item)&&!item.telemetryUnavailable&&item.statusSource!=='unavailable')).length:0;
+      const selectedItems=itemsOf(activeRoots),activeCount=activeIn(activeRoots);
+      // Sources that are visible under policy but not shown get the same attention tracking.
+      const shown=new Set(providers.map(provider=>provider.name));
+      const others=state.snapshot?sourceNames(state.snapshot).filter(name=>!shown.has(name)):[];
+      let workItems=selectedItems,otherActive=0;
+      for(const name of providers.map(provider=>provider.name))trackSourceAttention(name,selectedItems,true,evidenceFresh);
+      for(const name of others){
+        const roots=buildForest([(state.snapshot.providers||[]).find(provider=>provider.name===name)||{name,chats:[]}]).roots.filter(chat=>!state.hiddenChats.has(chat.key));
+        const items=itemsOf(roots);
+        trackSourceAttention(name,items,false,evidenceFresh);
+        workItems=workItems.concat(items);otherActive+=activeIn(roots);
+      }
       if(state.liveRecoveryPending){
-        for(const item of workItems){const previous=notch.workStates.get(item.key);if(previous?.active&&item.active)previous.latestMessageAt=item.latestMessageAt;}
+        // Recovery baselines replayed state, but a question never seen before the gap must still reveal.
+        for(const item of workItems){const previous=notch.workStates.get(item.key);if(previous?.active&&item.active){previous.latestMessageAt=item.latestMessageAt;if(!item.questionId||state.seenQuestions.has(item.questionId)){previous.waiting=item.waiting;previous.questionToken=item.questionToken;}}}
         state.liveRecoveryPending=false;
       }
-      syncNotch(activeCount,workItems);
+      if(evidenceFresh)for(const item of workItems)if(item.questionId){if(state.seenQuestions.size>500)state.seenQuestions.clear();state.seenQuestions.add(item.questionId);}
+      syncNotch(activeCount+otherActive,workItems);
+      updateSourceSwitch();
     const available=activeCount>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
     const header=$('#chats-head'),searchToggle=$('#search-toggle');
     if(header)header.hidden=!available;if(searchToggle)searchToggle.hidden=!available;
@@ -2310,7 +2400,7 @@ async function refresh(force=false) {
     const response=await fetch(requestedUrl,{cache:"no-store",signal:controller.signal});
     if(!response.ok)throw new Error("HTTP "+response.status);
     const snapshot=await response.json();if(!snapshot||typeof snapshot!=="object"||!Array.isArray(snapshot.providers))throw new Error("Invalid stats snapshot");applyLive(snapshot,state.live);markOk();
-    const codex=(snapshot.providers||[]).find(provider=>provider.name==='Codex'),present=new Set((codex?.chats||[]).map(chat=>'Codex:'+chat.id));
+    const present=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
     for(const [key,at] of state.pendingOutside)if(present.has(key)){state.outsideSeen.set(key,at);state.pendingOutside.delete(key);}
     if(selection===statsUrl(false)){render(snapshot);clearBootstrapRetry(true);}
     else state.refreshPending=true;
@@ -2342,24 +2432,33 @@ function handleVisibilityChange() {
   if(PHONE)state.foregroundLivePending=true;
   return refresh();
 }
-const LIVE_FIELDS=["contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable"]:[]),...(RUNWAY&&!PHONE?["parentId","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
+const LIVE_FIELDS=["contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY&&!PHONE?["parentId","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
+// A live row is qualified as "<Provider>:<id>"; ids may themselves contain ":" (Claude subagents).
+function liveIdentity(item) {
+  if(!item||typeof item.id!=='string'||!item.id||typeof item.key!=='string')return null;
+  for(const name of SOURCES)if(item.key===name+':'+item.id)return !item.provider||item.provider===name?name:null;
+  return null;
+}
 // Overlay seconds-fresh activity/state from /api/live onto the last full snapshot.
 function applyLive(snapshot, live) {
   if(!snapshot||!live||stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
   restrictSnapshotProviders(snapshot);
-  const validKnown=item=>!RUNWAY||PHONE||!item.id||item.key==='Codex:'+item.id;
+  const validKnown=item=>!RUNWAY||PHONE||liveIdentity(item)!==null;
   const byKey=new Map((live.chats||[]).filter(validKnown).map(item=>[item.key,item]));
   let changed=false,oldestShown=Infinity;
   const initiallyLoaded=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
-  const codex=(snapshot.providers||[]).find(provider=>provider.name==='Codex');
-  if(RUNWAY&&!PHONE&&codex&&Array.isArray(codex.chats)){
-    const known=new Set(codex.chats.map(chat=>'Codex:'+chat.id));
+  // Unseen rows are inserted per provider; providers hidden by policy are already absent from the snapshot.
+  const liveTargets=new Map();
+  if(RUNWAY&&!PHONE)for(const name of SOURCES){const target=(snapshot.providers||[]).find(provider=>provider.name===name);if(target&&Array.isArray(target.chats))liveTargets.set(name,{target,known:new Set(target.chats.map(chat=>name+':'+chat.id))});}
+  if(liveTargets.size){
     for(const item of live.chats||[]){
-      if(typeof item.id!=='string'||!item.id||item.key!=='Codex:'+item.id||(item.provider&&item.provider!=='Codex'))continue;
+      const owner=liveIdentity(item),entry=owner&&liveTargets.get(owner);
+      if(!entry)continue;
+      const {target,known}=entry;
       if(known.has(item.key))continue;
       const record={id:item.id};
-      for(const field of ['parentId','title','agentName','agentRole','workspace','workspaceKind','source','status','statusSource','telemetryUnavailable','metricsUnavailable','previousStatus','lastValidAt','stateDetail','failureReason','activity','activityUnavailable','executionStatus','executionSource','executionObservedAt','executionSince','executionCompactionStartedAt','executionTerminalAt','executionActivity','activeRunStartedAt','stateSince','runStartedAt','runEndedAt','updatedAt','activityAt','pendingQuestion','pendingQuestionAt','pendingQuestionId','pendingQuestionIds','questionId','questionResolutionAt','pendingOptions','model','contextTokens','contextWindow','contextPercent','contextObservedAt','contextModel','contextDelta','contextDeltaObservedAt','latestRequest','latestRequestAt','latestUpdate','latestUpdateAt','trackerUpdate','trackerUpdateAt','latestMessageAt','latestMessageDirection','latestMessageSourceId','latestMessageTargetId','toolCalls','filesEdited','fileChanges','recentTokens','usageUpdatedAt','lastRequest','attentionSince','compactionStartedAt','statusObservedAt','modelChangeAt'])if(item[field]!==undefined)record[field]=item[field];
-      codex.chats.push(record);known.add(item.key);changed=true;
+      for(const field of ['parentId','title','agentName','agentRole','workspace','workspaceKind','source','status','statusSource','telemetryUnavailable','metricsUnavailable','previousStatus','lastValidAt','stateDetail','failureReason','activity','activityUnavailable','executionStatus','executionSource','executionObservedAt','executionSince','executionCompactionStartedAt','executionTerminalAt','executionActivity','activeRunStartedAt','stateSince','runStartedAt','runEndedAt','updatedAt','activityAt','pendingQuestion','pendingQuestionAt','pendingQuestionId','pendingQuestionIds','questionId','questionResolutionAt','pendingOptions','model','contextTokens','contextWindow','contextPercent','contextObservedAt','contextModel','contextDelta','contextDeltaObservedAt','latestRequest','latestRequestAt','latestUpdate','latestUpdateAt','trackerUpdate','trackerUpdateAt','latestMessageAt','latestMessageDirection','latestMessageSourceId','latestMessageTargetId','toolCalls','filesEdited','fileChanges','recentTokens','usageUpdatedAt','lastRequest','attentionSince','compactionStartedAt','statusObservedAt','modelChangeAt','resumable','sessionId'])if(item[field]!==undefined)record[field]=item[field];
+      target.chats.push(record);known.add(item.key);changed=true;
     }
   }
   for(const provider of snapshot.providers||[])for(const chat of provider.chats||[]){
@@ -2381,7 +2480,7 @@ function applyLive(snapshot, live) {
   }
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
   const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!c.parentId).length,0);
-  const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(!RUNWAY||PHONE||(typeof item.id==='string'&&item.key==='Codex:'+item.id&&(!item.provider||item.provider==='Codex')))&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
+  const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(!RUNWAY||PHONE||(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})())&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
   return {changed,outside};
 }
 async function pollLive() {
@@ -2531,6 +2630,7 @@ function handleClick(event) {
   if(!button)return;
   const {action,key}=button.dataset;
   if(RUNWAY&&!PHONE&&action==='widget-lock'){void toggleWidgetLock();return;}
+  if(RUNWAY&&!PHONE&&action==='source'){setSource(button.dataset.source);return;}
   if(COMPACT&&action==='keep-open'){void toggleKeepOpen();return;}
   if(PHONE&&["answer","queue-answer","open","pin","hide-chat","show-hidden"].includes(action))return;
   if(action==="toggle-chat"){const was=state.open.has(key);if(RUNWAY)closeRunwayDetails();was?state.open.delete(key):state.open.add(key);if(RUNWAY)renderStripNow();}
@@ -2546,6 +2646,10 @@ function handleClick(event) {
       notch.manual=true;setNotch(true);openPopover(runwayQuestionPopover(chat),button);button.__questionId=chat.pendingQuestionId??chat.questionId??null;button.__questionAt=chat.pendingQuestionAt||null;button.__questionText=chat.pendingQuestion;button.__questionOptions=JSON.stringify(chat.pendingOptions||[]);return;
     }
     const chat=state.forest?.rows.find(item=>item.key===key);if(!chat||!runwayWaiting(chat))return;
+    if(!isCodexChat(chat)){
+      if(!chat.pendingQuestion)return;
+      notch.manual=true;setNotch(true);openPopover(runwayQuestionPopover(chat),button);button.__questionId=chat.pendingQuestionId??chat.questionId??null;button.__questionAt=chat.pendingQuestionAt||null;button.__questionText=chat.pendingQuestion;button.__questionOptions=JSON.stringify(chat.pendingOptions||[]);return;
+    }
     openInCodex(chat.id,button);return;
   }
   else if(RUNWAY&&action==="close-popover"){closePopover({restoreFocus:true});return;}
@@ -2573,7 +2677,7 @@ function handleContextMenu(event) {
   event.preventDefault();
   const chat=state.forest?.rows.find(c=>c.key===row.dataset.key);if(!chat)return;
   const pinned=state.pins.has(chat.key);
-  openPopover('<div class="menu"><button data-action="pin" data-key="'+esc(chat.key)+'">'+ICON.pin+(pinned?"Unpin":"Pin")+'</button><button data-action="copy" data-copy="codex resume '+esc(chat.id)+'">'+ICON.copy+ICON.check+'Copy resume</button></div>',{getBoundingClientRect:()=>({left:event.clientX,bottom:event.clientY})});
+  openPopover('<div class="menu"><button data-action="pin" data-key="'+esc(chat.key)+'">'+ICON.pin+(pinned?"Unpin":"Pin")+'</button>'+(resumeCommand(chat)?'<button data-action="copy" data-copy="'+esc(resumeCommand(chat))+'">'+ICON.copy+ICON.check+'Copy resume</button>':'')+'</div>',{getBoundingClientRect:()=>({left:event.clientX,bottom:event.clientY})});
 }
 function handleKey(event) {
   const typing=/INPUT|TEXTAREA/.test(event.target?.tagName||"");
@@ -2592,7 +2696,7 @@ window.__tokenTrackerTest={state,render,tick,renderChats,renderStrip,renderReset
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   if(!PHONE)loadAvatars();
   document.addEventListener("click",handleClick);
