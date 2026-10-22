@@ -6,18 +6,24 @@ agent execution harness.
 
 ## What it shows
 
-- Active Codex chats in a parent-and-child tree.
+- Active Codex chats in a parent-and-child tree; Claude Code chats and observed
+  subagents when the user explicitly enables local hook collection.
+- A Codex | Claude source switch for the same Runway view.
 - Observed model, status, current tool activity and elapsed time.
 - Context occupancy and cache details from the latest request when available.
 - Pending attention, with a shortcut to the exact Codex chat.
-- Remaining time and reset countdown for five-hour and weekly limits.
+- Five-hour and weekly quota data and reset countdowns when available.
+- Claude Code 31-day usage totals, cache, activity and per-model usage when
+  Claude collection is enabled. Real-session subagent coverage is unverified.
 - A compact hover widget with drag, lock, monitor and recenter controls.
-- Locally read Codex session, transcript and application-state metadata.
+- Locally read Codex session, transcript and application-state metadata, plus
+  consent-gated Claude Code hook events and local transcript data.
 
 ## Status and limitations
 
 This is an unpublished release candidate. Source features are implemented; native
-UI acceptance is pending. Orchestrator is Windows- and Codex-first. It does not
+UI acceptance is pending. Orchestrator is Windows-focused. Codex monitoring is
+the default; Claude Code hook collection requires explicit user consent. It does not
 provide direct structured replies or arbitrary agent control. Figma
 synchronization and analytics are deferred.
 
@@ -68,8 +74,15 @@ allowance reset API, and it does not purchase or redeem an allowance.
 ## Privacy and provider access
 
 - Monitoring reads local Codex session/transcript and application-state metadata.
-  Retained Claude support can also read local Claude usage/session data. These
-  sources can contain private chat text, workspace paths and identifiers.
+  Claude Code collection is off until the user explicitly enables it. When
+  enabled, local Claude Code hooks record allowlisted events; the reducer uses
+  those events and local transcripts to build observed chat and subagent rows.
+  Subagent coverage depends on reported hook events and is unverified on real
+  sessions. Hook event files do not persist chat titles. These local sources can
+  contain private chat text, workspace paths and identifiers.
+- The Claude hook installer backs up settings before changes and manages only
+  Branchglance-owned hook entries. No Claude hook data is collected before
+  consent is enabled.
 - Provider usage checks and enabled auto-greetings can contact the corresponding
   provider through the installed CLI or account integration. Auto-greeting submits
   a small model request; it is not an offline-only feature or an allowance-reset API.
