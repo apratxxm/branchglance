@@ -65,6 +65,10 @@ def test_codex_agent_lineage_and_period_usage(tmp_path, monkeypatch):
         for total in [100, 100, 130, 10]:
             rows.append({"type": "event_msg", "timestamp": recent, "payload": {"type": "token_count", "info": {"total_token_usage": {"total_tokens": total}}}})
         (sessions / (identity + ".jsonl")).write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    _register_live_desktop_threads(tmp_path / "state_5.sqlite", [
+        _live_desktop_row(identity, sessions / (identity + ".jsonl"), parent=parent)
+        for identity, parent in [("root", None), ("child", "root"), ("grandchild", "child")]
+    ])
     chats = CodexProvider()._with_agents([{"id": "root"}])
     assert {chat["id"] for chat in chats} == {"root", "child", "grandchild"}
     child = next(chat for chat in chats if chat["id"] == "child")
@@ -4429,6 +4433,10 @@ def test_recent_rollout_records_keep_old_mtime_child_running_after_cold_join(tmp
     ])
     old_mtime = time.time() - 600
     os.utime(child_path, (old_mtime, old_mtime))
+    _register_live_desktop_threads(tmp_path / "codex" / "state_5.sqlite", [
+        _live_desktop_row("parent", child_path.parent / "parent.jsonl"),
+        _live_desktop_row("child", child_path, parent="parent"),
+    ])
 
     full = CodexProvider()._with_agents([{"id": "parent", "title": "Parent", "status": "running"}])
     child = next(row for row in full if row["id"] == "child")

@@ -906,6 +906,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         exec_stamp_valid = exec_stamp_epoch is not None and exec_stamp_epoch <= time.time()
         exec_after_terminal = (exec_stamp_epoch is not None
                                and (exec_terminal_epoch is None or exec_stamp_epoch > exec_terminal_epoch))
+        exec_transition_admitted = exec_stamp_valid and exec_after_terminal
         exec_current_running = (
             exec_status == "running" and exec_floor_epoch is not None and exec_stamp_valid
             and exec_stamp_epoch >= exec_floor_epoch and exec_after_terminal
@@ -914,17 +915,17 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         exec_resume_epoch = _timestamp_epoch(exec_resume_at)
         exec_resume_admitted = (
             exec_status == "unknown" and exec_resume_epoch is not None and exec_stamp_valid
-            and exec_stamp_epoch >= exec_resume_epoch
+            and exec_stamp_epoch > exec_resume_epoch and exec_after_terminal
         )
         exec_qualifies = False
-        if item_kind == "event_msg" and payload_type == "task_started" and exec_stamp_valid:
+        if item_kind == "event_msg" and payload_type == "task_started" and exec_transition_admitted:
             exec_status, exec_since, exec_compaction_at = "running", exec_stamp, None
             exec_resume_at = None
             exec_activity = None
             exec_pending_calls.clear()
             exec_qualifies = True
         elif (item_kind == "event_msg" and payload_type in {"task_complete", "turn_complete", "turn_aborted", "task_failed"}
-              and exec_stamp_valid):
+              and exec_transition_admitted):
             exec_status = "failed" if payload_type in {"turn_aborted", "task_failed"} else "idle"
             exec_terminal_at = exec_stamp
             exec_compaction_at, exec_activity = None, None
@@ -932,18 +933,18 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             exec_pending_calls.clear()
             exec_qualifies = True
         elif ("compact" in event_type and any(word in event_type for word in ("start", "begin", "progress", "ing"))
-              and exec_stamp_valid):
+              and exec_transition_admitted):
             exec_status, exec_compaction_at = "compacting", exec_stamp
             exec_activity = None
             exec_pending_calls.clear()
             exec_qualifies = True
         elif ("compact" in event_type and any(word in event_type for word in ("complete", "finish", "end", "done", "boundary"))
-              and exec_stamp_valid):
+              and exec_transition_admitted):
             exec_status, exec_compaction_at = "running", None
             exec_activity = None
             exec_qualifies = True
         elif ((item_kind == "compacted" or (item_kind == "system" and item.get("subtype") == "compact_boundary"))
-              and exec_stamp_valid):
+              and exec_transition_admitted):
             exec_status, exec_compaction_at = "running", None
             exec_activity = None
             exec_qualifies = True
@@ -953,7 +954,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             ptype = str(payload.get("type") or "").lower()
             call_id = payload.get("call_id") or payload.get("id")
             if (ptype in {"function_call", "custom_tool_call", "local_shell_call"}
-                    and name in {"request_user_input", "ask_user_question"} and exec_stamp_valid):
+                    and name in {"request_user_input", "ask_user_question"} and exec_transition_admitted):
                 # Blocking questions pause this execution. Async asks remain in
                 # the attention ledger without changing execution state.
                 exec_status, exec_observed_at, exec_activity = "waiting", exec_stamp, None
@@ -964,7 +965,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             elif ptype in {"function_call", "custom_tool_call", "local_shell_call"} and not control_call:
                 if exec_current_running or exec_resume_admitted:
                     if exec_resume_admitted:
-                        exec_status, exec_since, exec_terminal_at = "running", exec_resume_at, None
+                        exec_status, exec_since = "running", exec_resume_at
                         exec_resume_at = None
                     if call_id is not None:
                         exec_pending_calls[str(call_id)] = _codex_tool_activity(payload, exec_stamp)
@@ -984,7 +985,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                     exec_pending_calls.pop(str(call_id), None)
             elif ptype == "message" and payload.get("role") == "assistant":
                 channel = str(payload.get("channel") or "").lower()
-                if channel == "final" and exec_stamp_valid:
+                if channel == "final" and exec_transition_admitted:
                     exec_status, exec_terminal_at = "idle", exec_stamp
                     exec_compaction_at, exec_activity = None, None
                     exec_pending_calls.clear()
@@ -1067,6 +1068,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         elif item.get("type") == "event_msg" and payload_type == "user_message":
             status, detail = "running", None
             clock_transition = True
+            resolved_blocking_question = sync_question is not None
             # Ordinary user input is not evidence that async question items were answered.
             message = payload.get("message")
             if isinstance(message, dict):
@@ -1272,7 +1274,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                          executionObservedAt=None, executionSince=None,
                          executionCompactionStartedAt=None, executionActivity=None,
                          executionPendingCalls={},
-                         executionResumeAt=exec_stamp if exec_stamp_valid else None)
+                         executionResumeAt=exec_stamp if exec_transition_admitted else None)
 
     state = _incremental_jsonl_reduce("codex-question-state", path, initial_state, reduce_record)
     pending = state.get("pendingQuestions") or {}
@@ -3580,7 +3582,8 @@ class CodexProvider:
         while remaining_candidates:
             before = len(rows_by_id)
             for identity in list(remaining_candidates):
-                if (identity in rows_by_id or identity in archived_ids or identity in conflicting_ids):
+                if (identity in rows_by_id or identity in archived_ids or identity in conflicting_ids
+                        or identity in failed_ids):
                     continue
                 meta_row = inventory.get(identity)
                 db_row = database_by_id.get(identity) or catalog_by_id.get(identity)
@@ -3649,6 +3652,10 @@ class CodexProvider:
                 if (identity not in failed_ids or identity in rows_by_id or identity in archived_ids
                         or identity in conflicting_ids):
                     continue
+                # Prior runtime truth cannot confirm a descendant's current
+                # archive eligibility while its catalog lookup is failing.
+                if parent_by_id.get(identity) or prior.get("parentId"):
+                    continue
                 current_row = inventory.get(identity) or api_by_id.get(identity) or local_by_id.get(identity)
                 current_path = current_row.get("path") if current_row else None
                 if prior.get("path") and current_path and str(prior["path"]) != str(current_path):
@@ -3683,7 +3690,8 @@ class CodexProvider:
                 prior = prior_index.get(f"Codex:{parent}", {})
                 last_valid = _timestamp_epoch(prior.get("lastValidAt"))
                 if (not prior or not _fresh_epoch(last_valid) or parent in archived_ids
-                        or parent in conflicting_ids):
+                        or parent in conflicting_ids or parent_by_id.get(parent)
+                        or prior.get("parentId")):
                     continue
                 row = {field: value for field, value in prior.items()
                        if field not in {"indexedAt"} and not field.startswith("identity")}

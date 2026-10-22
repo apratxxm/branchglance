@@ -515,6 +515,11 @@ assert.ok(manyAgents.some(chat=>Date.parse(chat.latestRequestAt)<Date.parse(chat
 assert.deepEqual([...new Set(manyAgents.map(chat=>chat.status))].sort(),["compacting","needs input","running"]);
 assert.equal(T.runwayTitle({...root,title:'Memoir sol wake learning'},true),'wake learning');
 assert.equal(T.runwayTitle({...root,title:'Memoir sol wake learning'}),'Memoir sol wake learning');
+// Orchestration job briefs collapse to worker and task for root chats and agents alike.
+assert.equal(T.runwayTitle({...root,title:'# [Orchestrator] Luna · positioning — draft product positioning, brand concepts and demo plan'}),'Luna · positioning');
+assert.equal(T.runwayTitle({...root,title:'[Orchestrator] Sol · review providers-diff - adversarial review (continue #2)'},true),'Sol · review providers-diff');
+assert.equal(T.runwayTitle({...root,title:'[Orchestrator] Luna · frozen-probe (retry #2)'}),'Luna · frozen-probe');
+assert.equal(T.runwayTitle({...root,title:'Fix the [Orchestrator] widget'}),'Fix the [Orchestrator] widget');
 assert.equal(T.runwayModelLabel({...root,model:'Codex'}),'');
 assert.doesNotMatch(T.rowHTML({...root,model:'Codex'}),/Model not recorded|data-runway-slot="model"/);
 assert.match(T.rowHTML({...root,model:'gpt-6-luna'}),/title="gpt-6-luna"><span class="runway-model-name">6 Luna/);
