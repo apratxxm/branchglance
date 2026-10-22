@@ -277,3 +277,72 @@ def test_http_configuration_persists_until_fresh_available_reset_then_dispatches
     restarted.check_provider("Codex", available_sample)
     assert queued == [ONE]
     assert restarted.get_reset_action()["lastRun"]["targets"][0]["status"] == "queued"
+
+
+def test_queue_rejects_thread_not_in_collected_codex_set(api, monkeypatch):
+    _, port = api
+    calls = []
+    monkeypatch.setattr(server, "queue_codex_message", lambda *_args: calls.append("queue"))
+    monkeypatch.setattr(server, "_collected_codex_thread_ids", lambda: frozenset({TWO}))
+    status, body = request(port, "/api/queue", {"thread": ONE, "message": "hello"})
+    assert status == 404 and calls == []
+    status, body = request(port, "/api/queue", {"thread": TWO, "message": "hello"})
+    assert status == 200 and body["status"] == "queued" and calls == ["queue"]
+
+
+def test_queue_requires_show_even_for_cached_thread_with_send_consent(api, monkeypatch):
+    policies = dict(provider_policy.POLICIES)
+    policies["Codex"] = replace(policies["Codex"], collect=True, show=False,
+                                send=True, send_origin="provider_env")
+    monkeypatch.setattr(provider_policy, "POLICIES", policies)
+    monkeypatch.setattr(server, "_collected_codex_thread_ids", lambda: frozenset({ONE}))
+    calls = []
+    monkeypatch.setattr(server, "queue_codex_message", lambda *_args: calls.append("queue"))
+    _, port = api
+    status, _ = request(port, "/api/queue", {"thread": ONE, "message": "hello"})
+    assert status == 403 and calls == []
+
+
+def test_collected_set_ignores_claude_rows_even_with_uuid_ids(monkeypatch):
+    monkeypatch.setattr(server.CACHE, "_value", {"providers": [
+        {"name": "Claude", "chats": [{"id": ONE}]}, {"name": "Codex", "chats": [{"id": TWO}]}]})
+    monkeypatch.setattr(server.LIVE_CACHE, "value", {"chats": [
+        {"id": ONE, "key": f"Claude:{ONE}", "provider": "Claude"}, {"id": ONE, "key": f"Codex:{ONE}x"}]})
+    assert server._collected_codex_thread_ids() == frozenset({TWO})
+
+
+def test_open_rejects_unknown_and_policy_denied_threads(api, monkeypatch):
+    _, port = api
+    launched = []
+    monkeypatch.setattr(server.os, "startfile", lambda target: launched.append(target), raising=False)
+    monkeypatch.setattr(server, "_collected_codex_thread_ids", lambda: frozenset({TWO}))
+    status, _ = request(port, f"/api/open?thread={ONE}")
+    assert status == 404 and launched == []
+    status, body = request(port, f"/api/open?thread={TWO}")
+    assert status == 200 and body["ok"] is True and launched == [f"codex://threads/{TWO}"]
+    launched.clear()
+    policies = dict(provider_policy.POLICIES)
+    policies["Codex"] = replace(policies["Codex"], show=False)
+    monkeypatch.setattr(provider_policy, "POLICIES", policies)
+    status, _ = request(port, f"/api/open?thread={TWO}")
+    assert status == 403 and launched == []
+    policies["Codex"] = replace(policies["Codex"], collect=False, show=True)
+    status, _ = request(port, f"/api/open?thread={TWO}")
+    assert status == 403 and launched == []
+
+
+def test_identity_reports_product_build_pid_and_state_root(api):
+    import os
+    _, port = api
+    status, payload = request(port, "/api/identity")
+    assert status == 200
+    assert payload["product"] == "Branchglance" and payload["build"] == server.BUILD
+    assert payload["pid"] == os.getpid() and payload["stateRoot"]
+    assert set(payload["providerPolicies"]["providers"]) >= {"Codex"}
+    status, _ = request(port, "/api/identity", headers={"Host": "evil.example"})
+    assert status == 403
+    status, _ = request(port, "/api/identity", headers={
+        "Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"})
+    assert status == 403
+    status, local = request(port, "/api/identity")
+    assert status == 200 and local["product"] == "Branchglance"

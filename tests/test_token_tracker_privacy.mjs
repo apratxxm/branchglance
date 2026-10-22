@@ -30,7 +30,7 @@ test("persisted hidden-chat and pin preferences remain unchanged, including the 
   const pins = ["Codex:pinned-one", "Codex:pinned-two"];
   const initial = { tokenTrackerRunwayHiddenChats: JSON.stringify(hidden), tokenTrackerPinsV2: JSON.stringify(pins), tokenTrackerRunwayHiddenSeedV1: "1" };
   const { state, storage, writes } = harness(initial);
-  assert.deepEqual([...state.hiddenChats], hidden.slice(0, 2));
+  assert.deepEqual([...state.hiddenChats], hidden);
   assert.deepEqual([...state.pins], pins);
   assert.equal(storage.get("tokenTrackerRunwayHiddenSeedV1"), "1");
   assert.deepEqual(writes, []);
