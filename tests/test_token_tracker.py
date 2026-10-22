@@ -394,6 +394,42 @@ def test_codex_token_event_cache_reuses_unchanged_file(tmp_path):
     assert CodexProvider._token_events(rollout) is first
 
 
+def test_codex_token_event_compact_cache_preserves_consumer_projection(tmp_path, isolated_token_event_cache):
+    rollout = tmp_path / "compact-events.jsonl"
+    shared_limits = {"primary": {"usedPercent": 12, "resetsAt": 1_800_000_000}}
+    rows = [
+        {"type": "turn_context", "payload": {"model": "gpt-6-luna"}},
+        {"type": "event_msg", "timestamp": "2026-10-20T10:00:00Z", "payload": {
+            "type": "token_count", "rate_limits": shared_limits,
+            "info": {"total_token_usage": {"input_tokens": 4, "total_tokens": 5},
+                     "last_token_usage": {"input_tokens": 4, "total_tokens": 5}},
+        }},
+        {"type": "event_msg", "timestamp": "2026-10-20T10:00:01Z", "payload": {
+            "type": "token_count", "rate_limits": dict(shared_limits),
+            "info": {"total_token_usage": {"input_tokens": 8, "total_tokens": 9, "vendor_counter": 2}},
+        }},
+    ]
+    _rollout(rollout, rows)
+
+    events = CodexProvider._token_events(rollout)
+
+    assert isinstance(events, providers._CompactTokenEvents)
+    assert list(events) == [
+        {"timestamp": "2026-10-20T10:00:00Z", "rate_limits": shared_limits, "model": "gpt-6-luna",
+         "usage": {"input_tokens": 4, "total_tokens": 5},
+         "last": {"input_tokens": 4, "total_tokens": 5}, "inherited": False},
+        {"timestamp": "2026-10-20T10:00:01Z", "rate_limits": shared_limits, "model": "gpt-6-luna",
+         "usage": {"input_tokens": 8, "total_tokens": 9, "vendor_counter": 2},
+         "last": None, "inherited": False},
+    ]
+    events[0]["usage"]["total_tokens"] = 100
+    assert events[0]["usage"]["total_tokens"] == 5
+    cache_key = next(iter(CodexProvider._token_event_cache))
+    compact_bytes = CodexProvider._estimate_token_event_cache_entry_bytes(cache_key, events)
+    expanded_bytes = CodexProvider._estimate_token_event_cache_entry_bytes(cache_key, list(events))
+    assert compact_bytes < expanded_bytes
+
+
 def test_codex_live_cache_keeps_oversized_projection_complete_but_uncached(tmp_path, monkeypatch, isolated_token_event_cache):
     rollout = tmp_path / "oversized-projection.jsonl"
     stamp = _recent_test_timestamp()

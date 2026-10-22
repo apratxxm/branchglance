@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import hashlib
 import math
@@ -11,7 +12,8 @@ import threading
 import time
 from copy import deepcopy
 from collections import OrderedDict, defaultdict
-from contextlib import closing
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -109,9 +111,17 @@ def _codex_identity_snapshot(ids: Iterable[Any] = (), limit: int = 200) -> dict[
                  if (isinstance(value, str) and value.strip()) or type(value) is int}
     root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     database = root / "state_5.sqlite"
+    try:
+        database.stat()
+    except FileNotFoundError:
+        return {"status": "unavailable", "catalog": [], "by_id": {},
+                "no_match_ids": set(), "failed_ids": requested, "catalog_missing": True}
+    except OSError:
+        return {"status": "unavailable", "catalog": [], "by_id": {},
+                "no_match_ids": set(), "failed_ids": requested, "catalog_missing": False}
     if not database.is_file():
         return {"status": "unavailable", "catalog": [], "by_id": {},
-                "no_match_ids": set(), "failed_ids": requested}
+                "no_match_ids": set(), "failed_ids": requested, "catalog_missing": False}
     try:
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=0.1)) as connection:
             connection.row_factory = sqlite3.Row
@@ -145,10 +155,10 @@ def _codex_identity_snapshot(ids: Iterable[Any] = (), limit: int = 200) -> dict[
             connection.commit()
     except (sqlite3.Error, OSError, ValueError):
         return {"status": "unavailable", "catalog": [], "by_id": {},
-                "no_match_ids": set(), "failed_ids": requested}
+                "no_match_ids": set(), "failed_ids": requested, "catalog_missing": False}
     return {"status": "partial" if failed_ids else "complete", "catalog": catalog,
             "by_id": by_id, "no_match_ids": queried - by_id.keys() - failed_ids,
-            "failed_ids": failed_ids}
+            "failed_ids": failed_ids, "catalog_missing": False}
 
 
 def _persisted_codex_threads(limit: int = 200) -> list[dict[str, Any]]:
@@ -264,6 +274,78 @@ def _tail_json(path: Path, byte_limit: int = 524_288) -> list[dict[str, Any]]:
     return rows
 
 
+_TOKEN_USAGE_KEYS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                     "output_tokens", "reasoning_output_tokens", "total_tokens")
+_TOKEN_ABSENT = object()
+
+
+def _pack_token_counters(value: Any) -> Any:
+    """Tuple of the consumed counter values; the original dict when it holds anything else."""
+    if not isinstance(value, dict) or any(key not in _TOKEN_USAGE_KEYS for key in value):
+        return value
+    return tuple(value.get(key, _TOKEN_ABSENT) for key in _TOKEN_USAGE_KEYS)
+
+
+def _unpack_token_counters(value: Any) -> Any:
+    if not isinstance(value, tuple):
+        return value
+    return {key: item for key, item in zip(_TOKEN_USAGE_KEYS, value) if item is not _TOKEN_ABSENT}
+
+
+class _CompactTokenEvents:
+    """Read-only sequence of token events stored as tuples; items materialize as dicts.
+
+    Consumers see the same event dicts as before (timestamp, rate_limits, model,
+    usage, last, inherited). Equal consecutive rate-limit objects and model names
+    share one object, so retained size is far below one dict tree per event.
+    """
+    __slots__ = ("_rows",)
+
+    def __init__(self) -> None:
+        self._rows: list[tuple[Any, ...]] = []
+
+    def append(self, timestamp: Any, rate_limits: Any, model: Any, usage: Any, last: Any,
+               inherited: bool) -> None:
+        if self._rows:
+            previous = self._rows[-1]
+            # Share an identical (type- and order-exact) rate-limit object.
+            if isinstance(rate_limits, dict) and isinstance(previous[1], dict):
+                if (rate_limits == previous[1]
+                        and json.dumps(rate_limits) == json.dumps(previous[1])):
+                    rate_limits = previous[1]
+            if model == previous[2]:
+                model = previous[2]
+        self._rows.append((timestamp, rate_limits, model, _pack_token_counters(usage),
+                           _pack_token_counters(last), inherited))
+
+    @staticmethod
+    def _event(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {"timestamp": row[0], "rate_limits": row[1], "model": row[2],
+                "usage": _unpack_token_counters(row[3]), "last": _unpack_token_counters(row[4]),
+                "inherited": row[5]}
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __bool__(self) -> bool:
+        return bool(self._rows)
+
+    def __iter__(self) -> Any:
+        return (self._event(row) for row in self._rows)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._event(row) for row in self._rows[index]]
+        return self._event(self._rows[index])
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, _CompactTokenEvents):
+            return list(self) == list(other)
+        return isinstance(other, list) and list(self) == other
+
+    __hash__ = None  # type: ignore[assignment]
+
+
 _FILE_MEMO: dict[tuple[str, str], tuple[tuple[int, ...], Any]] = {}
 _FILE_MEMO_LOCK = threading.Lock()
 
@@ -276,10 +358,88 @@ class _TimedProjection:
         self.valid_until = valid_until
 
 
-def _stat_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
-    stat = path.stat()
+class _BuildMemo:
+    """Per-build stat and path-resolution memo; never shared across builds."""
+    __slots__ = ("stats", "resolved")
+
+    def __init__(self) -> None:
+        self.stats: dict[str, Any] = {}
+        self.resolved: dict[str, str] = {}
+
+
+_BUILD_MEMO: ContextVar[_BuildMemo | None] = ContextVar("token_tracker_build_memo", default=None)
+
+
+@contextmanager
+def _build_scope() -> Any:
+    """Scope one live/snapshot build. The outermost scope owns the memo and drops it on exit."""
+    if _BUILD_MEMO.get() is not None:
+        yield
+        return
+    token = _BUILD_MEMO.set(_BuildMemo())
+    try:
+        yield
+    finally:
+        _BUILD_MEMO.reset(token)
+
+
+def _in_build_scope(function: Any) -> Any:
+    @functools.wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with _build_scope():
+            return function(*args, **kwargs)
+    return wrapper
+
+
+def _fingerprint_of(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino,
             getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000)))
+
+
+def _stat_fresh(path: Path) -> os.stat_result:
+    """Stat the path now and, inside a build, record it for later pre-read lookups."""
+    memo = _BUILD_MEMO.get()
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        if memo is not None:
+            memo.stats[os.fspath(path)] = exc
+        raise
+    if memo is not None:
+        memo.stats[os.fspath(path)] = stat
+    return stat
+
+
+def _stat_memoized(path: Path) -> os.stat_result:
+    """Pre-read stat: at most one filesystem stat per path per build."""
+    memo = _BUILD_MEMO.get()
+    if memo is None:
+        return path.stat()
+    cached = memo.stats.get(os.fspath(path))
+    if cached is None:
+        return _stat_fresh(path)
+    if isinstance(cached, OSError):
+        raise cached
+    return cached
+
+
+def _resolve_memoized(path: Path) -> str:
+    memo = _BUILD_MEMO.get()
+    if memo is None:
+        return str(path.resolve(strict=False))
+    name = os.fspath(path)
+    resolved = memo.resolved.get(name)
+    if resolved is None:
+        resolved = memo.resolved[name] = str(path.resolve(strict=False))
+    return resolved
+
+
+def _stat_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
+    return _fingerprint_of(_stat_fresh(path))
+
+
+def _stat_fingerprint_memoized(path: Path) -> tuple[int, int, int, int, int]:
+    return _fingerprint_of(_stat_memoized(path))
 
 
 def _codex_session_inventory() -> tuple[Path, ...]:
@@ -372,109 +532,140 @@ def _incremental_jsonl_reduce(kind: str, path: Path, initial_state: Any,
     state only, never raw JSONL lines. Calls for a path are serialized, and the
     retained checkpoint LRU is bounded by estimated state bytes and entry count.
     """
-    resolved = str(path.resolve(strict=False))
+    resolved = _resolve_memoized(path)
     key = (kind, resolved)
     lock = _JSONL_PATH_LOCKS[hash(resolved) % len(_JSONL_PATH_LOCKS)]
     with lock:
-        try:
-            before = _stat_fingerprint(path)
-        except OSError:
-            _jsonl_checkpoint_remove(key)
-            return deepcopy(unavailable)
-
-        with _JSONL_CHECKPOINT_LOCK:
-            cached = _JSONL_CHECKPOINTS.get(key)
-            if cached:
-                _JSONL_CHECKPOINTS.move_to_end(key)
-                cached = deepcopy(cached)
-        try:
-            handle_context = path.open("rb")
-        except OSError:
-            _jsonl_checkpoint_remove(key)
-            return deepcopy(unavailable)
-
-        with handle_context as handle:
-            opened = _jsonl_stat(handle)
-            if opened != before:
+        fresh = False
+        while True:
+            try:
+                before = _stat_fresh(path) if fresh else _stat_memoized(path)
+                before = _fingerprint_of(before)
+            except OSError:
                 _jsonl_checkpoint_remove(key)
-                state = initial_state() if callable(initial_state) else deepcopy(initial_state)
+                return deepcopy(unavailable)
+
+            with _JSONL_CHECKPOINT_LOCK:
+                # Checkpoints are replaced, never mutated in place, so a reference
+                # is safe to read after the lock is released; copies are made only
+                # where the data is handed out or mutated.
+                cached = _JSONL_CHECKPOINTS.get(key)
+                if cached:
+                    _JSONL_CHECKPOINTS.move_to_end(key)
+            if (cached and cached["stat"] == before
+                    and cached.get("extra") == fingerprint_extra):
+                # Full file identity (size, mtime, dev, ino, ctime) and extra
+                # match: nothing was appended or rewritten, so skip open + guards.
+                state = deepcopy(cached["state"])
                 return project(state) if project else state
+            result = _incremental_jsonl_reduce_locked(
+                key, path, initial_state, reduce_record, project, fingerprint_extra,
+                unavailable, before, cached, retry_on_stale=not fresh)
+            if result is not _STALE_PRE_READ_STAT:
+                return result
+            fresh = True
 
-            append = bool(cached and cached["stat"][2:4] == before[2:4]
-                          and cached["stat"][0] < before[0])
-            unchanged = bool(cached and cached["stat"] == before
-                             and cached.get("extra") == fingerprint_extra)
-            reusable_same_file = bool(cached and cached["stat"] == before)
-            if cached and (append or reusable_same_file):
-                # Validate exactly the bytes covered by the old checkpoint.
-                # For a short file, hashing to the new EOF would include the
-                # appended bytes and make every append look like a rewrite.
-                guards = _jsonl_guards(handle, cached["offset"], cached["stat"][0])
-                if guards != (cached["prefix"], cached["cursor"]):
-                    append = unchanged = reusable_same_file = False
-            if reusable_same_file:
-                after_handle = _jsonl_stat(handle)
-                try:
-                    after_path = _stat_fingerprint(path)
-                except OSError:
-                    after_path = None
-                if after_handle == before and after_path == before:
-                    value = cached["state"]
-                    if cached.get("extra") != fingerprint_extra:
-                        _jsonl_checkpoint_remove(key)
-                        _jsonl_cache_checkpoint(key, cached["state"], cached["offset"], before,
-                                                (cached["prefix"], cached["cursor"]), fingerprint_extra)
-                    return project(deepcopy(value)) if project else deepcopy(value)
-                _jsonl_checkpoint_remove(key)
-                state = cached["state"]
-                return project(deepcopy(state)) if project else deepcopy(state)
 
-            if cached and not append:
-                cached = None
-            state = deepcopy(cached["state"]) if cached else (initial_state() if callable(initial_state) else deepcopy(initial_state))
-            start_offset = cached["offset"] if cached else 0
-            handle.seek(start_offset)
-            committed_offset = start_offset
-            valid_unterminated_record = False
-            while True:
-                line = handle.readline()
-                if not line:
-                    break
-                if not line.endswith(b"\n"):
-                    # Preserve the old parser's valid-EOF behavior in this
-                    # projection, but never checkpoint it at the prior offset.
-                    try:
-                        item = json.loads(line.decode("utf-8", errors="ignore"))
-                    except (ValueError, UnicodeError):
-                        break
-                    reduce_record(state, item)
-                    valid_unterminated_record = True
-                    break
-                committed_offset = handle.tell()
-                try:
-                    item = json.loads(line.decode("utf-8", errors="ignore"))
-                except (ValueError, UnicodeError):
-                    continue
-                reduce_record(state, item)
+_STALE_PRE_READ_STAT = object()
 
-            guards = _jsonl_guards(handle, committed_offset, before[0])
+
+def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_state: Any,
+                                     reduce_record: Any, project: Any, fingerprint_extra: Any,
+                                     unavailable: Any, before: tuple[int, int, int, int, int],
+                                     cached: dict[str, Any] | None, retry_on_stale: bool) -> Any:
+    try:
+        handle_context = path.open("rb")
+    except OSError:
+        _jsonl_checkpoint_remove(key)
+        return deepcopy(unavailable)
+
+    with handle_context as handle:
+        opened = _jsonl_stat(handle)
+        if opened != before:
+            if retry_on_stale:
+                # The memoized pre-read stat is older than the file; restat.
+                return _STALE_PRE_READ_STAT
+            _jsonl_checkpoint_remove(key)
+            state = initial_state() if callable(initial_state) else deepcopy(initial_state)
+            return project(state) if project else state
+
+        append = bool(cached and cached["stat"][2:4] == before[2:4]
+                      and cached["stat"][0] < before[0])
+        unchanged = bool(cached and cached["stat"] == before
+                         and cached.get("extra") == fingerprint_extra)
+        reusable_same_file = bool(cached and cached["stat"] == before)
+        if cached and (append or reusable_same_file):
+            # Validate exactly the bytes covered by the old checkpoint.
+            # For a short file, hashing to the new EOF would include the
+            # appended bytes and make every append look like a rewrite.
+            guards = _jsonl_guards(handle, cached["offset"], cached["stat"][0])
+            if guards != (cached["prefix"], cached["cursor"]):
+                append = unchanged = reusable_same_file = False
+        if reusable_same_file:
             after_handle = _jsonl_stat(handle)
             try:
                 after_path = _stat_fingerprint(path)
             except OSError:
                 after_path = None
-            stable = after_handle == before and after_path == before
-            value = project(deepcopy(state)) if project else deepcopy(state)
-            if not stable:
-                _jsonl_checkpoint_remove(key)
-                return value
-
-            cost = _jsonl_state_cost(state, key, fingerprint_extra)
+            if after_handle == before and after_path == before:
+                value = cached["state"]
+                if cached.get("extra") != fingerprint_extra:
+                    _jsonl_checkpoint_remove(key)
+                    _jsonl_cache_checkpoint(key, cached["state"], cached["offset"], before,
+                                            (cached["prefix"], cached["cursor"]), fingerprint_extra)
+                state = deepcopy(value)
+                return project(state) if project else state
             _jsonl_checkpoint_remove(key)
-            if (cost <= _JSONL_CHECKPOINT_MAX_BYTES and not _jsonl_state_uncacheable(state)
-                    and not valid_unterminated_record):
-                _jsonl_cache_checkpoint(key, state, committed_offset, before, guards, fingerprint_extra)
-            return value
+            state = deepcopy(cached["state"])
+            return project(state) if project else state
+
+        if cached and not append:
+            cached = None
+        state = deepcopy(cached["state"]) if cached else (initial_state() if callable(initial_state) else deepcopy(initial_state))
+        start_offset = cached["offset"] if cached else 0
+        handle.seek(start_offset)
+        committed_offset = start_offset
+        valid_unterminated_record = False
+        while True:
+            line = handle.readline()
+            if not line:
+                break
+            if not line.endswith(b"\n"):
+                # Preserve the old parser's valid-EOF behavior in this
+                # projection, but never checkpoint it at the prior offset.
+                try:
+                    item = json.loads(line.decode("utf-8", errors="ignore"))
+                except (ValueError, UnicodeError):
+                    break
+                reduce_record(state, item)
+                valid_unterminated_record = True
+                break
+            committed_offset = handle.tell()
+            try:
+                item = json.loads(line.decode("utf-8", errors="ignore"))
+            except (ValueError, UnicodeError):
+                continue
+            reduce_record(state, item)
+
+        guards = _jsonl_guards(handle, committed_offset, before[0])
+        after_handle = _jsonl_stat(handle)
+        try:
+            after_path = _stat_fingerprint(path)
+        except OSError:
+            after_path = None
+        stable = after_handle == before and after_path == before
+        if not stable:
+            _jsonl_checkpoint_remove(key)
+            return project(state) if project else state
+
+        cost = _jsonl_state_cost(state, key, fingerprint_extra)
+        _jsonl_checkpoint_remove(key)
+        if (cost <= _JSONL_CHECKPOINT_MAX_BYTES and not _jsonl_state_uncacheable(state)
+                and not valid_unterminated_record):
+            # The checkpoint keeps its own deep copy, so ``state`` is private to
+            # this call and may be projected (and handed out) without another copy.
+            _jsonl_cache_checkpoint(key, state, committed_offset, before, guards, fingerprint_extra)
+        return project(state) if project else state
 
 
 def _jsonl_cache_checkpoint(key: tuple[str, str], state: Any, offset: int,
@@ -505,7 +696,7 @@ def _file_memo(kind: str, path: Path, compute: Any) -> Any:
         return value.value if isinstance(value, _TimedProjection) else value
 
     try:
-        stamp = _stat_fingerprint(path)
+        stamp = _stat_fingerprint_memoized(path)
     except OSError:
         path_key = str(path)
         with _FILE_MEMO_LOCK:
@@ -903,16 +1094,21 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         exec_observed_epoch = _timestamp_epoch(exec_observed_at)
         exec_floor_epoch = _timestamp_epoch(exec_since)
         exec_terminal_epoch = _timestamp_epoch(exec_terminal_at)
+        exec_resume_epoch = _timestamp_epoch(exec_resume_at)
         exec_stamp_valid = exec_stamp_epoch is not None and exec_stamp_epoch <= time.time()
         exec_after_terminal = (exec_stamp_epoch is not None
                                and (exec_terminal_epoch is None or exec_stamp_epoch > exec_terminal_epoch))
         exec_transition_admitted = exec_stamp_valid and exec_after_terminal
+        terminal_floors = [epoch for epoch in (exec_floor_epoch, exec_resume_epoch) if epoch is not None]
+        exec_terminal_admitted = (
+            exec_transition_admitted
+            and (not terminal_floors or exec_stamp_epoch >= max(terminal_floors))
+        )
         exec_current_running = (
             exec_status == "running" and exec_floor_epoch is not None and exec_stamp_valid
             and exec_stamp_epoch >= exec_floor_epoch and exec_after_terminal
             and (exec_observed_epoch is None or exec_stamp_epoch >= exec_observed_epoch)
         )
-        exec_resume_epoch = _timestamp_epoch(exec_resume_at)
         exec_resume_admitted = (
             exec_status == "unknown" and exec_resume_epoch is not None and exec_stamp_valid
             and exec_stamp_epoch > exec_resume_epoch and exec_after_terminal
@@ -925,7 +1121,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             exec_pending_calls.clear()
             exec_qualifies = True
         elif (item_kind == "event_msg" and payload_type in {"task_complete", "turn_complete", "turn_aborted", "task_failed"}
-              and exec_transition_admitted):
+              and exec_terminal_admitted):
             exec_status = "failed" if payload_type in {"turn_aborted", "task_failed"} else "idle"
             exec_terminal_at = exec_stamp
             exec_compaction_at, exec_activity = None, None
@@ -985,7 +1181,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                     exec_pending_calls.pop(str(call_id), None)
             elif ptype == "message" and payload.get("role") == "assistant":
                 channel = str(payload.get("channel") or "").lower()
-                if channel == "final" and exec_transition_admitted:
+                if channel == "final" and exec_terminal_admitted:
                     exec_status, exec_terminal_at = "idle", exec_stamp
                     exec_compaction_at, exec_activity = None, None
                     exec_pending_calls.clear()
@@ -1068,7 +1264,9 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         elif item.get("type") == "event_msg" and payload_type == "user_message":
             status, detail = "running", None
             clock_transition = True
-            resolved_blocking_question = sync_question is not None
+            resolved_blocking_question = (
+                sync_question is not None and execution_status_before == "waiting"
+            )
             # Ordinary user input is not evidence that async question items were answered.
             message = payload.get("message")
             if isinstance(message, dict):
@@ -1224,7 +1422,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                                 for native_id in native_ids
                             )
                     if actual_sync_answer:
-                        resolved_blocking_question = True
+                        resolved_blocking_question = execution_status_before == "waiting"
                         sync_question = None
                         question_resolution_at = item.get("timestamp") or payload.get("timestamp")
                         status, detail = "running", None
@@ -2212,15 +2410,15 @@ def _session_insights(path_value: str | Path | None) -> dict[str, Any]:
         return {}
     path = Path(path_value)
     try:
-        _stat_fingerprint(path)
+        _stat_fingerprint_memoized(path)
     except OSError:
-        _jsonl_checkpoint_remove(("codex-session-insights", str(path.resolve(strict=False))))
+        _jsonl_checkpoint_remove(("codex-session-insights", _resolve_memoized(path)))
         return {}
     meta_path = path.with_suffix(".meta.json") if path.parent.name == "subagents" else None
     meta_stamp: tuple[int, ...] = ()
     if meta_path is not None:
         try:
-            meta_stamp = _stat_fingerprint(meta_path)
+            meta_stamp = _stat_fingerprint_memoized(meta_path)
         except OSError:
             meta_stamp = (-1, -1, -1, -1, -1)
     now_epoch = time.time()
@@ -2653,6 +2851,7 @@ class ClaudeDesktopProvider:
         rows.sort(key=lambda row: row.get("updatedAt") or "", reverse=True)
         return rows
 
+    @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
         samples, latest = self._usage()
         usage = latest.get("u") or {}
@@ -2698,6 +2897,7 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     No transcript scan: this stays cheap while Claude chats are not tracked.
     """
 
+    @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
         samples, latest = self._usage()
         usage = latest.get("u") or {}
@@ -2903,7 +3103,7 @@ class CodexProvider:
                     cls._token_event_cache.move_to_end(key)
                     return cached
 
-            events: list[dict[str, Any]] = []
+            events = _CompactTokenEvents()
             model = None
             started: float | None = None
             try:
@@ -2924,16 +3124,14 @@ class CodexProvider:
                         info = payload.get("info") or {}
                         if info.get("total_token_usage"):
                             recorded = _timestamp_epoch(item.get("timestamp"))
-                            events.append({
-                                "timestamp": item.get("timestamp"),
-                                "rate_limits": payload.get("rate_limits"),
-                                "model": model,
-                                "usage": info["total_token_usage"],
-                                "last": info.get("last_token_usage") if isinstance(info.get("last_token_usage"), dict) else None,
+                            events.append(
+                                item.get("timestamp"), payload.get("rate_limits"), model,
+                                info["total_token_usage"],
+                                info.get("last_token_usage") if isinstance(info.get("last_token_usage"), dict) else None,
                                 # Counters copied from a source thread before this
                                 # session began are a baseline, never new usage.
-                                "inherited": started is not None and recorded is not None and recorded < started,
-                            })
+                                started is not None and recorded is not None and recorded < started,
+                            )
             except OSError:
                 return []
 
@@ -3001,8 +3199,9 @@ class CodexProvider:
     ) -> int:
         """Estimate retained projection size without double-counting shared objects."""
         seen: set[int] = set()
-        pending: list[Any] = [key, events]
-        total = cls._TOKEN_EVENT_CACHE_ENTRY_OVERHEAD
+        pending: list[Any] = [key, events._rows if isinstance(events, _CompactTokenEvents) else events]
+        total = cls._TOKEN_EVENT_CACHE_ENTRY_OVERHEAD + (
+            sys.getsizeof(events) if isinstance(events, _CompactTokenEvents) else 0)
         while pending:
             value = pending.pop()
             identity = id(value)
@@ -3532,6 +3731,7 @@ class CodexProvider:
                          if isinstance(row.get("id"), str) and row["id"]}
         database_by_id = identity_snapshot["by_id"]
         failed_ids = identity_snapshot["failed_ids"]
+        catalog_missing = identity_snapshot.get("catalog_missing") is True
         archived_ids = {identity for identity, row in database_by_id.items() if row.get("archived")}
 
         parent_values: dict[str, set[str]] = defaultdict(set)
@@ -3583,7 +3783,7 @@ class CodexProvider:
             before = len(rows_by_id)
             for identity in list(remaining_candidates):
                 if (identity in rows_by_id or identity in archived_ids or identity in conflicting_ids
-                        or identity in failed_ids):
+                        or (identity in failed_ids and not catalog_missing)):
                     continue
                 meta_row = inventory.get(identity)
                 db_row = database_by_id.get(identity) or catalog_by_id.get(identity)
@@ -3828,6 +4028,7 @@ class CodexProvider:
                 "dataError": f"This chat's local record could not be read ({type(exc).__name__}: {str(exc)[:160]})",
             }
 
+    @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
         session_paths = _codex_session_inventory()
         local = self._local_usage(session_paths=session_paths)
@@ -4170,6 +4371,7 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
         _LIVE_INDEX_POLICY_GENERATION = policy_generation
 
 
+@_in_build_scope
 def live_state() -> dict[str, Any]:
     """Seconds-fresh activity and state for known chats, without a full snapshot.
 
@@ -4223,7 +4425,7 @@ def live_state() -> dict[str, Any]:
         path_value = indexed["path"]
         path = Path(path_value)
         try:
-            modified = path.stat().st_mtime
+            modified = _stat_memoized(path).st_mtime
         except OSError:
             if key.startswith("Codex:"):
                 last_valid = _timestamp_epoch(indexed.get("lastValidAt"))
@@ -4274,7 +4476,7 @@ def live_state() -> dict[str, Any]:
             continue
         provider = key.split(":", 1)[0]
         try:
-            codex_revision_before = _stat_fingerprint(path) if provider == "Codex" else None
+            codex_revision_before = _stat_fingerprint_memoized(path) if provider == "Codex" else None
         except OSError:
             codex_revision_before = None
         state = _claude_transcript_state(path) if provider == "Claude" else _codex_rollout_state(path_value)

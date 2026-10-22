@@ -629,6 +629,59 @@ def test_identity_batch_distinguishes_partial_failure_from_no_match(tmp_path, mo
     assert snapshot["no_match_ids"] == {"missing"}
 
 
+def test_cli_only_install_can_discover_transcript_proven_descendants(tmp_path, monkeypatch):
+    now = 1_800_000_090.0
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    _make_runtime_thread(tmp_path, "child", "running", parent="root", now=now - 2)
+    _make_runtime_thread(tmp_path, "grandchild", "running", parent="child", now=now - 1)
+    assert not (tmp_path / "state_5.sqlite").exists()
+
+    chats = {row["id"]: row for row in CodexProvider()._with_agents([
+        {"id": "root", "status": "idle"},
+    ])}
+
+    assert set(chats) == {"root", "child", "grandchild"}
+    assert chats["child"]["status"] == chats["grandchild"]["status"] == "running"
+    assert chats["child"]["parentId"] == "root"
+    assert chats["grandchild"]["parentId"] == "child"
+
+
+@pytest.mark.parametrize("lookup_failure", ["unreadable_database", "per_id_batch"])
+def test_catalog_failures_keep_only_the_confirmed_root(tmp_path, monkeypatch, lookup_failure):
+    now = 1_800_000_100.0
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    child = _make_runtime_thread(tmp_path, "child", "running", parent="root", now=now - 2)
+    grandchild = _make_runtime_thread(tmp_path, "grandchild", "running", parent="child", now=now - 1)
+    database = tmp_path / "state_5.sqlite"
+    if lookup_failure == "unreadable_database":
+        database.write_bytes(b"not a sqlite database")
+    else:
+        _create_identity_db(tmp_path, [
+            _identity_record("root"),
+            _identity_record("child", str(child), parent="root"),
+            _identity_record("grandchild", str(grandchild), parent="child"),
+        ])
+        monkeypatch.setattr(providers, "_sqlite_variable_limit", lambda _connection: 1)
+        original = providers._codex_identity_batch
+
+        def fail_child(connection, ids):
+            if ids == ["child"]:
+                raise sqlite3.OperationalError("synthetic per-id failure")
+            return original(connection, ids)
+
+        monkeypatch.setattr(providers, "_codex_identity_batch", fail_child)
+
+    chats = {row["id"]: row for row in CodexProvider()._with_agents([
+        {"id": "root", "status": "running"},
+    ])}
+
+    assert set(chats) == {"root"}
+
+
 @pytest.mark.parametrize("query_state", ["partial", "unavailable"])
 def test_partial_identity_failure_retains_recent_truth_but_not_expired_or_unknown_rows(tmp_path, monkeypatch, query_state):
     now = datetime.now(timezone.utc)
@@ -761,6 +814,96 @@ def test_async_question_keeps_fresh_execution_tool_evidence(tmp_path, monkeypatc
     assert state["executionObservedAt"] == _stamp(now - 7)
     assert state["executionActivity"]["kind"] == "reading"
     assert state["executionActivity"]["files"] == ["src/app.js"]
+
+
+@pytest.mark.parametrize("message_offset,append_read", [(-25, False), (-5, True)])
+def test_user_message_clears_only_a_current_execution_blocker(tmp_path, monkeypatch, message_offset, append_read):
+    now = 1_800_000_070.0
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    path = _rollout(tmp_path / "old-blocker.jsonl", [
+        _record("event_msg", _stamp(now - 100), {"type": "task_started"}),
+        _record("event_msg", _stamp(now - 10), {"type": "task_complete"}),
+    ])
+    completed = providers._codex_rollout_state(str(path))
+    terminal = _stamp(now - 10)
+    assert completed["executionStatus"] == "idle" and completed["executionTerminalAt"] == terminal
+
+    def append(record):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+
+    append(_record("response_item", _stamp(now - 30), {
+        "type": "function_call", "name": "request_user_input", "call_id": "delayed-ask",
+        "arguments": json.dumps({"questions": [{"question": "Old blocker?"}]}),
+    }))
+    append(_record("event_msg", _stamp(now + message_offset), {
+        "type": "user_message", "message": "Continue",
+    }))
+    if append_read:
+        append(_record("response_item", _stamp(now - 1), {
+            "type": "function_call", "name": "read_file", "call_id": "post-terminal-read",
+            "arguments": json.dumps({"path": "src/app.js"}),
+        }))
+
+    state = providers._codex_rollout_state(str(path))
+    assert state["executionStatus"] == "idle"
+    assert state["executionTerminalAt"] == terminal
+    assert state["executionObservedAt"] == terminal
+    assert state["executionActivity"] is None
+
+
+def test_terminal_admission_respects_run_and_resume_boundaries(tmp_path, monkeypatch):
+    now = 1_800_000_080.0
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+
+    path = _rollout(tmp_path / "terminal-before-run.jsonl", [
+        _record("event_msg", _stamp(now - 20), {"type": "task_started"}),
+    ])
+    started = providers._codex_rollout_state(str(path))
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("event_msg", _stamp(now - 50), {"type": "task_complete"})) + "\n")
+    stale_terminal = providers._codex_rollout_state(str(path))
+    assert stale_terminal["executionStatus"] == "running"
+    assert stale_terminal["executionTerminalAt"] is None
+    assert stale_terminal["executionObservedAt"] == started["executionObservedAt"]
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("response_item", _stamp(now - 1), {
+            "type": "function_call", "name": "read_file", "call_id": "read-after-stale-end",
+            "arguments": json.dumps({"path": "src/app.js"}),
+        })) + "\n")
+    resumed = providers._codex_rollout_state(str(path))
+    assert resumed["executionStatus"] == "running"
+    assert resumed["executionActivity"]["kind"] == "reading"
+
+    blocked = _rollout(tmp_path / "terminal-before-resume.jsonl", [
+        _record("event_msg", _stamp(now - 20), {"type": "task_started"}),
+        _record("response_item", _stamp(now - 10), {
+            "type": "function_call", "name": "request_user_input", "call_id": "ask-before-resume",
+            "arguments": json.dumps({"questions": [{"question": "Continue?"}]}),
+        }),
+    ])
+    assert providers._codex_rollout_state(str(blocked))["executionStatus"] == "waiting"
+    with blocked.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("event_msg", _stamp(now - 5), {
+            "type": "user_message", "message": "Continue",
+        })) + "\n")
+    cleared = providers._codex_rollout_state(str(blocked))
+    assert cleared["executionStatus"] == "unknown"
+    with blocked.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("event_msg", _stamp(now - 8), {"type": "task_complete"})) + "\n")
+    delayed_terminal = providers._codex_rollout_state(str(blocked))
+    assert delayed_terminal["executionStatus"] == "unknown"
+    assert delayed_terminal["executionTerminalAt"] is None
+    with blocked.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("response_item", _stamp(now - 1), {
+            "type": "function_call", "name": "read_file", "call_id": "read-after-resume",
+            "arguments": json.dumps({"path": "src/app.js"}),
+        })) + "\n")
+    after_boundary = providers._codex_rollout_state(str(blocked))
+    assert after_boundary["executionStatus"] == "running"
+    assert after_boundary["executionActivity"]["kind"] == "reading"
 
 
 @pytest.mark.parametrize("delayed_terminal", [
@@ -1040,3 +1183,127 @@ def test_meta_cache_reloads_ownership_after_same_path_replacement(tmp_path, monk
     second = {row["id"] for row in provider._with_agents([])}
     assert "replacement-child-with-longer-id" in second
     assert "first-child" not in second
+
+
+# ---- incremental reducer fast path / build-scoped memo ----
+
+def _count_reduce(path, kind="perf-test-count", project=None):
+    def reduce_record(state, item):
+        state["n"] += 1
+        state["items"].append(item.get("v"))
+
+    return providers._incremental_jsonl_reduce(
+        kind, path, lambda: {"n": 0, "items": []}, reduce_record, project, unavailable={})
+
+
+def _write_lines(path, values):
+    path.write_text("".join(json.dumps({"v": value}) + "\n" for value in values), encoding="utf-8")
+
+
+def test_unchanged_checkpoint_does_not_open_file(tmp_path, monkeypatch):
+    path = tmp_path / "a.jsonl"
+    _write_lines(path, [1, 2, 3])
+    assert _count_reduce(path)["n"] == 3
+    opened = []
+    real_open = Path.open
+    monkeypatch.setattr(Path, "open", lambda self, *a, **k: (opened.append(self), real_open(self, *a, **k))[1])
+    guards = []
+    monkeypatch.setattr(providers, "_jsonl_guards", lambda *a: guards.append(a) or (b"", b""))
+    assert _count_reduce(path)["items"] == [1, 2, 3]
+    assert opened == [] and guards == []
+
+
+def test_same_size_rewrite_with_new_mtime_invalidates(tmp_path):
+    import os
+    path = tmp_path / "b.jsonl"
+    _write_lines(path, [1, 2, 3])
+    assert _count_reduce(path)["items"] == [1, 2, 3]
+    size = path.stat().st_size
+    _write_lines(path, [7, 8, 9])
+    assert path.stat().st_size == size
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    assert _count_reduce(path)["items"] == [7, 8, 9]
+
+
+def test_append_is_incremental_but_guarded(tmp_path):
+    path = tmp_path / "c.jsonl"
+    _write_lines(path, [1, 2, 3])
+    _count_reduce(path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"v": 4}) + "\n")
+    assert _count_reduce(path)["items"] == [1, 2, 3, 4]
+    # Rewrite that grows the file but changes already-checkpointed bytes.
+    _write_lines(path, [9, 9, 9, 9, 9, 9])
+    assert _count_reduce(path)["items"] == [9] * 6
+
+
+def test_truncation_and_replacement_invalidate(tmp_path):
+    path = tmp_path / "d.jsonl"
+    _write_lines(path, [1, 2, 3, 4])
+    _count_reduce(path)
+    _write_lines(path, [1, 2])
+    assert _count_reduce(path)["items"] == [1, 2]
+    other = tmp_path / "other.jsonl"
+    _write_lines(other, [5, 6])
+    other.replace(path)
+    assert _count_reduce(path)["items"] == [5, 6]
+    path.unlink()
+    assert _count_reduce(path) == {}
+
+
+def test_caller_mutation_never_reaches_next_call(tmp_path):
+    path = tmp_path / "e.jsonl"
+    _write_lines(path, [1, 2])
+    first = _count_reduce(path)
+    first["items"].append("poison")
+    first["n"] = 99
+    second = _count_reduce(path)
+    assert second == {"n": 2, "items": [1, 2]}
+    second["items"].clear()
+    assert _count_reduce(path) == {"n": 2, "items": [1, 2]}
+    projected = _count_reduce(path, kind="perf-test-proj", project=lambda s: s)
+    projected["items"].append("x")
+    assert _count_reduce(path, kind="perf-test-proj", project=lambda s: s)["items"] == [1, 2]
+
+
+def test_build_scope_stats_and_resolves_each_path_once(tmp_path, monkeypatch):
+    path = tmp_path / "f.jsonl"
+    _write_lines(path, [1])
+    _count_reduce(path)
+    calls = {"stat": 0, "resolve": 0}
+    real_stat, real_resolve = Path.stat, Path.resolve
+
+    def stat(self, *a, **k):
+        calls["stat"] += 1
+        return real_stat(self, *a, **k)
+
+    def resolve(self, *a, **k):
+        calls["resolve"] += 1
+        return real_resolve(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "resolve", resolve)
+    with providers._build_scope():
+        for _ in range(5):
+            _count_reduce(path)
+            _count_reduce(path, kind="perf-test-other")
+    assert calls["resolve"] == 1
+    assert calls["stat"] <= 3  # one pre-read stat; the second kind's first read adds post-read checks
+    assert providers._BUILD_MEMO.get() is None
+    with providers._build_scope():
+        pass
+    before = dict(calls)
+    _count_reduce(path)
+    assert calls["resolve"] == before["resolve"] + 1  # no cross-build memo
+
+
+def test_stale_memoized_stat_is_refreshed_not_treated_as_rewrite(tmp_path):
+    path = tmp_path / "g.jsonl"
+    _write_lines(path, [1, 2])
+    with providers._build_scope():
+        assert _count_reduce(path, kind="perf-test-stale")["n"] == 2
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"v": 3}) + "\n")
+        # Memo holds the old stat, but a changed file must still be read fully, not as empty.
+        assert _count_reduce(path, kind="perf-test-stale-2")["items"] == [1, 2, 3]
