@@ -24,10 +24,12 @@ from .claude_cache import reset_info, usage_info
 from .provider_policy import POLICIES, policy_for, public_policies
 
 # Full transcript collection is intentionally limited to providers listed here.
+# Claude is full-collected (hook-sourced sessions) only when its policy allows
+# collection; otherwise it stays quota-only via LIMIT_ONLY_PROVIDERS.
 ENABLED_PROVIDERS = (
     "Codex",
+    "Claude",
 )
-# Claude remains quota-only unless a separate full-transcript capability is approved.
 LIMIT_ONLY_PROVIDERS = ("Claude",)
 
 
@@ -4568,7 +4570,11 @@ def live_state() -> dict[str, Any]:
             **({"pendingOptions": state["options"]} if state.get("options") else {}),
             "stateDetail": state.get("detail") or indexed.get("stateDetail"),
         }
-        if provider != "Codex":
+        if provider == "Claude":
+            # Hook-sourced rows keep their execution fields; the transcript state
+            # above (which infers running from trailing records) is discarded.
+            row = _claude_live_row(row, indexed)
+        elif provider != "Codex":
             for field in ("statusSource", "statusObservedAt", "telemetryUnavailable", "metricsUnavailable", "stateSince", "compactionStartedAt", "activity", "activityUnavailable",
                           "executionStatus", "executionSource", "executionObservedAt", "executionSince",
                           "executionCompactionStartedAt", "executionTerminalAt", "executionActivity"):
@@ -4783,6 +4789,18 @@ def _dedupe_provider_chats(provider: dict[str, Any]) -> None:
     provider["chats"] = unique
 
 
+# --- Claude Code hook rows (token_tracker/claude_provider.py) ---------------
+def _claude_code_provider() -> Any:
+    from .claude_provider import ClaudeCodeProvider
+    return ClaudeCodeProvider()
+
+
+def _claude_live_row(row: dict[str, Any], indexed: dict[str, Any]) -> dict[str, Any]:
+    from .claude_provider import live_row
+    return live_row(row, indexed)
+# --- end Claude Code hook rows -----------------------------------------------
+
+
 def _provider_snapshot(factory: Any, name: str, accent: str,
                       policy_generation: str | None = None) -> dict[str, Any]:
     """A failed build keeps the last successful provider data, clearly marked stale."""
@@ -4828,7 +4846,7 @@ def build_snapshot() -> dict[str, Any]:
         structure_stamp = _structure_stamp(visible_full)
     except Exception:
         structure_stamp = None
-    factories = {"Claude": (ClaudeDesktopProvider, "#e8813f"), "Codex": (CodexProvider, "#4a95e0")}
+    factories = {"Claude": (_claude_code_provider, "#e8813f"), "Codex": (CodexProvider, "#4a95e0")}
     limit_factories = {"Claude": (ClaudeLimitsProvider, "#e8813f")}
     jobs = [(name, *factories[name]) for name in full_collect] + [(name, *limit_factories[name]) for name in limit_only]
     with ThreadPoolExecutor(max_workers=max(1, len(jobs)), thread_name_prefix="token-provider") as pool:
