@@ -114,8 +114,16 @@ def _codex_identity_snapshot(ids: Iterable[Any] = (), limit: int = 200) -> dict[
     try:
         database.stat()
     except FileNotFoundError:
+        # Only a genuinely catalog-less (CLI-only) install counts as missing. Another
+        # schema version or a sqlite/ store means "present but unsupported": fail closed.
+        try:
+            other_catalog = (any(root.glob("state_*.sqlite"))
+                             or (root / "sqlite").exists())
+        except OSError:
+            other_catalog = True
         return {"status": "unavailable", "catalog": [], "by_id": {},
-                "no_match_ids": set(), "failed_ids": requested, "catalog_missing": True}
+                "no_match_ids": set(), "failed_ids": requested,
+                "catalog_missing": not other_catalog}
     except OSError:
         return {"status": "unavailable", "catalog": [], "by_id": {},
                 "no_match_ids": set(), "failed_ids": requested, "catalog_missing": False}
@@ -556,6 +564,8 @@ def _incremental_jsonl_reduce(kind: str, path: Path, initial_state: Any,
                     and cached.get("extra") == fingerprint_extra):
                 # Full file identity (size, mtime, dev, ino, ctime) and extra
                 # match: nothing was appended or rewritten, so skip open + guards.
+                # Accepted gap: a same-size in-place rewrite with a restored mtime is
+                # not detected. Codex/Claude transcripts are append-only.
                 state = deepcopy(cached["state"])
                 return project(state) if project else state
             result = _incremental_jsonl_reduce_locked(
@@ -1114,7 +1124,9 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             and exec_stamp_epoch > exec_resume_epoch and exec_after_terminal
         )
         exec_qualifies = False
-        if item_kind == "event_msg" and payload_type == "task_started" and exec_transition_admitted:
+        # Starts and compaction obey the same floor as terminals: a delayed record older
+        # than the current run start or resume boundary cannot reopen or restart it.
+        if item_kind == "event_msg" and payload_type == "task_started" and exec_terminal_admitted:
             exec_status, exec_since, exec_compaction_at = "running", exec_stamp, None
             exec_resume_at = None
             exec_activity = None
@@ -1129,7 +1141,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             exec_pending_calls.clear()
             exec_qualifies = True
         elif ("compact" in event_type and any(word in event_type for word in ("start", "begin", "progress", "ing"))
-              and exec_transition_admitted):
+              and exec_terminal_admitted):
             exec_status, exec_compaction_at = "compacting", exec_stamp
             exec_activity = None
             exec_pending_calls.clear()
@@ -3069,6 +3081,9 @@ class CodexProvider:
     @classmethod
     def _token_events(cls, path: Path) -> list[dict[str, Any]]:
         """Read only counter telemetry, cached by immutable file state.
+
+        Returned events are read-only: equal consecutive ``rate_limits`` dicts are
+        shared between events and with the cache, so callers must never mutate them.
 
         Each token_count is cumulative for its session. Callers must use deltas,
         not assign a session total to its final event date.

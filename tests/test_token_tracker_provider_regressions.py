@@ -906,6 +906,43 @@ def test_terminal_admission_respects_run_and_resume_boundaries(tmp_path, monkeyp
     assert after_boundary["executionActivity"]["kind"] == "reading"
 
 
+def test_delayed_task_started_cannot_override_newer_waiting_state(tmp_path, monkeypatch):
+    now = 1_800_000_085.0
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    path = _rollout(tmp_path / "delayed-start.jsonl", [
+        _record("event_msg", _stamp(now - 20), {"type": "task_started"}),
+        _record("response_item", _stamp(now - 10), {
+            "type": "function_call", "name": "request_user_input", "call_id": "ask-1",
+            "arguments": json.dumps({"questions": [{"question": "Continue?"}]}),
+        }),
+        _record("event_msg", _stamp(now - 50), {"type": "task_started"}),
+    ])
+    state = providers._codex_rollout_state(str(path))
+    assert state["executionStatus"] == "waiting"
+    assert state["executionSince"] == _stamp(now - 20)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("event_msg", _stamp(now - 5), {
+            "type": "user_message", "message": "Continue",
+        })) + "\n")
+    assert providers._codex_rollout_state(str(path))["executionStatus"] == "unknown"
+
+
+def test_versioned_or_relocated_catalog_is_not_treated_as_missing(tmp_path, monkeypatch):
+    now = 1_800_000_095.0
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    _make_runtime_thread(tmp_path, "child", "running", parent="root", now=now - 2)
+    (tmp_path / "state_6.sqlite").write_bytes(b"future schema")
+    chats = {row["id"]: row for row in CodexProvider()._with_agents([{"id": "root", "status": "idle"}])}
+    assert set(chats) == {"root"}
+    (tmp_path / "state_6.sqlite").unlink()
+    (tmp_path / "sqlite").mkdir()
+    chats = {row["id"]: row for row in CodexProvider()._with_agents([{"id": "root", "status": "idle"}])}
+    assert set(chats) == {"root"}
+
+
 @pytest.mark.parametrize("delayed_terminal", [
     {"type": "event_msg", "payload": {"type": "task_complete"}},
     {"type": "event_msg", "payload": {"type": "task_failed"}},
