@@ -73,6 +73,12 @@ def test_consent_absent_writes_nothing(data_env):
     assert not data_env.exists()
 
 
+def test_bom_prefixed_payload_is_accepted(data_env):
+    data_env.mkdir(parents=True)
+    (data_env / claude_hook.CONSENT_NAME).write_text("{}")
+    assert claude_hook.handle(b"\xef\xbb\xbf" + json.dumps(PAYLOAD).encode(), NOW) is True
+
+
 def test_consent_present_writes_one_allowlisted_line(data_env):
     data_env.mkdir(parents=True)
     (data_env / claude_hook.CONSENT_NAME).write_text("{}")
