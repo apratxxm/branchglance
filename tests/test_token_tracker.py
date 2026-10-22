@@ -1013,22 +1013,125 @@ def test_native_region_ignores_unavailable_native_handle():
         app.control.close()
 
 
-def test_notify_existing_sends_show_command():
+def _fake_control_listener(respond, connections=1):
+    """Bind a control-port stand-in.
+
+    ``respond(line, exchange)`` returns the reply for each line received on a
+    connection (or None to stay silent). Every line any client sends is
+    recorded in ``received`` so tests can prove what was (not) transmitted.
+    """
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind((widget.HTTP_HOST, 0)); listener.listen(1)
-    port = listener.getsockname()[1]
-    original = widget.CONTROL_PORT
-    widget.CONTROL_PORT = port
+    listener.bind((widget.HTTP_HOST, 0)); listener.listen(4)
     received = []
-    thread = threading.Thread(target=lambda: received.append(listener.accept()[0].recv(32)), daemon=True)
+
+    def serve():
+        for _ in range(connections):
+            try:
+                conn, _addr = listener.accept()
+            except OSError:
+                return
+            exchange = {}
+            with conn:
+                conn.settimeout(1)
+                buffer = b""
+                while True:
+                    try:
+                        chunk = conn.recv(4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    while b"\n" in buffer:
+                        raw, buffer = buffer.split(b"\n", 1)
+                        line = raw.decode().strip()
+                        received.append(line)
+                        reply = respond(line, exchange)
+                        if reply is not None:
+                            conn.sendall(reply.encode() + b"\n")
+
+    thread = threading.Thread(target=serve, daemon=True)
     thread.start()
+    return listener, listener.getsockname()[1], received, thread
+
+
+def _genuine_responder(nonce, pid=4242):
+    """A stand-in that holds ``nonce`` and speaks the challenge-response protocol."""
+    product = widget.product
+
+    def respond(line, exchange):
+        verb, _, arg = line.partition(" ")
+        if verb == "hello":
+            exchange["cc"], exchange["sc"] = arg, product.new_challenge()
+            return json.dumps({"product": "Branchglance", "build": "b1", "pid": pid,
+                               "challenge": exchange["sc"],
+                               "proof": product.control_mac(nonce, "server", arg, exchange["sc"])})
+        expected = product.control_mac(nonce, "client", exchange.get("cc", ""), exchange.get("sc", ""), verb)
+        return "ok" if product.control_mac_matches(expected, arg) else "denied"
+    return respond
+
+
+def _write_nonce(value):
+    path = widget.product.control_nonce_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value)
+    return value
+
+
+def test_notify_existing_authenticates_listener_then_sends_mac_never_the_nonce(monkeypatch):
+    nonce = _write_nonce("a1" * 32)
+    listener, port, received, thread = _fake_control_listener(_genuine_responder(nonce))
+    monkeypatch.setattr(widget, "CONTROL_PORT", port)
     try:
         assert widget.WidgetApp.notify_existing() is True
-        thread.join(1)
-        assert received == [b"show"]
+        thread.join(2)
+        assert [line.split()[0] for line in received] == ["hello", "show"]
+        assert all(nonce not in line for line in received)
     finally:
-        widget.CONTROL_PORT = original
+        listener.close()
+
+
+def _forged_hello(identity_fields, proof):
+    def respond(line, exchange):
+        if line.startswith("hello "):
+            fields = dict(identity_fields)
+            fields["challenge"] = "d4" * 32
+            if proof == "wrong-key":
+                fields["proof"] = widget.product.control_mac("e5" * 32, "server", line.split()[1], fields["challenge"])
+            elif proof == "replayed":
+                fields["proof"] = widget.product.control_mac("b2" * 32, "server", "f6" * 32, fields["challenge"])
+            elif proof is not None:
+                fields["proof"] = proof
+            return json.dumps(fields)
+        return "ok"
+    return respond
+
+
+PLAUSIBLE = {"schema": 1, "product": "Branchglance", "version": "1.0.0", "build": "b1", "pid": 4242,
+             "stateRoot": "C:\\anything", "frozen": True}
+
+
+@pytest.mark.parametrize("respond", [
+    lambda line, exchange: None,  # silent / foreign listener
+    lambda line, exchange: "not json",
+    lambda line, exchange: json.dumps(PLAUSIBLE),  # old-style identity echo, no proof
+    _forged_hello(PLAUSIBLE, None),
+    _forged_hello(PLAUSIBLE, "0" * 64),
+    _forged_hello(PLAUSIBLE, "wrong-key"),
+    _forged_hello(PLAUSIBLE, "replayed"),  # right key, proof bound to another exchange
+    _forged_hello(dict(PLAUSIBLE, product="TokenTracker"), None),
+])
+def test_notify_existing_never_sends_nonce_or_command_to_unverified_listener(monkeypatch, respond):
+    nonce = _write_nonce("b2" * 32)
+    listener, port, received, thread = _fake_control_listener(respond)
+    monkeypatch.setattr(widget, "CONTROL_PORT", port)
+    try:
+        assert widget.WidgetApp.notify_existing() is False
+        thread.join(3)
+        assert len(received) == 1 and received[0].startswith("hello ")
+        assert all(nonce not in line for line in received)
+    finally:
         listener.close()
 
 
@@ -1690,14 +1793,40 @@ def test_widget_control_listener_survives_silent_clients_and_stops_on_quit(monke
 
 
 def test_widget_second_instance_loses_control_port_and_notifies_winner(monkeypatch):
-    winner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    widget._claim_address(winner)
-    winner.bind((widget.HTTP_HOST, 0)); winner.listen(1)
-    port = winner.getsockname()[1]
+    nonce = _write_nonce("c3" * 32)
     received = []
-    thread = threading.Thread(target=lambda: received.append(winner.accept()[0].recv(32)), daemon=True)
+    winner =socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    widget._claim_address(winner)
+    winner.bind((widget.HTTP_HOST, 0)); winner.listen(4)
+    port = winner.getsockname()[1]
+    respond = _genuine_responder(nonce)
+
+    def serve():
+        conn, _addr = winner.accept()
+        exchange, buffer = {}, b""
+        with conn:
+            conn.settimeout(1)
+            while True:
+                try:
+                    chunk = conn.recv(4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk
+                while b"\n" in buffer:
+                    raw, buffer = buffer.split(b"\n", 1)
+                    line = raw.decode().strip()
+                    received.append(line)
+                    conn.sendall(respond(line, exchange).encode() + b"\n")
+
+    thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     monkeypatch.setattr(widget, "CONTROL_PORT", port)
+    monkeypatch.setattr(widget, "BIND_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr(widget, "BIND_RETRY_DELAY", 0)
+    messages = []
+    monkeypatch.setattr(widget, "show_message", lambda *a: messages.append(a))
     app = widget.WidgetApp()
     created = []
     monkeypatch.setattr(widget.webview, "create_window", lambda *a, **k: created.append(a))
@@ -1713,8 +1842,9 @@ def test_widget_second_instance_loses_control_port_and_notifies_winner(monkeypat
                 intruder.close()
         app.run()
         thread.join(2)
-        assert received == [b"show"]
-        assert created == []
+        assert [line.split()[0] for line in received] == ["hello", "show"]
+        assert all(nonce not in line for line in received)
+        assert created == [] and messages == []
     finally:
         app.control.close()
         winner.close()
@@ -1767,7 +1897,7 @@ def test_widget_run_wires_native_state_and_region_events(monkeypatch):
     monkeypatch.setattr(widget.ctypes, "windll", type("WinDll", (), {"user32": user32})(), raising=False)
     monkeypatch.setattr(widget.webview, "create_window", lambda *a, **k: window)
     monkeypatch.setattr(widget.webview, "start", lambda **k: started.append(k))
-    monkeypatch.setattr(widget.pystray, "Icon", lambda *a, **k: type("Tray", (), {"run": lambda self: None, "stop": lambda self: None})())
+    monkeypatch.setattr(widget.pystray, "Icon", lambda *a, **k: type("Tray", (), {"run": lambda self, **kw: None, "stop": lambda self: None})())
     app = widget.WidgetApp()
     app.limit_reset = type("Reset", (), {"start": lambda self: None, "stop": lambda self: None})()
     try:
