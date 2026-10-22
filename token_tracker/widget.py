@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw
 
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
-from . import product, reset_delivery
+from . import product, reset_delivery, server as server_module
 
 
 _WAIT_OBJECT_0 = 0x0
@@ -811,11 +811,16 @@ class _ExclusiveHTTPServer(ThreadingHTTPServer):
         super().server_bind()
 
 
+RESET_ACTIONS_URL = f"http://{HTTP_HOST}:{HTTP_PORT}/reset_actions.html"
+
+
 class WidgetApp:
     def __init__(self, *, start_hidden: bool = False, compact_profile: bool = True,
                  recenter_on_start: bool = False) -> None:
         self.window = None
         self.reset_actions_window = None
+        self._reset_actions_token = None
+        self._reset_actions_lock = threading.Lock()
         self.start_hidden = bool(start_hidden)
         self.visible = not self.start_hidden
         self.server: ThreadingHTTPServer | None = None
@@ -2409,6 +2414,14 @@ class WidgetApp:
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()
+        # Revoke the settings capability, then destroy its window before the port is released.
+        with self._reset_actions_lock:
+            server_module.set_settings_token(None)
+            self._reset_actions_token = None
+        child, self.reset_actions_window = self.reset_actions_window, None
+        if child is not None:
+            with suppress(Exception):
+                child.destroy()
         if self.server:
             with suppress(Exception):
                 self.server.shutdown()
@@ -2444,6 +2457,12 @@ class WidgetApp:
 
     def open_reset_actions(self) -> bool:
         """Open or focus the user-requested reset action settings window."""
+        with self._lifecycle:
+            if self.quitting:
+                return False
+            return self._open_reset_actions_locked()
+
+    def _open_reset_actions_locked(self) -> bool:
         child = self.reset_actions_window
         if child is not None:
             try:
@@ -2454,16 +2473,33 @@ class WidgetApp:
             except Exception:
                 self.reset_actions_window = None
         try:
+            token = secrets.token_urlsafe(32)
+            with self._reset_actions_lock:
+                server_module.set_settings_token(token)
+                self._reset_actions_token = token
             child = webview.create_window(
-                "Reset action settings", f"http://{HTTP_HOST}:{HTTP_PORT}/reset_actions.html",
+                "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
                 width=440, height=540, min_size=(360, 360), resizable=True,
                 background_color="#111316",
             )
             self.reset_actions_window = child
-            child.events.closed += lambda *_args: setattr(self, "reset_actions_window", None)
+
+            def on_closed(*_args):
+                with self._reset_actions_lock:
+                    if self.reset_actions_window is child:
+                        self.reset_actions_window = None
+                    if self._reset_actions_token == token:
+                        self._reset_actions_token = None
+                        server_module.set_settings_token(None)
+
+            child.events.closed += on_closed
             return True
         except Exception:
-            logging.getLogger(__name__).exception("Could not open reset action settings")
+            with self._reset_actions_lock:
+                if self._reset_actions_token == locals().get("token"):
+                    self._reset_actions_token = None
+                    server_module.set_settings_token(None)
+            logging.getLogger(__name__).warning("Could not open reset action settings")
             self.reset_actions_window = None
             return False
 

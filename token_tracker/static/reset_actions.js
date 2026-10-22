@@ -1,8 +1,51 @@
 (() => {
   const $ = (s) => document.querySelector(s);
-  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false };
+  let settingsToken="";
+  try {
+    settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
+    window.history?.replaceState?.(null,"",`${window.location.pathname}${window.location.search}`);
+  } catch {}
+  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const message = (text, error=false) => { const el=$("#message"); el.textContent=text||""; el.classList.toggle("error",error); };
+  const canChangeClaude = () => Boolean(settingsToken);
+  function renderClaude() {
+    const value=state.claude,status=$("#claude-status"),button=$("#claude-toggle"),explanation=$("#claude-explanation"),readOnly=$("#claude-readonly-note");
+    if(!value){status.textContent="Unavailable";button.textContent="Turn on Claude Code";button.disabled=true;explanation.hidden=true;readOnly.hidden=canChangeClaude();return;}
+    const labels={off:"Off",on:"On",partial:"Partially enabled",blocked:"Blocked",unavailable:"Unavailable",vetoed:"Turned off by an environment setting",checking:"Checking?"};
+    status.textContent=value.state==="checking"?"Checking… · Status is not confirmed.":[labels[value.state]||"Unavailable",value.reason,value.restartRequired?"Restart Branchglance to apply changes.":""].filter(Boolean).join(" · ");
+    const cleanup=(value.state==="blocked"||value.state==="vetoed")&&Boolean(value.consent||(value.hooks?.installed||0)>0);
+    const turningOff=["on","partial"].includes(value.state)||cleanup;
+    button.textContent=turningOff?"Turn off":"Turn on Claude Code";
+    button.disabled=state.claudeBusy||!canChangeClaude()||["checking","unavailable"].includes(value.state)||(["blocked","vetoed"].includes(value.state)&&!cleanup);
+    explanation.hidden=value.state!=="off";
+    readOnly.hidden=canChangeClaude();
+  }
+  async function loadClaude({reconcile=false}={}) {
+    try {
+      const response=await fetch("/api/claude-collection",{cache:"no-store",signal:AbortSignal.timeout(10000)});
+      const data=await response.json();if(!response.ok)throw new Error(data.error||"Claude Code status is unavailable.");
+      if(!data?.ok)throw new Error(data?.error||"Claude Code status is unavailable.");
+      state.claude=data;
+    } catch(e) { state.claude=reconcile?{state:"checking",reason:"Status is not confirmed.",restartRequired:false}:{state:"unavailable",reason:e.message||"Claude Code status is unavailable.",restartRequired:false}; }
+    renderClaude();
+    return state.claude.state!=="checking";
+  }
+  async function toggleClaude() {
+    if(!state.claude||!canChangeClaude())return;
+    const cleanup=(state.claude.state==="blocked"||state.claude.state==="vetoed")&&Boolean(state.claude.consent||(state.claude.hooks?.installed||0)>0);
+    if(["unavailable","checking"].includes(state.claude.state)||(["blocked","vetoed"].includes(state.claude.state)&&!cleanup))return;
+    const action=["on","partial"].includes(state.claude.state)||cleanup?"disable":"enable";
+    state.claudeBusy=true;renderClaude();
+    try {
+      const response=await fetch("/api/claude-collection",{method:"POST",headers:{"Content-Type":"application/json","X-Branchglance-Settings-Token":settingsToken},body:JSON.stringify({action}),cache:"no-store",signal:AbortSignal.timeout(20000)});
+      const data=await response.json();if(!response.ok||!data?.ok)throw new Error(data?.reason||data?.error||"Claude Code setting could not be changed.");
+      state.claude=data;
+    } catch(e) {
+      state.claude={state:"checking",reason:"Status is not confirmed.",restartRequired:false};renderClaude();
+      await loadClaude({reconcile:true});
+    } finally { state.claudeBusy=false;renderClaude(); }
+  }
   function mode() { return document.querySelector('input[name="mode"]:checked')?.value || "greet"; }
   function readPolicy(value) {
     if(!value||value.schemaVersion!==1||typeof value.generation!=="string"||!value.generation||!Array.isArray(value.providers))return null;
@@ -86,6 +129,7 @@
   }
   document.addEventListener("change",e=>{if(e.target.matches('input[name="mode"]')){state.dirty=true;render();}if(e.target.matches('#threads input[type="checkbox"]')){state.dirty=true;e.target.checked?state.selected.add(e.target.dataset.id):state.selected.delete(e.target.dataset.id);render();}});
   $("#search").addEventListener("input",render); $("#refresh").addEventListener("click",load); $("#save").addEventListener("click",save);
-  $("#cancel").addEventListener("click",()=>window.close()); load();
-  if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,render,load,save,mode,esc,renderLastRun};
+  $("#cancel").addEventListener("click",()=>window.close()); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();});
+  load();loadClaude();
+  if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};
 })();

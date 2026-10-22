@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hmac
 import ipaddress
 import json
 import logging
@@ -30,6 +31,29 @@ LIVE_REFRESH_TTL_SECONDS = 1.0
 LIVE_MAX_AGE_SECONDS = 4.0
 LIVE_COLD_WAIT_SECONDS = 0.35
 LIVE_RETRY_COOLDOWN_SECONDS = 1.0
+_CLAUDE_COLLECTION_LOCK = threading.Lock()
+_SETTINGS_TOKEN_LOCK = threading.Lock()
+_SETTINGS_TOKEN: str | None = None
+_SETTINGS_AUTH_MESSAGE = "Open settings from the Branchglance widget to change this."
+
+
+def set_settings_token(token: str | None) -> None:
+    """Register or clear the current reset-settings window capability in memory."""
+    global _SETTINGS_TOKEN
+    if token is not None and (not isinstance(token, str) or not token):
+        raise ValueError("settings token must be a non-empty string or None")
+    with _SETTINGS_TOKEN_LOCK:
+        _SETTINGS_TOKEN = token
+
+
+def _settings_token_matches(provided: str | None) -> bool:
+    with _SETTINGS_TOKEN_LOCK:
+        return _settings_token_matches_locked(provided)
+
+
+def _settings_token_matches_locked(provided: str | None) -> bool:
+    expected = _SETTINGS_TOKEN
+    return bool(expected and provided and hmac.compare_digest(expected, provided))
 
 
 def _codex_policy():
@@ -417,6 +441,16 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "local Host required"}, 403)
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/api/claude-collection":
+            if parsed.query or not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return
+            try:
+                from .claude_collection import status as claude_collection_status
+                self._send_json({"ok": True, **claude_collection_status()})
+            except Exception:
+                self._send_json({"ok": False, "error": "Claude Code collection status is unavailable."}, 503)
+            return
         if parsed.path == "/api/provider-policy":
             try:
                 from .provider_policy import public_policies
@@ -561,17 +595,31 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        parsed = urlparse(self.path)
+        settings_mutation = parsed.path == "/api/claude-collection"
         if not self._valid_local_host():
+            if settings_mutation:
+                self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                return
             self._send_json({"ok": False, "error": "local Host required"}, 403)
             return
-        parsed = urlparse(self.path)
-        if parsed.path not in {"/api/queue", "/api/reset-action"}:
+        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection"}:
             self._send_json({"ok": False, "error": "not found"}, 404)
             return
         if not self._same_origin_request():
+            if settings_mutation:
+                self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                return
             self._send_json({"ok": False, "error": "same-origin request required"}, 403)
             return
+        if settings_mutation and (parsed.query or not _settings_token_matches(
+                self.headers.get("X-Branchglance-Settings-Token"))):
+            self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+            return
         if self.headers.get_content_type() != "application/json":
+            if settings_mutation:
+                self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                return
             self._send_json({"ok": False, "error": "application/json required"}, 415)
             return
         try:
@@ -586,6 +634,26 @@ class Handler(SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json({"ok": False, "error": "invalid JSON"}, 400)
+            return
+        if settings_mutation:
+            action = body.get("action") if isinstance(body, dict) else None
+            if not isinstance(action, str) or action not in {"enable", "disable"} or set(body) != {"action"}:
+                self._send_json({"ok": False, "error": "Expected action enable or disable."}, 400)
+                return
+            from . import claude_collection
+            operation = claude_collection.enable if action == "enable" else claude_collection.disable
+            provided_token = self.headers.get("X-Branchglance-Settings-Token")
+            with _SETTINGS_TOKEN_LOCK:
+                if not _settings_token_matches_locked(provided_token):
+                    self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                    return
+                with _CLAUDE_COLLECTION_LOCK:
+                    try:
+                        result = operation()
+                    except Exception:
+                        self._send_json({"ok": False, "error": "Claude Code collection could not be changed."}, 503)
+                        return
+            self._send_json(result, 200 if result.get("ok") else 409)
             return
         if parsed.path == "/api/reset-action":
             service = self.reset_service
