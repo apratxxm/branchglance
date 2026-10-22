@@ -119,6 +119,25 @@ def test_trash_reservation_recovers_between_ledger_and_journal_writes(tmp_path):
     assert [item["name"] for item in read_owned_ledger(root)["trash"]] == [entry["name"]]
 
 
+def test_reserved_trash_resume_renames_source_and_recovers_end_to_end(tmp_path):
+    import shutil
+    from branchglance_installer.core import Journal, trash_hash_snapshot
+    root = _root(tmp_path)
+    releases = root / "releases"
+    releases.mkdir()
+    source = _release(tmp_path, "reserved-source", version="1.0.0", build_id="old")
+    shutil.copytree(source, releases / "1.0.0+old")
+    record = Journal(root).begin("install", "2.0.0+new", {"pointer": None, "integration": {}})
+    entry = {"name": f".trash-{record['id']}-0", "version": "1.0.0+old",
+             "files": trash_hash_snapshot(releases / "1.0.0+old", "1.0.0+old")}
+    ops = ReleaseOps(root)
+    ops._reserve_trash(entry, ops._ledger(), record)
+    assert ops._trash_valid_release(releases / "1.0.0+old", "1.0.0+old", record=record) == entry["name"]
+    assert not (releases / "1.0.0+old").exists() and (releases / entry["name"]).exists()
+    assert ReleaseOps(root).recover() == "rolled-back"
+    assert not (releases / entry["name"]).exists() and not (root / "install-journal.json").exists()
+
+
 def test_recorded_trash_partial_deletion_retries_but_added_changed_and_redirected_files_refuse(tmp_path):
     import shutil
     from branchglance_installer.core import LocalFileSystem, read_owned_ledger, remove_plain_tree

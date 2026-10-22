@@ -198,9 +198,10 @@ def test_windows_cutover_identity_uses_authenticated_control_health(monkeypatch,
     adapter.kernel = Kernel()
     assert adapter.identity() == identity
     assert len(health_calls) == 1 and adapter.launcher_pid is None and adapter.pending_app_pid == identity["pid"]
+    adapter.launch_pending = False
     adapter.pending_app_pid = identity["pid"]
     adapter.branch_handle = None
-    with pytest.raises(SafetyError, match="handle is unavailable"):
+    with pytest.raises(SafetyError, match="process is not verified"):
         adapter.branchglance_running()
 
 
@@ -270,6 +271,54 @@ def test_cutover_cli_releases_instance_before_app_launch(tmp_path, monkeypatch, 
                       adapter_factory=Adapter)
     assert result == 0 and state["handoff"] and not state["instance"] and not state["install"]
     assert json.loads(capsys.readouterr().out)["pid"] == 501
+
+
+@pytest.mark.parametrize("command", ["recover", "rollback"])
+def test_fresh_cutover_commands_use_instance_mutex_as_app_absence_proof(tmp_path, monkeypatch, capsys, command):
+    import types
+    import cutover_branchglance as cli
+    from branchglance_installer.app import Paths
+    from branchglance_installer.cutover import OLD_ARGUMENTS
+    appdata = tmp_path / "LocalAppData"
+    (appdata / "TokenTracker").mkdir(parents=True)
+    product_root = appdata / "Branchglance"
+    product_root.mkdir()
+    journal_path = product_root / "cutover-journal.json"
+    paths = Paths(appdata / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
+                  product_root, tmp_path / "Temp")
+    monkeypatch.setattr(cli, "local_app_data", lambda: appdata)
+    monkeypatch.setattr(cli.Paths, "for_user", classmethod(lambda _cls: paths))
+    if command == "recover":
+        journal_path.write_text(json.dumps({
+            "schemaVersion": 1, "id": "a" * 32, "phase": "planned", "staging": "state.cutover-" + "a" * 32 + ".partial",
+            "shortcut": {"target": r"C:\\old\\pythonw.exe", "workdir": r"C:\\old",
+                         "arguments": OLD_ARGUMENTS}, "beforeHashes": {}, "beforePolicy": None,
+        }))
+    state = {"instance": False}
+    class Mutex:
+        def acquire(self, name, _timeout):
+            if name.endswith("-Instance"): state["instance"] = True
+            return name, "acquired"
+        def release(self, name):
+            if name.endswith("-Instance"): state["instance"] = False
+    class Control:
+        def identity(self): return None
+    class Processes: pass
+    native = types.SimpleNamespace(mutex=Mutex(), control=Control(), processes=Processes())
+    class NoAppAdapter(FakeCutover):
+        def __init__(self, *_args): super().__init__(product_root / "state")
+        def branchglance_running(self):
+            assert state["instance"] and self.instance_mutex_held
+            return False
+    result = cli.main([command, "--old-pid", "1", "--old-target", r"C:\\old\\pythonw.exe",
+                       "--old-workdir", r"C:\\old"], native_factory=lambda _paths: native,
+                      adapter_factory=NoAppAdapter)
+    assert result == 0 and not state["instance"]
+    if command == "recover":
+        assert not journal_path.exists()
+        assert json.loads(capsys.readouterr().out) == "rolled-back"
+    else:
+        assert json.loads(capsys.readouterr().out)["restored"] is True
 
 
 def test_cutover_rollback_refuses_interrupted_journal_after_reboot_without_abandoned_mutex(tmp_path, monkeypatch):
