@@ -2241,7 +2241,11 @@ def test_live_state_reports_fresh_status_without_exposing_paths(tmp_path, monkey
     providers._index_live_paths(snapshot_providers)
     assert "path" not in snapshot_providers[0]["chats"][0]
     live = providers.live_state()
-    assert live["chats"] == [{"key": "Claude:chat", "activityAt": live["chats"][0]["activityAt"], "status": "running", "pendingQuestion": None, "pendingQuestionIds": [], "questionResolutionAt": None, "questionCorrelationUnavailable": False, "stateDetail": None}]
+    # Claude execution comes only from hook events: a bare transcript is never "running".
+    chat = live["chats"][0]
+    assert len(live["chats"]) == 1 and chat["key"] == "Claude:chat"
+    assert chat["status"] == "unavailable" and chat["executionStatus"] == "unavailable"
+    assert chat["executionActivity"] is None and "path" not in chat
     assert str(tmp_path) not in json.dumps(live)
     assert live["structureStamp"]
 
