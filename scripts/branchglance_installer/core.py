@@ -685,6 +685,7 @@ class ReleaseOps:
             index = len(record.get("trashEntries", [])) if record is not None else 0
             name = f".trash-{transaction}-{index}"
             entry = {"name": name, "version": version, "files": files}
+        name = entry["name"]
         self._reserve_trash(entry, ledger, record)
         target = self.releases / name
         self._replace(path, target, "release-trashed")

@@ -42,9 +42,16 @@ def main(argv=None, *, native_factory=None, adapter_factory=None) -> int:
     else:
         paths = Paths.for_user()
         native = (native_factory or Native.real)(paths)
-        with Lifecycle(native.mutex, native.control, native.processes, operation.recover) as lifecycle:
+        def recover_while_locked():
+            adapter.instance_mutex_held = True
+            return operation.recover()
+        with Lifecycle(native.mutex, native.control, native.processes, recover_while_locked) as lifecycle:
+            adapter.instance_mutex_held = True
             if args.command == "run":
-                result = operation.run(release_instance=lifecycle.release_instance)
+                def release_instance_for_launch():
+                    lifecycle.release_instance()
+                    adapter.instance_mutex_held = False
+                result = operation.run(release_instance=release_instance_for_launch)
             elif args.command == "recover":
                 result = operation.recover()
             else:

@@ -173,13 +173,11 @@ def test_hook_mode_relays_stdio_bytes_exactly_and_always_exits_zero(launcher, tm
 def test_hook_mode_stops_waiting_at_its_deadline(launcher, tmp_path):
     folder, harness = launcher
     _hook_release(tmp_path, folder / "Echo.exe")
-    diagnostic = tmp_path / "diagnostic.txt"
     started = time.monotonic()
-    result = subprocess.run([str(harness), "hookdiag", "500", str(tmp_path), str(diagnostic), "--sleep"],
+    result = subprocess.run([str(harness), "hook", "500", str(tmp_path), "--sleep"],
                             input=b"", capture_output=True, timeout=30)
     assert result.returncode == 0 and time.monotonic() - started < 10
-    assert not result.stdout
-    assert diagnostic.read_text() == "timeout"
+    assert not result.stdout and b"diagnostic: timeout" in result.stderr
 
 
 def test_hook_mode_without_a_valid_release_exits_zero_quietly(launcher, tmp_path):
