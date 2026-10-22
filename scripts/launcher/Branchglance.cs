@@ -44,6 +44,8 @@ public static class BranchglanceLauncher
     static extern bool SetInformationJobObject(IntPtr job, uint infoClass, IntPtr info, uint infoLength);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool TerminateJobObject(IntPtr job, uint exitCode);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -331,6 +333,7 @@ public static class BranchglanceLauncher
             start.Arguments = String.Join(" ", new List<string>(args).ConvertAll(Quote).ToArray());
             IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
             if (job == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "CreateJobObjectW failed");
+            bool launcherInJob = false;
             try
             {
                 var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
@@ -344,10 +347,12 @@ public static class BranchglanceLauncher
                         throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "SetInformationJobObject failed");
                 }
                 finally { Marshal.FreeHGlobal(buffer); }
+                launcherInJob = AssignProcessToJobObject(job, GetCurrentProcess());
+                if (!launcherInJob) NoteAsync("Branchglance hook launcher self-assignment failed; using child-assignment fallback");
                 using (var child = Process.Start(start))
                 {
                     if (child == null) throw new InvalidOperationException("Hook process did not start");
-                    if (!AssignProcessToJobObject(job, child.Handle))
+                    if (!launcherInJob && !AssignProcessToJobObject(job, child.Handle))
                     {
                         try { child.Kill(); } catch { }
                         throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "AssignProcessToJobObject failed");
@@ -365,13 +370,21 @@ public static class BranchglanceLauncher
                     }
                     else
                     {
-                        try { TerminateJobObject(job, 1); } catch { }
+                        Note("Branchglance hook diagnostic: timeout");
+                        try { Console.Out.Flush(); } catch { }
+                        try { Console.Error.Flush(); } catch { }
                         HookDiagnosticCategory = "timeout";
-                        NoteAsync("Branchglance hook exceeded its deadline and was stopped");
+                        try { TerminateJobObject(job, 0); } catch { }
+                        return 0;
                     }
                 }
             }
-            finally { CloseHandle(job); }
+            finally
+            {
+                // A launcher assigned to its own kill-on-close job leaves the handle
+                // open until process exit; the OS then closes it and kills descendants.
+                if (!launcherInJob) CloseHandle(job);
+            }
         }
         catch (Exception e)
         {
