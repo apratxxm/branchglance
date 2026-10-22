@@ -338,7 +338,8 @@ def handle(raw: bytes, now: float | None = None) -> bool:
         return False
     now = time.time() if now is None else now
     try:
-        payload = json.loads(raw.decode("utf-8", "replace"))
+        # utf-8-sig: a .NET Framework parent writing through a UTF-8 console encoding prefixes a BOM.
+        payload = json.loads(raw.decode("utf-8-sig", "replace"))
     except ValueError:
         return False
     pid, created = _claude_process()
