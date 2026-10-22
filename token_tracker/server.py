@@ -54,9 +54,57 @@ def _codex_queue_allowed() -> bool:
     policy = _codex_policy()
     try:
         return (policy is not None and policy.allows("collect") is True
+                and policy.allows("show") is True
                 and policy.send is True and policy.send_origin == "provider_env")
     except Exception:
         return False
+
+
+PRODUCT = "Branchglance"
+BUILD = os.environ.get("BRANCHGLANCE_BUILD", "dev")
+
+
+def _collected_codex_thread_ids() -> frozenset[str]:
+    """Codex thread ids from the cached snapshot and live roster; Claude ids never qualify."""
+    ids: set[str] = set()
+    try:
+        snapshot = CACHE.value
+        for provider in (snapshot or {}).get("providers", []):
+            if isinstance(provider, dict) and provider.get("name") == "Codex":
+                ids.update(chat["id"] for chat in provider.get("chats", [])
+                           if isinstance(chat, dict) and isinstance(chat.get("id"), str))
+        live = LIVE_CACHE.value
+        for chat in (live or {}).get("chats", []):
+            if (isinstance(chat, dict) and isinstance(chat.get("id"), str)
+                    and chat.get("key") == f"Codex:{chat['id']}"
+                    and chat.get("provider", "Codex") == "Codex"):
+                ids.add(chat["id"])
+    except Exception:
+        return frozenset()
+    return frozenset(ids)
+
+
+def _is_collected_codex_thread(thread: str) -> bool:
+    return thread in _collected_codex_thread_ids()
+
+
+def _identity_payload() -> dict:
+    try:
+        from .limit_reset import _runtime_dir
+        state_root = str(_runtime_dir())
+    except Exception:
+        state_root = None
+    try:
+        from .provider_policy import public_policies
+        policies = public_policies()
+        summary = {"generation": policies["generation"],
+                   "providers": {row["name"]: {"collect": row["collect"], "show": row["show"],
+                                                "send": row["send"], "sendOrigin": row["sendOrigin"]}
+                                 for row in policies["providers"]}}
+    except Exception:
+        summary = None
+    return {"product": PRODUCT, "build": BUILD, "pid": os.getpid(), "stateRoot": state_root,
+            "providerPolicies": summary}
 
 
 def _without_codex_thread_ids(value):
@@ -377,6 +425,12 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._send_json(payload)
             return
+        if parsed.path == "/api/identity":
+            if not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return
+            self._send_json(_identity_payload())
+            return
         if parsed.path == "/api/stats":
             query = parse_qs(parsed.query)
             force = query.get("refresh", [""])[0] == "1"
@@ -416,6 +470,12 @@ class Handler(SimpleHTTPRequestHandler):
             thread = parse_qs(parsed.query).get("thread", [""])[0]
             if not THREAD_ID.fullmatch(thread):
                 self._send_json({"ok": False, "error": "invalid thread id"})
+                return
+            if not _codex_allows("show"):
+                self._send_json({"ok": False, "error": "Codex is not enabled."}, 403)
+                return
+            if not _is_collected_codex_thread(thread):
+                self._send_json({"ok": False, "error": "unknown Codex thread"}, 404)
                 return
             try:
                 os.startfile(f"codex://threads/{thread}")  # type: ignore[attr-defined]
@@ -576,6 +636,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if not _codex_queue_allowed():
             self._send_json({"ok": False, "error": "Explicit Codex SEND consent is required."}, 403)
+            return
+        if not _is_collected_codex_thread(thread):
+            self._send_json({"ok": False, "error": "unknown Codex thread"}, 404)
             return
         try:
             queue_codex_message(thread, message)
