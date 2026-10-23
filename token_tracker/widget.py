@@ -222,6 +222,9 @@ COMPACT_NOTCH_SIZES = {"idle": (420, 100), "rest": (420, 100),
 COMPACT_INSPECT_MAX_HEIGHT = 420
 COMPACT_DRAG_LEASE_SECONDS = 60
 COMPACT_DRAG_WATCHDOG_SECONDS = 0.10
+# Match the compact CSS reveal in one smootherstep sequence, sampled at 120 Hz.
+# Match the compact CSS reveal in one smootherstep sequence, sampled at 120 Hz.
+COMPACT_NOTCH_TRANSITION_SECONDS = 0.22
 NOTCH_TRANSITION_SECONDS = 0.11
 NOTCH_OPEN_TRANSITION_SECONDS = 0.14
 NOTCH_FRAME_INTERVAL = 1 / 120
@@ -2291,8 +2294,8 @@ class WidgetApp:
             if self.maximized:
                 self.window.restore()
                 self.maximized = False
-            duration = (NOTCH_OPEN_TRANSITION_SECONDS
-                        if expanded and not was_expanded else NOTCH_TRANSITION_SECONDS)
+            duration = (COMPACT_NOTCH_TRANSITION_SECONDS if self.compact_profile else
+                        NOTCH_OPEN_TRANSITION_SECONDS if expanded and not was_expanded else NOTCH_TRANSITION_SECONDS)
             self._apply_notch_bounds(animate=not reduced_motion, duration=duration)
 
     def _cancel_notch_transition(self) -> None:
