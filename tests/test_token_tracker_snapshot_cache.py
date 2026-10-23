@@ -546,3 +546,42 @@ def test_persisted_cache_construction_reads_no_policy_before_first_use(tmp_path,
     monkeypatch.setattr(server, "_snapshot_cache_compatibility", forbidden)
     cache = server.SnapshotCache(persist_path=tmp_path / "stats-snapshot.json")
     assert cache._compatibility is None and cache._restore_pending
+
+
+def test_lazy_restore_never_overwrites_a_fresh_build(monkeypatch, tmp_path):
+    path = tmp_path / "stats-snapshot.json"
+    compatibility = "policy-and-source-a"
+    monkeypatch.setattr(server, "build_snapshot", lambda: _persistable_snapshot())
+    server.SnapshotCache(persist_path=path, compatibility=compatibility).get()
+    assert path.is_file()
+
+    fresh = _persistable_snapshot(status="idle", pending=None)
+    monkeypatch.setattr(server, "build_snapshot", lambda: fresh)
+    cache = server.SnapshotCache(persist_path=path, compatibility=compatibility)
+    restore = cache._restore_persisted
+    entered, publish = threading.Event(), threading.Event()
+
+    def paused_restore():
+        entered.set()
+        assert publish.wait(2)
+        restore()
+
+    monkeypatch.setattr(cache, "_restore_persisted", paused_restore)
+    first = threading.Thread(target=cache.get_background)
+    first.start()
+    assert entered.wait(2)
+    # A concurrent first-use caller must wait for the restore rather than build around it.
+    second_done = threading.Event()
+    second = threading.Thread(target=lambda: (cache.get(force=True), second_done.set()))
+    second.start()
+    assert not second_done.wait(0.2)
+    publish.set()
+    first.join(2)
+    second.join(2)
+    _wait_idle(cache)
+    assert cache.value["providers"][0]["chats"][0]["status"] == "idle"
+
+    # Even a late restore cannot replace an already published fresh build.
+    restore()
+    assert cache.value is not None
+    assert cache.value["providers"][0]["chats"][0]["status"] == "idle"
