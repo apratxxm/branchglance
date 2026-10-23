@@ -51,14 +51,9 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 .source-switch{position:relative;display:inline-flex;align-items:center;flex:none;height:22px;margin:0 2px;padding:1px;border-radius:7px;background:var(--source-accent-soft);isolation:isolate}
 .source-switch::before{content:"";position:absolute;z-index:-1;inset:1px auto 1px 1px;width:calc(50% - 1px);border-radius:6px;background:var(--source-accent-soft);transform:translateX(0);transition:transform var(--motion-source) var(--ease-standard),background-color var(--motion-source) var(--ease-standard)}
 body[data-source="Claude"] .source-switch::before{transform:translateX(100%)}
-.source-seg{position:relative;display:flex;align-items:center;justify-content:center;gap:2px;height:20px;min-width:54px;flex:1 1 0;padding:0 4px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:600 11px var(--sans);letter-spacing:0;transition:color var(--motion-source) var(--ease-standard)}
+.source-seg{position:relative;display:flex;align-items:center;justify-content:center;gap:0;height:20px;min-width:64px;flex:1 1 0;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:600 12px var(--sans);letter-spacing:0;transition:color var(--motion-source) var(--ease-standard)}
 .source-seg:hover{color:var(--ink)}
 .source-seg[aria-pressed="true"]{background:transparent;color:var(--source-accent)}
-.source-mark{width:8px;height:8px;stroke-width:1.6;opacity:.55;transition:opacity var(--motion-info) var(--ease-standard)}
-/* Each mark keeps its own identity colour; only its intensity follows selection. */
-.source-seg[data-source="Codex"] .source-mark{color:#6f86ff}
-.source-seg[data-source="Claude"] .source-mark{color:#e8813f}
-.source-seg[aria-pressed="true"] .source-mark{opacity:1}
 .source-dot{position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--source-dot);opacity:0;transform:scale(.6);transition:opacity var(--motion-info) var(--ease-standard),transform var(--motion-info) var(--ease-standard)}
 .source-seg.has-attention .source-dot{opacity:1;transform:scale(1)}
 .q-plain{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px}

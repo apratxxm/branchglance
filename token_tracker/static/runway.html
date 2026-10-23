@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="runway.css">
   <link rel="stylesheet" href="runway_refined.css">
 </head>
-<body class="notch-collapsed runway-refined runway-compact" data-notch-mode="idle">
+<body class="notch-collapsed runway-refined runway-compact" data-notch-mode="controls">
   <main class="widget">
     <header class="titlebar compact-toolbar pywebview-drag-region">
       <time id="toolbar-clock" class="compact-clock" aria-label="Local time"></time>
@@ -16,7 +16,7 @@
       <button id="widget-keep-open" class="icon-btn compact-keep-open" data-action="keep-open" aria-pressed="false" aria-label="Keep widget open" title="Keep widget open"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2.2 9.8 8l-1.6 1.6L2.4 3.8zM3.6 6.4 1.5 8.5l2 2 2.1-2.1M6.2 4.4l1.4-1.4"/></svg></button>
       <button id="sync-age" class="sync-age" data-action="refresh" aria-label="Refresh usage" title="Refresh usage">Now</button>
       <button id="monitor-toggle" class="sync-age" aria-label="Move to next monitor" title="Move to next monitor">Monitor</button>
-      <div id="source-switch" class="source-switch" role="group" aria-label="Source" hidden><button class="source-seg" data-action="source" data-source="Codex" aria-pressed="true"><svg class="ic source-mark" viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="3.5" height="3.5" rx=".6"/><rect x="7" y="1.5" width="3.5" height="3.5" rx=".6"/><rect x="1.5" y="7" width="3.5" height="3.5" rx=".6"/><rect x="7" y="7" width="3.5" height="3.5" rx=".6"/></svg>Codex<i class="source-dot" aria-hidden="true"></i></button><button class="source-seg" data-action="source" data-source="Claude" aria-pressed="false"><svg class="ic source-mark" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 9.5 6 2l4 7.5M4 7.5h4"/></svg>Claude<i class="source-dot" aria-hidden="true"></i></button></div>
+      <div id="source-switch" class="source-switch" role="group" aria-label="Source" aria-busy="true"><button class="source-seg" data-action="source" data-source="Codex" aria-label="Codex" aria-pressed="true" aria-disabled="true" disabled>Codex<i class="source-dot" aria-hidden="true"></i></button><button class="source-seg" data-action="source" data-source="Claude" aria-label="Claude" aria-pressed="false" aria-disabled="true" disabled>Claude<i class="source-dot" aria-hidden="true"></i></button></div>
       <button id="window-recenter"class="icon-btn" aria-label="Recenter widget" title="Recenter widget"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1v2M6 9v2M1 6h2M9 6h2"/><rect x="3" y="3" width="6" height="6" rx="1"/></svg></button>
       <span class="tb-fill pywebview-drag-region"></span>
       <span id="notch-counts" class="notch-counts" aria-label="Live chat counts"></span>

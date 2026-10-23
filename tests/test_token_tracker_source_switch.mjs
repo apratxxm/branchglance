@@ -10,11 +10,11 @@ const mainCss=fs.readFileSync(new URL("../token_tracker/static/styles.css",impor
 const fixedNow=new Date("2026-10-06T12:00:00Z").getTime();
 const ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
 
-assert.match(page,/id="source-switch"[^>]*role="group"[^>]*hidden/,"the switch ships hidden");
-assert.match(page,/data-action="source" data-source="Codex" aria-pressed="true"/);
-assert.match(page,/data-action="source" data-source="Claude" aria-pressed="false"/);
-assert.match(page,/data-source="Codex"[^>]*aria-pressed="true"><svg class="ic source-mark"/);
-assert.match(page,/data-source="Claude"[^>]*aria-pressed="false"><svg class="ic source-mark"/);
+assert.match(page,/id="source-switch"[^>]*role="group"[^>]*aria-busy="true"/,"the source labels are present before the startup policy response");
+assert.doesNotMatch(page,/id="source-switch"[^>]*hidden/);
+assert.match(page,/data-action="source" data-source="Codex" aria-label="Codex" aria-pressed="true"/);
+assert.match(page,/data-action="source" data-source="Claude" aria-label="Claude" aria-pressed="false"/);
+assert.doesNotMatch(page,/source-mark|<svg class="ic source-mark"/);
 assert.ok(page.indexOf('id="source-switch"')>page.indexOf('id="monitor-toggle"')&&page.indexOf('id="source-switch"')<page.indexOf('class="tb-fill'),"the switch lives in the controls band");
 assert.match(css,/\.source-dot\{[^}]*position:absolute/);
 assert.match(css,/body\[data-source="Claude"\]\{[^}]*--source-accent:#e8813f/);
@@ -23,13 +23,14 @@ assert.match(refined,/--blue:var\(--source-accent\)/,"the source accent replaces
 assert.doesNotMatch(refined,/#425df6|#7040ff|#b99aff/,"the refined Claude palette leaves no fixed Codex blue or purple accent");
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);assert.match(mainCss,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
+assert.match(css,/\.source-seg\{[^}]*min-width:64px[^}]*padding:0 10px/);
 assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
 assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 240ms/);
 assert.match(page,/placeholder="[^"]*is:hidden/);
 assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
 assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 48px/);
 assert.match(refined,/compact-toolbar \.notch-counts\{display:none/);
-assert.match(refined,/compact-toolbar \.source-seg\{width:auto;height:20px;min-width:45px/);
+assert.match(refined,/compact-toolbar \.source-seg\{width:auto;height:20px;min-width:62px/);
 assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);
 
 function boot(initialStorage={}, {compact=false}={}) {
@@ -65,6 +66,64 @@ const quota={fiveHour:{percent:80,resetAt:fixedNow/1000+1500},weekly:{percent:60
 const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>({generatedAt:ago(0),enabledProviders:["Codex","Claude"],providerPolicies:policy,
   providers:[{name:"Codex",connected:true,chats:codex,...quota,fiveHour:{percent:92,resetAt:fixedNow/1000+1500}},{name:"Claude",connected:true,chats:claude,...claudeQuota}]});
 
+// Both labels paint immediately, then become selectable only when policy confirms visibility.
+{
+  const initial=boot();initial.T.updateSourceSwitch();
+  assert.equal(initial.node("#source-switch").hidden,false);
+  assert.equal(initial.segments[1].disabled,true);
+  assert.equal(initial.node("#source-switch").getAttribute("aria-busy"),"true");
+  const requests=[];initial.context.fetch=async url=>{requests.push(String(url));return {ok:true,json:async()=>policies()};};
+  assert.equal(await initial.T.loadProviderPolicy(),true);
+  assert.deepEqual(requests,["/api/provider-policy"]);
+  assert.equal(initial.node("#source-switch").hidden,false);
+  assert.equal(initial.segments[1].disabled,false);
+  assert.equal(initial.node("#source-switch").getAttribute("aria-busy"),"false");
+  assert.equal(initial.T.setSource("Claude"),true,"a policy-approved source can be selected before the full snapshot");
+  assert.equal(initial.T.state.source,"Claude");
+}
+
+// Any Claude quota sample arriving before stats paints into the selected provider's meter.
+{
+  const early=boot(undefined,{compact:true}),samples={
+    Codex:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,five_hour_percent:55,weekly_percent:50}},
+    Claude:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,five_hour_percent:43,weekly_percent:28}}
+  };
+  early.context.fetch=async url=>String(url)==="/api/quota"?{ok:true,json:async()=>({providers:samples,quotaCache:{ready:true,fresh:true,ageSeconds:0.25,refreshing:false,errorCategory:null}})}:{ok:true,json:async()=>policies()};
+  assert.equal(await early.T.loadQuota(),true);
+  assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour,undefined,"an unapproved sample stays unrendered while policy is pending");
+  await early.T.loadProviderPolicy();early.T.setSource("Claude");
+  assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour.percent,43);
+  assert.equal(early.node("#r0-fiveHour-left").innerHTML,"<b>43%</b><i>used</i>");
+}
+
+// Startup's first active snapshot chooses the provider with work before painting and ignores a stale saved manual window.
+{
+  const startup=boot({branchglanceSource:"Codex",branchglanceSourceManualAt:String(fixedNow-1000)},{compact:true});
+  startup.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(startup.T.state.source,"Claude");
+  assert.equal(startup.saved.get("branchglanceSource"),"Codex","startup auto-selection does not replace the saved manual preference");
+  assert.ok(startup.T.notch.active>0,"the selected source has active rows before reveal");
+}
+
+// A work item outside policy-visible sources cannot create an empty auto-reveal.
+{
+  const empty=boot(undefined,{compact:true});empty.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
+  empty.T.syncNotch(0,[{key:"Unknown:s1",provider:"Unknown",active:true,activityAt:ago(0)}]);
+  assert.equal(empty.T.notch.active,0);
+  assert.equal(empty.T.notch.autoExpanded,false);assert.equal(empty.T.notch.mode,"controls");
+}
+
+// A compact roster has no range-window empty card; search may show only a quiet No matches line.
+{
+  const empty=boot(undefined,{compact:true}),idle=Array.from({length:27},(_,i)=>codexChat("idle"+i));
+  empty.T.render(snapshotOf({codex:idle,claude:[]}));
+  assert.equal(empty.node("#chat-list").innerHTML,"");
+  assert.doesNotMatch(empty.node("#chat-list").innerHTML,/Nothing in|data-action="window"/);
+  empty.T.state.searchOpen=true;empty.T.state.query="not-found";
+  empty.T.render(snapshotOf({codex:idle,claude:[]}));
+  assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty">No matches</div>');
+}
+
 // The source-change overlay retains the old content and palette until it fades over the new rows.
 {
   const {T,node,context}=boot(),list=node("#chat-list"),frameCallbacks=[],added=[],removed=[],styleValues={};
@@ -94,6 +153,8 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.deepEqual(Array.from(T.sourceNames(T.state.snapshot)),["Codex"]);
   const single=boot();
   single.T.render({generatedAt:ago(0),enabledProviders:["Codex"],providers:[{name:"Codex",connected:true,chats:[]}]});
+  assert.equal(single.node("#source-switch").hidden,false,"the undecided source choices remain visible while policy is still loading");
+  single.T.state.providerPolicyReady=true;single.T.updateSourceSwitch();
   assert.equal(single.node("#source-switch").hidden,true,"a snapshot without provider policies shows Codex only");
   const both=boot();
   both.T.render(snapshotOf({codex:[codexChat("c1",running())]}));
@@ -175,25 +236,31 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(newestWins.T.state.source,"Claude","without a question, newest activity wins the tie");
 }
 
-// Manual source choices and explicit opens protect the selected provider.
+// New work follows its provider despite a saved source choice; an explicitly open panel still holds its view.
 {
   const manual=boot({branchglanceSource:"Codex"},{compact:true});
   manual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
   manual.T.setSource("Codex");
   assert.equal(manual.saved.get("branchglanceSourceManualAt"),String(fixedNow),"manual override time survives reload");
-  assert.equal(boot(Object.fromEntries(manual.saved),{compact:true}).T.state.sourceManualAt,fixedNow,"the 60-second override window reloads with the manual preference");
+  assert.equal(boot(Object.fromEntries(manual.saved),{compact:true}).T.state.sourceManualAt,fixedNow,"the manual selection timestamp remains persisted");
   manual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
-  assert.equal(manual.T.state.source,"Codex","a source choice in the last 60 seconds wins over auto-follow");
+  assert.equal(manual.T.state.source,"Claude","new work opens on its active provider despite the saved source choice");
+  assert.equal(manual.saved.get("branchglanceSource"),"Codex","automatic follow never replaces the saved source choice");
+  const followed=boot({branchglanceSource:"Codex"},{compact:true});
+  followed.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
+  followed.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(followed.T.state.source,"Claude");
+  assert.match(followed.node("#chat-list").innerHTML,/Claude s1/,"the new-work auto-switch leaves the selected provider's rows rendered");
   const restoredManual=boot(Object.fromEntries(manual.saved),{compact:true});
   restoredManual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
   restoredManual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
-  assert.equal(restoredManual.T.state.source,"Codex","the persisted manual window remains active after reload");
+  assert.equal(restoredManual.T.state.source,"Claude","startup and new work both select the active provider after reload");
 
   const expired=boot({branchglanceSource:"Codex"},{compact:true});
   expired.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
   expired.T.setSource("Codex");expired.T.state.sourceManualAt=fixedNow-60001;
   expired.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
-  assert.equal(expired.T.state.source,"Claude","manual preference protection expires after 60 seconds");
+  assert.equal(expired.T.state.source,"Claude","new work follows regardless of manual timestamp age");
 
   const explicitlyOpen=boot({branchglanceSource:"Codex"},{compact:true});
   explicitlyOpen.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
