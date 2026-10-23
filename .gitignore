@@ -30,3 +30,10 @@ recordings/
 
 # Private operational transfer; never publish with product sources.
 docs/OPUS_HANDOFF.md
+
+# Local-only: agent worktrees, build outputs, runtime state.
+.claude/
+build/
+dist/
+.branchglance-build/
+state/
