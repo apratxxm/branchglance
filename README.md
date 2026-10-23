@@ -25,11 +25,14 @@ No screenshots are included yet. Add reviewed, privacy-safe images at these path
 
 Branchglance requires 64-bit Windows 10 build 19041 or newer, .NET Framework 4.8 or newer, and Microsoft Edge WebView2 Runtime. Setup checks these prerequisites and stops with an explanation when one is missing.
 
-The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup creates a Start menu shortcut and an optional sign-in startup shortcut. **This source does not create a Desktop shortcut; the requested Desktop shortcut is a release blocker recorded in the checklist.**
+The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup creates Start menu and Desktop shortcuts, plus an optional sign-in Startup shortcut. Setup resolves these locations through Windows known folders, including redirected Desktop locations such as OneDrive. All shortcuts use the Branchglance fork icon; uninstall removes the shortcuts it owns.
+
+Setup checks whether `%LOCALAPPDATA%` is redirected into a packaged app's private storage. It refuses with a visible explanation when redirection is detected or the check is inconclusive. If the Branchglance launcher detects redirected storage, it reopens through File Explorer before starting the widget. Run Setup from File Explorer or the Start menu, not from another app's terminal.
 
 ## Open and use
 
 - Open Branchglance from the Start menu. The widget stays in the Windows desktop session.
+- When you reopen the widget, it can show the last snapshot immediately with a stale marker while refreshing in the background. Stale snapshots do not show live statuses or current limits. A first-ever launch loads normally.
 - Use the Codex | Claude switch when both providers are available. New provider activity can bring that provider into view; a manual selection takes priority briefly.
 - Limit meters show used percentage and stop at 100%. Reset times are observations; reaching zero on a countdown alone does not confirm a reset.
 - Open search and enter `is:hidden` to find chats you previously hid. Clear the query to return to the normal list.
@@ -37,9 +40,7 @@ The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup c
 
 ## Uninstall and rollback
 
-To remove the app, open **Settings → Apps → Installed apps**, select **Branchglance**, and choose **Uninstall**. The uninstaller removes the owned install and integrations. It keeps Branchglance settings and history under `%LOCALAPPDATA%\Branchglance`.
-
-If Claude Code collection is enabled, disable it in Reset Action Settings before uninstalling. Claude Code hook entries live in Claude's user settings outside the app install; the uninstaller does not remove them. Disabling collection first revokes consent and removes Branchglance-owned hooks while leaving other hook entries alone.
+To remove the app, open **Settings → Apps → Installed apps**, select **Branchglance**, and choose **Uninstall**. The uninstaller removes the owned install, shortcuts and integrations. It revokes the Claude consent marker first, then backs up Claude settings before removing Branchglance-owned hooks. Other hooks are left in place. If settings are unreadable, they are left untouched and the cleanup result is reported. A simultaneous Claude Code settings write can race the uninstall edit because no lock serializes those writes. User settings and history under `%LOCALAPPDATA%\Branchglance` are kept.
 
 The setup program has a rollback mode that restores the previous verified release. Release reviewers should test `BranchglanceSetup.exe --rollback` using a reviewed Windows shortcut or other release-approved launch method. Do not launch Setup from another application's terminal.
 
@@ -56,15 +57,11 @@ Runtime settings, hook events and history remain in the per-user application dat
 ## Troubleshooting
 
 - **Setup says it cannot continue:** confirm 64-bit Windows 10 build 19041+, .NET Framework 4.8+, and WebView2 Runtime are installed. Run as a standard user, not as administrator.
+- **Setup reports redirected or inconclusive AppData:** launch Setup from File Explorer or the Start menu, not another app's terminal. Setup refuses if it cannot verify a safe per-user data location.
 - **Setup refuses an existing folder or shortcut:** it will not overwrite files it cannot identify as Branchglance-owned. Preserve the folder and contact the release maintainer; do not delete files to force an install.
-- **Setup ran but Branchglance is not in the Start menu:** check whether Windows or endpoint protection blocked Setup, then rerun Setup from File Explorer. Do not launch it from another app's terminal.
+- **Setup ran but Branchglance is not in the Start menu:** check whether Windows or endpoint protection prevented Setup from running, then rerun Setup from File Explorer. Do not launch it from another app's terminal.
 - **Claude is unavailable:** open Reset Action Settings, enable Claude Code collection, and restart Branchglance if it asks. Check that Claude Code hooks are allowed by Claude Code settings. Only events Claude Code reports can appear; missing events do not prove a session is idle.
-- **Uninstalling with Claude hooks enabled:** cancel uninstall, open Reset Action Settings, disable Claude Code collection, then uninstall. The uninstaller does not remove hooks stored in Claude's settings.
 - **A hidden chat is missing:** search for `is:hidden`. Hiding is a local display choice, not deletion.
 - **No greeting appeared at countdown zero:** the app waits for a verified reset sample; zero on the timer is not enough. Confirm the correct provider's greeting setting is enabled and that its CLI is signed in.
-
-## Release readiness note
-
-This README describes intended 1.0.0 behavior. The current `docs` branch has two installer acceptance gaps: it does not create a Desktop shortcut, and source inspection found no refusal guard for Setup launched from Claude Desktop. The committed-tree privacy scan also found machine-specific review/test material. See [the release checklist](docs/release/RELEASE_CHECKLIST.md); do not publish until its blockers are cleared and the screenshots are reviewed.
 
 Branchglance is licensed under MIT. See [LICENSE](LICENSE). Bundled fonts (Inter, Instrument Sans, Geist, Red Hat Mono) keep their SIL Open Font License 1.1 notices in `token_tracker/static/fonts/*/OFL.txt`.
