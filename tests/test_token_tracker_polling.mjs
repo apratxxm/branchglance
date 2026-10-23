@@ -254,8 +254,8 @@ test("fast quota boot paints from bootstrap while full stats remain pending, the
   await gatedLive;
   assert.equal(T.state.snapshot,null,"quota data never fabricates a ready snapshot or roster");
   assert.equal(T.state.runwaySnapshotPainted,false);
-  assert.equal(nodes.get("#r0-fiveHour-left").innerHTML,"<b>60%</b><i>left</i>");
-  assert.equal(nodes.get("#r0-weekly-left").innerHTML,"<b>45%</b><i>left</i>");
+  assert.equal(nodes.get("#r0-fiveHour-left").innerHTML,"<b>40%</b><i>used</i>");
+  assert.equal(nodes.get("#r0-weekly-left").innerHTML,"<b>55%</b><i>used</i>");
   assert.equal(T.state.lastOkAt,null,"quota success is not a full-stat success signal");
   assert.equal(T.state.watcher,null,"quota data does not populate greeter/action status");
   assert.ok(calls.every(([,method])=>method==="GET"),"startup quota polling sends no action or message writes");
@@ -296,7 +296,7 @@ test("cold quota refresh reports readiness separately and the next existing poll
   assert.equal(T.quotaBootstrap.provider.fiveHour.percent,25);
   assert.equal(T.quotaBootstrap.provider.weekly.percent,70);
   assert.equal(T.state.snapshot,null);assert.equal(T.state.runwaySnapshotPainted,false);
-  assert.match(nodes.get("#r0-fiveHour-left").innerHTML,/75%/);
+  assert.match(nodes.get("#r0-fiveHour-left").innerHTML,/25%/);
   assert.equal(T.state.watcher,null);
 });
 

@@ -21,7 +21,7 @@ body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(saf
 .rr-head{min-height:20px;display:flex;align-items:center;gap:3px}.rr-label{color:var(--muted);font-size:11px;font-weight:500}
 .rr-left{display:flex;align-items:baseline;gap:3px;margin-left:auto;color:var(--ink);white-space:nowrap}.rr-left b{font-size:16px;font-weight:600;letter-spacing:-.3px}.rr-left i{color:var(--muted);font-size:11px;font-style:normal}
 .rr-moment{min-height:30px;display:flex;min-width:0;align-items:center;margin:3px 0 7px}.rr-cd{color:var(--ink);font-size:18px;font-weight:500;letter-spacing:-.3px;line-height:1.15;white-space:nowrap}.rr-cd.unknown{color:var(--muted);font-size:16px}.rr-day,.rr-time,.rr-stale{display:none}
-.meter{height:4px;overflow:hidden;border-radius:4px;background:#2b2b2b}.meter i{display:block;height:100%;border-radius:inherit;background:var(--blue)}
+.meter{height:4px;overflow:hidden;border-radius:4px;background:#2b2b2b}.meter i{display:block;height:100%;border-radius:inherit;background:var(--source-accent)}
 .greeter-status{margin-top:8px;overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.greeter-status.error{color:var(--red)}
 .analytics{display:none!important}
 .strip{order:2;flex:none;max-height:none;overflow:visible;margin:0 8px;overscroll-behavior:contain}

@@ -7,13 +7,13 @@
   --bg:#0A0A0A;--surface:#111111;--raised:#1A1A1A;
   --line:#242424;--line-strong:#333333;
   --text-1:#EDEDED;--text-2:#A1A1A1;--text-3:#878787;
-  --live:#3FCF8E;--attn:#F5A524;--err:#FF6166;--focus:#52A8FF;
+  --live:#3FCF8E;--attn:#F5A524;--err:#FF6166;--focus:#52A8FF;--source-accent:#425DF6;
   /* stat unit labels (section N); dim variants keep >=4.5:1 on --surface */
   --stat-tok:#6FA8F0;--stat-tool:#B69CF6;--stat-file:#5CC8C0;
   --stat-tok-dim:#5C8AC3;--stat-tool-dim:#9580C8;--stat-file-dim:#4DA39D;
   --sans:"Geist","Segoe UI Variable","Segoe UI",system-ui,sans-serif;
   --mono:"Red Hat Mono","Cascadia Mono",Consolas,ui-monospace,monospace;
-  --ease-out:cubic-bezier(.2,.8,.2,1);--ease-in:cubic-bezier(.4,0,1,1);
+  --ease-out:cubic-bezier(.2,.8,.2,1);--ease-in:cubic-bezier(.4,0,1,1);--ease-standard:cubic-bezier(.16,1,.3,1);
   --motion-fast:100ms;--motion-info:160ms;--motion-panel:200ms;
   --gutter:12px;
 }
@@ -37,8 +37,8 @@ code{font:11px var(--mono);color:var(--text-1);background:var(--raised);padding:
 
 /* ---------- title bar (drag region) ---------- */
 .titlebar{flex:none;height:36px;display:flex;align-items:center;gap:6px;padding:0 6px 0 var(--gutter);border-bottom:1px solid var(--line)}
-.brand{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:500;color:var(--text-1);white-space:nowrap}
-.brand .ic{color:var(--text-2)}
+.brand{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:500;color:var(--source-accent);white-space:nowrap;transition:color var(--motion-info) var(--ease-standard)}
+.brand .ic{color:var(--source-accent);transition:color var(--motion-info) var(--ease-standard)}
 .sync-age{height:20px;padding:0 5px;border:0;border-radius:4px;background:none;font:11px var(--mono);color:var(--text-3);cursor:pointer}
 .sync-age:hover{background:var(--raised);color:var(--text-2)}
 .sync-age.t-attn,.sync-age.t-err{color:var(--tone)}
@@ -115,7 +115,8 @@ svg.sg{background:none;width:10px;height:10px;color:var(--tone);overflow:visible
 .rr-weekly .rr-time{font-size:16px}
 .rr-weekly .rr-cd{font-size:13px;color:var(--text-2)}
 .meter{height:5px;margin-top:8px;overflow:hidden;border-radius:3px;background:var(--line-strong)}
-.meter i{display:block;width:0;height:100%;border-radius:3px;background:var(--focus);transition:background-color var(--motion-fast) var(--ease-out)}
+.meter[aria-hidden="true"]{visibility:hidden}
+.meter i{display:block;width:0;height:100%;border-radius:3px;background:var(--source-accent);transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-info) var(--ease-standard)}
 .meter i.t-attn,.meter i.t-err{background:var(--tone)}
 
 /* ---------- chats header ---------- */

@@ -1,8 +1,19 @@
+@property --source-accent{syntax:"<color>";inherits:true;initial-value:#425df6}
+@property --source-accent-soft{syntax:"<color>";inherits:true;initial-value:#171d34}
+@property --source-hover{syntax:"<color>";inherits:true;initial-value:#172638}
+@property --source-focus{syntax:"<color>";inherits:true;initial-value:#9bb0ff}
+@property --source-muted{syntax:"<color>";inherits:true;initial-value:#8490ad}
+@property --source-glow-primary{syntax:"<color>";inherits:true;initial-value:#7040ff}
+@property --source-glow-secondary{syntax:"<color>";inherits:true;initial-value:#425df6}
+@property --blue{syntax:"<color>";inherits:true;initial-value:#425df6}
+@property --blue-soft{syntax:"<color>";inherits:true;initial-value:#171d34}
 :root {
   color-scheme:dark; --paper:#080808; --card:#161616; --ink:#fafafa; --muted:#b4b4b4;
-  --quiet:#999; --line:#282828; --blue:#60a5fa; --blue-soft:#111b29;
+  --quiet:#999; --line:#282828; --blue:#425df6; --blue-soft:#171d34;
   --orange:#ffb454; --orange-soft:#211a10; --red:#ff7777; --red-soft:#251313;
-  --green:#85d6a8; --focus:#fff; --gutter:12px; --ease-standard:cubic-bezier(.16,1,.3,1);
+  --green:#85d6a8; --source-accent:#425df6; --source-accent-soft:#171d34; --source-hover:#172638; --source-focus:#9bb0ff;
+  --source-muted:#8490ad; --source-glow-primary:#7040ff; --source-glow-secondary:#425df6;
+  --focus:var(--source-focus); --gutter:12px; --ease-standard:cubic-bezier(.16,1,.3,1);
   --motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms;
   --sans:"Instrument Sans","Segoe UI Variable","Segoe UI",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
@@ -12,6 +23,8 @@
 html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--paper)}
 body{color:var(--ink);font:13px/1.4 var(--sans);font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
 button,input{font:inherit;color:inherit}
+body{transition:--source-accent var(--motion-info) var(--ease-standard),--source-accent-soft var(--motion-info) var(--ease-standard),--source-hover var(--motion-info) var(--ease-standard),--source-focus var(--motion-info) var(--ease-standard),--source-muted var(--motion-info) var(--ease-standard),--source-glow-primary var(--motion-info) var(--ease-standard),--source-glow-secondary var(--motion-info) var(--ease-standard),--blue var(--motion-info) var(--ease-standard),--blue-soft var(--motion-info) var(--ease-standard)}
+body[data-source="Claude"]{--source-accent:#e8813f;--source-accent-soft:#301e17;--source-hover:#3a2319;--source-focus:#ffb98c;--source-muted:#ad826f;--source-glow-primary:#ffb14a;--source-glow-secondary:#d64a2f;--blue:var(--source-accent);--blue-soft:var(--source-accent-soft);--focus:var(--source-focus)}
 body:not(.phone) button{cursor:pointer;transition:transform var(--motion-fast) var(--ease-standard),opacity var(--motion-fast) var(--ease-standard),background-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}
 body:not(.phone) .icon-btn:active,body:not(.phone) .sync-age:active,body:not(.phone) .window-controls button:active,body:not(.phone) .greet:active{transform:scale(.97)}
 button:disabled{cursor:default}
@@ -23,7 +36,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 .titlebar{order:0;height:30px;min-height:30px;display:flex;align-items:center;gap:1px;padding:0 8px}
 .brand{display:flex;align-items:center;gap:4px;font-size:12px;font-weight:600;letter-spacing:-.3px}
 .brand>.ic{display:none}
-.brand .ic{color:var(--ink)}
+.brand .ic{color:var(--source-accent)}
+#brand-name{color:var(--source-accent)}
 .tb-fill{flex:1}
 .titlebar>.tb-fill{align-self:stretch;min-width:0}
 .titlebar>.brand,.titlebar>.sync-age,.titlebar>.icon-btn,.titlebar>.window-controls,.titlebar>.notch-counts{flex-shrink:0}
@@ -31,27 +45,32 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 #sync-age{min-width:28px;height:24px;display:inline-grid;place-items:center}
 #monitor-toggle{width:52px;min-width:52px;max-width:52px;flex:none}
 /* Source switch: two segments in the controls band; the dot marks attention in the unselected source. */
-:root{--claude:#e39a72;--source-dot:#ffd24a}
-.source-switch{position:relative;display:inline-flex;align-items:center;flex:none;height:22px;margin:0 2px;padding:1px;border-radius:7px;background:#1a1a1a;isolation:isolate}
-.source-switch::before{content:"";position:absolute;z-index:-1;inset:1px auto 1px 1px;width:calc(50% - 1px);border-radius:6px;background:#2e2e2e;transform:translateX(0);transition:transform var(--motion-info) var(--ease-standard)}
+:root{--claude:#e8813f;--source-dot:#ffd24a}
+.source-switch{position:relative;display:inline-flex;align-items:center;flex:none;height:22px;margin:0 2px;padding:1px;border-radius:7px;background:var(--source-accent-soft);isolation:isolate}
+.source-switch::before{content:"";position:absolute;z-index:-1;inset:1px auto 1px 1px;width:calc(50% - 1px);border-radius:6px;background:var(--source-accent-soft);transform:translateX(0);transition:transform var(--motion-info) var(--ease-standard),background-color var(--motion-info) var(--ease-standard)}
 body[data-source="Claude"] .source-switch::before{transform:translateX(100%)}
-.source-seg{position:relative;height:20px;min-width:54px;flex:1 1 0;padding:0 7px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:600 11px var(--sans);letter-spacing:0}
+.source-seg{position:relative;display:flex;align-items:center;justify-content:center;gap:2px;height:20px;min-width:54px;flex:1 1 0;padding:0 4px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:600 11px var(--sans);letter-spacing:0}
 .source-seg:hover{color:var(--ink)}
-.source-seg[aria-pressed="true"]{background:transparent;color:var(--ink)}
-.source-seg[data-source="Claude"][aria-pressed="true"]{color:var(--claude)}
+.source-seg[aria-pressed="true"]{background:transparent;color:var(--source-accent)}
+.source-mark{width:8px;height:8px;stroke-width:1.6;opacity:.55;transition:opacity var(--motion-info) var(--ease-standard)}
+/* Each mark keeps its own identity colour; only its intensity follows selection. */
+.source-seg[data-source="Codex"] .source-mark{color:#6f86ff}
+.source-seg[data-source="Claude"] .source-mark{color:#e8813f}
+.source-seg[aria-pressed="true"] .source-mark{opacity:1}
 .source-dot{position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--source-dot);opacity:0;transform:scale(.6);transition:opacity var(--motion-info) var(--ease-standard),transform var(--motion-info) var(--ease-standard)}
 .source-seg.has-attention .source-dot{opacity:1;transform:scale(1)}
-body[data-source="Claude"] .meter i:not(.t-attn):not(.t-err){background:var(--claude)}
 .q-plain{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px}
 body:not(.phone) #sync-age.is-loading::before{content:"";width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sync-spin .8s linear infinite,sync-appear var(--motion-info) var(--ease-standard) 250ms both}
 .icon-btn,.sync-age,.window-controls button{border:0;background:transparent;color:var(--muted);border-radius:6px}
+body:not(.phone) .icon-btn[aria-pressed="true"]{background:var(--source-accent-soft);color:var(--source-accent)}
 body:not(.phone) .icon-btn,body:not(.phone) .window-controls button{width:22px;height:24px;display:grid;place-items:center}
 .window-controls{display:flex;gap:1px}
 .icon-btn:hover,.sync-age:hover,.window-controls button:hover{background:#242424;color:#fff}
 #window-maximize,#window-fit,.resize-edge{display:none!important}
 body:not(.phone) .titlebar>#widget-lock{width:22px;min-width:22px;height:24px;flex:none}
-body:not(.phone) #widget-lock[aria-pressed="true"]{background:var(--blue-soft);color:var(--blue)}
-body:not(.phone) #widget-lock[aria-pressed="true"]:hover{background:#172638;color:var(--blue)}
+body:not(.phone) #widget-lock[aria-pressed="true"]{background:var(--source-accent-soft);color:var(--source-accent)}
+body:not(.phone) #widget-lock[aria-pressed="true"]:hover{background:var(--source-hover);color:var(--source-accent)}
+body:not(.phone) #widget-keep-open[aria-pressed="true"]{background:var(--source-accent-soft);color:var(--source-accent)}
 body.phone #widget-lock{display:none}
 .notch-count{font:12px var(--mono)}
 .layout{order:2;width:100%;min-width:0;flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#444 transparent}
@@ -72,7 +91,7 @@ body.phone #widget-lock{display:none}
 .rr-cd.unknown{font-size:17px;color:var(--muted);letter-spacing:-.3px}
 .meter{height:3px;background:#2b2b2b;border-radius:3px;overflow:hidden}
 .meter[aria-hidden="true"]{visibility:hidden}
-.meter i{display:block;height:100%;background:var(--blue);border-radius:inherit;transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-info) var(--ease-standard)}
+.meter i{display:block;height:100%;background:var(--source-accent);border-radius:inherit;transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-info) var(--ease-standard)}
 .meter i.t-attn{background:var(--orange)}
 .meter i.t-err{background:var(--red)}
 .greet{width:16px;height:16px;display:grid;place-items:center;border:0;background:none;padding:0}
@@ -337,7 +356,7 @@ body:not(.phone) .runway-agent-glance{position:relative;align-items:start;gap:1p
 body:not(.phone) .chat>.row{padding-top:3px;padding-bottom:3px}
 body:not(.phone) .row .r-title{padding-left:4px}
 body:not(.phone) .runway-tree-connectors{position:absolute;top:0;left:0;width:100%;height:auto;overflow:visible;pointer-events:none}
-body:not(.phone) .runway-tree-connectors path{fill:none;stroke:#484848;stroke-width:1}
+body:not(.phone) .runway-tree-connectors path{fill:none;stroke:var(--source-muted);stroke-width:1}
 body:not(.phone) .runway-tree-dot{fill:#484848;stroke:none}
 body:not(.phone) .tray{padding-bottom:0}
 body:not(.phone) .ag.runway-agent{border-left:0;padding-left:0}

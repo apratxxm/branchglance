@@ -11,8 +11,9 @@ function loadDismissed() { try { const list=JSON.parse(localStorage.getItem("tok
 function saveDismissed() { while(state.dismissed.size>200)state.dismissed.delete(state.dismissed.values().next().value);try{localStorage.setItem("tokenTrackerDismissed",JSON.stringify([...state.dismissed]));}catch{} }
 const WINDOWS=RUNWAY?[1,7,30]:[1,2,5,7];
 function loadWindow() { try { const days=Number(localStorage.getItem(RUNWAY?"tokenTrackerRunwayWindow":"tokenTrackerWindow")); return WINDOWS.includes(days)?days:1; } catch { return 1; } }
-const SOURCES=["Codex","Claude"],SOURCE_KEY="branchglanceSource";
+const SOURCES=["Codex","Claude"],SOURCE_KEY="branchglanceSource",SOURCE_MANUAL_AT_KEY="branchglanceSourceManualAt";
 function loadSource() { try { const value=localStorage.getItem(SOURCE_KEY); return SOURCES.includes(value)?value:"Codex"; } catch { return "Codex"; } }
+function loadSourceManualAt() { try {const value=Number(localStorage.getItem(SOURCE_MANUAL_AT_KEY));return Number.isFinite(value)&&value>0&&value<=Date.now()?value:0;}catch{return 0;} }
 function loadHiddenChats() {
   try {
     const list=JSON.parse(localStorage.getItem('tokenTrackerRunwayHiddenChats')||'[]');
@@ -31,7 +32,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
   hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,
-  source:loadSource(), sourceAttention:new Set(), sourceBase:new Map(), sourceSwitching:false, policyWarnings:[] };
+  source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceBase:new Map(), sourceSwitching:false, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
 const quotaBootstrap={provider:{name:'Codex'},metadata:null,fetchError:null,unsupported:false};
@@ -169,7 +170,7 @@ async function syncWidgetLock() {
   const initial=!widgetLock.known;
   try{
     const result=await window.pywebview?.api?.get_widget_lock?.();if(!applyWidgetLock(result))return null;
-    if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:Boolean(chat.parentId),waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null})));}
+    if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,provider:chat.provider,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:Boolean(chat.parentId),waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt))})));}
     return result;
   }catch{return null;}
 }
@@ -355,13 +356,16 @@ function syncCompactNotch(count,items) {
   const fresh=runwayCurrentEvidenceFresh(),current=fresh?new Map(items.map(item=>typeof item==="string"?[item,{key:item,active:true}]:[item.key,item])):new Map();
   const activeKeys=new Set([...current.values()].filter(item=>item.active).map(item=>item.key));
   let newWork=notch.activeKeys===null?activeKeys.size>0:[...activeKeys].some(key=>!notch.activeKeys.has(key));
+  const newWorkItems=[];
+  if(notch.activeKeys===null){for(const item of current.values())if(item.active)newWorkItems.push(item);}
+  else for(const [key,item] of current)if(item.active&&!notch.activeKeys.has(key))newWorkItems.push(item);
   for(const [key,item] of current){
     if(!item.active)continue;
     const previous=notch.workStates.get(key);
     const restarted=Boolean(previous?.active&&previous.runStartedAt&&item.runStartedAt&&previous.runStartedAt!==item.runStartedAt);
     const messageArrived=Boolean(item.subagent&&item.latestMessageDirection&&["parent-to-agent","agent-to-parent","agent-to-agent"].includes(item.latestMessageDirection)&&item.latestMessageAt&&previous&&(!previous.latestMessageAt||item.latestMessageAt>previous.latestMessageAt));
     const questionArrived=Boolean(item.waiting&&(!previous?.waiting||previous.questionToken!==item.questionToken));
-    if(!previous||!previous.active||restarted||messageArrived||questionArrived)newWork=true;
+    if(!previous||!previous.active||restarted||messageArrived||questionArrived){newWork=true;if(!newWorkItems.some(candidate=>candidate.key===key))newWorkItems.push(item);}
   }
   const nextStates=new Map(current);for(const [key,item] of notch.workStates)if(!current.has(key))nextStates.set(key,{...item,active:false});
   notch.workStates=nextStates;notch.activeKeys=activeKeys;notch.active=fresh?count:0;
@@ -372,7 +376,7 @@ function syncCompactNotch(count,items) {
     if(!notch.hover&&!compactHasFocus())notch.contentHover=false;
     setNotch(false);return;
   }
-  if(newWork)expandForNewWork();else setNotch(false);
+  if(newWork){selectSourceForNewWork(newWorkItems);expandForNewWork();}else setNotch(false);
 }
 function syncNotch(count,items=[]) {
   if(PHONE)return;
@@ -1342,12 +1346,13 @@ function resetView(provider, key) {
   const quotaAt=provider._quotaWindowObservedAt&&Object.prototype.hasOwnProperty.call(provider._quotaWindowObservedAt,key)?provider._quotaWindowObservedAt[key]:provider.limitsUpdatedAt;
   const sampled=stamp(quotaAt),age=sampled?Date.now()-sampled:null;
   const measured=!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000);
-  const shownUsed=measured?used:null,left=shownUsed==null?null:Math.max(0,Math.min(100,100-shownUsed));
+  const shownUsed=measured&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const hasReset=Boolean(measured&&parts.target);
   const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m "+pad2(parts.seconds%60)+"s":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
-  return {measured,left:left==null?"— left":Math.round(left)+"% left",leftLabel:left==null?(RUNWAY?"":"—"):Math.round(left)+"%",leftPercent:left==null?0:left,used:shownUsed==null?0:Math.max(0,Math.min(100,shownUsed)),
-    tone:left==null?"":left<30?"err":left<50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset&&(!PHONE||key==="fiveHour")?runwayCountdown:""):parts.countdown,due:parts.due,
+  const usedLabel=shownUsed==null?"":Math.round(shownUsed)+"%",usedText=usedLabel?usedLabel+" used":"";
+  return {measured,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,
+    tone:shownUsed==null?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset&&(!PHONE||key==="fiveHour")?runwayCountdown:""):parts.countdown,due:parts.due,
     // Both limits come from one sample, so its age is stated once, on the 5-hour row.
     stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"—"):"",
     tip:RUNWAY?(sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"—")};
@@ -1399,30 +1404,30 @@ function renderResets(providers) {
       const id="r"+i+"-"+key;
       return '<div class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
         (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>left</i>':'—')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>used</i>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
-        '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit remaining" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
+        '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("");
     if(REFINED){node.innerHTML=markup("fiveHour");if(weeklyNode)weeklyNode.innerHTML=markup("weekly");}
     else node.innerHTML=providers.map((p,i)=>["fiveHour","weekly"].map(key=>{
       const id="r"+i+"-"+key;
       return '<div class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
         (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>left</i>':'—')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>used</i>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
-        '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit remaining" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
+        '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("")).join("");
   }
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
     const id="#r"+i+"-"+key,view=resetView(p,key);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
-    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.measured?'<b>'+esc(view.leftLabel)+'</b><i>left</i>':'<b></b><i></i>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
-    else set("-left",view.left);
+    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<b>'+esc(view.usedLabel)+'</b><i>used</i>':'<b></b><i></i>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
+    else set("-left",view.usedText);
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
     const left=$(id+"-left");if(left){left.className="rr-left"+(view.tone?" t-"+view.tone:"");left.title=view.tip;}
     const cd=$(id+"-cd");if(cd){cd.className="rr-cd"+(view.due?" t-attn":"");if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;cd.title=countdownText?'Resets '+view.day+' '+view.time:'';cd.setAttribute?.('aria-hidden',String(!countdownText));}}
-    const meter=$(id+"-meter");if(meter){if(RUNWAY&&!view.measured){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{meter.setAttribute("aria-valuenow",String(Math.round(view.leftPercent)));if(RUNWAY){meter.removeAttribute?.('aria-valuetext');meter.removeAttribute?.('aria-hidden');}}}
-    const bar=$(id+"-bar");if(bar){bar.style.width=view.leftPercent+"%";bar.className=view.tone?"t-"+view.tone:"";}
+    const meter=$(id+"-meter");if(meter){if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{meter.setAttribute("aria-valuenow",String(Math.round(view.usedPercent)));meter.setAttribute?.('aria-valuetext',Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
+    const bar=$(id+"-bar");if(bar){bar.style.width=(view.usedPercent??0)+"%";bar.className=view.tone?"t-"+view.tone:"";}
     if(key==="fiveHour"&&!PHONE){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
   }));
   if(RUNWAY&&!PHONE)renderGreeterStatus(providers);
@@ -1975,11 +1980,12 @@ function updateSourceSwitch() {
   }
   const body=document.body;if(body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
 }
-function setSource(name) {
+function setSource(name,{persist=true,manual=true}={}) {
   if(!RUNWAY||PHONE||!SOURCES.includes(name)||!state.snapshot)return;
-  if(!sourceNames(state.snapshot).includes(name)||effectiveSource(state.snapshot)===name)return;
+  if(!sourceNames(state.snapshot).includes(name))return false;
+  if(manual){state.sourceManualAt=Date.now();if(persist)try{localStorage.setItem(SOURCE_KEY,name);localStorage.setItem(SOURCE_MANUAL_AT_KEY,String(state.sourceManualAt));}catch{}}
+  if(effectiveSource(state.snapshot)===name){state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();return true;}
   state.source=name;
-  try{localStorage.setItem(SOURCE_KEY,name);}catch{}
   state.sourceAttention.delete(name);
   if(state.popover)closePopover({restoreFocus:false});
   closeRunwayDetails();state.lastOrder=null;
@@ -1994,6 +2000,16 @@ function setSource(name) {
   try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);}
   finally{state.sourceSwitching=false;}
   updateSourceSwitch();
+  return true;
+}
+function selectSourceForNewWork(items) {
+  if(!COMPACT||!state.snapshot||(state.sourceManualAt>0&&Date.now()-state.sourceManualAt<60000)||notch.manual||notch.keyboardInspecting||state.searchOpen||state.popover||(widgetLock.locked&&widgetLock.expanded))return false;
+  const available=sourceNames(state.snapshot),candidates=(items||[]).filter(item=>available.includes(item.provider));
+  if(!candidates.length)return false;
+  candidates.sort((a,b)=>Number(Boolean(b.waiting))-Number(Boolean(a.waiting))||(b.activityAt||0)-(a.activityAt||0));
+  const chosen=candidates[0]?.provider;
+  if(!chosen||chosen===effectiveSource(state.snapshot))return false;
+  return setSource(chosen,{persist:false,manual:false});
 }
 function renderChats(providers) {
   scheduleNotchSize();
@@ -2016,9 +2032,10 @@ function renderChats(providers) {
     // not for every transcript or token update on an already-running chat.
       const evidenceFresh=runwayCurrentEvidenceFresh();
       const itemsOf=roots=>roots.flatMap(chat=>[chat,...chat.descendants]).map(chat=>({
-        key:chat.key,active:evidenceFresh&&runwayActive(chat)&&!chat.telemetryUnavailable&&chat.statusSource!=='unavailable',subagent:Boolean(chat.parentId),
+        key:chat.key,provider:chat.provider,active:evidenceFresh&&runwayActive(chat)&&!chat.telemetryUnavailable&&chat.statusSource!=='unavailable',subagent:Boolean(chat.parentId),
         waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,questionId:runwayWaiting(chat)?chat.key+'|'+(chat.pendingQuestionId??chat.questionId??chat.pendingQuestion??''):null,
       runStartedAt:stamp(chat.activeRunStartedAt)||(chat.telemetryUnavailable?notch.workStates.get(chat.key)?.runStartedAt:0),latestMessageAt:stamp(chat.latestMessageAt),latestMessageDirection:chat.latestMessageDirection,
+      activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt)),
     }));
       const activeIn=roots=>evidenceFresh?roots.filter(chat=>[chat,...chat.descendants].some(item=>runwayActive(item)&&!item.telemetryUnavailable&&item.statusSource!=='unavailable')).length:0;
       const selectedItems=itemsOf(activeRoots),activeCount=activeIn(activeRoots);
@@ -2028,7 +2045,7 @@ function renderChats(providers) {
       let workItems=selectedItems,otherActive=0;
       for(const name of providers.map(provider=>provider.name))trackSourceAttention(name,selectedItems,true,evidenceFresh);
       for(const name of others){
-        const roots=buildForest([(state.snapshot.providers||[]).find(provider=>provider.name===name)||{name,chats:[]}]).roots.filter(chat=>!state.hiddenChats.has(chat.key));
+        const roots=buildForest([(state.snapshot.providers||[]).find(provider=>provider.name===name)||{name,chats:[]}]).roots.filter(chat=>state.showHidden||!state.hiddenChats.has(chat.key));
         const items=itemsOf(roots);
         trackSourceAttention(name,items,false,evidenceFresh);
         workItems=workItems.concat(items);otherActive+=activeIn(roots);
