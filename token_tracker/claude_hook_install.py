@@ -11,10 +11,9 @@ Safety rules:
   or other reparse point.
 * Best-effort update, not an atomic compare-and-swap: write a uniquely named
   backup first (exclusive create), then a uniquely named temp file, re-read
-  and hash-compare the original immediately before ``os.replace``; on any
-  change, abort, keep the backup and leave the original untouched. The
-  window between that last comparison and the replace cannot be closed on
-  Windows without Claude Code's cooperation.
+  and hash-compare immediately before replacement, and verify the exact bytes
+  afterward. Uninstall retries a changing file up to three times. The final
+  race cannot be closed without Claude Code's cooperation.
 * The consent marker (what lets the hook write anything) is created last on
   install and removed on uninstall.
 """
@@ -38,7 +37,7 @@ from . import claude_hook
 
 MARKER = "--branchglance-hook"
 HOOK_TIMEOUT_SECONDS = 10  # Claude Code's own bound; the hook also self-exits sooner
-WRITE_SAFETY = ("Best-effort settings update: backup first, hash recheck immediately before replace; "
+WRITE_SAFETY = ("Best-effort settings update: backup first, hash recheck before replace and verify afterward; "
                 "Windows cannot close the final race without Claude Code cooperation. This is not atomic CAS.")
 EVENTS = (
     "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
@@ -379,6 +378,67 @@ def _write_checked(path: Path, original: bytes | None, payload: bytes, now: floa
     return backup
 
 
+def _write_transform_checked(path: Path, transform, now: float) -> str | None:
+    """Retry a hook transform when another writer changes settings mid-edit.
+
+    Claude Code exposes no lock/CAS for settings.json. Hash checks immediately
+    before and after replacement narrow the race; a writer can still race in
+    the final interval, so this is best-effort protection rather than atomicity.
+    """
+    saw_existing = False
+    for attempt in range(3):
+        original, data, bom = _read(path)
+        if original is None and saw_existing:
+            raise HookInstallError("settings.json changed while editing; it disappeared and was left untouched")
+        saw_existing = saw_existing or original is not None
+        payload = transform(data, bom)
+        if payload is None:
+            return None
+        backup: str | None = None
+        temp: Path | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _validate_path_chain(path)
+            if original is not None:
+                stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+                backup = str(_unique_adjacent(path, f"backup-{stamp}", original))
+            temp = _unique_adjacent(path, "tmp", payload)
+            _validate_path_chain(path)
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                current = None
+            else:
+                if _is_reparse(path, info) or not stat.S_ISREG(info.st_mode):
+                    raise HookInstallError("settings.json changed to an unsafe file; aborted")
+                current = path.read_bytes()
+            if _digest(current) != _digest(original):
+                if attempt == 2:
+                    raise HookInstallError("settings.json kept changing; left the latest version untouched")
+                continue
+            os.replace(temp, path)
+            temp = None
+            try:
+                written = path.read_bytes()
+            except OSError:
+                written = None
+            if written == payload:
+                _prune_backups(path)
+                return backup
+            if attempt == 2:
+                raise HookInstallError("settings.json changed during verification; latest content was preserved")
+        except OSError as exc:
+            action = "backup" if original is not None and backup is None else "update"
+            raise HookInstallError(f"could not write settings {action} ({exc.__class__.__name__}); settings were left unchanged") from None
+        finally:
+            if temp is not None:
+                try:
+                    temp.unlink()
+                except OSError:
+                    pass
+    raise HookInstallError("settings.json kept changing; update refused")
+
+
 # ------------------------------------------------------------------ consent
 
 def _consent_file(data_directory: str | os.PathLike[str] | None) -> Path:
@@ -442,20 +502,23 @@ def install(settings_path: str | os.PathLike[str] | None = None, command: str | 
     if not _is_branchglance_command(command):
         raise HookInstallError("hook command must be a Branchglance invocation with a standalone marker argument")
     known = _known_executables(data_directory, command)
-    original, data, bom = _read(path)
-    hooks = data.setdefault("hooks", {})
     desired = _group(command)
     changed = False
-    for event in EVENTS:
-        groups = hooks.setdefault(event, [])
-        ours = [g for g in groups if is_ours(g, known)]
-        if ours == [desired]:
-            continue
-        hooks[event] = [g for g in groups if not is_ours(g, known)] + [desired]
-        changed = True
-    backup = None
-    if changed:
-        backup = _write_checked(path, original, _serialize(data, bom), now)
+
+    def ensure_hooks(data, bom):
+        nonlocal changed
+        changed = False
+        hooks = data.setdefault("hooks", {})
+        for event in EVENTS:
+            groups = hooks.setdefault(event, [])
+            ours = [g for g in groups if is_ours(g, known)]
+            if ours == [desired]:
+                continue
+            hooks[event] = [g for g in groups if not is_ours(g, known)] + [desired]
+            changed = True
+        return _serialize(data, bom) if changed else None
+
+    backup = _write_transform_checked(path, ensure_hooks, now)
     try:
         _write_consent(data_directory, now, command)
     except OSError as exc:
@@ -488,22 +551,28 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
     result: dict[str, Any] = {"ok": True, "changed": False, "backup": None, "consentRemoved": consent_removed,
                               "hooksLeft": [], "mixedGroupsLeft": [], "error": None, "writeSafety": WRITE_SAFETY}
     try:
-        original, data, bom = _read(path)
-        hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
-        changed, left_mixed = False, []
-        for event in list(hooks):
-            groups = hooks[event]
-            kept = [g for g in groups if not is_ours(g, known)]
-            left_mixed += [event for g in kept if _touches_marker(g)]
-            if len(kept) != len(groups):
-                changed = True
-                if kept:
-                    hooks[event] = kept
-                else:
-                    del hooks[event]
-        if changed and not hooks:
-            data.pop("hooks", None)
-        backup = _write_checked(path, original, _serialize(data, bom), now) if changed else None
+        changed = False
+        left_mixed: list[str] = []
+
+        def remove_owned(data, bom):
+            nonlocal changed, left_mixed
+            hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+            changed, left_mixed = False, []
+            for event in list(hooks):
+                groups = hooks[event]
+                kept = [g for g in groups if not is_ours(g, known)]
+                left_mixed += [event for g in kept if _touches_marker(g)]
+                if len(kept) != len(groups):
+                    changed = True
+                    if kept:
+                        hooks[event] = kept
+                    else:
+                        del hooks[event]
+            if changed and not hooks:
+                data.pop("hooks", None)
+            return _serialize(data, bom) if changed else None
+
+        backup = _write_transform_checked(path, remove_owned, now)
     except HookInstallError as exc:
         left = _hooks_left(path, known)
         result.update(ok=False, error=str(exc), hooksLeft=left if left is not None else "unknown")

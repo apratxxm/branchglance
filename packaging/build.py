@@ -22,8 +22,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.branchglance_installer.core import validate_version, write_manifest, write_stamps  # noqa: E402
+RELEASE_VERSION = "1.0.0"
 SPEC = ROOT / "packaging" / "branchglance.draft.spec"
 INSTALLER_SPEC = ROOT / "packaging" / "branchglance_installer.spec"
+ICON = ROOT / "assets" / "brand" / "branchglance.ico"
 LAUNCHER = ROOT / "scripts" / "launcher" / "Branchglance.cs"
 # Signing hook point: SIGNING_HOOK(path) Authenticode-signs one binary in place. It is
 # applied to every shipped executable before it is hashed into a manifest or embedded,
@@ -85,7 +87,7 @@ def build(output: Path, version: str, build_id: str, *, python: Path | None = No
         (source / f"branchglance_{role}_entry.py").write_text(_installer_entry_source(role), encoding="utf-8")
     py = python or Path(sys.executable)
     env = os.environ.copy()
-    env.update({"BRANCHGLANCE_SOURCE": str(source), "PYTHONDONTWRITEBYTECODE": "1",
+    env.update({"BRANCHGLANCE_SOURCE": str(source), "BRANCHGLANCE_ICON": str(ICON), "PYTHONDONTWRITEBYTECODE": "1",
                 "PYINSTALLER_CONFIG_DIR": str(work / "pyinstaller-config")})
     env.pop("BRANCHGLANCE_BUILD", None)
 
@@ -108,7 +110,7 @@ def build(output: Path, version: str, build_id: str, *, python: Path | None = No
         raise FileNotFoundError(f"In-box C# compiler not found: {compiler}")
     launcher = output / "Branchglance.exe"
     subprocess.run([str(compiler), "/nologo", "/target:winexe", "/platform:x64", "/optimize+",
-                    "/out:" + str(launcher), *LAUNCHER_REFERENCES, str(LAUNCHER)], check=True)
+                    "/win32icon:" + str(ICON), "/out:" + str(launcher), *LAUNCHER_REFERENCES, str(LAUNCHER)], check=True)
     _sign(launcher)
 
     # 3. The uninstaller (installer core, uninstall role).
@@ -144,8 +146,8 @@ def _installer_entry_source(role: str) -> str:
 
 
 def _entry_source() -> str:
-    # Imports stay inside each mode: --self-test and --claude-hook never import the
-    # widget, so they open no ports or windows and read no product state.
+    # Imports stay inside each mode: diagnostic and hook modes never import the
+    # widget, so they open no ports or windows.
     return '''import importlib, json, os, sys
 
 def self_test(report=None):
@@ -186,6 +188,10 @@ if __name__ == "__main__":
         raise SystemExit(self_test(sys.argv[2] if len(sys.argv) > 2 else None))
     if len(sys.argv) > 1 and sys.argv[1] == "--claude-hook":
         raise SystemExit(hook())
+    if len(sys.argv) > 1 and sys.argv[1] == "--appdata-probe":
+        from token_tracker.product import appdata_probe
+        status, _reason = appdata_probe()
+        raise SystemExit(10 if status == "redirected" else 11 if status == "unknown" else 0)
     from token_tracker.widget import main as widget_main
     widget_main()
 '''
@@ -194,7 +200,7 @@ if __name__ == "__main__":
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--version", default="1.0.0")
+    parser.add_argument("--version", default=RELEASE_VERSION)
     parser.add_argument("--build-id", default=time.strftime("%Y%m%d%H%M%S"))
     parser.add_argument("--python", type=Path, help="prepared offline build interpreter")
     args = parser.parse_args(argv)

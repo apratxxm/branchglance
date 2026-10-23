@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .core import SafetyError
+from token_tracker.product import APP_USER_MODEL_ID
 
 MARKER = "Branchglance managed shortcut"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Branchglance"
@@ -29,10 +30,13 @@ class Integrations:
     start_menu: Path
     startup: Path | None = None
     uninstaller: Path | None = None
+    desktop: Path | None = None
 
     @property
     def shortcut_paths(self) -> tuple[Path, ...]:
         paths = [self.start_menu / "Branchglance.lnk"]
+        if self.desktop is not None:
+            paths.append(self.desktop / "Branchglance.lnk")
         if self.startup is not None:
             paths.append(self.startup / "Branchglance.lnk")
         return tuple(paths)
@@ -43,6 +47,7 @@ class Integrations:
             return None
         if (found.get("description") != MARKER
                 or Path(found.get("target", "")).resolve() != self.launcher.resolve()
+                or found.get("app_id") != APP_USER_MODEL_ID
                 or found.get("arguments", "") not in ("", "--background")
                 or Path(found.get("workdir", "")).resolve() != self.root.resolve()):
             raise SafetyError(f"Foreign shortcut collision: {path}")
@@ -106,11 +111,11 @@ class Integrations:
         launcher = str(self.launcher)
         uninstaller = str(self.uninstaller or self.root / "BranchglanceUninstall.exe")
         for index, path in enumerate(self.shortcut_paths):
-            is_startup = index == 1
+            is_startup = path == (self.startup / "Branchglance.lnk" if self.startup is not None else None)
             if is_startup and not startup_enabled:
                 continue
             self.adapter.replace_shortcut(path, target=launcher, arguments="--background" if is_startup else "", workdir=str(self.root),
-                                          app_id="Branchglance.App", description=MARKER)
+                                          app_id=APP_USER_MODEL_ID, description=MARKER)
         self.adapter.write_uninstall(self._uninstall_values())
 
     def remove(self) -> None:
@@ -120,6 +125,7 @@ class Integrations:
                 continue
             if (found.get("description") == MARKER
                     and Path(found.get("target", "")).resolve() == self.launcher.resolve()
+                    and found.get("app_id") == APP_USER_MODEL_ID
                     and Path(found.get("workdir", "")).resolve() == self.root.resolve()):
                 self.adapter.remove_shortcut(path)
         registry = self.adapter.read_uninstall()

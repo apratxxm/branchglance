@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,14 +139,20 @@ def read_policy_file(path: Path | str | None, *, claude_consent: bool = False) -
     except FileNotFoundError:
         return PolicyFileResult("absent")
     except OSError:
-        return PolicyFileResult("malformed", warning="policy file could not be inspected; defaults are in force")
+        return PolicyFileResult("malformed", warning="policy file unreadable (could not be inspected); defaults are in force")
     reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     if not stat.S_ISREG(info.st_mode) or reparse or info.st_size > _FILE_MAX_BYTES:
         return PolicyFileResult("malformed", warning="policy file is not a plain small file; defaults are in force")
     try:
-        document = json.loads(path.read_bytes().decode("utf-8-sig"))
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return PolicyFileResult("absent")  # removed between lstat and open
+    except OSError:
+        return PolicyFileResult("malformed", warning="policy file unreadable; defaults are in force")
+    try:
+        document = json.loads(raw.decode("utf-8-sig"))
         providers = _validate_policy_document(document)
-    except (OSError, ValueError, ProviderPolicyError, RecursionError) as exc:
+    except (ValueError, ProviderPolicyError, RecursionError) as exc:
         # RecursionError: pathologically nested JSON is malformed input, not a crash.
         if isinstance(exc, ProviderPolicyError):
             reason = str(exc)
@@ -302,7 +309,39 @@ def _startup_policies() -> Mapping[str, ProviderPolicy]:
     return load_policies_resilient(policy_path=path, claude_consent=consent)
 
 
-POLICIES = _startup_policies()
+class LazyPolicyMap(Mapping):
+    """Defer the one policy-file read until startup has passed the install gate."""
+    __slots__ = ("_loader", "_loaded", "_value", "_lock")
+
+    def __init__(self, loader):
+        self._loader = loader
+        self._loaded = False
+        self._value = None
+        self._lock = threading.Lock()
+
+    def _resolve(self):
+        if not self._loaded:
+            with self._lock:
+                if not self._loaded:
+                    self._value = self._loader()
+                    self._loaded = True
+        return self._value
+
+    @property
+    def meta(self):
+        return self._resolve().meta
+
+    def __getitem__(self, key):
+        return self._resolve()[key]
+
+    def __iter__(self):
+        return iter(self._resolve())
+
+    def __len__(self):
+        return len(self._resolve())
+
+
+POLICIES = LazyPolicyMap(_startup_policies)
 
 
 def policy_for(name: str, policies: Mapping[str, ProviderPolicy] | None = None) -> ProviderPolicy:
