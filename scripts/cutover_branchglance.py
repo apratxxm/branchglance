@@ -12,9 +12,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
 
 from branchglance_installer.app import Native, Paths
+from branchglance_installer.core import SafetyError
 from branchglance_installer.cutover import Cutover
 from branchglance_installer.lifecycle import Lifecycle
 from branchglance_installer.windows_cutover import WindowsCutoverAdapter, migrate_state_copy
+from token_tracker import product
 from token_tracker.product import local_app_data
 
 
@@ -28,6 +30,11 @@ def main(argv=None, *, native_factory=None, adapter_factory=None) -> int:
     parser.add_argument("--desktop-shortcut", type=Path,
                         default=Path.home() / "Desktop" / "Token Tracker.lnk")
     args = parser.parse_args(argv)
+    if args.command != "plan":
+        probe_status, reason = product.appdata_probe()
+        if probe_status != "not_redirected":
+            raise SafetyError("Run Branchglance cutover from File Explorer or the Start menu, not from inside another app's terminal. "
+                              f"AppData probe: {probe_status}; {reason or 'destination could not be verified'}")
     old_link = args.desktop_shortcut.resolve()
     renamed = old_link.with_name("Token Tracker (old).lnk")
     appdata = local_app_data()

@@ -102,10 +102,11 @@ class WindowsCutoverAdapter:
 
     def _write_link(self, path, target, arguments, workdir, description):
         from .windows import WindowsIntegrationAdapter
+        from token_tracker.product import APP_USER_MODEL_ID
         if path.exists():
             raise SafetyError("Branchglance shortcut already exists; refusing overwrite")
         WindowsIntegrationAdapter().replace_shortcut(path, target=target, arguments=arguments,
-            workdir=workdir, app_id="Branchglance.App", description=description)
+            workdir=workdir, app_id=APP_USER_MODEL_ID, description=description)
 
     def create_branchglance_shortcut(self, record):
         desktop = Path(record["path"])
@@ -118,15 +119,16 @@ class WindowsCutoverAdapter:
             self, "_branch_shortcut", Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop" / "Branchglance.lnk")
         if record and path.exists():
             info = self._read_shortcut(path)
-            if all(info.get(key) == record.get(key) for key in ("target", "arguments", "workdir", "description")):
+            if all(info.get(key) == record.get(key) for key in ("target", "arguments", "workdir", "app_id", "description")):
                 from .windows import WindowsIntegrationAdapter
                 WindowsIntegrationAdapter().remove_shortcut(path)
 
-    def start_branchglance(self):
+    def start_branchglance(self, handoff_token: str):
         launcher = self.product_root.parent / "Programs" / "Branchglance" / "Branchglance.exe"
         self.launch_pending = True
         try:
-            process = subprocess.Popen([str(launcher)], cwd=launcher.parent, close_fds=True)
+            process = subprocess.Popen([str(launcher), "--install-handoff", handoff_token],
+                                       cwd=launcher.parent, close_fds=True)
         except BaseException:
             self.launch_pending = False
             raise

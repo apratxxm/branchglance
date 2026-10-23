@@ -22,6 +22,12 @@ CSC = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Microsoft.NET" / "Framewo
 REFERENCES = ["/reference:System.Web.Extensions.dll", "/reference:System.Windows.Forms.dll"]
 
 HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { static int Main(string[] a) { try {
+    if (a[0] == "appdata") { long ms; string status = BranchglanceLauncher.ProbeAppData(a[1], out ms);
+        Console.Write(status + "|" + ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return status == "redirected" ? 10 : status == "unknown" ? 11 : 0; }
+    if (a[0] == "appdata-simulate") { long ms; string status = BranchglanceLauncher.ProbeAppData(a[1], out ms, a[2]);
+        Console.Write(status + "|" + ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return status == "redirected" ? 10 : status == "unknown" ? 11 : 0; }
     if (a[0] == "mac") { Console.Write(BranchglanceLauncher.ControlMac(a[1], a[2], a.Skip(3).ToArray())); return 0; }
     if (a[0] == "ask") { Console.Write(BranchglanceLauncher.AskMaintenanceExit(a[1], int.Parse(a[2])) ? "true" : "false"); return 0; }
     if (a[0] == "hook") { BranchglanceLauncher.HookDeadlineMs = int.Parse(a[1]);
@@ -90,6 +96,49 @@ def _pointer(path, current, previous=None):
     path.write_text(json.dumps({"schemaVersion": 1,
         "current": {"version": current, "path": "C:\\evil\\absolute paths are ignored"},
         "previous": {"version": previous} if previous else None}), encoding="utf-8")
+
+
+def _probe(harness, args):
+    return subprocess.run([str(harness), *args], capture_output=True, text=True, timeout=20)
+
+
+def test_csharp_appdata_probe_scans_more_than_128_packages(launcher, tmp_path):
+    _folder, harness = launcher
+    local = tmp_path / "Local"
+    for index in range(150):
+        (local / "Packages" / f"Package{index:03d}" / "LocalCache" / "Local").mkdir(parents=True)
+    result = _probe(harness, ["appdata", str(local)])
+    assert result.returncode == 0 and result.stdout.startswith("not_redirected|")
+
+
+def test_csharp_appdata_probe_skips_junctioned_package_cache(launcher, tmp_path):
+    _folder, harness = launcher
+    local = tmp_path / "Local"
+    package = local / "Packages" / "Junctioned"
+    package.mkdir(parents=True)
+    target = tmp_path / "external-cache"
+    branch_root = target / "Local" / "Branchglance"
+    branch_root.mkdir(parents=True)
+    sentinel = branch_root / "keep.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    link = package / "LocalCache"
+    made = subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+    if made.returncode:
+        pytest.skip("junction creation unavailable")
+    result = _probe(harness, ["appdata", str(local)])
+    assert result.returncode == 0 and result.stdout.startswith("not_redirected|")
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    assert not list(branch_root.glob(".branchglance-probe-*"))
+
+
+def test_csharp_appdata_probe_detects_redirected_probe_in_plain_package(launcher, tmp_path):
+    _folder, harness = launcher
+    local = tmp_path / "Local"
+    package_root = local / "Packages" / "Plain" / "LocalCache" / "Local" / "Branchglance"
+    package_root.mkdir(parents=True)
+    result = _probe(harness, ["appdata-simulate", str(local), str(package_root)])
+    assert result.returncode == 10 and result.stdout.startswith("redirected|")
+    assert not list(package_root.glob(".branchglance-probe-*"))
 
 
 def test_launcher_resolves_current_release_by_manifest_and_version(launcher, tmp_path):

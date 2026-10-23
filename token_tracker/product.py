@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
 import secrets
 import stat
 import sys
+import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -80,6 +82,42 @@ def mutex_name(purpose: str, sid: str | None = None) -> str:
     return f"Global\\Branchglance-{sid}-{purpose}"
 
 
+def brand_icon_path() -> Path:
+    """Path to the packaged fork mark used by windows and tray integration."""
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        return Path(frozen_root) / "assets" / "brand" / "branchglance.ico"
+    return Path(__file__).resolve().parents[1] / "assets" / "brand" / "branchglance.ico"
+
+
+def install_handoff_path() -> Path:
+    """One-use cutover handoff marker beside the installed launcher."""
+    return Path(launcher_path()).parent / ".cutover-handoff.json"
+
+
+def consume_install_handoff(token: str, *, path: Path | None = None, now: float | None = None) -> bool:
+    """Consume a bounded nonce written by the Install-mutex owner for its child launch."""
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token):
+        return False
+    marker = Path(path or install_handoff_path())
+    try:
+        info = os.lstat(marker)
+        if (not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+                or info.st_size > 1024):
+            return False
+        record = json.loads(marker.read_text(encoding="utf-8"))
+        clock = time.time() if now is None else now
+        expires = record.get("expires") if isinstance(record, dict) else None
+        valid = (record.get("schemaVersion") == 1 and isinstance(record.get("nonce"), str)
+                 and hmac.compare_digest(record["nonce"], token)
+                 and isinstance(expires, (int, float)) and clock < expires <= clock + 30)
+        if valid:
+            marker.unlink()
+        return valid
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def mutex_security_sddl(sid: str | None = None) -> str:
     sid = current_user_sid() if sid is None else sid
     if not re.fullmatch(r"S-1-(?:\d+-)+\d+", sid):
@@ -131,7 +169,21 @@ def create_secured_mutex(name: str):
     return _create_mutex_with_dacl(name, mutex_security_sddl(sid), kernel, advapi)
 
 
+def release_secured_mutex(handle) -> None:
+    if not handle:
+        return
+    import ctypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.ReleaseMutex.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    if not kernel.ReleaseMutex(ctypes.c_void_p(handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not kernel.CloseHandle(ctypes.c_void_p(handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
 INSTANCE_MUTEX_NAME = mutex_name("Instance")
+INSTALL_MUTEX_NAME = mutex_name("Install")
 STATE_ROOT_ENV = "BRANCHGLANCE_STATE_ROOT"
 POLICY_FILE_ENV = "BRANCHGLANCE_POLICY_FILE"  # development only
 CLAUDE_CONSENT_MARKER = "claude-consent.json"
@@ -160,6 +212,207 @@ def _environ(environ: Mapping[str, str] | None) -> Mapping[str, str]:
 def local_app_data(environ: Mapping[str, str] | None = None) -> Path:
     env = _environ(environ)
     return Path(env.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+
+
+def _is_plain_directory(path: Path) -> bool:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and not (attributes & reparse)
+
+
+# A developer machine easily has more than 128 packages; each costs one existence check.
+_MAX_PROBE_PACKAGES = 4096
+
+
+class _AppDataProbeFS:
+    """Small seam for the redirected-AppData probe; tests use an in-memory fake."""
+    def exists(self, path: Path) -> bool:
+        return path.exists()
+
+    def mkdir(self, path: Path) -> None:
+        path.mkdir()
+
+    def create_probe(self, path: Path) -> None:
+        path.mkdir()
+        with (path / "probe.bin").open("xb") as stream:
+            stream.write(b"branchglance-appdata-probe")
+            stream.flush()
+
+    def package_branch_roots(self, packages: Path) -> list[Path]:
+        results = []
+        try:
+            with os.scandir(packages) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= _MAX_PROBE_PACKAGES:
+                        _LOG.warning("AppData redirection probe limited package scan to %d entries", _MAX_PROBE_PACKAGES)
+                        break
+                    package = Path(entry.path)
+                    if not _is_plain_directory(package):
+                        continue
+                    cache = package / "LocalCache"
+                    candidate = cache / "Local"
+                    if not _is_plain_directory(cache) or not _is_plain_directory(candidate):
+                        continue
+                    try:
+                        with os.scandir(candidate) as children:
+                            for child in children:
+                                if len(results) >= _MAX_PROBE_PACKAGES:
+                                    break
+                                if (child.name.casefold().startswith(PRODUCT.casefold())
+                                        and _is_plain_directory(Path(child.path))):
+                                    results.append(Path(child.path))
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        raise
+        except FileNotFoundError:
+            return results
+        return results
+
+    def package_cache_dirs(self, packages: Path) -> list[Path]:
+        results = []
+        try:
+            with os.scandir(packages) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= _MAX_PROBE_PACKAGES:
+                        break
+                    package = Path(entry.path)
+                    if not _is_plain_directory(package):
+                        continue
+                    for candidate in (package / "LocalCache", package / "LocalCache" / "Local"):
+                        if _is_plain_directory(candidate):
+                            results.append(candidate)
+        except OSError:
+            pass
+        return results
+
+    def unlink(self, path: Path) -> None:
+        path.unlink(missing_ok=True)
+
+    def rmdir(self, path: Path) -> None:
+        path.rmdir()
+
+
+def _package_roots(local: Path, fs: _AppDataProbeFS) -> list[Path]:
+    return fs.package_branch_roots(local / "Packages")
+
+
+def appdata_probe(environ: Mapping[str, str] | None = None, *, fs=None) -> tuple[str, str | None]:
+    """Return redirected/not_redirected/unknown after probing a newly created subfolder."""
+    filesystem = fs or _AppDataProbeFS()
+    try:
+        local = local_app_data(environ)
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        _LOG.warning("AppData redirection probe is unknown: %s", reason)
+        return "unknown", reason
+    root = local / PRODUCT
+    token = f".branchglance-probe-{uuid.uuid4().hex}"
+    probe_dir = root / token
+    probe_file = probe_dir / "probe.bin"
+    root_created = False
+    status, reason = "unknown", "probe did not complete"
+    package_roots_before: set[Path] = set()
+    cache_dirs_before: set[Path] = set()
+    try:
+        root_existed = filesystem.exists(root)
+        package_roots_before = set(_package_roots(local, filesystem))
+        cache_dirs_before = set(getattr(filesystem, "package_cache_dirs", lambda _path: [])(local / "Packages"))
+        if not root_existed:
+            try:
+                filesystem.mkdir(root)
+                root_created = True
+            except FileExistsError:
+                root_existed = True
+        filesystem.create_probe(probe_dir)
+        redirected = any(filesystem.exists(package_root / token / "probe.bin")
+                         for package_root in _package_roots(local, filesystem))
+        status, reason = ("redirected", "new Branchglance subfolder appeared in a package LocalCache") if redirected \
+            else ("not_redirected", None)
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+    finally:
+        cleanup_errors = []
+        try:
+            filesystem.unlink(probe_file)
+        except Exception as exc:
+            cleanup_errors.append(exc)
+        try:
+            package_roots_after = _package_roots(local, filesystem)
+        except Exception as exc:
+            package_roots_after = []
+            cleanup_errors.append(exc)
+        for package_root in package_roots_after:
+            try:
+                filesystem.unlink(package_root / token / "probe.bin")
+                try:
+                    filesystem.rmdir(package_root / token)
+                except FileNotFoundError:
+                    pass
+            except Exception as exc:
+                cleanup_errors.append(exc)
+        try:
+            filesystem.rmdir(probe_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            cleanup_errors.append(exc)
+        try:
+            if root_created:
+                filesystem.rmdir(root)
+        except OSError:
+            pass  # pre-existing data raced with cleanup; never remove a non-empty root
+        for package_root in package_roots_after:
+            if package_root not in package_roots_before:
+                try:
+                    filesystem.rmdir(package_root)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    try:
+                        if package_root.exists() and not any(package_root.iterdir()):
+                            cleanup_errors.append(exc)
+                    except OSError:
+                        cleanup_errors.append(exc)
+        try:
+            cache_dirs_after = getattr(filesystem, "package_cache_dirs", lambda _path: [])(local / "Packages")
+        except Exception as exc:
+            cache_dirs_after = []
+            cleanup_errors.append(exc)
+        for directory in sorted(cache_dirs_after, key=lambda item: len(item.parts), reverse=True):
+            if directory not in cache_dirs_before:
+                try:
+                    filesystem.rmdir(directory)
+                except OSError as exc:
+                    try:
+                        if not any(directory.iterdir()):
+                            cleanup_errors.append(exc)
+                    except OSError:
+                        cleanup_errors.append(exc)
+        if cleanup_errors:
+            status, reason = "unknown", f"probe cleanup failed: {cleanup_errors}"
+    if status == "unknown":
+        _LOG.warning("AppData redirection probe is unknown: %s", reason)
+    return status, reason
+
+
+def appdata_redirected(environ: Mapping[str, str] | None = None, *, fs=None) -> str:
+    """Compatibility wrapper returning one of the three probe states."""
+    return appdata_probe(environ, fs=fs)[0]
+
+
+def stranded_appdata_paths(local: Path | None = None, *, fs=None) -> list[Path]:
+    """List (but never move) Branchglance data roots stranded in package caches."""
+    filesystem = fs or _AppDataProbeFS()
+    try:
+        return _package_roots(local or local_app_data(), filesystem)
+    except Exception:
+        _LOG.warning("Could not inspect package-local Branchglance data roots", exc_info=True)
+        return []
 
 
 def product_root(*, frozen: bool | None = None, environ: Mapping[str, str] | None = None) -> Path | None:

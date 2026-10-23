@@ -30,6 +30,60 @@ def _root(tmp_path):
     return root
 
 
+def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=True):
+    from types import SimpleNamespace
+    from branchglance_installer.app import Native
+    class Mutex:
+        def acquire(self, name, timeout): events.append(("mutex-acquire", name)); return name, "acquired"
+        def release(self, handle): events.append(("mutex-release", handle))
+    class Control:
+        def identity(self):
+            if not running:
+                return None
+            pointer = read_json(paths.root / "current.json")
+            version = pointer["current"]["version"]
+            manifest = verify_manifest(paths.root / "releases" / version, expected_version=version)
+            return {"product": "Branchglance", "pid": 404, "build": manifest["buildId"],
+                    "stateRoot": str(paths.product_root / "state")}
+        def health(self):
+            events.append(("authenticated-health",))
+            return self.identity()
+        def maintenance_exit(self): events.append(("maintenance-exit",)); return "ok"
+    class Processes:
+        def wait_for_instance_exit(self, _timeout): events.append(("wait-exit",)); return wait_exit
+    class Adapter:
+        def __init__(self): self.links = {}; self.registry = None
+        def read_shortcut(self, path): return self.links.get(str(path))
+        def replace_shortcut(self, path, **values): self.links[str(path)] = dict(values)
+        def remove_shortcut(self, path): self.links.pop(str(path), None)
+        def read_uninstall(self): return self.registry
+        def read_uninstall_typed(self): return {"values": self.registry or {}, "types": {}}
+        def write_uninstall(self, values, **_kwargs): self.registry = {**(self.registry or {}), **values}
+        def remove_uninstall(self, *, expected=None):
+            if expected is None: self.registry = None
+            else: self.registry = {k:v for k,v in (self.registry or {}).items()
+                                   if not (k in expected and expected[k] == v)}
+    def runner(args, **_kwargs):
+        Path(args[-1]).write_text(json.dumps({"ok": True, "webview2": "test"}), encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+    def after(name):
+        events.append(("mutation", name))
+        if interrupt and name == interrupt: raise RuntimeError("injected setup failure")
+    return Native(lambda: HostInfo(True, 19041, True, 528040, ("155",)), lambda: False,
+                  Mutex(), Control(), Processes(), Adapter(), runner=runner,
+                  popen=lambda args, **_kwargs: events.append(("popen", list(args))), after_mutation=after)
+
+
+def _setup_payload(tmp_path, *, version, build_id, body):
+    payload = tmp_path / "payload"
+    (payload / "release").mkdir(parents=True)
+    (payload / "release" / "BranchglanceApp.exe").write_text(body, encoding="utf-8")
+    write_manifest(payload / "release", version, build_id)
+    (payload / "Branchglance.exe").write_bytes(b"launcher")
+    (payload / "BranchglanceUninstall.exe").write_bytes(b"uninstaller")
+    return payload
+
+
 def test_manifest_detects_missing_extra_and_modified_files(tmp_path):
     release = _release(tmp_path, "stage")
     write_manifest(release, "1.0.0", "abc")
@@ -52,6 +106,189 @@ def test_install_is_immutable_and_second_build_becomes_rollback_target(tmp_path)
         ops.install(second, "1.0.1", "b")
     assert ops.rollback()["current"]["version"] == "1.0.0+a"
     assert verify_manifest(root / "releases/1.0.1+b")["version"] == "1.0.1+b"
+
+
+def test_setup_same_version_identical_release_is_noop_before_stopping_running_app(tmp_path):
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    body = "same-release"
+    ReleaseOps(root).install(_release(tmp_path, "initial", body, "1.0.0", "a"), "1.0.0", "a")
+    payload = _setup_payload(tmp_path, version="1.0.0", build_id="a", body=body)
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "LocalAppData" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events)
+    result = install(paths, payload, native, startup=False)
+    assert result["alreadyInstalled"] is True
+    assert not any(event[0] == "maintenance-exit" for event in events)
+
+
+def test_setup_same_version_different_release_refuses_before_stopping_running_app(tmp_path):
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old-bytes", "1.0.0", "a"), "1.0.0", "a")
+    payload = _setup_payload(tmp_path, version="1.0.0", build_id="a", body="different-bytes")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "LocalAppData" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events)
+    with pytest.raises(SafetyError, match="Immutable|different bytes"):
+        install(paths, payload, native, startup=False)
+    assert not any(event[0] == "maintenance-exit" for event in events)
+
+
+@pytest.mark.parametrize("running,interrupt,should_relaunch", [(True, None, True),
+                                                                (True, "release-promoted", True),
+                                                                (True, "tool-backed-up", True),
+                                                                (False, None, False)])
+def test_setup_relaunches_only_previously_running_app_after_success_or_failure(
+        tmp_path, running, interrupt, should_relaunch):
+    from branchglance_installer.app import Paths, install
+    from branchglance_installer.core import read_owned_ledger, write_owned_ledger
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    ledger = read_owned_ledger(root)
+    ledger["tools"].append("Branchglance.exe")
+    write_owned_ledger(root, ledger)
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "LocalAppData" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=running, events=events, interrupt=interrupt)
+    if interrupt:
+        with pytest.raises(RuntimeError, match="injected setup failure"):
+            install(paths, payload, native, startup=False)
+    else:
+        install(paths, payload, native, startup=False)
+    launches = [event for event in events if event[0] == "popen"]
+    assert bool(launches) is should_relaunch
+    if interrupt == "tool-backed-up":
+        assert (root / "Branchglance.exe").read_bytes() == b"old launcher"
+        assert read_json(root / "current.json")["current"]["version"] == "1.0.0+a"
+    if launches:
+        assert launches[0][1][0] == str(root / "Branchglance.exe")
+        assert events.index(launches[0]) > max(i for i, event in enumerate(events) if event[0] == "mutex-release")
+
+
+def test_setup_does_not_relaunch_until_old_instance_exit_is_confirmed(tmp_path):
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "LocalAppData" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events, wait_exit=False)
+    with pytest.raises(SafetyError, match="still running"):
+        install(paths, payload, native, startup=False)
+    assert not any(event[0] == "popen" for event in events)
+
+
+def test_setup_relaunches_once_when_old_instance_exits_during_bounded_late_wait(tmp_path):
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"launcher")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events, wait_exit=False)
+    with pytest.raises(SafetyError, match="still running"):
+        install(paths, payload, native, startup=False)
+    launches = [event for event in events if event[0] == "popen"]
+    assert len(launches) == 1
+    assert any(event[0] == "authenticated-health" for event in events)
+    assert events.index(launches[0]) > max(i for i, event in enumerate(events) if event[0] == "mutex-release")
+
+
+def test_restart_rejects_matching_public_identity_without_authenticated_health(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths, _restart_after_install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    clock = [0.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(app.time, "sleep", lambda delta: clock.__setitem__(0, clock[0] + delta))
+    public = {"product": "Branchglance", "pid": 404, "build": "a", "stateRoot": str(paths.product_root / "state")}
+    class Control:
+        def identity(self): return public
+        def health(self): return None
+    native = SimpleNamespace(control=Control(), popen=lambda *args, **_kwargs: events.append(args))
+    with pytest.raises(SafetyError, match="authenticated health"):
+        _restart_after_install(paths, native)
+    assert len(events) == 1
+
+
+def test_setup_refuses_redirected_appdata_before_creating_product_folders(monkeypatch, tmp_path):
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths
+    paths = Paths(tmp_path / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
+                  tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    monkeypatch.setattr(app.product, "appdata_probe", lambda _environment: ("redirected", "package LocalCache"))
+    with pytest.raises(SafetyError, match="Run Branchglance Setup from File Explorer or the Start menu"):
+        app._prepare_appdata(paths)
+    assert not paths.product_root.exists()
+
+
+def test_setup_fails_closed_on_unknown_appdata_probe_with_reason(monkeypatch, tmp_path):
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths
+    paths = Paths(tmp_path / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
+                  tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    monkeypatch.setattr(app.product, "appdata_probe", lambda _environment: ("unknown", "PermissionError: denied"))
+    with pytest.raises(SafetyError, match="AppData probe: unknown; PermissionError: denied"):
+        app._prepare_appdata(paths)
+    assert not paths.product_root.exists()
+
+
+def test_setup_bootstrap_creates_real_product_and_claude_event_folders_and_reports_strays(monkeypatch, tmp_path):
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths
+    paths = Paths(tmp_path / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
+                  tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    stray = tmp_path / "Local" / "Packages" / "Claude" / "LocalCache" / "Local" / "Branchglance"
+    monkeypatch.setattr(app.product, "appdata_probe", lambda _environment: ("not_redirected", None))
+    monkeypatch.setattr(app.product, "stranded_appdata_paths", lambda _local: [stray])
+    assert app._prepare_appdata(paths) == [str(stray)]
+    assert paths.product_root.is_dir() and (paths.product_root / "claude-events").is_dir()
+    assert not stray.exists()
+
+
+def test_setup_reports_recovery_failure_and_returns_failure_exit_code(monkeypatch, tmp_path, capsys):
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths
+    from branchglance_installer.core import ReleaseOps
+    from branchglance_installer import windows
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events, interrupt="tool-backed-up")
+    monkeypatch.setattr(app.product, "appdata_probe", lambda _environment: ("not_redirected", None))
+    monkeypatch.setattr(app.product, "stranded_appdata_paths", lambda _local: [])
+    monkeypatch.setattr(windows, "cleanup_stale_workers", lambda *_args: None)
+    original_recover = ReleaseOps.recover
+    recoveries = []
+    def fail_recovery_after_install(self):
+        recoveries.append(True)
+        if len(recoveries) == 3:
+            raise SafetyError("injected recovery refusal")
+        return original_recover(self)
+    monkeypatch.setattr(ReleaseOps, "recover", fail_recovery_after_install)
+    code = app.main(["--quiet", "--payload", str(payload)], paths=paths, native=native)
+    assert code == 2
+    stderr = capsys.readouterr().err
+    assert "transaction restoration also failed" in stderr and "injected recovery refusal" in stderr
 
 
 def test_rollback_uses_healthy_previous_when_current_release_is_damaged(tmp_path):
@@ -485,7 +722,33 @@ def test_integration_manager_uses_temp_replace_owned_marker_and_preserves_foreig
     adapter.registry["OtherAppValue"] = "keep"
     integration.remove()
     assert str(menu / "Branchglance.lnk") in adapter.links
+    assert str(startup / "Branchglance.lnk") not in adapter.links
     assert adapter.registry == {"OtherAppValue": "keep"}
+
+
+def test_integration_shortcuts_use_launcher_icon_on_start_menu_desktop_and_startup(tmp_path):
+    from token_tracker import product
+    class Adapter:
+        def __init__(self): self.links = {}; self.registry = None
+        def read_shortcut(self, path): return self.links.get(str(path))
+        def replace_shortcut(self, path, **values): self.links[str(path)] = dict(values)
+        def remove_shortcut(self, path): self.links.pop(str(path), None)
+        def read_uninstall(self): return self.registry
+        def write_uninstall(self, values): self.registry = dict(values)
+        def remove_uninstall(self, *, expected=None): self.registry = None
+    adapter = Adapter()
+    root = tmp_path / "Programs" / "Branchglance"
+    launcher = root / "Branchglance.exe"
+    menu, desktop, startup = tmp_path / "Menu", tmp_path / "Desktop", tmp_path / "Startup"
+    integration = Integrations(adapter, root, launcher, "1.0.0", menu, startup,
+                                root / "BranchglanceUninstall.exe", desktop)
+    integration.apply(startup_enabled=True)
+    expected = {menu / "Branchglance.lnk", desktop / "Branchglance.lnk", startup / "Branchglance.lnk"}
+    assert {Path(path) for path in adapter.links} == expected
+    assert all(link["target"] == str(launcher) for link in adapter.links.values())
+    assert all(link["app_id"] == product.APP_USER_MODEL_ID for link in adapter.links.values())
+    assert all(link["description"] == MARKER for link in adapter.links.values())
+    assert adapter.registry["DisplayIcon"] == str(launcher)
 
 
 def test_integration_manager_refuses_foreign_collision_before_writes(tmp_path):

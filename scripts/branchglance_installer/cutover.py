@@ -4,13 +4,17 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
 from .core import SafetyError, atomic_json, is_reparse, read_json
+from .integration import MARKER
+from token_tracker.product import APP_USER_MODEL_ID
 
 STATE_FILES = ("limit-reset-state.json", "limit-reset.jsonl", "window-state.json")
 POLICY = {"schemaVersion": 1, "origin": "user_settings",
@@ -26,7 +30,7 @@ class CutoverAdapter(Protocol):
     def rename_old_shortcut(self, snapshot: dict) -> None: ...
     def create_branchglance_shortcut(self, record: dict) -> dict: ...
     def remove_branchglance_shortcut(self, record: dict | None = None) -> None: ...
-    def start_branchglance(self) -> int: ...
+    def start_branchglance(self, handoff_token: str) -> int: ...
     def identity(self) -> dict: ...
     def branchglance_running(self) -> bool: ...
     def quit_branchglance(self) -> bool: ...
@@ -89,9 +93,13 @@ class Cutover:
         snapshot = plan["old_shortcut"]
         mutated_shortcut = False
         launcher = str(self.product_root.parent / "Programs" / "Branchglance" / "Branchglance.exe")
+        handoff_path = Path(launcher).parent / ".cutover-handoff.json"
+        handoff_token = secrets.token_hex(32)
+        handoff_written = False
+        handoff_record = {"file": handoff_path.name, "nonce": handoff_token, "expires": time.time() + 30.0}
         new_shortcut = {"path": str(Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop" / "Branchglance.lnk"),
                         "target": launcher, "arguments": "", "workdir": str(Path(launcher).parent),
-                        "description": f"Branchglance managed shortcut {txid}"}
+                        "app_id": APP_USER_MODEL_ID, "description": MARKER}
         journal = {"schemaVersion": 1, "id": txid, "phase": "planned", "staging": staging.name,
                    "shortcut": snapshot, "beforeHashes": plan["state_files"], "beforePolicy": None,
                    "newShortcut": new_shortcut, "newShortcutCreated": False}
@@ -134,14 +142,25 @@ class Cutover:
             journal["newShortcutCreated"] = True
             atomic_json(journal_path, journal, replace=self.replace)
             intent("starting-branchglance")
+            if os.path.lexists(handoff_path):
+                raise SafetyError("A cutover startup handoff is already pending")
+            journal["handoff"] = dict(handoff_record)
+            atomic_json(journal_path, journal, replace=self.replace)
+            self.after_mutation("handoff-intent")
+            atomic_json(handoff_path, {"schemaVersion": 1, "nonce": handoff_token,
+                                       "expires": handoff_record["expires"]})
+            handoff_written = True
+            self.after_mutation("handoff-written")
             release_instance()
-            pid = self.adapter.start_branchglance()
+            pid = self.adapter.start_branchglance(handoff_token)
             phase("branchglance-started", "started")
             who = self.adapter.identity()
             if (who.get("product") != "Branchglance" or type(who.get("pid")) is not int
                     or who.get("stateRoot") != str(target) or not who.get("build")):
                 raise SafetyError("Branchglance health identity did not match the launched release")
             phase("committed", "committed")
+            if handoff_written:
+                self._remove_owned_handoff(handoff_record, require_expired=False)
             journal_path.unlink(missing_ok=True)
             return {"pid": who["pid"], "identity": who, "state": str(target)}
         except Exception:
@@ -151,6 +170,8 @@ class Cutover:
                 self.adapter.restore_old_shortcut(snapshot)
             if journal.get("newShortcutCreated") or journal.get("creationAttempted"):
                 self.adapter.remove_branchglance_shortcut(new_shortcut)
+            if handoff_written:
+                self._remove_owned_handoff(handoff_record, require_expired=False)
             if staging.exists():
                 shutil.rmtree(staging)
             # Once promoted, retain policy and journal so recover can safely undo it.
@@ -171,6 +192,9 @@ class Cutover:
                 "renaming-old-shortcut", "old-shortcut-renamed", "creating-new-shortcut", "rollback-merging",
                 "new-shortcut-created", "starting-branchglance", "started", "committed"}:
             raise SafetyError("Cutover journal is corrupt or unsupported")
+        handoff = journal.get("handoff")
+        if isinstance(handoff, dict):
+            self._remove_owned_handoff(handoff, require_expired=True)
         if journal["phase"] == "rollback-merging":
             merge = journal.get("rollbackMerge")
             if not isinstance(merge, dict) or merge.get("path") != "limit-reset-state.json":
@@ -216,6 +240,29 @@ class Cutover:
                 policy.unlink()
         journal_path.unlink()
         return "completed" if journal["phase"] == "committed" else "rolled-back"
+
+    def _remove_owned_handoff(self, record: dict, *, require_expired: bool) -> bool:
+        if (not isinstance(record, dict) or record.get("file") != ".cutover-handoff.json"
+                or not isinstance(record.get("nonce"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", record["nonce"])
+                or not isinstance(record.get("expires"), (int, float))):
+            raise SafetyError("Cutover handoff ownership record is invalid; marker preserved")
+        path = self.product_root.parent / "Programs" / "Branchglance" / record["file"]
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return False
+        if is_reparse(path) or not path.is_file() or info.st_size > 1024:
+            raise SafetyError("Cutover handoff marker is foreign or unsafe; marker preserved")
+        marker = read_json(path)
+        owned = (marker.get("schemaVersion") == 1 and marker.get("nonce") == record["nonce"]
+                 and marker.get("expires") == record["expires"])
+        if not owned:
+            raise SafetyError("Cutover handoff marker does not match its journal; marker preserved")
+        if require_expired and time.time() < float(record["expires"]):
+            raise SafetyError("Cutover handoff is still unexpired; journal and marker retained")
+        path.unlink()
+        return True
 
     def rollback(self) -> dict:
         journal_path = self.product_root / "cutover-journal.json"

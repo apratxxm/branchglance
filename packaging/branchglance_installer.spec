@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 SOURCE = Path(os.environ["BRANCHGLANCE_SOURCE"]).resolve()
+ICON = Path(os.environ["BRANCHGLANCE_ICON"]).resolve()
 ROLE = os.environ["BRANCHGLANCE_INSTALLER_ROLE"]  # "setup" | "uninstall"
 PAYLOAD = os.environ.get("BRANCHGLANCE_PAYLOAD")
 NAME = {"setup": "BranchglanceSetup", "uninstall": "BranchglanceUninstall"}[ROLE]
@@ -23,4 +24,4 @@ a = Analysis([str(ENTRY)], pathex=[str(SOURCE), str(SOURCE / "scripts")], binari
              noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name=NAME, debug=False, bootloader_ignore_signals=False,
-          strip=False, upx=False, runtime_tmpdir=None, console=False)
+          strip=False, upx=False, runtime_tmpdir=None, console=False, icon=str(ICON))
