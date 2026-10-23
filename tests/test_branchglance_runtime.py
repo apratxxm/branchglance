@@ -1033,6 +1033,33 @@ class _FakeWindow:
         self.destroyed += 1
 
 
+def test_branchglance_window_tray_and_runway_document_titles(monkeypatch):
+    from pathlib import Path
+    app = widget.WidgetApp()
+    window_args = []
+    tray_args = []
+    class FakeTray:
+        def __init__(self, *args): tray_args.append(args)
+        def run(self, **_kwargs): pass
+    class NoThread:
+        def __init__(self, *args, **_kwargs): pass
+        def start(self): pass
+    monkeypatch.setattr(app, "initial_bounds", lambda: (420, 240, 0, 0))
+    monkeypatch.setattr(widget.webview, "create_window",
+                        lambda *args, **_kwargs: (window_args.append(args) or _FakeWindow()))
+    monkeypatch.setattr(widget.pystray, "Icon", FakeTray)
+    monkeypatch.setattr(widget.threading, "Thread", NoThread)
+    try:
+        app._create_main_window()
+        app._start_tray()
+    finally:
+        app.control.close()
+    runway = (Path(widget.__file__).parent / "static" / "runway.html").read_text(encoding="utf-8")
+    assert window_args[0][0] == "Branchglance"
+    assert tray_args[0][2] == "Branchglance"
+    assert "<title>Branchglance · Runway</title>" in runway
+
+
 @pytest.mark.parametrize("during", ["http", "limit_reset", "window"])
 def test_maintenance_exit_during_startup_cancels_remaining_init_and_releases_resources(monkeypatch, during):
     monkeypatch.setattr(widget, "CONTROL_PORT", 0)

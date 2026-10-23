@@ -15,6 +15,9 @@ import time
 import uuid
 import ctypes
 import os
+import secrets
+import queue
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -22,8 +25,8 @@ from typing import Callable
 from token_tracker import product
 
 from .core import (JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, UNINSTALLER, Journal, LocalFileSystem, ReleaseOps, SafetyError,
-                   create_owner, is_reparse, read_json, require_owned_root, uninstall_owned_root, validate_version,
-                   verify_manifest)
+                   atomic_json, create_owner, is_reparse, read_json, require_owned_root, uninstall_owned_root,
+                   validate_version, verify_manifest)
 from .integration import Integrations
 from .lifecycle import Lifecycle
 from .preflight import HostInfo, check_host, staged_self_test
@@ -218,36 +221,118 @@ def _raise_already_installed(paths: Paths, staged_manifest: dict) -> None:
         raise _AlreadyInstalled(result)
 
 
-def _restart_after_install(paths: Paths, native: Native) -> None:
-    launcher = paths.root / LAUNCHER
+def _integration_snapshot_bounded(paths: Paths, native: Native, version_full: str,
+                                 deadline: float | None) -> dict:
+    operation = lambda: _integrations(paths, native, version_full).snapshot()
+    if deadline is None:
+        return operation()
+    timeout = min(5.0, deadline - time.monotonic())
+    if timeout <= 0:
+        raise SafetyError("Quiet setup deadline expired during shortcut ownership preflight")
+    result: queue.Queue = queue.Queue(maxsize=1)
+
+    def read_only_snapshot():
+        try:
+            result.put((True, operation()))
+        except BaseException as exc:
+            result.put((False, exc))
+
+    # IShellLink COM reads can hang on damaged/remote shortcut targets. A
+    # daemon reader keeps quiet setup bounded; it has no write authority.
+    threading.Thread(target=read_only_snapshot, daemon=True, name="Branchglance-shortcut-preflight").start()
     try:
+        ok, value = result.get(timeout=timeout)
+    except queue.Empty:
+        raise SafetyError("Shortcut ownership preflight timed out; setup stopped before changing the installation") from None
+    if not ok:
+        raise value
+    return value
+
+
+def _setup_preflight(paths: Paths, native: Native, manifest: dict, version_full: str,
+                     deadline: float | None = None) -> None:
+    """Refuse collisions and invalid install roots before asking a running app to stop."""
+    _raise_already_installed(paths, manifest)
+    root = paths.root
+    if os.path.lexists(root):
+        if is_reparse(root) or not root.is_dir():
+            raise SafetyError(f"The install folder is a link or a file: {root}")
+        if (root / OWNER_FILE).exists():
+            require_owned_root(root)
+        elif any(root.iterdir()):
+            raise SafetyError(f"The install folder is not owned by Branchglance: {root}")
+    handoff = root / ".cutover-handoff.json"
+    if os.path.lexists(handoff):
+        raise SafetyError(f"A Branchglance startup handoff is already pending: {handoff}")
+    # This checks shortcut ownership and the uninstall registry without writing.
+    _integration_snapshot_bounded(paths, native, version_full, deadline)
+
+
+def _remove_owned_restart_handoff(path: Path, token: str) -> None:
+    if not os.path.lexists(path):
+        return
+    if is_reparse(path) or not path.is_file() or path.stat().st_size > 1024:
+        raise SafetyError("Setup startup handoff became unsafe; it was preserved")
+    try:
+        record = read_json(path)
+    except (OSError, SafetyError) as exc:
+        raise SafetyError("Setup startup handoff changed; it was preserved") from exc
+    if (not isinstance(record, dict) or record.get("schemaVersion") != 1
+            or not secrets.compare_digest(str(record.get("nonce", "")), token)):
+        raise SafetyError("Setup startup handoff ownership changed; it was preserved")
+    path.unlink()
+
+
+def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -> None:
+    launcher = paths.root / LAUNCHER
+    handoff = paths.root / ".cutover-handoff.json"
+    token = secrets.token_hex(32)
+    try:
+        if lifecycle.install_handle is None or lifecycle.instance_handle is None:
+            raise SafetyError("Setup lost lifecycle exclusion before restoring the app")
         if is_reparse(launcher) or not launcher.is_file():
             raise SafetyError("Installed launcher is missing or redirected")
-        native.popen([str(launcher)], cwd=str(paths.root), close_fds=True)
         pointer = read_json(paths.root / "current.json")
         version = validate_version(pointer["current"]["version"])
         manifest = verify_manifest(paths.root / "releases" / version, expected_version=version)
-        deadline = time.monotonic() + 9.0
+        state_root = str(paths.product_root / "state")
+        if os.path.lexists(handoff):
+            raise SafetyError("A startup handoff appeared while setup held Install; it was preserved")
+        atomic_json(handoff, {"schemaVersion": 1, "nonce": token, "expires": time.time() + 30.0})
+        # Install remains held. Only this child can pass the startup gate using
+        # the one-use owner token; a waiting second setup cannot overtake restore.
+        lifecycle.release_instance()
+        native.popen([str(launcher), "--install-handoff", token], cwd=str(paths.root), close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        start = time.monotonic()
+        deadline = start + 9.0
+        if lifecycle.deadline is not None:
+            deadline = min(deadline, lifecycle.deadline)
         identity = None
         while time.monotonic() < deadline:
             try:
                 candidate = native.control.health()
-                if (candidate and candidate.get("product") == "Branchglance"
-                        and type(candidate.get("pid")) is int
-                        and candidate.get("build") == manifest.get("buildId")
-                        and candidate.get("stateRoot") == str(paths.product_root / "state")):
-                    identity = candidate
-                    break
             except Exception:
-                pass
+                candidate = None
+            if candidate is not None:
+                if (candidate.get("product") != "Branchglance"
+                        or type(candidate.get("pid")) is not int
+                        or candidate.get("build") != manifest.get("buildId")
+                        or candidate.get("stateRoot") != state_root):
+                    raise SafetyError("A live Branchglance did not match the restored release")
+                identity = candidate
+                break
             time.sleep(0.1)
         if identity is None:
-            raise SafetyError("The previously running Branchglance did not return authenticated health")
+            raise SafetyError("The restored Branchglance did not return authenticated health before deadline")
     except Exception as exc:
         raise SafetyError(f"Setup could not restore the previously running Branchglance: {exc}") from exc
+    finally:
+        _remove_owned_restart_handoff(handoff, token)
 
 
-def install(paths: Paths, payload: Path, native: Native, *, startup: bool) -> dict:
+def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
+            deadline: float | None = None) -> dict:
     if native.elevated():
         raise SafetyError("Run Branchglance setup as a standard user, not as administrator.")
     check_host(native.host())
@@ -258,75 +343,86 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool) -> di
     tools = {LAUNCHER: payload / LAUNCHER, UNINSTALLER: payload / UNINSTALLER}
     holder: dict = {}
 
+    # Fast, read-only refusal before Lifecycle can send maintenance-exit.
+    try:
+        _setup_preflight(paths, native, manifest, version_full, deadline)
+    except _AlreadyInstalled as already:
+        return already.result
+
+    def pre_stop() -> None:
+        _setup_preflight(paths, native, manifest, version_full, deadline)
+        test_timeout = 30.0
+        if deadline is not None:
+            test_timeout = deadline - time.monotonic() - 9.0  # reserve bounded restore health time
+            if test_timeout <= 0:
+                raise SafetyError("Quiet setup deadline leaves no time for staged-release preflight")
+            test_timeout = min(test_timeout, 15.0)
+        staged_self_test(release, runner=native.runner, timeout=test_timeout)
+
     def recover_abandoned() -> None:
         holder["abandoned"] = True  # install() always runs journal recovery first
 
     failure = None
     try:
         lifecycle = Lifecycle(native.mutex, native.control, native.processes, recover_abandoned,
-                              before_stop=lambda: _raise_already_installed(paths, manifest))
+                              before_stop=pre_stop,
+                              deadline=deadline)
         with lifecycle:
-            journal_record = Journal(paths.root).load() if paths.root.exists() else None
-            if journal_record and journal_record["operation"] == "uninstall":
-                before_integration = journal_record["before"].get("integration", {})
-                managed = before_integration.get("uninstallManaged", {}) if isinstance(before_integration, dict) else {}
-                uninstall_version = managed.get("DisplayVersion", "0.0.0+unknown")
-                try:
-                    uninstall_version = validate_version(uninstall_version)
-                except SafetyError:
-                    uninstall_version = "0.0.0+unknown"
-                integrations = _integrations(paths, native, uninstall_version)
-                uninstall_owned_root(paths.root, integration_remove=integrations.remove,
-                                     after_mutation=native.after_mutation, integration_snapshot=integrations.snapshot,
-                                     fs=native.file_system or LocalFileSystem())
-            _claim_root(paths.root)
-            integrations = _integrations(paths, native, version_full)
-            ops = ReleaseOps(paths.root, fs=native.file_system or LocalFileSystem(),
-                             integration_snapshot=integrations.snapshot,
-                             integration_restore=integrations.restore,
-                             integration_apply=lambda _release: integrations.apply(startup_enabled=startup),
-                             after_mutation=native.after_mutation, tools=tools,
-                             self_test=lambda staged: staged_self_test(staged, runner=native.runner))
-            recovered = ops.recover()
             try:
-                result = ops.install(release, version, build_id)
-            except Exception as install_error:
+                journal_record = Journal(paths.root).load() if paths.root.exists() else None
+                if journal_record and journal_record["operation"] == "uninstall":
+                    before_integration = journal_record["before"].get("integration", {})
+                    managed = before_integration.get("uninstallManaged", {}) if isinstance(before_integration, dict) else {}
+                    uninstall_version = managed.get("DisplayVersion", "0.0.0+unknown")
+                    try:
+                        uninstall_version = validate_version(uninstall_version)
+                    except SafetyError:
+                        uninstall_version = "0.0.0+unknown"
+                    integrations = _integrations(paths, native, uninstall_version)
+                    uninstall_owned_root(paths.root, integration_remove=integrations.remove,
+                                         after_mutation=native.after_mutation, integration_snapshot=integrations.snapshot,
+                                         fs=native.file_system or LocalFileSystem())
+                _claim_root(paths.root)
+                integrations = _integrations(paths, native, version_full)
+                ops = ReleaseOps(paths.root, fs=native.file_system or LocalFileSystem(),
+                                 integration_snapshot=integrations.snapshot,
+                                 integration_restore=integrations.restore,
+                                 integration_apply=lambda _release: integrations.apply(startup_enabled=startup),
+                                 after_mutation=native.after_mutation, tools=tools,
+                                 self_test=lambda _staged: None)  # source release was tested before shutdown
+                recovered = ops.recover()
                 try:
-                    ops.recover()
-                except Exception as recovery_error:
-                    raise SafetyError(f"Setup failed ({install_error}); transaction restoration also failed "
-                                      f"({recovery_error})") from recovery_error
-                raise
-            try:
-                pruned = ops.prune()
-            except (OSError, SafetyError) as exc:  # committed already; tidying must not fail setup
-                pruned = [f"prune skipped: {exc}"]
+                    result = ops.install(release, version, build_id)
+                except Exception as install_error:
+                    try:
+                        ops.recover()
+                    except Exception as recovery_error:
+                        raise SafetyError(f"Setup failed ({install_error}); transaction restoration also failed "
+                                          f"({recovery_error})") from recovery_error
+                    raise
+                try:
+                    pruned = ops.prune()
+                except (OSError, SafetyError) as exc:  # committed already; tidying must not fail setup
+                    pruned = [f"prune skipped: {exc}"]
+            except BaseException as exc:
+                failure = exc
+            if lifecycle.shutdown_confirmed:
+                lifecycle.relaunch_attempted = True
+                try:
+                    _restart_after_install(paths, native, lifecycle)
+                except Exception as restart_error:
+                    if failure is not None:
+                        failure = SafetyError(f"Setup failed ({failure}); restoring the running app also failed "
+                                              f"({restart_error})")
+                    else:
+                        failure = restart_error
     except _AlreadyInstalled as already:
         return already.result
     except BaseException as exc:
-        failure = exc
-    if "lifecycle" in locals() and lifecycle.shutdown_requested:
-        if not lifecycle.shutdown_confirmed:
-            try:
-                lifecycle.confirm_late_exit(timeout=10.0)
-            except Exception as late_exit_error:
-                lifecycle.release_locks()
-                if failure is not None:
-                    failure = SafetyError(f"Setup failed ({failure}); the old app did not exit within the "
-                                          f"restoration deadline ({late_exit_error})")
-                else:
-                    failure = SafetyError(f"The old app did not exit within the restoration deadline: {late_exit_error}")
-        if lifecycle.shutdown_confirmed:
-            lifecycle.relaunch_attempted = True
-            lifecycle.release_locks()
-            try:
-                _restart_after_install(paths, native)
-            except Exception as restart_error:
-                if failure is not None:
-                    raise SafetyError(f"Setup failed ({failure}); restoring the running app also failed ({restart_error})") from failure
-                raise
-        else:
-            lifecycle.release_locks()
+        if failure is None:
+            failure = exc
+    if "lifecycle" in locals():
+        lifecycle.release_locks()
     if failure is not None:
         raise failure
     return {"installed": version_full, "pointer": result, "recovered": recovered,
@@ -413,6 +509,7 @@ def main(argv=None, *, role: str = "setup", paths: Paths | None = None, native: 
     paths = paths or Paths.for_user()
     native = native or Native.real(paths)
     executable = Path(executable or sys.executable)
+    wait_deadline = time.monotonic() + 30.0 if args.quiet else None
     try:
         stranded_appdata = None
         if role == "setup" and not (args.uninstall or args.rollback or args.uninstall_worker):
@@ -458,7 +555,7 @@ def main(argv=None, *, role: str = "setup", paths: Paths | None = None, native: 
             raise SafetyError("This setup program has no Branchglance release inside it.")
         startup = args.with_startup or ui.confirm("Start Branchglance automatically when you sign in?",
                                                   default=False)
-        result = install(paths, payload, native, startup=startup)
+        result = install(paths, payload, native, startup=startup, deadline=wait_deadline)
         suffix = ""
         if stranded_appdata:
             suffix = " Older package-cache data was found and left untouched."

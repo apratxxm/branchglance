@@ -30,15 +30,23 @@ def _root(tmp_path):
     return root
 
 
-def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=True):
+def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=True, late_exit=False):
     from types import SimpleNamespace
     from branchglance_installer.app import Native
+    alive = [running]
     class Mutex:
-        def acquire(self, name, timeout): events.append(("mutex-acquire", name)); return name, "acquired"
+        def acquire(self, name, timeout):
+            events.append(("mutex-acquire", name, timeout))
+            if name.endswith("-Instance") and alive[0]:
+                if late_exit and timeout <= 10:
+                    alive[0] = False
+                else:
+                    raise SafetyError("fake instance mutex remains held")
+            return name, "acquired"
         def release(self, handle): events.append(("mutex-release", handle))
     class Control:
         def identity(self):
-            if not running:
+            if not alive[0]:
                 return None
             pointer = read_json(paths.root / "current.json")
             version = pointer["current"]["version"]
@@ -48,9 +56,13 @@ def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=
         def health(self):
             events.append(("authenticated-health",))
             return self.identity()
-        def maintenance_exit(self): events.append(("maintenance-exit",)); return "ok"
+        def maintenance_exit(self, timeout=2.0): events.append(("maintenance-exit", timeout)); return "ok"
     class Processes:
-        def wait_for_instance_exit(self, _timeout): events.append(("wait-exit",)); return wait_exit
+        def wait_for_instance_exit(self, _timeout):
+            events.append(("wait-exit",))
+            if wait_exit:
+                alive[0] = False
+            return wait_exit
     class Adapter:
         def __init__(self): self.links = {}; self.registry = None
         def read_shortcut(self, path): return self.links.get(str(path))
@@ -69,9 +81,14 @@ def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=
     def after(name):
         events.append(("mutation", name))
         if interrupt and name == interrupt: raise RuntimeError("injected setup failure")
+    def popen(args, **_kwargs):
+        selected = read_json(paths.root / "current.json")["current"]["version"]
+        events.append(("popen", list(args), selected, (paths.root / "Branchglance.exe").read_bytes()))
+        alive[0] = True
+        return SimpleNamespace(pid=505)
     return Native(lambda: HostInfo(True, 19041, True, 528040, ("155",)), lambda: False,
                   Mutex(), Control(), Processes(), Adapter(), runner=runner,
-                  popen=lambda args, **_kwargs: events.append(("popen", list(args))), after_mutation=after)
+                  popen=popen, after_mutation=after)
 
 
 def _setup_payload(tmp_path, *, version, build_id, body):
@@ -137,6 +154,108 @@ def test_setup_same_version_different_release_refuses_before_stopping_running_ap
     assert not any(event[0] == "maintenance-exit" for event in events)
 
 
+@pytest.mark.parametrize("collision", ["shortcut", "registry"])
+def test_setup_integration_collision_refuses_before_stopping_running_app(tmp_path, collision):
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp", desktop=tmp_path / "Desktop")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events)
+    if collision == "shortcut":
+        path = paths.desktop / "Branchglance.lnk"
+        native.integration_adapter.links[str(path)] = {
+            "target": str(tmp_path / "Foreign.exe"), "arguments": "", "workdir": str(tmp_path),
+            "app_id": "Foreign.App", "description": "Foreign shortcut"}
+        expected = "Foreign shortcut collision"
+    else:
+        native.integration_adapter.registry = {"DisplayName": "Other", "InstallLocation": str(tmp_path / "Other")}
+        expected = "Foreign uninstall registry key collision"
+    with pytest.raises(SafetyError, match=expected):
+        install(paths, payload, native, startup=False)
+    assert not any(event[0] in {"maintenance-exit", "popen", "mutation"} for event in events)
+
+
+def test_setup_staged_selftest_failure_refuses_before_stopping_running_app(tmp_path):
+    from types import SimpleNamespace
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events)
+    native.runner = lambda *_args, **_kwargs: SimpleNamespace(returncode=1)
+    with pytest.raises(SafetyError, match="Staged self-test failed"):
+        install(paths, payload, native, startup=False)
+    assert not any(event[0] in {"maintenance-exit", "popen", "mutation"} for event in events)
+
+
+def test_two_setups_serialize_failure_restore_then_upgrade_the_restored_instance(tmp_path):
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events, interrupt="tool-backed-up")
+    with pytest.raises(RuntimeError, match="injected setup failure"):
+        install(paths, payload, native, startup=False)
+    assert read_json(root / "current.json")["current"]["version"] == "1.0.0+a"
+    native.after_mutation = lambda _name: None
+    result = install(paths, payload, native, startup=False)
+    assert result["installed"] == "1.0.1+b"
+    assert [event[2] for event in events if event[0] == "popen"] == ["1.0.0+a", "1.0.1+b"]
+    assert events.count(("maintenance-exit", 2.0)) == 2
+    assert native.control.identity()["build"] == "b"
+    assert not (root / ".cutover-handoff.json").exists()
+
+
+def test_quiet_setup_lifecycle_waits_share_one_deadline(monkeypatch):
+    from branchglance_installer.lifecycle import INSTALL_MUTEX
+    clock = [0.0]
+    monkeypatch.setattr("branchglance_installer.lifecycle.time.monotonic", lambda: clock[0])
+    attempts = []
+    class Mutex:
+        def acquire(self, name, timeout):
+            attempts.append((name, timeout))
+            clock[0] += timeout
+            if name != INSTALL_MUTEX:
+                raise SafetyError("simulated busy Instance")
+            return name, "acquired"
+        def release(self, _handle): pass
+    class Control:
+        def identity(self): return None
+    with pytest.raises(SafetyError, match="simulated busy Instance"):
+        with Lifecycle(Mutex(), Control(), object(), lambda: None, deadline=30.0):
+            pytest.fail("busy Instance must not enter Lifecycle")
+    assert clock[0] == 30.0
+    assert sum(timeout for _name, timeout in attempts) <= 30.0
+
+
+def test_quiet_setup_passes_one_deadline_to_install(tmp_path, monkeypatch):
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths
+    from branchglance_installer import windows
+    paths = Paths(tmp_path / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
+                  tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    observed = {}
+    monkeypatch.setattr(app, "_prepare_appdata", lambda _paths: [])
+    monkeypatch.setattr(windows, "cleanup_stale_workers", lambda *_args: [])
+    monkeypatch.setattr(app, "install", lambda _paths, _payload, _native, **kwargs: observed.update(kwargs) or {})
+    monkeypatch.setattr(app.time, "monotonic", lambda: 10.0)
+    assert app.main(["--quiet", "--with-startup", "--payload", str(payload)],
+                    paths=paths, native=object()) == 0
+    assert observed["deadline"] == 40.0
+
+
 @pytest.mark.parametrize("running,interrupt,should_relaunch", [(True, None, True),
                                                                 (True, "release-promoted", True),
                                                                 (True, "tool-backed-up", True),
@@ -168,7 +287,11 @@ def test_setup_relaunches_only_previously_running_app_after_success_or_failure(
         assert read_json(root / "current.json")["current"]["version"] == "1.0.0+a"
     if launches:
         assert launches[0][1][0] == str(root / "Branchglance.exe")
-        assert events.index(launches[0]) > max(i for i, event in enumerate(events) if event[0] == "mutex-release")
+        releases = [i for i, event in enumerate(events) if event[0] == "mutex-release"]
+        assert events.index(launches[0]) > next(i for i in releases if events[i][1].endswith("-Instance"))
+        assert events.index(launches[0]) < max(releases)  # Install stays held through health confirmation.
+        health = next(i for i, event in enumerate(events) if event[0] == "authenticated-health")
+        assert health < max(releases)
 
 
 def test_setup_does_not_relaunch_until_old_instance_exit_is_confirmed(tmp_path):
@@ -183,9 +306,11 @@ def test_setup_does_not_relaunch_until_old_instance_exit_is_confirmed(tmp_path):
     with pytest.raises(SafetyError, match="still running"):
         install(paths, payload, native, startup=False)
     assert not any(event[0] == "popen" for event in events)
+    assert read_json(root / "current.json")["current"]["version"] == "1.0.0+a"
+    assert not any(event[0] == "mutation" for event in events)
 
 
-def test_setup_relaunches_once_when_old_instance_exits_during_bounded_late_wait(tmp_path):
+def test_slow_old_instance_exits_in_bounded_window_then_installs_before_relaunch(tmp_path):
     from branchglance_installer.app import Paths, install
     root = _root(tmp_path)
     ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
@@ -194,13 +319,20 @@ def test_setup_relaunches_once_when_old_instance_exits_during_bounded_late_wait(
     paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
                   tmp_path / "Temp")
     events = []
-    native = _fake_installer_native(paths, running=True, events=events, wait_exit=False)
-    with pytest.raises(SafetyError, match="still running"):
-        install(paths, payload, native, startup=False)
+    native = _fake_installer_native(paths, running=True, events=events, wait_exit=False, late_exit=True)
+    result = install(paths, payload, native, startup=False)
+    assert result["installed"] == "1.0.1+b"
+    assert read_json(root / "current.json")["current"]["version"] == "1.0.1+b"
     launches = [event for event in events if event[0] == "popen"]
     assert len(launches) == 1
     assert any(event[0] == "authenticated-health" for event in events)
-    assert events.index(launches[0]) > max(i for i, event in enumerate(events) if event[0] == "mutex-release")
+    releases = [i for i, event in enumerate(events) if event[0] == "mutex-release"]
+    assert events.index(launches[0]) > next(i for i in releases if events[i][1].endswith("-Instance"))
+    assert events.index(launches[0]) < max(releases)
+    assert next(i for i, event in enumerate(events) if event[0] == "authenticated-health") < max(releases)
+    assert launches[0][2] == "1.0.1+b" and launches[0][3] == b"launcher"
+    assert events.index(launches[0]) > next(i for i, event in enumerate(events)
+                                             if event[:2] == ("mutation", "pointer-switched"))
 
 
 def test_restart_rejects_matching_public_identity_without_authenticated_health(tmp_path, monkeypatch):
@@ -220,10 +352,20 @@ def test_restart_rejects_matching_public_identity_without_authenticated_health(t
     class Control:
         def identity(self): return public
         def health(self): return None
-    native = SimpleNamespace(control=Control(), popen=lambda *args, **_kwargs: events.append(args))
+    native = SimpleNamespace(control=Control(), popen=lambda *args, **kwargs: events.append((args, kwargs)))
+    class HeldLifecycle:
+        install_handle = 1
+        instance_handle = 2
+        deadline = None
+        def release_instance(self): events.append(("release-instance",))
     with pytest.raises(SafetyError, match="authenticated health"):
-        _restart_after_install(paths, native)
-    assert len(events) == 1
+        _restart_after_install(paths, native, HeldLifecycle())
+    import subprocess
+    assert events[0] == ("release-instance",)
+    assert len(events) == 2 and events[1][0][0][0] == str(root / "Branchglance.exe")
+    assert events[1][1]["stdin"] is subprocess.DEVNULL
+    assert events[1][1]["stdout"] is subprocess.DEVNULL and events[1][1]["stderr"] is subprocess.DEVNULL
+    assert not (root / ".cutover-handoff.json").exists()
 
 
 def test_setup_refuses_redirected_appdata_before_creating_product_folders(monkeypatch, tmp_path):
@@ -537,7 +679,7 @@ def test_lifecycle_orders_verified_exit_before_instance_mutex_and_recovers_aband
         def release(self, handle): calls.append(("release", handle))
     class Control:
         def identity(self): calls.append(("identity",)); return {"pid": 10}
-        def maintenance_exit(self): calls.append(("exit",)); return True
+        def maintenance_exit(self, timeout=2.0): calls.append(("exit",)); return True
     class Processes:
         def wait_for_instance_exit(self, timeout): calls.append(("wait",)); return True
     with Lifecycle(Mutex(), Control(), Processes(), lambda: calls.append(("recover",))):
@@ -558,7 +700,7 @@ def test_lifecycle_confirms_lost_maintenance_reply_by_acquiring_instance_mutex()
         def release(self, handle): calls.append(("release", handle))
     class Control:
         def identity(self): return {"product": "Branchglance", "pid": 42}
-        def maintenance_exit(self): calls.append(("maintenance", "response-lost")); return None
+        def maintenance_exit(self, timeout=2.0): calls.append(("maintenance", "response-lost")); return None
     class Processes:
         def wait_for_instance_exit(self, _timeout): pytest.fail("lost reply must be resolved by mutex ownership")
     with Lifecycle(Mutex(), Control(), Processes(), lambda: None):
