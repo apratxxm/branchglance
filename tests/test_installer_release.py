@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import time
 import sys
 from pathlib import Path
 
@@ -410,6 +412,33 @@ def test_restore_job_terminates_a_suspended_launcher_process_tree(tmp_path):
     assert child.terminate_tree(5.0)
     assert child.wait(timeout=1.0) is not None
     child.release_job()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job object integration check")
+def test_released_restore_job_leaves_its_live_child_running(tmp_path):
+    from branchglance_installer.windows import spawn_restore_job
+    child = spawn_restore_job([sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path)
+    pid = child.pid
+    try:
+        child.release_job()  # authenticated health succeeded; setup lets go of the Job
+        del child
+        import gc; gc.collect()
+        time.sleep(0.5)
+        assert _process_alive(pid), "a released restore Job must not kill the restored app"
+    finally:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+
+
+def _process_alive(pid: int) -> bool:
+    import ctypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel.OpenProcess(0x1000 | 0x00100000, False, pid)  # QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+    if not handle:
+        return False
+    try:
+        return kernel.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT: still running
+    finally:
+        kernel.CloseHandle(handle)
 
 
 @pytest.mark.parametrize("running,interrupt,should_relaunch", [(True, None, True),

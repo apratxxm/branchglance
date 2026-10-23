@@ -481,10 +481,26 @@ class _JobTrackedProcess:
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, wintypes.INT, ctypes.c_void_p, wintypes.DWORD]
         kernel.SetInformationJobObject.restype = wintypes.BOOL
-        limits = _JOB_BASIC_LIMIT_INFORMATION()  # clear KILL_ON_JOB_CLOSE after authenticated health succeeds
-        if not kernel.SetInformationJobObject(self.job, self.BASIC_LIMIT_CLASS, ctypes.byref(limits),
+        kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, wintypes.INT, ctypes.c_void_p, wintypes.DWORD,
+                                                     ctypes.POINTER(wintypes.DWORD)]
+        kernel.QueryInformationJobObject.restype = wintypes.BOOL
+
+        def query() -> _JOB_EXTENDED_LIMIT_INFORMATION:
+            info = _JOB_EXTENDED_LIMIT_INFORMATION()
+            if not kernel.QueryInformationJobObject(self.job, self.EXTENDED_LIMIT_CLASS, ctypes.byref(info),
+                                                    ctypes.sizeof(info), None):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return info
+
+        # KILL_ON_JOB_CLOSE is an extended limit: clearing it through the basic class reports
+        # success but leaves the flag set, which would kill the restored app on close.
+        limits = query()
+        limits.BasicLimitInformation.LimitFlags &= ~self.KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(self.job, self.EXTENDED_LIMIT_CLASS, ctypes.byref(limits),
                                               ctypes.sizeof(limits)):
             raise ctypes.WinError(ctypes.get_last_error())
+        if query().BasicLimitInformation.LimitFlags & self.KILL_ON_JOB_CLOSE:
+            raise OSError("restore Job still kills its process on close")
         self.close_job()
 
     def __del__(self):
