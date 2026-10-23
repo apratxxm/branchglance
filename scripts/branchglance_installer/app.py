@@ -8,12 +8,13 @@ lock and the user-facing messages. Every native boundary is injectable.
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
 import time
 import uuid
+import ctypes
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -27,6 +28,45 @@ from .integration import Integrations
 from .lifecycle import Lifecycle
 from .preflight import HostInfo, check_host, staged_self_test
 
+FOLDERID_DESKTOP = "B4BFCC3A-DB2C-424C-B029-7FE99A87C641"
+FOLDERID_PROGRAMS = "A77F5D77-2E2B-44C3-A6A2-ABA601054A51"
+FOLDERID_STARTUP = "B97D20BB-F46A-4C97-BA10-5E3608430854"
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", ctypes.c_uint32), ("Data2", ctypes.c_uint16), ("Data3", ctypes.c_uint16),
+                ("Data4", ctypes.c_ubyte * 8)]
+
+    @classmethod
+    def from_text(cls, text: str):
+        import uuid as uuid_module
+        value = uuid_module.UUID(text)
+        result = cls()
+        ctypes.memmove(ctypes.byref(result), value.bytes_le, 16)
+        return result
+
+
+def windows_known_folder(folder_id: str) -> Path | None:
+    """Resolve a Windows known folder; return None on unsupported systems or API failure."""
+    if os.name != "nt":
+        return None
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(_GUID), ctypes.c_uint32,
+                                             ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    output = ctypes.c_void_p()
+    guid = _GUID.from_text(folder_id)
+    hr = shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(output))
+    if hr < 0 or not output.value:
+        return None
+    try:
+        value = ctypes.wstring_at(output.value)
+        return Path(value) if value else None
+    finally:
+        ole32.CoTaskMemFree(output)
+
 
 @dataclass
 class Paths:
@@ -36,16 +76,26 @@ class Paths:
     product_root: Path
     temp: Path
     desktop: Path | None = None
+    home: Path | None = None
 
     @classmethod
-    def for_user(cls, environ=None) -> "Paths":
+    def for_user(cls, environ=None, *, known_folder_resolver=None) -> "Paths":
         env = os.environ if environ is None else environ
         local = Path(env["LOCALAPPDATA"])
         roaming = Path(env["APPDATA"])
-        menu = roaming / "Microsoft" / "Windows" / "Start Menu" / "Programs"
-        return cls(root=local / "Programs" / "Branchglance", start_menu=menu, startup=menu / "Startup",
+        home = Path(env.get("USERPROFILE") or Path.home())
+        resolve = known_folder_resolver or windows_known_folder
+        def known(folder_id):
+            try:
+                return resolve(folder_id)
+            except Exception:
+                return None
+        desktop = known(FOLDERID_DESKTOP) or home / "Desktop"
+        menu = known(FOLDERID_PROGRAMS) or roaming / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+        startup = known(FOLDERID_STARTUP) or menu / "Startup"
+        return cls(root=local / "Programs" / "Branchglance", start_menu=menu, startup=startup,
                    product_root=local / "Branchglance", temp=Path(env.get("TEMP") or env["LOCALAPPDATA"]),
-                   desktop=Path(env.get("USERPROFILE", str(local))) / "Desktop")
+                   desktop=desktop, home=home)
 
 
 @dataclass
@@ -298,6 +348,17 @@ def uninstall(paths: Paths, native: Native) -> dict:
         raise SafetyError("Run the Branchglance uninstaller as a standard user, not as administrator.")
     with Lifecycle(native.mutex, native.control, native.processes, lambda: None):
         root = paths.root
+        claude_home = Path(os.environ.get("CLAUDE_HOME") or (paths.home or Path.home()) / ".claude")
+        claude_settings = claude_home / "settings.json"
+        try:
+            from token_tracker import claude_hook_install
+            claude_integration = claude_hook_install.uninstall(
+                settings_path=claude_settings, data_directory=paths.product_root,
+                command=claude_hook_install.default_command(executable=paths.root / LAUNCHER))
+        except Exception as exc:
+            claude_integration = {"ok": False, "changed": False, "backup": None,
+                                  "consentRemoved": False, "hooksLeft": "unknown",
+                                  "error": f"{type(exc).__name__}: {exc}"}
         pointer = root / "current.json"
         version = "0.0.0+unknown"
         try:
@@ -307,10 +368,14 @@ def uninstall(paths: Paths, native: Native) -> dict:
         except (SafetyError, KeyError, TypeError):
             pass
         integrations = _integrations(paths, native, version)
-        uninstall_owned_root(root, integration_remove=integrations.remove, after_mutation=native.after_mutation,
-                             integration_snapshot=integrations.snapshot,
-                             fs=native.file_system or LocalFileSystem())
-    return {"uninstalled": str(paths.root), "keptData": str(paths.product_root)}
+        if os.path.lexists(root):
+            uninstall_owned_root(root, integration_remove=integrations.remove, after_mutation=native.after_mutation,
+                                 integration_snapshot=integrations.snapshot,
+                                 fs=native.file_system or LocalFileSystem())
+        else:
+            integrations.remove()
+    return {"uninstalled": str(paths.root), "keptData": str(paths.product_root),
+            "claudeIntegration": claude_integration}
 
 
 def rollback(paths: Paths, native: Native) -> dict:
@@ -361,8 +426,16 @@ def main(argv=None, *, role: str = "setup", paths: Paths | None = None, native: 
                     or is_reparse(executable) or not executable.is_file()):
                 raise SafetyError("Uninstall worker is not the issued UUID-named temp executable")
             try:
-                uninstall(paths, native)
-                ui.info("Branchglance was removed. Your settings and history were kept.")
+                result = uninstall(paths, native)
+                claude = result["claudeIntegration"]
+                if claude.get("ok") and not claude.get("hooksLeft"):
+                    ui.info("Branchglance and its Claude Code hooks were removed. Your settings and history were kept.")
+                elif claude.get("ok"):
+                    ui.info("Branchglance was removed. Mixed Claude Code hook groups were preserved. "
+                            "Your settings and history were kept.")
+                else:
+                    ui.info("Branchglance was removed. Some Claude Code hooks could not be removed: "
+                            f"{claude.get('error') or 'settings could not be updated'}. Your settings and history were kept.")
             finally:
                 if getattr(sys, "frozen", False) or executable.name.startswith("Branchglance-uninstall-"):
                     from .windows import schedule_self_delete
