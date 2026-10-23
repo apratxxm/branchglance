@@ -34,8 +34,8 @@ for(const m of css.matchAll(/font(?:-size)?:[^;}]*?(\d+(?:\.\d+)?)px/g)) assert.
 // ---------- VM with DOM stubs ----------
 const nodes=new Map();
 function node(selector){
-  if(!nodes.has(selector))nodes.set(selector,{innerHTML:"",textContent:"",value:"",hidden:false,title:"",className:"",dataset:{},style:{setProperty(k,v){this[k]=v;}},
-    contains(){return false},querySelectorAll(){return []},setAttribute(){},getAttribute(){return null},classList:{toggle(){},add(){},remove(){}}});
+  if(!nodes.has(selector))nodes.set(selector,{innerHTML:"",textContent:"",value:"",hidden:false,title:"",className:"",dataset:{},attributes:{},style:{setProperty(k,v){this[k]=v;}},
+    contains(){return false},querySelectorAll(){return []},setAttribute(name,value){this.attributes[name]=String(value);},getAttribute(name){return this.attributes[name]??null;},removeAttribute(name){delete this.attributes[name];},classList:{toggle(){},add(){},remove(){}}});
   return nodes.get(selector);
 }
 const saved=new Map();
@@ -57,7 +57,7 @@ class RunwayDate extends Date { constructor(...args){super(...(args.length?args:
 const runwayNodes=new Map();
 function runwayNode(selector){
   if(!runwayNodes.has(selector))runwayNodes.set(selector,{innerHTML:"",textContent:"",value:"",hidden:false,title:"",className:"",dataset:{},style:{setProperty(k,v){this[k]=v;}},
-    contains(){return false},querySelectorAll(){return []},setAttribute(){},getAttribute(){return null},removeAttribute(){},classList:{toggle(){},add(){},remove(){},contains(){return false}}});
+    attributes:{},contains(){return false},querySelectorAll(){return []},setAttribute(name,value){this.attributes[name]=String(value);},getAttribute(name){return this.attributes[name]??null;},removeAttribute(name){delete this.attributes[name];},classList:{toggle(){},add(){},remove(){},contains(){return false}}});
   return runwayNodes.get(selector);
 }
 const runwaySaved=new Map();
@@ -234,14 +234,14 @@ assert.equal(T.ageShort(fixedNow-2*86400000),"2d");
   assert.equal(T.resetParts("reset unavailable").time,"—:—");
   assert.equal(T.resetAt({reset:"resets 1h 00m"},new Date(fixedNow-60000).toISOString()),fixedNow+3540000);
   const low=T.resetView({fiveHour:{percent:94,resetAt:at(0,3,8)},limitsUpdatedAt:new Date(fixedNow).toISOString()},"fiveHour");
-  assert.equal(low.left,"6% left");assert.equal(low.tone,"err");assert.equal(low.countdown,"38m");assert.equal(low.stale,"");
-  assert.equal(low.leftPercent,6);
+  assert.equal(low.usedText,"94% used");assert.equal(low.usedPercent,94);assert.equal(low.tone,"err");assert.equal(low.countdown,"38m");assert.equal(low.stale,"");
   const weeklyLow=T.resetView({weekly:{percent:88,resetAt:at(2,8,30)},limitsUpdatedAt:ago(120)},"weekly");
-  assert.equal(weeklyLow.tone,"err");assert.equal(weeklyLow.left,"12% left");assert.equal(weeklyLow.stale,"");   // sample age is stated once, on the 5-hour row
-  assert.equal(T.resetView({weekly:{percent:71},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"err"); // 29% remaining
-  assert.equal(T.resetView({weekly:{percent:70},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn"); // 30% remaining
-  assert.equal(T.resetView({weekly:{percent:51},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn"); // 49% remaining
-  assert.equal(T.resetView({weekly:{percent:50},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,""); // 50% remaining
+  assert.equal(weeklyLow.tone,"err");assert.equal(weeklyLow.usedText,"88% used");assert.equal(weeklyLow.stale,"");   // sample age is stated once, on the 5-hour row
+  assert.equal(T.resetView({weekly:{percent:71},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"err");
+  assert.equal(T.resetView({weekly:{percent:70},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"err");
+  assert.equal(T.resetView({weekly:{percent:69},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn");
+  assert.equal(T.resetView({weekly:{percent:50},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn");
+  assert.equal(T.resetView({weekly:{percent:49},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"");
   assert.equal(T.resetView({fiveHour:{percent:12},limitsUpdatedAt:ago(120)},"fiveHour").stale,"sampled 2h ago");
   assert.equal(T.resetView({fiveHour:{percent:40},limitsUpdatedAt:ago(0)},"fiveHour").tone,"");
   T.renderResets([{name:"Codex",fiveHour:{percent:94,resetAt:at(0,3,8)},weekly:{percent:12,resetAt:at(5,22,6)},limitsUpdatedAt:new Date(fixedNow).toISOString()}]);
@@ -249,9 +249,11 @@ assert.equal(T.ageShort(fixedNow-2*86400000),"2d");
   assert.equal(node("#r0-fiveHour-left").className,"rr-left t-err");
   assert.equal(node("#r0-weekly-day").textContent,"Mon 28 Sep");
   assert.equal(node("#r0-weekly-cd").textContent,"5d 19h");
-  assert.equal(node("#r0-fiveHour-bar").style.width,"6%");
-  assert.equal(node("#r0-weekly-bar").style.width,"88%");
-  assert.match(node("#resets").innerHTML,/5-hour limit remaining/);
+  assert.equal(node("#r0-fiveHour-bar").style.width,"94%");
+  assert.equal(node("#r0-weekly-bar").style.width,"12%");
+  assert.equal(node("#r0-fiveHour-meter").getAttribute("aria-valuenow"),"94");
+  assert.equal(node("#r0-fiveHour-meter").getAttribute("aria-valuetext"),"94% used");
+  assert.match(node("#resets").innerHTML,/5-hour limit used/);
 }
 
 // ---------- forest, parent roll-up, agent tray ----------

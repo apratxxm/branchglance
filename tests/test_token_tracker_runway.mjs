@@ -25,8 +25,8 @@ assert.match(cssRule('.layout'),/overflow-y:auto/);assert.match(cssRule('.layout
 assert.match(cssRule('.chat-list'),/flex:none/);assert.match(cssRule('.chat-list'),/overflow:visible/);
 assert.match(cssRule('.strip'),/display:none!important/,'the desktop attention strip stays outside the notch roster');
 assert.match(cssRule('.runway-question-detail'),/max-height:none/);assert.match(cssRule('.runway-question-detail'),/overflow:visible/);
-// Quota readings and their meter colors keep their existing contracts.
-assert.match(cssRule('.meter i'),/background:var\(--blue\)/);
+// Quota meters show usage while preserving semantic warning and error colors.
+assert.match(cssRule('.meter i'),/background:var\(--source-accent\)/);
 assert.match(cssRule('.meter i.t-attn'),/background:var\(--orange\)/);
 assert.match(cssRule('.meter i.t-err'),/background:var\(--red\)/);
 assert.doesNotMatch(css,/^\.t-live,\.t-attn,\.t-err/m); // telemetry overrides cannot recolor quotas
@@ -96,7 +96,7 @@ assert.match(css,/body:not\(\.phone\) \.ag\.runway-agent::before,[\s\S]*?body:no
 const cssVars=Object.fromEntries([...css.matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})/gi)].map(([,name,value])=>[name,value]));
 const luminance=hex=>{const rgb=hex.match(/[\da-f]{2}/gi).map(channel=>parseInt(channel,16)/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4);return .2126*rgb[0]+.7152*rgb[1]+.0722*rgb[2];};
 const contrast=(a,b)=>{const values=[luminance(a),luminance(b)].sort((x,y)=>y-x);return (values[0]+.05)/(values[1]+.05);};
-for(const color of [cssVars.ink,cssVars.muted,cssVars.green,cssVars.orange,cssVars.red,cssVars.blue])for(const surface of [cssVars.paper,cssVars.card,"#282116"])assert.ok(contrast(color,surface)>=4.5,`${color} must meet 4.5:1 on ${surface}`);
+for(const color of [cssVars.ink,cssVars.muted,cssVars.green,cssVars.orange,cssVars.red])for(const surface of [cssVars.paper,cssVars.card,"#282116"])assert.ok(contrast(color,surface)>=4.5,`${color} must meet 4.5:1 on ${surface}`);
 
 const nodes=new Map(),saved=new Map(),scheduledTimers=new Map(),openRequests=[],dragRegionNodes=[],fixedNow=new Date("2026-10-06T12:00:00Z").getTime();let timerSequence=0,testNow=fixedNow;
 const fakeSetTimeout=(callback,delay)=>{const id=++timerSequence;scheduledTimers.set(id,{callback,delay});return id;};
@@ -736,7 +736,7 @@ assert.equal(T.notch.autoTimer,burstTimer,"a burst of new children shares the fi
 }
 T.setNotch(false);T.notch.activeKeys=null;T.notch.workStates.clear();
 const quotas=T.resetView(provider,"fiveHour");
-assert.equal(quotas.left,"8% left");assert.equal(quotas.countdown,"25m 00s");assert.equal(quotas.tone,"err");
+assert.equal(quotas.usedText,"92% used");assert.equal(quotas.countdown,"25m 00s");assert.equal(quotas.tone,"err");
 assert.equal(T.resetView(provider,"weekly").countdown,"22h 13m","weekly countdowns show hours/minutes while the target is within a day");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000+3*86400+7260}},"weekly").countdown,"3d 2h","weekly countdowns show day/hour remaining for distant targets");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000-1}},"weekly").countdown,"due");
@@ -744,7 +744,7 @@ assert.equal(T.resetView({...provider,weekly:{percent:78},limitsUpdatedAt:new Da
 assert.equal(T.watcherPopoverHTML('Codex'),'<p class="policy-notice" data-policy-warning hidden></p><button class="ghost" data-action="reset-settings">Reset action settings</button>');
 assert.equal(T.watcherTone(null,'Codex').tip,'');
 const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
-assert.equal(staleQuota.measured,false);assert.equal(staleQuota.leftLabel,"");assert.equal(staleQuota.day,"");assert.equal(staleQuota.time,"");assert.equal(staleQuota.countdown,"");assert.equal(staleQuota.stale,"");
+assert.equal(staleQuota.measured,false);assert.equal(staleQuota.usedLabel,"");assert.equal(staleQuota.day,"");assert.equal(staleQuota.time,"");assert.equal(staleQuota.countdown,"");assert.equal(staleQuota.stale,"");
 assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);
 assert.equal(node('#r0-fiveHour-left').innerHTML,'<b></b><i></i>');
@@ -762,11 +762,11 @@ for(const verificationEvidence of ["stable_deadline","unknown",undefined]){
   const unverified={...verifiedWatcher,providers:{Codex:{...verifiedWatcher.providers.Codex,verificationEvidence}}};
   assert.doesNotMatch(T.watcherTone(unverified,"Codex").tip,/✓/);
 }
-assert.equal(node("#r0-fiveHour-bar").style.width,"8%");
-assert.equal(node("#r0-weekly-bar").style.width,"22%");
-for(const [remaining,tone] of [[50,""],[49,"attn"],[30,"attn"],[29,"err"]]){
-  const view=T.resetView({fiveHour:{percent:100-remaining},limitsUpdatedAt:new Date(fixedNow).toISOString()},"fiveHour");
-  assert.equal(view.left,remaining+"% left");assert.equal(view.tone,tone);
+assert.equal(node("#r0-fiveHour-bar").style.width,"92%");
+assert.equal(node("#r0-weekly-bar").style.width,"78%");
+for(const [used,tone] of [[49,""],[50,"attn"],[69,"attn"],[70,"err"]]){
+  const view=T.resetView({fiveHour:{percent:used},limitsUpdatedAt:new Date(fixedNow).toISOString()},"fiveHour");
+  assert.equal(view.usedText,used+"% used");assert.equal(view.tone,tone);
 }
 
 // Expanded height tracks visible list content and excludes hidden blocks and padding buffers.
@@ -1121,6 +1121,8 @@ vm.createContext(phoneContext);vm.runInContext(app,phoneContext);
 const P=phoneContext.window.__tokenTrackerTest;
 assert.equal(P.phone,true);assert.equal(P.runway,true);
 assert.equal(P.resetView(provider,"fiveHour").countdown,"25m 00s");
+assert.equal(P.resetView(provider,"fiveHour").usedText,"92% used");
+P.renderResets([{name:"Codex",...provider}]);assert.equal(node("#r0-fiveHour-left").innerHTML,"<b>92%</b><i>used</i>");
 assert.equal(P.resetView(provider,"weekly").countdown,"","phone mode keeps the weekly countdown slot blank");
 const phoneRoot={...root,id:"phone-root"},phoneChild={...child,id:"phone-child",parentId:"phone-root",activity:{kind:"reading",files:["A:\\src\\phone.js"],observedAt:ago(0)}},
   phoneQuestionChild={...child,id:"phone-question-child",parentId:"phone-root",status:"needs-input",pendingQuestion:"Choose a safe action",pendingQuestionAt:ago(1),pendingOptions:["Read only","Wait"],activity:null};

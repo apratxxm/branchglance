@@ -5,16 +5,26 @@ import vm from "node:vm";
 const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
 const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
+const refined=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
+const mainCss=fs.readFileSync(new URL("../token_tracker/static/styles.css",import.meta.url),"utf8");
 const fixedNow=new Date("2026-10-06T12:00:00Z").getTime();
 const ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
 
 assert.match(page,/id="source-switch"[^>]*role="group"[^>]*hidden/,"the switch ships hidden");
 assert.match(page,/data-action="source" data-source="Codex" aria-pressed="true"/);
 assert.match(page,/data-action="source" data-source="Claude" aria-pressed="false"/);
+assert.match(page,/data-source="Codex"[^>]*aria-pressed="true"><svg class="ic source-mark"/);
+assert.match(page,/data-source="Claude"[^>]*aria-pressed="false"><svg class="ic source-mark"/);
 assert.ok(page.indexOf('id="source-switch"')>page.indexOf('id="monitor-toggle"')&&page.indexOf('id="source-switch"')<page.indexOf('class="tb-fill'),"the switch lives in the controls band");
 assert.match(css,/\.source-dot\{[^}]*position:absolute/);
+assert.match(css,/body\[data-source="Claude"\]\{[^}]*--source-accent:#e8813f/);
+assert.match(css,/--source-glow-primary:#ffb14a/);assert.match(css,/--source-glow-secondary:#d64a2f/);
+assert.match(refined,/--blue:var\(--source-accent\)/,"the source accent replaces fixed blue in refined mode");
+assert.doesNotMatch(refined,/#425df6|#7040ff|#b99aff/,"the refined Claude palette leaves no fixed Codex blue or purple accent");
+assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);assert.match(mainCss,/\.meter i\{[^}]*background:var\(--source-accent\)/);
+assert.match(css,/transition:--source-accent var\(--motion-info\)/,"source colors transition with the selected provider");
 
-function boot(initialStorage={}) {
+function boot(initialStorage={}, {compact=false}={}) {
   const nodes=new Map(),saved=new Map(Object.entries(initialStorage)),timers=new Map();let sequence=0;
   const node=selector=>{
     if(!nodes.has(selector))nodes.set(selector,{innerHTML:"",textContent:"",value:"",hidden:false,title:"",className:"",dataset:{},attributes:{},offsetHeight:0,
@@ -29,7 +39,7 @@ function boot(initialStorage={}) {
   };
   const segments=[segment("Codex"),segment("Claude")];
   class TestDate extends Date {constructor(...args){super(...(args.length?args:[fixedNow]));}static now(){return fixedNow;}}
-  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:node,
+  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:compact,__TOKEN_TRACKER_COMPACT__:compact},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:node,
     querySelectorAll(selector){return selector==="#source-switch [data-source]"?segments:[];},documentElement:{style:{setProperty(){}}},hidden:false,activeElement:null},
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))},fetch:async()=>({ok:true,json:async()=>({ok:true})}),Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,
     setTimeout:callback=>{timers.set(++sequence,callback);return sequence;},clearTimeout:id=>timers.delete(id),setInterval(){return 0;}};
@@ -77,7 +87,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.match(node("#notch-counts").innerHTML,/data-count-slot="groups"[^>]*aria-label="2 /,"counts follow the selected source");
   assert.match(node("#notch-counts").innerHTML,/data-count-slot="waiting"(?![^>]*is-empty)/,"the Claude waiting row counts as waiting");
   assert.equal(node("#resets").dataset.shape,"Claude","quota bands rebuild for the selected provider");
-  assert.match(node("#r0-fiveHour-left").innerHTML,/65%/,"the five-hour band shows Claude's reading, not Codex's");
+  assert.match(node("#r0-fiveHour-left").innerHTML,/35%/,"the five-hour band shows Claude usage");
   assert.equal(context.document.body.dataset.source,"Claude","the provider accent follows the selected source");
   assert.equal(segments[1].attrs["aria-pressed"],"true");assert.equal(segments[0].attrs["aria-pressed"],"false");
   assert.deepEqual({...T.widgetLock},lock,"lock state is untouched by a source switch");assert.deepEqual({...T.keepOpenState},keep,"keep-open state is untouched");
@@ -112,6 +122,56 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   T.setSource("Claude");assert.equal(T.state.sourceAttention.has("Claude"),false,"viewing the source clears the flag");assert.equal(segments[1].dot.attrs["aria-hidden"],"true");
   T.render(snapshotOf({codex:[codexChat("c1",running({activeRunStartedAt:ago(0)}))],claude:[claudeChat("s1")]}));
   assert.ok(T.state.sourceAttention.has("Codex"),"the symmetric case flags Codex while Claude is selected");
+}
+
+// Compact auto-open follows the triggering provider without persisting it as a user choice.
+{
+  const codexOnly=boot({branchglanceSource:"Claude"},{compact:true});
+  codexOnly.T.render(snapshotOf({codex:[codexChat("c1",running({activityAt:ago(0)}))],claude:[claudeChat("s1")]}));
+  assert.equal(codexOnly.T.state.source,"Codex","Codex work selects Codex before auto-reveal");
+  assert.equal(codexOnly.saved.get("branchglanceSource"),"Claude","automatic switching does not overwrite the saved choice");
+  assert.equal(codexOnly.saved.has("branchglanceSourceManualAt"),false,"auto-follow creates no manual override timestamp");
+
+  const claudeOnly=boot(undefined,{compact:true});
+  claudeOnly.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(claudeOnly.T.state.source,"Claude","Claude work selects Claude before auto-reveal");
+  assert.equal(claudeOnly.saved.has("branchglanceSource"),false,"the automatic Claude switch is not persisted");
+  assert.equal(claudeOnly.saved.has("branchglanceSourceManualAt"),false);
+
+  const questionWins=boot(undefined,{compact:true});
+  questionWins.T.render(snapshotOf({codex:[codexChat("c1",running({activityAt:ago(0)}))],claude:[claudeChat("s1",running({status:"needs-input",pendingQuestion:"Approve?",pendingQuestionAt:ago(2),activityAt:ago(2)}))]}));
+  assert.equal(questionWins.T.state.source,"Claude","a pending question wins a simultaneous source tie");
+
+  const newestWins=boot(undefined,{compact:true});
+  newestWins.T.render(snapshotOf({codex:[codexChat("c1",running({activityAt:ago(2)}))],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(newestWins.T.state.source,"Claude","without a question, newest activity wins the tie");
+}
+
+// Manual source choices and explicit opens protect the selected provider.
+{
+  const manual=boot({branchglanceSource:"Codex"},{compact:true});
+  manual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
+  manual.T.setSource("Codex");
+  assert.equal(manual.saved.get("branchglanceSourceManualAt"),String(fixedNow),"manual override time survives reload");
+  assert.equal(boot(Object.fromEntries(manual.saved),{compact:true}).T.state.sourceManualAt,fixedNow,"the 60-second override window reloads with the manual preference");
+  manual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(manual.T.state.source,"Codex","a source choice in the last 60 seconds wins over auto-follow");
+  const restoredManual=boot(Object.fromEntries(manual.saved),{compact:true});
+  restoredManual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
+  restoredManual.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(restoredManual.T.state.source,"Codex","the persisted manual window remains active after reload");
+
+  const expired=boot({branchglanceSource:"Codex"},{compact:true});
+  expired.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
+  expired.T.setSource("Codex");expired.T.state.sourceManualAt=fixedNow-60001;
+  expired.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(expired.T.state.source,"Claude","manual preference protection expires after 60 seconds");
+
+  const explicitlyOpen=boot({branchglanceSource:"Codex"},{compact:true});
+  explicitlyOpen.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
+  explicitlyOpen.T.notch.manual=true;
+  explicitlyOpen.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
+  assert.equal(explicitlyOpen.T.state.source,"Codex","an explicitly open panel prevents auto-follow");
 }
 
 // The runway Show hidden toggle restores explicitly hidden active chats.
