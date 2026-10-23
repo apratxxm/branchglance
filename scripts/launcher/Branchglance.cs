@@ -54,7 +54,247 @@ public static class BranchglanceLauncher
     // Kept identical to scripts/branchglance_installer/core.py VERSION_RE: no empty dot segment.
     static readonly string VersionPattern = @"\A\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\+[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\z";
     const string Manifest = "release-manifest.json";
+    const string Product = "Branchglance";
+    const int MaxProbePackages = 4096; // one existence check per package; real machines exceed 128
+    const int RelaunchRequestLimit = 64 * 1024;
     static Stopwatch ActiveHookClock;
+
+    sealed class RelaunchRequest
+    {
+        public string Id;
+        public string[] Arguments;
+        public bool Guard;
+        public string TestReport;
+    }
+
+    static void LauncherLog(string message)
+    {
+        try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "Branchglance-launcher.log"),
+            DateTime.UtcNow.ToString("o") + " " + message + Environment.NewLine, Encoding.UTF8); } catch { }
+    }
+
+    public static string ProbeAppData(string localAppData, out long elapsedMs, string simulateRedirectRoot = null)
+    {
+        var clock = Stopwatch.StartNew();
+        string root = Path.Combine(localAppData, Product);
+        string id = Guid.NewGuid().ToString("N");
+        string name = ".branchglance-probe-" + id;
+        string probeDir = Path.Combine(root, name);
+        string probeFile = Path.Combine(probeDir, "probe.bin");
+        bool rootCreated = false;
+        var packageRoots = new List<string>();
+        var packageRootsBefore = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var packageCacheDirs = new List<string>();
+        var packageCacheDirsBefore = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var packageDirs = new List<string>();
+        string result = "unknown";
+        string reason = "probe did not complete";
+        try
+        {
+            if (!DirectoryExistsStrict(root))
+            {
+                try { Directory.CreateDirectory(root); rootCreated = true; }
+                catch (IOException) { if (!DirectoryExistsStrict(root)) throw; }
+            }
+            string packages = Path.Combine(localAppData, "Packages");
+            if (DirectoryExistsStrict(packages))
+            {
+                foreach (string package in Directory.EnumerateDirectories(packages))
+                {
+                    if (packageDirs.Count >= MaxProbePackages)
+                        throw new InvalidDataException("Package scan exceeded its bounded limit");
+                    string localCache = Path.Combine(package, "LocalCache");
+                    string local = Path.Combine(localCache, "Local");
+                    string packageRoot = Path.Combine(local, Product);
+                    bool cacheBefore, localBefore, rootBefore;
+                    try
+                    {
+                        cacheBefore = DirectoryExistsStrict(localCache);
+                        localBefore = DirectoryExistsStrict(local);
+                        rootBefore = DirectoryExistsStrict(packageRoot);
+                    }
+                    catch (IOException)
+                    {
+                        // Apps installed on another drive junction their LocalCache there.
+                        // Never probe or delete through a reparse point; skip that package.
+                        continue;
+                    }
+                    packageDirs.Add(package);
+                    packageCacheDirs.Add(localCache);
+                    packageCacheDirs.Add(local);
+                    if (cacheBefore) packageCacheDirsBefore.Add(localCache);
+                    if (localBefore) packageCacheDirsBefore.Add(local);
+                    packageRoots.Add(packageRoot);
+                    if (rootBefore) packageRootsBefore.Add(packageRoot);
+                }
+            }
+            Directory.CreateDirectory(probeDir);
+            using (var stream = new FileStream(probeFile, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                byte[] marker = Encoding.ASCII.GetBytes(id);
+                stream.Write(marker, 0, marker.Length);
+                stream.Flush(true);
+            }
+            if (simulateRedirectRoot != null)
+            {
+                bool allowed = false;
+                foreach (string branchRoot in packageRoots)
+                    if (String.Equals(Path.GetFullPath(branchRoot), Path.GetFullPath(simulateRedirectRoot), StringComparison.OrdinalIgnoreCase))
+                        allowed = true;
+                if (!allowed) throw new InvalidDataException("Redirect simulation must target a plain discovered package root");
+                string simulated = Path.Combine(simulateRedirectRoot, name);
+                Directory.CreateDirectory(simulated);
+                File.Copy(probeFile, Path.Combine(simulated, "probe.bin"), false);
+            }
+            if (packageDirs.Count == 0)
+            {
+                result = "not_redirected";
+                reason = null;
+            }
+            else
+            {
+                foreach (string localCache in packageRoots)
+                {
+                    if (!DirectoryExistsStrict(localCache)) continue;
+                    string candidate = Path.Combine(localCache, name);
+                    if (DirectoryExistsStrict(candidate) && FileExistsStrict(Path.Combine(candidate, "probe.bin")))
+                    {
+                        result = "redirected";
+                        reason = "probe subfolder appeared under a package LocalCache";
+                        break;
+                    }
+                }
+                if (result == "unknown") { result = "not_redirected"; reason = null; }
+            }
+        }
+        catch (Exception e) { result = "unknown"; reason = e.GetType().Name + ": " + e.Message; }
+        finally
+        {
+            try { if (FileExistsStrict(probeFile)) File.Delete(probeFile); } catch { result = "unknown"; reason = "probe file cleanup failed"; }
+            foreach (string packageRoot in packageRoots)
+            {
+                string candidate = Path.Combine(packageRoot, name);
+                try { if (FileExistsStrict(Path.Combine(candidate, "probe.bin"))) File.Delete(Path.Combine(candidate, "probe.bin")); } catch { result = "unknown"; reason = "redirected probe cleanup failed"; }
+                try { if (DirectoryExistsStrict(candidate)) Directory.Delete(candidate, false); } catch { result = "unknown"; reason = "redirected probe folder cleanup failed"; }
+            }
+            try { if (DirectoryExistsStrict(probeDir)) Directory.Delete(probeDir, false); } catch { result = "unknown"; reason = "probe folder cleanup failed"; }
+            foreach (string packageRoot in packageRoots)
+            {
+                if (!packageRootsBefore.Contains(packageRoot))
+                { try { if (DirectoryExistsStrict(packageRoot) && Directory.GetFileSystemEntries(packageRoot).Length == 0) Directory.Delete(packageRoot, false); } catch { } }
+            }
+            foreach (string cacheDir in packageCacheDirs)
+            {
+                if (!packageCacheDirsBefore.Contains(cacheDir))
+                { try { if (DirectoryExistsStrict(cacheDir) && Directory.GetFileSystemEntries(cacheDir).Length == 0) Directory.Delete(cacheDir, false); } catch { } }
+            }
+            if (rootCreated) { try { if (DirectoryExistsStrict(root) && Directory.GetFileSystemEntries(root).Length == 0) Directory.Delete(root, false); } catch { } }
+        }
+        clock.Stop();
+        elapsedMs = clock.ElapsedMilliseconds;
+        if (result == "unknown") LauncherLog("AppData probe unknown: " + reason);
+        return result;
+    }
+
+    static bool DirectoryExistsStrict(string path)
+    {
+        try
+        {
+            FileAttributes attrs = File.GetAttributes(path);
+            if ((attrs & FileAttributes.ReparsePoint) != 0) throw new IOException("reparse point in package cache");
+            return (attrs & FileAttributes.Directory) != 0;
+        }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+    }
+
+    static bool FileExistsStrict(string path)
+    {
+        try
+        {
+            FileAttributes attrs = File.GetAttributes(path);
+            if ((attrs & FileAttributes.ReparsePoint) != 0) throw new IOException("reparse point in package cache");
+            return (attrs & FileAttributes.Directory) == 0;
+        }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+    }
+
+    static string RequestMutexName(string root)
+    {
+        using (var sha = SHA256.Create())
+            return "Local\\Branchglance-Relaunch-" + Hex(sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToUpperInvariant()))).Substring(0, 32);
+    }
+
+    static string WriteRelaunchRequest(string root, string[] argv, string testReport = null)
+    {
+        string id = Guid.NewGuid().ToString("N");
+        string path = Path.Combine(root, ".relaunch-" + id + ".json");
+        var record = new Dictionary<string, object> {
+            { "schemaVersion", 1 }, { "id", id }, { "argv", argv },
+            { "created", DateTime.UtcNow.Ticks }, { "expires", (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds + 30 },
+            { "guard", true }
+        };
+        if (testReport != null) record["testReport"] = testReport;
+        byte[] bytes = Encoding.UTF8.GetBytes(Json.Serialize(record));
+        if (bytes.Length > RelaunchRequestLimit) throw new InvalidDataException("Relaunch arguments exceed the request limit");
+        using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+        return path;
+    }
+
+    static RelaunchRequest ConsumeRelaunchRequest(string root)
+    {
+        string mutexName = RequestMutexName(root);
+        using (var mutex = new Mutex(false, mutexName))
+        {
+            bool held = false;
+            try { try { held = mutex.WaitOne(750); } catch (AbandonedMutexException) { held = true; }
+                if (!held) throw new TimeoutException("Relaunch request lock is busy");
+                var valid = new List<Tuple<long, string, RelaunchRequest>>();
+                foreach (string path in Directory.GetFiles(root, ".relaunch-*.json"))
+                {
+                    string file = Path.GetFileName(path);
+                    Match match = Regex.Match(file, @"\A\.relaunch-([0-9a-f]{32})\.json\z");
+                    if (!match.Success) continue;
+                    try
+                    {
+                        var attrs = File.GetAttributes(path);
+                        var info = new FileInfo(path);
+                        if ((attrs & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 || info.Length > RelaunchRequestLimit) continue;
+                        var record = Object(Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)), "relaunch request");
+                        string id = GetString(record, "id");
+                        if (!String.Equals(id, match.Groups[1].Value, StringComparison.Ordinal)) continue;
+                        object schema, expiry, created, guard, rawArgs;
+                        if (!record.TryGetValue("schemaVersion", out schema) || !(schema is int) || (int)schema != 1
+                            || !record.TryGetValue("expires", out expiry) || !(expiry is long || expiry is int)
+                            || !record.TryGetValue("created", out created) || !(created is long || created is int)
+                            || !record.TryGetValue("guard", out guard) || !(guard is bool) || !(bool)guard
+                            || !record.TryGetValue("argv", out rawArgs) || !(rawArgs is object[])) continue;
+                        long expiryValue = Convert.ToInt64(expiry);
+                        object[] items = (object[])rawArgs;
+                        if (items.Length > 64) continue;
+                        var args = new List<string>();
+                        foreach (object item in items) { if (!(item is string)) { args.Clear(); break; } args.Add((string)item); }
+                        if (args.Count != items.Length || String.Join("", args.ToArray()).Length > 8192) continue;
+                        if (expiryValue <= (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds) { File.Delete(path); continue; }
+                        string report = record.ContainsKey("testReport") && record["testReport"] is string ? (string)record["testReport"] : null;
+                        valid.Add(Tuple.Create(Convert.ToInt64(created), path, new RelaunchRequest { Id=id, Arguments=args.ToArray(), Guard=true, TestReport=report }));
+                    }
+                    catch (FileNotFoundException) { }
+                    catch (DirectoryNotFoundException) { }
+                    catch (Exception e) { LauncherLog("Ignoring foreign relaunch request " + file + ": " + e.Message); }
+                }
+                if (valid.Count == 0) return null;
+                // Explorer cannot carry an ID. Consume the oldest valid request under this short mutex.
+                valid.Sort((left, right) => left.Item1.CompareTo(right.Item1));
+                var selected = valid[0];
+                File.Delete(selected.Item2); // one-use: delete before forwarding argv
+                return selected.Item3;
+            }
+            finally { if (held) mutex.ReleaseMutex(); }
+        }
+    }
 
     static Dictionary<string, object> Object(object value, string label)
     {
@@ -270,13 +510,75 @@ public static class BranchglanceLauncher
         string root = AppDomain.CurrentDomain.BaseDirectory;
         // Hook mode never shows UI and never fails Claude Code.
         if (args.Length > 0 && args[0] == "--claude-hook") return RunHook(root, args);
+        if (args.Length > 0 && args[0] == "--appdata-probe" && args.Length == 2)
+        {
+            long elapsed;
+            string state = ProbeAppData(args[1], out elapsed);
+            Console.WriteLine(state + " " + elapsed.ToString() + "ms");
+            return state == "redirected" ? 10 : state == "unknown" ? 11 : 0;
+        }
+        if (args.Length > 0 && args[0] == "--appdata-probe-simulate" && args.Length == 3)
+        {
+            long elapsed;
+            string state = ProbeAppData(args[1], out elapsed, args[2]);
+            Console.WriteLine(state + " " + elapsed.ToString() + "ms");
+            return state == "redirected" ? 10 : state == "unknown" ? 11 : 0;
+        }
+        if (args.Length == 2 && args[0] == "--explorer-roundtrip-test")
+        {
+            try
+            {
+                string[] expected = { "--install-handoff", "a1b2c3d4e5f6", "--background", "--recenter" };
+                WriteRelaunchRequest(root, expected, args[1]);
+                string own = Process.GetCurrentProcess().MainModule.FileName;
+                var explorerTest = Process.Start(new ProcessStartInfo("explorer.exe", Quote(own)) { UseShellExecute = true });
+                return explorerTest == null ? 1 : 0;
+            }
+            catch (Exception e) { LauncherLog("Explorer round-trip test failed to start: " + e.Message); return 1; }
+        }
         try
         {
+            string ownPath = Process.GetCurrentProcess().MainModule.FileName;
+            RelaunchRequest request = null;
+            string[] launchArgs = args;
+            if (args.Length == 0)
+            {
+                request = ConsumeRelaunchRequest(root);
+                if (request != null)
+                {
+                    if (request.TestReport != null)
+                    {
+                        File.WriteAllText(request.TestReport, Json.Serialize(new Dictionary<string, object> {
+                            { "id", request.Id }, { "argv", request.Arguments } }), new UTF8Encoding(false));
+                        return 0;
+                    }
+                    launchArgs = request.Arguments;
+                }
+            }
+            string appDataState = "not_redirected";
+            if (request == null)
+            {
+                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                long probeMilliseconds;
+                appDataState = ProbeAppData(local, out probeMilliseconds);
+                if (appDataState == "redirected")
+                {
+                    WriteRelaunchRequest(root, launchArgs);
+                    Process explorer = Process.Start(new ProcessStartInfo("explorer.exe", Quote(ownPath)) { UseShellExecute = true });
+                    if (explorer == null) throw new InvalidOperationException("Explorer did not accept the launcher request");
+                    return 0;
+                }
+            }
             string release = ResolveRelease(root, Path.Combine(root, "current.json"));
-            var start = new ProcessStartInfo(Path.Combine(release, "BranchglanceApp.exe"));
+            string app = Path.Combine(release, "BranchglanceApp.exe");
+            var start = new ProcessStartInfo(app);
             start.WorkingDirectory = release;
             start.UseShellExecute = false;
-            start.Arguments = String.Join(" ", new List<string>(args).ConvertAll(Quote).ToArray());
+            var forwardedArgs = new List<string>(launchArgs);
+            forwardedArgs.RemoveAll(a => a == "--launcher-appdata-ok" || a == "--launcher-appdata-unknown");
+            if (request != null || appDataState == "not_redirected") forwardedArgs.Add("--launcher-appdata-ok");
+            else if (appDataState == "unknown") forwardedArgs.Add("--launcher-appdata-unknown");
+            start.Arguments = String.Join(" ", forwardedArgs.ConvertAll(Quote).ToArray());
             Process.Start(start);
             return 0;
         }
