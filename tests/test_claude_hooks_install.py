@@ -179,7 +179,7 @@ def test_default_command_quotes_shell_metacharacters_as_literal_arguments():
     assert command.count("'") > 4
 
 
-def test_concurrent_modification_aborts_and_keeps_backup(env, monkeypatch):
+def test_concurrent_modification_retries_and_preserves_newer_settings(env, monkeypatch):
     settings, data_dir = env
     settings.write_text(json.dumps({"hooks": {}}), encoding="utf-8")
     real_create = installer._unique_adjacent
@@ -192,14 +192,16 @@ def test_concurrent_modification_aborts_and_keeps_backup(env, monkeypatch):
         return created
 
     monkeypatch.setattr(installer, "_unique_adjacent", racing_create)
-    with pytest.raises(installer.HookInstallError, match="changed while editing"):
-        installer.install(settings, CMD, data_dir)
-    assert load(settings) == {"hooks": {}, "model": "changed-meanwhile"}
-    assert not (data_dir / claude_hook.CONSENT_NAME).exists()
+    result = installer.install(settings, CMD, data_dir)
+    assert result["ok"] and result["changed"]
+    assert load(settings)["model"] == "changed-meanwhile"
+    assert set(load(settings)["hooks"]) == set(installer.EVENTS)
+    assert (data_dir / claude_hook.CONSENT_NAME).exists()
     remaining = list(settings.parent.iterdir())
-    assert len(remaining) == 2 and settings in remaining
-    backup = next(p for p in remaining if p != settings)
-    assert backup.read_text() == '{"hooks": {}}'
+    assert len(remaining) == 3 and settings in remaining
+    backups = [p for p in remaining if p != settings]
+    assert any(backup.read_text() == '{"hooks": {}}' for backup in backups)
+    assert any('"model": "changed-meanwhile"' in backup.read_text() for backup in backups)
 
 
 def test_uninstall_removes_only_marked_groups(env):
@@ -488,12 +490,38 @@ def test_uninstall_reports_hooks_left_when_write_fails(env, monkeypatch):
     def refuse(*_a, **_k):
         raise installer.HookInstallError("could not write the settings update (PermissionError)")
 
-    monkeypatch.setattr(installer, "_write_checked", refuse)
+    monkeypatch.setattr(installer, "_write_transform_checked", refuse)
     result = installer.uninstall(settings, data_dir)
     assert result["ok"] is False and result["consentRemoved"] is True
     assert result["hooksLeft"] == sorted(installer.EVENTS)
     assert settings.read_bytes() == before
     assert not (data_dir / claude_hook.CONSENT_NAME).exists()
+
+
+def test_uninstall_retries_when_settings_change_before_replace_and_preserves_newer_content(env, monkeypatch):
+    settings, data_dir = env
+    installer.install(settings, CMD, data_dir)
+    original_unique_adjacent = installer._unique_adjacent
+    injected = False
+
+    def race_on_temp(path, label, payload):
+        nonlocal injected
+        result = original_unique_adjacent(path, label, payload)
+        if label == "tmp" and not injected:
+            injected = True
+            latest = load(settings)
+            latest["concurrentClaudeChange"] = {"value": "keep"}
+            settings.write_text(json.dumps(latest, indent=2), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(installer, "_unique_adjacent", race_on_temp)
+    result = installer.uninstall(settings, data_dir, now=1_800_000_123)
+    assert result["ok"] is True and result["changed"] is True
+    final = load(settings)
+    assert final["concurrentClaudeChange"] == {"value": "keep"}
+    assert "hooks" not in final
+    backups = list(settings.parent.glob("settings.json.branchglance-backup-*"))
+    assert backups and any(b"concurrentClaudeChange" in backup.read_bytes() for backup in backups)
 
 
 def test_frozen_build_refuses_install_until_launcher_supports_hook(env, monkeypatch):

@@ -487,7 +487,7 @@ def test_python_appdata_probe_scans_beyond_128_package_roots(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="junction test requires Windows")
-def test_python_appdata_probe_skips_junctioned_package_cache(tmp_path):
+def test_python_appdata_probe_leaves_unrelated_junction_cache_untouched(tmp_path):
     local = tmp_path / "Local"
     package = local / "Packages" / "LinkedApp"
     package.mkdir(parents=True)
@@ -533,7 +533,7 @@ def test_python_appdata_probe_scans_more_than_128_packages_and_detects_last(tmp_
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="junction test requires Windows")
-def test_python_appdata_probe_skips_junctioned_cache_without_touching_target(tmp_path):
+def test_python_appdata_probe_leaves_unrelated_junctioned_cache_untouched(tmp_path):
     local = tmp_path / "Local"
     package = local / "Packages" / "LinkedApp"
     package.mkdir(parents=True)
@@ -547,6 +547,49 @@ def test_python_appdata_probe_skips_junctioned_cache_without_touching_target(tmp
     assert status == "not_redirected"
     assert sentinel.read_text(encoding="utf-8") == "untouched"
     assert not list(branch_root.glob(".branchglance-probe-*"))
+
+
+def test_python_probe_detects_and_cleans_only_its_marker_through_fake_junction(tmp_path):
+    local = tmp_path / "Local"
+    package_root = local / "Packages" / "Junctioned" / "LocalCache" / "Local" / "Branchglance"
+    sentinel = package_root / "unrelated.txt"
+
+    class JunctionFS:
+        def __init__(self):
+            self.files = {sentinel}
+            self.directories = {package_root}
+            self.removed = []
+        def exists(self, path): return path in self.files or path in self.directories
+        def mkdir(self, path): self.directories.add(path)
+        def create_probe(self, path):
+            self.directories.add(path)
+            self.files.add(path / "probe.bin")
+            redirected = package_root / path.name
+            self.directories.add(redirected)
+            self.files.add(redirected / "probe.bin")
+        def package_branch_roots(self, _packages): return [package_root]
+        def package_cache_dirs(self, _packages): return []
+        def is_reparse_path(self, path): return path == package_root or package_root in path.parents
+        def unlink(self, path):
+            self.removed.append(path)
+            self.files.discard(path)
+        def rmdir(self, path):
+            self.removed.append(path)
+            if any(child.parent == path for child in self.files | self.directories):
+                raise OSError("not empty")
+            self.directories.discard(path)
+
+    fs = JunctionFS()
+    status, _reason = product.appdata_probe({"LOCALAPPDATA": str(local)}, fs=fs)
+    assert status == "redirected"
+    assert fs.files == {sentinel}
+    through_junction = [path for path in fs.removed if len(path.parts) > len(package_root.parts)
+                        and path.parts[:len(package_root.parts)] == package_root.parts]
+    assert len(through_junction) == 2
+    assert sum(path.name == "probe.bin" for path in through_junction) == 1
+    probe_dir = next(path for path in through_junction if path.name.startswith(".branchglance-probe-"))
+    assert {path for path in through_junction} == {probe_dir, probe_dir / "probe.bin"}
+    assert package_root in fs.directories
 
 
 def test_install_handoff_is_expiring_and_one_use(tmp_path):
