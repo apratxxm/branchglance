@@ -1044,8 +1044,25 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                 "pendingActivityCalls": {}, "pendingQuestions": {},
                 "questionAliases": {}, "syncQuestion": None,
                 "questionResolutionAt": None, "questionCorrelationUnavailable": False,
+                "sessionSource": None, "sessionMetaSeen": False, "turnEndedAt": None,
                 "observedAt": None,
                 "recordTimestampPresent": False}
+
+    def start_after_exec_turn_end(pending: dict[Any, Any], aliases: dict[str, list[tuple[str, str, int]]],
+                                  ended_at: Any, started_at: Any) -> tuple[bool, bool]:
+        """Supersede only questions from an ended exec turn at a later start."""
+        ended_epoch = _timestamp_epoch(ended_at)
+        started_epoch = _timestamp_epoch(started_at)
+        if ended_epoch is None or started_epoch is None or started_epoch <= ended_epoch:
+            return False, False
+        stale = []
+        for identity, question in pending.items():
+            question_epoch = _timestamp_epoch(question.get("at"))
+            if question_epoch is None or question_epoch <= ended_epoch:
+                stale.append(identity)
+        for identity in stale:
+            _drop_pending_question(identity, pending, aliases)
+        return True, bool(stale)
 
     def reduce_record(state: dict[str, Any], item: dict[str, Any]) -> None:
         status = state["status"]
@@ -1061,6 +1078,9 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         question_correlation_unavailable = state["questionCorrelationUnavailable"]
         observed_at = state["observedAt"]
         record_timestamp_present = state["recordTimestampPresent"]
+        session_source = state.get("sessionSource")
+        session_meta_seen = state.get("sessionMetaSeen", False)
+        turn_ended_at = state.get("turnEndedAt")
         stamp = item.get("timestamp")
         if stamp:
             record_timestamp_present = True
@@ -1078,6 +1098,10 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         resolved_blocking_question = False
         payload = item.get("payload") or {}
         payload_type = str(payload.get("type") or "").lower()
+        item_kind = item.get("type")
+        if item_kind == "session_meta" and not session_meta_seen:
+            session_meta_seen = True
+            session_source = "exec" if isinstance(payload, dict) and payload.get("source") == "exec" else None
         event_type = payload_type if item.get("type") == "event_msg" else str(item.get("subtype") or "").lower()
         timestamp = item.get("timestamp") or payload.get("timestamp")
         execution_status_before = state.get("executionStatus", "unknown")
@@ -1102,7 +1126,6 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
         exec_pending_calls = state.setdefault("executionPendingCalls", {})
         exec_resume_at = state.get("executionResumeAt")
         exec_activity = state.get("executionActivity")
-        item_kind = item.get("type")
         exec_stamp = item.get("timestamp") or payload.get("timestamp")
         exec_stamp_epoch = _timestamp_epoch(exec_stamp)
         exec_observed_epoch = _timestamp_epoch(exec_observed_at)
@@ -1128,6 +1151,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             and exec_stamp_epoch > exec_resume_epoch and exec_after_terminal
         )
         exec_qualifies = False
+        exec_turn_ended = False
         # Starts and compaction obey the same floor as terminals: a delayed record older
         # than the current run start or resume boundary cannot reopen or restart it.
         if item_kind == "event_msg" and payload_type == "task_started" and exec_terminal_admitted:
@@ -1136,6 +1160,14 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             exec_activity = None
             exec_pending_calls.clear()
             exec_qualifies = True
+            if session_source == "exec":
+                later_turn, superseded = start_after_exec_turn_end(
+                    pending_questions, question_aliases, turn_ended_at, exec_stamp,
+                )
+                if later_turn:
+                    turn_ended_at = None
+                    if superseded:
+                        question_resolution_at = exec_stamp
         elif (item_kind == "event_msg" and payload_type in {"task_complete", "turn_complete", "turn_aborted", "task_failed"}
               and exec_terminal_admitted):
             exec_status = "failed" if payload_type in {"turn_aborted", "task_failed"} else "idle"
@@ -1144,6 +1176,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             exec_resume_at = None
             exec_pending_calls.clear()
             exec_qualifies = True
+            exec_turn_ended = True
         elif ("compact" in event_type and any(word in event_type for word in ("start", "begin", "progress", "ing"))
               and exec_terminal_admitted):
             exec_status, exec_compaction_at = "compacting", exec_stamp
@@ -1202,6 +1235,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                     exec_compaction_at, exec_activity = None, None
                     exec_pending_calls.clear()
                     exec_qualifies = True
+                    exec_turn_ended = True
                 elif channel in {"analysis", "reasoning"}:
                     reasoning_epoch = _timestamp_epoch(exec_stamp)
                     observed_epoch = _timestamp_epoch(exec_observed_at)
@@ -1241,6 +1275,10 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                          executionTerminalAt=exec_terminal_at, executionPendingCalls=exec_pending_calls,
                          executionResumeAt=exec_resume_at,
                          executionActivity=exec_activity)
+        if session_source == "exec" and exec_turn_ended and exec_stamp_valid:
+            previous_end_epoch = _timestamp_epoch(turn_ended_at)
+            if previous_end_epoch is None or exec_stamp_epoch > previous_end_epoch:
+                turn_ended_at = exec_stamp
         if "compact" in event_type:
             if any(word in event_type for word in ("start", "begin", "progress", "ing")):
                 status, sync_question, detail = "compacting", None, None
@@ -1306,6 +1344,14 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             else:
                 activity = None
                 pending_activity_calls.clear()
+                if session_source == "exec":
+                    later_turn, superseded = start_after_exec_turn_end(
+                        pending_questions, question_aliases, turn_ended_at, exec_stamp,
+                    )
+                    if later_turn:
+                        turn_ended_at = None
+                        if superseded:
+                            question_resolution_at = exec_stamp
             sync_question = None
         elif item.get("type") == "event_msg" and payload_type in {"reasoning", "reasoning_started", "thinking", "thinking_started"}:
             if not pending_activity_calls and activity is None and status not in {"idle", "failed", "compacting"}:
@@ -1461,6 +1507,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                     identity = _observed_question_id(answer.get("questionItemId"), question_aliases)
                     if identity in pending_questions:
                         matched = _drop_pending_question(identity, pending_questions, question_aliases) or matched
+                matched_question_reply = matched
                 if matched:
                     question_resolution_at = item.get("timestamp") or payload.get("timestamp")
                 if not matched:
@@ -1468,6 +1515,14 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                     activity = None
                     status, detail = "running", None
                     clock_transition = True
+                    if session_source == "exec":
+                        later_turn, superseded = start_after_exec_turn_end(
+                            pending_questions, question_aliases, turn_ended_at, exec_stamp,
+                        )
+                        if later_turn:
+                            turn_ended_at = None
+                            if superseded:
+                                question_resolution_at = exec_stamp
         if clock_transition and (status != previous_status or (payload_type == "task_started" and status == "running")):
             state_since = item.get("timestamp") or payload.get("timestamp")
         if status == "compacting" and previous_status != "compacting":
@@ -1481,6 +1536,8 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                      questionAliases=question_aliases, syncQuestion=sync_question,
                      questionResolutionAt=question_resolution_at,
                      questionCorrelationUnavailable=question_correlation_unavailable,
+                     sessionSource=session_source, sessionMetaSeen=session_meta_seen,
+                     turnEndedAt=turn_ended_at,
                      observedAt=observed_at,
                      recordTimestampPresent=record_timestamp_present)
         if resolved_blocking_question:

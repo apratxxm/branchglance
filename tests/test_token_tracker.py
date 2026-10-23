@@ -3414,6 +3414,111 @@ def test_async_question_stays_pending_after_its_turn_completes(tmp_path):
     assert answered["status"] == "running" and answered["questionIds"] == []
 
 
+@pytest.mark.parametrize("turn_start", ["task_started", "user_message"])
+def test_exec_async_question_is_superseded_at_the_next_turn_and_stays_cleared(tmp_path, turn_start):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    stamp = lambda seconds: (now - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    path = tmp_path / f"exec-stale-question-{turn_start}.jsonl"
+    rows = [
+        {"type": "session_meta", "timestamp": stamp(30),
+         "payload": {"id": "exec-stale-question", "source": "exec"}},
+        {"type": "event_msg", "timestamp": stamp(20), "payload": {"type": "task_started"}},
+        {"type": "response_item", "timestamp": stamp(19), "payload": {
+            "type": "function_call", "name": "request_user_input_async", "call_id": "turn-one-question",
+            "arguments": json.dumps({"questions": [{"title": "Prior turn question?"}]}),
+        }},
+        {"type": "event_msg", "timestamp": stamp(10), "payload": {"type": "task_complete"}},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    ended = providers._codex_rollout_state(str(path))
+    assert ended["status"] == "needs input"
+    assert ended["question"] == "Prior turn question?"
+    assert ended["questionResolutionAt"] is None
+
+    start_record = ({"type": "event_msg", "timestamp": stamp(5), "payload": {"type": "task_started"}}
+                    if turn_start == "task_started" else
+                    {"type": "event_msg", "timestamp": stamp(5),
+                     "payload": {"type": "user_message", "message": "Continue"}})
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(start_record) + "\n")
+        handle.write(json.dumps({"type": "response_item", "timestamp": stamp(4), "payload": {
+            "type": "function_call", "name": "read_file", "call_id": "turn-two-read",
+            "arguments": json.dumps({"path": "src/current.py"}),
+        }}) + "\n")
+
+    state = providers._codex_rollout_state(str(path))
+    assert state["status"] == "running"
+    assert state["question"] is None and state["questionIds"] == []
+    assert state["questionResolutionAt"] == stamp(5)
+    assert providers._codex_rollout_state(str(path)) == state
+
+    thread = CodexProvider._thread({"id": "exec-stale-question", "path": str(path)})
+    assert thread["status"] == "running"
+    assert thread["pendingQuestion"] is None and thread["pendingQuestionIds"] == []
+    assert thread["questionResolutionAt"] == stamp(5)
+    providers._index_live_paths([{"name": "Codex", "chats": [thread]}])
+    live = next(row for row in providers.live_state()["chats"]
+                if row["key"] == "Codex:exec-stale-question")
+    assert live["status"] == "running" and live["pendingQuestion"] is None
+    assert live["pendingQuestionIds"] == [] and live["questionResolutionAt"] == stamp(5)
+
+
+def test_exec_async_question_remains_pending_until_its_turn_ends(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    stamp = lambda seconds: (now - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    path = tmp_path / "exec-open-question.jsonl"
+    rows = [
+        {"type": "session_meta", "payload": {"id": "exec-open-question", "source": "exec"}},
+        {"type": "event_msg", "timestamp": stamp(20), "payload": {"type": "task_started"}},
+        {"type": "response_item", "timestamp": stamp(19), "payload": {
+            "type": "function_call", "name": "request_user_input_async", "call_id": "open-turn-question",
+            "arguments": json.dumps({"questions": [{"title": "Still open?"}]}),
+        }},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "event_msg", "timestamp": stamp(18),
+                                 "payload": {"type": "user_message", "message": "Ordinary input"}}) + "\n")
+        handle.write(json.dumps({"type": "response_item", "timestamp": stamp(17), "payload": {
+            "type": "function_call", "name": "read_file", "call_id": "same-turn-read",
+            "arguments": json.dumps({"path": "src/current.py"}),
+        }}) + "\n")
+
+    state = providers._codex_rollout_state(str(path))
+    assert state["status"] == "needs input"
+    assert state["question"] == "Still open?"
+    assert state["questionIds"] == [["request_user_input_async", "open-turn-question", 0]]
+    assert state["questionResolutionAt"] is None
+
+
+@pytest.mark.parametrize("source", ["vscode", None])
+def test_non_exec_and_unknown_sources_keep_async_question_across_turns(tmp_path, source):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    stamp = lambda seconds: (now - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    path = tmp_path / f"non-exec-question-{source or 'unknown'}.jsonl"
+    metadata = {"id": "desktop-question"}
+    if source is not None:
+        metadata["source"] = source
+    rows = [
+        {"type": "session_meta", "payload": metadata},
+        {"type": "event_msg", "timestamp": stamp(20), "payload": {"type": "task_started"}},
+        {"type": "response_item", "timestamp": stamp(19), "payload": {
+            "type": "function_call", "name": "request_user_input_async", "call_id": "desktop-question-call",
+            "arguments": json.dumps({"questions": [{"title": "Answer later?"}]}),
+        }},
+        {"type": "event_msg", "timestamp": stamp(10), "payload": {"type": "task_complete"}},
+        {"type": "event_msg", "timestamp": stamp(5), "payload": {"type": "task_started"}},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    state = providers._codex_rollout_state(str(path))
+    assert state["status"] == "needs input"
+    assert state["question"] == "Answer later?"
+    assert state["questionIds"] == [["request_user_input_async", "desktop-question-call", 0]]
+    assert state["questionResolutionAt"] is None
+
+
 def test_async_question_identity_requires_nonempty_exact_answer_and_survives_large_rollout(tmp_path):
     path = tmp_path / "correlated-question.jsonl"
     call = {"type": "response_item", "payload": {"type": "function_call", "name": "request_user_input_async",
