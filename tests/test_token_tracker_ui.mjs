@@ -88,6 +88,28 @@ async function acceptRunwayLive(sample){
   await R.pollLive();
 }
 
+// A restored stats snapshot cannot establish a quota observation.
+{
+  const restored=runwaySnapshot(runwayNow);
+  restored.snapshotCache={generation:1,builtAt:runwayIso(runwayNow),ageSeconds:0,building:true,stale:true,lastFailureAt:null,lastFailureCategory:null};
+  restored.providers[0].fiveHour={percent:null,resetAt:runwayNow/1000+3600};
+  restored.providers[0].weekly={percent:null,resetAt:runwayNow/1000+86400};
+  restored.providers[0].limitsUpdatedAt=null;
+  R.render(restored);
+  const cachedProvider=R.state.snapshot.providers[0];
+  assert.equal(R.resetView(cachedProvider,"fiveHour").measured,false);
+  assert.equal(R.resetView(cachedProvider,"weekly").measured,false);
+  assert.equal(runwayNode("#r0-fiveHour-meter").getAttribute("aria-valuenow"),null);
+  assert.equal(runwayNode("#r0-weekly-meter").getAttribute("aria-valuenow"),null);
+  assert.equal(runwayNode("#r0-fiveHour-meter").getAttribute("aria-hidden"),"true");
+
+  const checkedAt=runwayIso(runwayNow);
+  assert.equal(R.applyQuotaSamples({Codex:{lastStatus:{checkedAt,five_hour_percent:23,weekly_percent:41}}},1,R.limitProvidersFor(R.state.snapshot)),true);
+  R.renderResets(R.limitProvidersFor(R.state.snapshot));
+  assert.equal(runwayNode("#r0-fiveHour-meter").getAttribute("aria-valuenow"),"23");
+  assert.equal(runwayNode("#r0-weekly-meter").getAttribute("aria-valuenow"),"41");
+}
+
 // ---------- current-evidence expiry, monotonic recovery, and active reveal ----------
 {
   const initial=runwaySnapshot(runwayNow);

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -258,6 +259,8 @@ class SnapshotCache:
     RETRY_COOLDOWN_SECONDS = 5.0
     PERSISTED_SCHEMA_VERSION = 1
     PERSISTED_MAX_BYTES = 32 * 1024 * 1024
+    PERSISTED_KEY_NAME = "snapshot-cache.key"
+    PERSISTED_KEY_BYTES = 32
 
     def __init__(self, ttl: float = 120.0, *, persist_path: Path | None = None,
                  compatibility: str | None = None) -> None:
@@ -351,11 +354,83 @@ class SnapshotCache:
             return None
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return None
+            return parsed.astimezone(timezone.utc)
+        except (OverflowError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _authenticated_bytes(envelope: dict) -> bytes:
+        body = {key: value for key, value in envelope.items() if key != "mac"}
+        return json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def _snapshot_mac(cls, envelope: dict, key: bytes) -> str:
+        return hmac.new(key, cls._authenticated_bytes(envelope), hashlib.sha256).hexdigest()
+
+    @property
+    def _key_path(self) -> Path | None:
+        return self.persist_path.parent / self.PERSISTED_KEY_NAME if self.persist_path is not None else None
+
+    def _read_persistence_key(self) -> bytes:
+        path = self._key_path
+        if path is None:
+            raise OSError("snapshot persistence is disabled")
+        info = os.lstat(path)
+        reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if not stat.S_ISREG(info.st_mode) or reparse or info.st_size != self.PERSISTED_KEY_BYTES:
+            raise ValueError("snapshot key is not a regular 32-byte file")
+        key = path.read_bytes()
+        if len(key) != self.PERSISTED_KEY_BYTES:
+            raise ValueError("snapshot key is not a regular 32-byte file")
+        return key
+
+    @staticmethod
+    def _atomic_write(path: Path, payload: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _ensure_persistence_key(self) -> bytes:
+        try:
+            return self._read_persistence_key()
+        except FileNotFoundError:
+            pass
         except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            return None
-        return parsed.astimezone(timezone.utc)
+            path = self._key_path
+            if path is None:
+                raise
+            info = os.lstat(path)
+            reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if not stat.S_ISREG(info.st_mode) or reparse:
+                raise OSError("snapshot key path is not a regular file")
+        key = secrets.token_bytes(self.PERSISTED_KEY_BYTES)
+        self._atomic_write(self._key_path, key)
+        return key
+
+    def _delete_persisted(self) -> None:
+        if self.persist_path is not None:
+            try:
+                self.persist_path.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _shown_provider_names() -> set[str]:
+        from .provider_policy import POLICIES, PROVIDERS, policy_for
+        return {name for name in PROVIDERS if policy_for(name, POLICIES).allows("show")}
 
     @staticmethod
     def _safe_snapshot_shape(snapshot: object) -> bool:
@@ -382,8 +457,28 @@ class SnapshotCache:
                     or info.st_size > self.PERSISTED_MAX_BYTES):
                 return
             envelope = json.loads(path.read_text(encoding="utf-8"))
-            if (not isinstance(envelope, dict)
-                    or envelope.get("schemaVersion") != self.PERSISTED_SCHEMA_VERSION
+            if not isinstance(envelope, dict):
+                self._delete_persisted()
+                return
+            try:
+                key = self._read_persistence_key()
+            except (OSError, ValueError):
+                self._delete_persisted()
+                return
+            mac = envelope.get("mac")
+            if not isinstance(mac, str) or len(mac) != hashlib.sha256().digest_size * 2:
+                self._delete_persisted()
+                return
+            try:
+                bytes.fromhex(mac)
+                expected_mac = self._snapshot_mac(envelope, key)
+            except (TypeError, ValueError, RecursionError):
+                self._delete_persisted()
+                return
+            if not hmac.compare_digest(mac, expected_mac):
+                self._delete_persisted()
+                return
+            if (envelope.get("schemaVersion") != self.PERSISTED_SCHEMA_VERSION
                     or envelope.get("compatibility") != self.compatibility
                     or type(envelope.get("generation")) is not int or envelope["generation"] < 1):
                 return
@@ -392,6 +487,10 @@ class SnapshotCache:
             now = datetime.now(timezone.utc)
             if (built_at is None or built_at > now + timedelta(seconds=1)
                     or not self._safe_snapshot_shape(snapshot)):
+                return
+            provider_names = {provider["name"] for provider in snapshot["providers"]}
+            if not provider_names <= self._shown_provider_names():
+                self._delete_persisted()
                 return
             snapshot = copy.deepcopy(snapshot)
             snapshot.pop("snapshotCache", None)
@@ -404,7 +503,7 @@ class SnapshotCache:
                 self._restored = True
                 self.generation = envelope["generation"]
                 self.built_at = built_at.isoformat()
-        except (OSError, ValueError, TypeError, RecursionError):
+        except (OSError, OverflowError, ValueError, TypeError, RecursionError):
             # A missing or damaged disk cache only loses the warm display path.
             return
 
@@ -423,7 +522,6 @@ class SnapshotCache:
         path = self.persist_path
         if path is None:
             return
-        temp_path = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             try:
@@ -434,6 +532,7 @@ class SnapshotCache:
                 reparse = getattr(existing, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
                 if not stat.S_ISREG(existing.st_mode) or reparse:
                     raise OSError("snapshot cache path is not a regular file")
+            key = self._ensure_persistence_key()
             envelope = {
                 "schemaVersion": self.PERSISTED_SCHEMA_VERSION,
                 "compatibility": self.compatibility,
@@ -441,24 +540,13 @@ class SnapshotCache:
                 "builtAt": built_at,
                 "snapshot": snapshot,
             }
+            envelope["mac"] = self._snapshot_mac(envelope, key)
             payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             if len(payload) > self.PERSISTED_MAX_BYTES:
                 raise OSError("snapshot cache exceeds size limit")
-            descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-            temp_path = Path(temp_name)
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
+            self._atomic_write(path, payload)
         except OSError as exc:
             logging.getLogger(__name__).warning("Snapshot cache persistence failed (%s)", type(exc).__name__)
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
 
     def _record_failure_locked(self, exc: Exception, *, worker_start: bool = False) -> None:
         self.building = False
@@ -492,6 +580,14 @@ class SnapshotCache:
                 if not isinstance(provider, dict):
                     continue
                 provider["stale"] = True
+                for field in ("fiveHour", "weekly"):
+                    quota = provider.get(field)
+                    if not isinstance(quota, dict):
+                        quota = {}
+                        provider[field] = quota
+                    quota["percent"] = None
+                provider["limitsUpdatedAt"] = None
+                provider.pop("_quotaWindowObservedAt", None)
                 for chat in provider.get("chats", []):
                     if not isinstance(chat, dict):
                         continue
