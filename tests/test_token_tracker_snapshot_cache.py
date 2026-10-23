@@ -461,3 +461,13 @@ def test_cold_background_stats_and_quota_requests_do_not_wait_for_full_build(mon
         release.set()
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_persisted_cache_construction_reads_no_policy_before_first_use(tmp_path, monkeypatch):
+    # The app module builds its cache at import, before the Install gate allows a policy read.
+    def forbidden():
+        raise RuntimeError("policy read before Install mutex gate")
+
+    monkeypatch.setattr(server, "_snapshot_cache_compatibility", forbidden)
+    cache = server.SnapshotCache(persist_path=tmp_path / "stats-snapshot.json")
+    assert cache._compatibility is None and cache._restore_pending

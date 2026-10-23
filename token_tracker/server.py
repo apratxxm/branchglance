@@ -263,9 +263,11 @@ class SnapshotCache:
                  compatibility: str | None = None) -> None:
         self.ttl = ttl
         self.persist_path = Path(persist_path) if persist_path is not None else None
-        self.compatibility = compatibility if compatibility is not None else (
-            _snapshot_cache_compatibility() if self.persist_path is not None else None
-        )
+        # Compatibility reads provider policy, which the app may load only after its
+        # Install gate; the key and the disk restore are therefore resolved on first use.
+        self._compatibility = compatibility
+        self._restore_once = threading.Lock()
+        self._restore_pending = self.persist_path is not None
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
         self._value = None
@@ -284,11 +286,25 @@ class SnapshotCache:
         self._last_build_error: Exception | None = None
         self._attempt = 0
         self._completed_attempt = 0
-        self._restore_persisted()
+
+    @property
+    def compatibility(self) -> str | None:
+        if self._compatibility is None and self.persist_path is not None:
+            self._compatibility = _snapshot_cache_compatibility()
+        return self._compatibility
+
+    def _ensure_restored(self) -> None:
+        if not self._restore_pending:
+            return
+        with self._restore_once:
+            if self._restore_pending:
+                self._restore_pending = False
+                self._restore_persisted()
 
     @property
     def value(self):
         """Return only a current-process build for action authorization."""
+        self._ensure_restored()
         with self.condition:
             value = self._trusted_value
             if value is None and not self._restored:
@@ -550,6 +566,7 @@ class SnapshotCache:
             self.condition.notify_all()
 
     def get(self, force: bool = False, background: bool = False):
+        self._ensure_restored()
         with self.condition:
             while True:
                 now = time.monotonic()
@@ -610,6 +627,7 @@ class SnapshotCache:
 
     def get_background(self, force: bool = False):
         """Return cached data immediately, or start a cold build and return no snapshot."""
+        self._ensure_restored()
         with self.condition:
             now = time.monotonic()
             if self._value is not None:
