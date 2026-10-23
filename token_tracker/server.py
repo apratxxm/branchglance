@@ -299,10 +299,14 @@ class SnapshotCache:
     def _ensure_restored(self) -> None:
         if not self._restore_pending:
             return
+        # First-use callers wait here until the restore has finished, so none can
+        # publish a fresh build that the restore would then overwrite.
         with self._restore_once:
             if self._restore_pending:
-                self._restore_pending = False
-                self._restore_persisted()
+                try:
+                    self._restore_persisted()
+                finally:
+                    self._restore_pending = False
 
     @property
     def value(self):
@@ -495,6 +499,8 @@ class SnapshotCache:
             snapshot = copy.deepcopy(snapshot)
             snapshot.pop("snapshotCache", None)
             with self.condition:
+                if self._value is not None:
+                    return  # a fresh build won; disk data must never replace it
                 self._value = snapshot
                 self._trusted_value = None
                 self._at = time.monotonic()
