@@ -533,7 +533,7 @@ class Journal:
             parse_pointer(before["pointer"])
         allowed = {"schemaVersion", "id", "operation", "target", "phase", "before", "created",
                    "tools", "promotionIntent", "partialIntent", "trashEntries", "damagedCurrent",
-                   "trashIntent", "quarantineName", "collisionQuarantine"}
+                   "trashIntent", "quarantineName", "collisionQuarantine", "restoreHandoff"}
         if set(value) - allowed:
             raise SafetyError("Installer journal contains unsupported fields")
         if operation != "install" and set(value) & {"tools", "promotionIntent", "partialIntent"}:
@@ -557,6 +557,17 @@ class Journal:
         if "collisionQuarantine" in value and (operation != "install"
                 or value["collisionQuarantine"] != f".quarantine-{value['id']}"):
             raise SafetyError("Installer journal collision quarantine name is invalid")
+        if "restoreHandoff" in value:
+            handoff = value["restoreHandoff"]
+            if (operation != "install" or value["phase"] != "committed" or not isinstance(handoff, dict)
+                    or set(handoff) != {"file", "nonce", "expires"}
+                    or handoff.get("file") != ".cutover-handoff.json"
+                    or not isinstance(handoff.get("nonce"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", handoff["nonce"])
+                    or type(value.get("created")) not in (int, float)
+                    or type(handoff.get("expires")) not in (int, float)
+                    or not value.get("created") < handoff["expires"] <= value["created"] + 31):
+                raise SafetyError("Installer restore-handoff journal record is invalid")
         tools = value.get("tools", {})
         if not isinstance(tools, dict):
             raise SafetyError("Installer journal tool list is invalid")

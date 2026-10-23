@@ -30,10 +30,12 @@ def _root(tmp_path):
     return root
 
 
-def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=True, late_exit=False):
+def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=True, late_exit=False,
+                           delay_first_restore=False):
     from types import SimpleNamespace
     from branchglance_installer.app import Native
     alive = [running]
+    delay_restore = [delay_first_restore]
     class Mutex:
         def acquire(self, name, timeout):
             events.append(("mutex-acquire", name, timeout))
@@ -55,6 +57,8 @@ def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=
                     "stateRoot": str(paths.product_root / "state")}
         def health(self):
             events.append(("authenticated-health",))
+            if alive[0] and delay_restore[0]:
+                return None
             return self.identity()
         def maintenance_exit(self, timeout=2.0): events.append(("maintenance-exit", timeout)); return "ok"
     class Processes:
@@ -85,10 +89,24 @@ def _fake_installer_native(paths, *, running, events, interrupt=None, wait_exit=
         selected = read_json(paths.root / "current.json")["current"]["version"]
         events.append(("popen", list(args), selected, (paths.root / "Branchglance.exe").read_bytes()))
         alive[0] = True
-        return SimpleNamespace(pid=505)
-    return Native(lambda: HostInfo(True, 19041, True, 528040, ("155",)), lambda: False,
-                  Mutex(), Control(), Processes(), Adapter(), runner=runner,
-                  popen=popen, after_mutation=after)
+        class RestoreProcess:
+            pid = 505
+            def release_job(self): events.append(("restore-job-detached", selected))
+            def terminate_tree(self, _timeout):
+                events.append(("restore-tree-terminated", selected))
+                alive[0] = False
+                delay_restore[0] = False
+                return True
+            def close_job(self):
+                events.append(("restore-job-closed", selected))
+                alive[0] = False
+                delay_restore[0] = False
+        return RestoreProcess()
+    native = Native(lambda: HostInfo(True, 19041, True, 528040, ("155",)), lambda: False,
+                    Mutex(), Control(), Processes(), Adapter(), runner=runner,
+                    popen=popen, after_mutation=after)
+    native.fake_alive = alive
+    return native
 
 
 def _setup_payload(tmp_path, *, version, build_id, body):
@@ -216,6 +234,134 @@ def test_two_setups_serialize_failure_restore_then_upgrade_the_restored_instance
     assert not (root / ".cutover-handoff.json").exists()
 
 
+def test_delayed_restore_child_is_terminated_before_waiting_setup_updates_pointer(tmp_path, monkeypatch):
+    import threading
+    import time
+    from branchglance_installer import app as app_module
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events, interrupt="tool-backed-up",
+                                    delay_first_restore=True)
+    install_lock, instance_lock = threading.Lock(), threading.Lock()
+    second_waiting = threading.Event()
+    clock = [0.0]
+
+    class SerializedMutex:
+        def acquire(self, name, timeout):
+            lock = instance_lock if name.endswith("-Instance") else install_lock
+            if lock is install_lock:
+                if lock.acquire(blocking=False):
+                    acquired = True
+                else:
+                    second_waiting.set()
+                    acquired = lock.acquire(timeout=timeout)
+            else:
+                acquired = lock.acquire(timeout=timeout)
+            if not acquired:
+                raise SafetyError("fake Lifecycle mutex timeout")
+            events.append(("serialized-acquire", name))
+            return (name, lock), "acquired"
+        def release(self, handle):
+            events.append(("serialized-release", handle[0]))
+            handle[1].release()
+
+    native.mutex = SerializedMutex()
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
+
+    def stop_wait_after_setup_two_is_blocked(_delay):
+        assert second_waiting.wait(5), "second setup did not wait behind restore exclusion"
+        clock[0] = 10.0  # move past the bounded authenticated-health deadline
+
+    monkeypatch.setattr(app_module.time, "sleep", stop_wait_after_setup_two_is_blocked)
+    outcomes = []
+
+    def first_setup():
+        try:
+            install(paths, payload, native, startup=False)
+            outcomes.append(("first", "unexpected success"))
+        except Exception as exc:
+            outcomes.append(("first", exc))
+
+    def second_setup():
+        native.after_mutation = lambda _name: None
+        try:
+            outcomes.append(("second", install(paths, payload, native, startup=False)))
+        except Exception as exc:
+            outcomes.append(("second", exc))
+
+    first = threading.Thread(target=first_setup)
+    first.start()
+    deadline = time.monotonic() + 5
+    while not any(event[0] == "popen" for event in events) and time.monotonic() < deadline:
+        threading.Event().wait(0.005)
+    assert any(event[0] == "popen" for event in events)
+    second = threading.Thread(target=second_setup)
+    second.start()
+    first.join(timeout=10)
+    second.join(timeout=10)
+    assert not first.is_alive() and not second.is_alive()
+    assert isinstance(dict(outcomes)["first"], SafetyError)
+    assert dict(outcomes)["second"]["installed"] == "1.0.1+b"
+    kills = [i for i, event in enumerate(events) if event[0] == "restore-tree-terminated"]
+    launches = [i for i, event in enumerate(events) if event[0] == "popen"]
+    assert len(launches) == 1 and kills and launches[0] < kills[0]
+    assert read_json(root / "current.json")["current"]["version"] == "1.0.1+b"
+    assert native.fake_alive[0] is False  # delayed rc.7 never resumes against the new pointer
+
+
+def test_expired_restore_marker_from_crash_is_recovered_before_later_upgrade(tmp_path, monkeypatch):
+    import json
+    from branchglance_installer import app as app_module
+    from branchglance_installer.app import Paths, _write_owned_restore_handoff, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    token = "a" * 64
+    journal = _write_owned_restore_handoff(paths, "1.0.0+a", token)
+    marker = root / journal["restoreHandoff"]["file"]
+    assert marker.is_file() and (root / "install-journal.json").is_file()
+    monkeypatch.setattr(app_module.time, "time", lambda: journal["restoreHandoff"]["expires"] + 1)
+
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    events = []
+    native = _fake_installer_native(paths, running=False, events=events)
+    result = install(paths, payload, native, startup=False)
+    assert result["installed"] == "1.0.1+b"
+    assert not marker.exists() and not (root / "install-journal.json").exists()
+    assert not any(event[0] == "popen" for event in events)
+
+
+def test_mismatched_restore_marker_is_preserved_and_setup_refuses(tmp_path):
+    import json
+    from branchglance_installer.app import Paths, _write_owned_restore_handoff, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    journal = _write_owned_restore_handoff(paths, "1.0.0+a", "b" * 64)
+    marker = root / journal["restoreHandoff"]["file"]
+    marker.write_text(json.dumps({"schemaVersion": 1, "nonce": "c" * 64,
+                                  "expires": journal["restoreHandoff"]["expires"]}), encoding="utf-8")
+    before = marker.read_bytes()
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    events = []
+    native = _fake_installer_native(paths, running=True, events=events)
+    with pytest.raises(SafetyError, match="does not match its journal"):
+        install(paths, payload, native, startup=False)
+    assert marker.read_bytes() == before
+    assert (root / "install-journal.json").is_file()
+    assert not any(event[0] in {"maintenance-exit", "popen"} for event in events)
+
+
 def test_quiet_setup_lifecycle_waits_share_one_deadline(monkeypatch):
     from branchglance_installer.lifecycle import INSTALL_MUTEX
     clock = [0.0]
@@ -254,6 +400,16 @@ def test_quiet_setup_passes_one_deadline_to_install(tmp_path, monkeypatch):
     assert app.main(["--quiet", "--with-startup", "--payload", str(payload)],
                     paths=paths, native=object()) == 0
     assert observed["deadline"] == 40.0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job object integration check")
+def test_restore_job_terminates_a_suspended_launcher_process_tree(tmp_path):
+    from branchglance_installer.windows import spawn_restore_job
+    child = spawn_restore_job([sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path)
+    assert child.pid > 0
+    assert child.terminate_tree(5.0)
+    assert child.wait(timeout=1.0) is not None
+    child.release_job()
 
 
 @pytest.mark.parametrize("running,interrupt,should_relaunch", [(True, None, True),
@@ -352,7 +508,16 @@ def test_restart_rejects_matching_public_identity_without_authenticated_health(t
     class Control:
         def identity(self): return public
         def health(self): return None
-    native = SimpleNamespace(control=Control(), popen=lambda *args, **kwargs: events.append((args, kwargs)))
+    class RestoreChild:
+        pid = 505
+        def terminate_tree(self, _timeout):
+            events.append(("tree-terminated",))
+            return True
+        def release_job(self): events.append(("job-released",))
+    def popen(*args, **kwargs):
+        events.append((args, kwargs))
+        return RestoreChild()
+    native = SimpleNamespace(control=Control(), popen=popen)
     class HeldLifecycle:
         install_handle = 1
         instance_handle = 2
@@ -362,10 +527,11 @@ def test_restart_rejects_matching_public_identity_without_authenticated_health(t
         _restart_after_install(paths, native, HeldLifecycle())
     import subprocess
     assert events[0] == ("release-instance",)
-    assert len(events) == 2 and events[1][0][0][0] == str(root / "Branchglance.exe")
+    assert len(events) == 4 and events[1][0][0][0] == str(root / "Branchglance.exe")
     assert events[1][1]["stdin"] is subprocess.DEVNULL
     assert events[1][1]["stdout"] is subprocess.DEVNULL and events[1][1]["stderr"] is subprocess.DEVNULL
     assert not (root / ".cutover-handoff.json").exists()
+    assert ("tree-terminated",) in events and ("job-released",) in events
 
 
 def test_setup_refuses_redirected_appdata_before_creating_product_folders(monkeypatch, tmp_path):

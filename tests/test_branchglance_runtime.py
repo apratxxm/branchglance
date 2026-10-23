@@ -399,7 +399,8 @@ def test_cutover_handoff_skips_install_wait_only_while_install_owner_holds_gate(
     assert calls == [0, "run"] and messages == []
 
 
-def test_invalid_cutover_handoff_uses_normal_install_wait(monkeypatch):
+@pytest.mark.parametrize("token", ["invalid", "expired", "consumed"])
+def test_invalid_cutover_handoff_exits_nonzero_without_normal_startup(monkeypatch, token):
     calls = []
     monkeypatch.setattr(product, "consume_install_handoff", lambda _token: False)
     monkeypatch.setattr(widget, "claim_install_mutex",
@@ -410,8 +411,10 @@ def test_invalid_cutover_handoff_uses_normal_install_wait(monkeypatch):
         def __init__(self, **_kwargs): self._startup_install_mutex = None
         def run(self): calls.append("run")
     monkeypatch.setattr(widget, "WidgetApp", FakeApp)
-    widget.main(["--install-handoff", "invalid"])
-    assert calls == [20.0, "run"]
+    with pytest.raises(SystemExit) as exc:
+        widget.main(["--install-handoff", token])
+    assert exc.value.code == 2
+    assert calls == []
 
 
 @pytest.mark.parametrize("redirected", [False, True])

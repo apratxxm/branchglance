@@ -24,9 +24,9 @@ from typing import Callable
 
 from token_tracker import product
 
-from .core import (JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, UNINSTALLER, Journal, LocalFileSystem, ReleaseOps, SafetyError,
-                   atomic_json, create_owner, is_reparse, read_json, require_owned_root, uninstall_owned_root,
-                   validate_version, verify_manifest)
+from .core import (JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, SCHEMA, UNINSTALLER, Journal, LocalFileSystem,
+                   ReleaseOps, SafetyError, atomic_json, create_owner, is_reparse, read_json, require_owned_root,
+                   uninstall_owned_root, validate_version, verify_manifest)
 from .integration import Integrations
 from .lifecycle import Lifecycle
 from .preflight import HostInfo, check_host, staged_self_test
@@ -140,16 +140,18 @@ class Native:
     popen: Callable = subprocess.Popen
     after_mutation: Callable[[str], None] = field(default=lambda _name: None)
     file_system: object | None = None
+    restore_popen: Callable | None = None
 
     @classmethod
     def real(cls, paths: Paths) -> "Native":
         from .lifecycle import Win32MutexAdapter
         from .preflight import current_host
-        from .windows import NoWait, WindowsControl, WindowsFileSystem, WindowsIntegrationAdapter, is_elevated
+        from .windows import (NoWait, WindowsControl, WindowsFileSystem, WindowsIntegrationAdapter,
+                              is_elevated, spawn_restore_job)
         return cls(host=current_host, elevated=is_elevated, mutex=Win32MutexAdapter(),
                    control=WindowsControl(paths.product_root / "state" / "control.nonce"),
                    processes=NoWait(), integration_adapter=WindowsIntegrationAdapter(),
-                   file_system=WindowsFileSystem())
+                   file_system=WindowsFileSystem(), restore_popen=spawn_restore_job)
 
 
 def _integrations(paths: Paths, native: Native, version: str) -> Integrations:
@@ -250,7 +252,7 @@ def _integration_snapshot_bounded(paths: Paths, native: Native, version_full: st
 
 
 def _setup_preflight(paths: Paths, native: Native, manifest: dict, version_full: str,
-                     deadline: float | None = None) -> None:
+                     deadline: float | None = None, *, check_handoff: bool = False) -> None:
     """Refuse collisions and invalid install roots before asking a running app to stop."""
     _raise_already_installed(paths, manifest)
     root = paths.root
@@ -262,31 +264,88 @@ def _setup_preflight(paths: Paths, native: Native, manifest: dict, version_full:
         elif any(root.iterdir()):
             raise SafetyError(f"The install folder is not owned by Branchglance: {root}")
     handoff = root / ".cutover-handoff.json"
-    if os.path.lexists(handoff):
+    if check_handoff and os.path.lexists(handoff):
         raise SafetyError(f"A Branchglance startup handoff is already pending: {handoff}")
     # This checks shortcut ownership and the uninstall registry without writing.
     _integration_snapshot_bounded(paths, native, version_full, deadline)
 
 
-def _remove_owned_restart_handoff(path: Path, token: str) -> None:
-    if not os.path.lexists(path):
-        return
+def _write_owned_restore_handoff(paths: Paths, version: str, token: str) -> dict:
+    journal = Journal(paths.root)
+    if journal.load() is not None:
+        raise SafetyError("Cannot record setup restore ownership while another installer journal exists")
+    pointer = ReleaseOps(paths.root).current()
+    if pointer is None or pointer.get("current", {}).get("version") != version:
+        raise SafetyError("Restore-handoff target is not the selected committed release")
+    now = time.time()
+    handoff_record = {"file": ".cutover-handoff.json", "nonce": token, "expires": now + 30.0}
+    record = {"schemaVersion": SCHEMA, "id": uuid.uuid4().hex, "operation": "install", "target": version,
+              "phase": "committed", "before": {"pointer": pointer, "integration": {}}, "created": now,
+              "restoreHandoff": handoff_record}
+    journal.save(record)  # Durable ownership is recorded before the marker is created.
+    marker = paths.root / handoff_record["file"]
+    if os.path.lexists(marker):
+        raise SafetyError("A startup handoff appeared before setup could write its owned marker")
+    atomic_json(marker, {"schemaVersion": 1, "nonce": token, "expires": handoff_record["expires"]})
+    return record
+
+
+def _read_restore_marker(path: Path) -> dict:
     if is_reparse(path) or not path.is_file() or path.stat().st_size > 1024:
         raise SafetyError("Setup startup handoff became unsafe; it was preserved")
     try:
         record = read_json(path)
     except (OSError, SafetyError) as exc:
-        raise SafetyError("Setup startup handoff changed; it was preserved") from exc
+        raise SafetyError("Setup startup handoff is malformed; it was preserved") from exc
     if (not isinstance(record, dict) or record.get("schemaVersion") != 1
-            or not secrets.compare_digest(str(record.get("nonce", "")), token)):
-        raise SafetyError("Setup startup handoff ownership changed; it was preserved")
-    path.unlink()
+            or not isinstance(record.get("nonce"), str) or type(record.get("expires")) not in (int, float)):
+        raise SafetyError("Setup startup handoff is foreign or malformed; it was preserved")
+    return record
+
+
+def _recover_expired_restore_handoff(paths: Paths) -> bool:
+    """Under Install exclusion, clear only an expired marker owned by a committed install journal."""
+    journal = Journal(paths.root)
+    record = journal.load() if paths.root.exists() else None
+    marker = paths.root / ".cutover-handoff.json"
+    ownership = record.get("restoreHandoff") if isinstance(record, dict) else None
+    if ownership is None:
+        return False
+    if not os.path.lexists(marker):
+        ReleaseOps(paths.root).recover()  # launcher already consumed it before the crash
+        return True
+    found = _read_restore_marker(marker)
+    if (found.get("nonce") != ownership.get("nonce")
+            or found.get("expires") != ownership.get("expires")):
+        raise SafetyError("Setup restore handoff does not match its journal; marker was preserved")
+    if time.time() < ownership["expires"]:
+        raise SafetyError("A recorded setup restore handoff is still active; retry after it expires")
+    marker.unlink()
+    ReleaseOps(paths.root).recover()
+    return True
+
+
+def _clear_owned_restore_handoff(paths: Paths, token: str) -> None:
+    journal = Journal(paths.root)
+    record = journal.load() if paths.root.exists() else None
+    ownership = record.get("restoreHandoff") if isinstance(record, dict) else None
+    marker = paths.root / ".cutover-handoff.json"
+    if os.path.lexists(marker):
+        found = _read_restore_marker(marker)
+        if not secrets.compare_digest(found.get("nonce", ""), token):
+            raise SafetyError("Setup startup handoff ownership changed; it was preserved")
+        marker.unlink()
+    if ownership is not None:
+        if not secrets.compare_digest(ownership.get("nonce", ""), token):
+            raise SafetyError("Setup restore journal ownership changed; it was preserved")
+        ReleaseOps(paths.root).recover()
 
 
 def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -> None:
     launcher = paths.root / LAUNCHER
     handoff = paths.root / ".cutover-handoff.json"
     token = secrets.token_hex(32)
+    process = None
     try:
         if lifecycle.install_handle is None or lifecycle.instance_handle is None:
             raise SafetyError("Setup lost lifecycle exclusion before restoring the app")
@@ -298,16 +357,22 @@ def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -
         state_root = str(paths.product_root / "state")
         if os.path.lexists(handoff):
             raise SafetyError("A startup handoff appeared while setup held Install; it was preserved")
-        atomic_json(handoff, {"schemaVersion": 1, "nonce": token, "expires": time.time() + 30.0})
+        _write_owned_restore_handoff(paths, version, token)
         # Install remains held. Only this child can pass the startup gate using
         # the one-use owner token; a waiting second setup cannot overtake restore.
         lifecycle.release_instance()
-        native.popen([str(launcher), "--install-handoff", token], cwd=str(paths.root), close_fds=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        arguments = [str(launcher), "--install-handoff", token]
+        restore_popen = getattr(native, "restore_popen", None)
+        if restore_popen is not None:
+            process = restore_popen(arguments, cwd=str(paths.root))
+        else:  # injectable test adapter; the real Windows adapter always uses a suspended Job launch
+            process = native.popen(arguments, cwd=str(paths.root), close_fds=True,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
         start = time.monotonic()
         deadline = start + 9.0
         if lifecycle.deadline is not None:
-            deadline = min(deadline, lifecycle.deadline)
+            deadline = min(deadline, lifecycle.deadline - 5.0)  # reserve time to terminate and confirm the tree
         identity = None
         while time.monotonic() < deadline:
             try:
@@ -325,10 +390,50 @@ def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -
             time.sleep(0.1)
         if identity is None:
             raise SafetyError("The restored Branchglance did not return authenticated health before deadline")
+        if hasattr(process, "release_job"):
+            process.release_job()  # authenticated app survives after setup exits
     except Exception as exc:
+        if process is not None:
+            termination_timeout = 5.0
+            if lifecycle.deadline is not None:
+                termination_timeout = max(0.0, min(termination_timeout, lifecycle.deadline - time.monotonic()))
+            terminated = False
+            try:
+                terminate_tree = getattr(process, "terminate_tree", None)
+                if terminate_tree is not None:
+                    terminated = bool(terminate_tree(termination_timeout))
+                    if not terminated:
+                        # Preserve Install until the Job confirms no member remains.
+                        # This fallback is reachable only when the bounded kill did
+                        # not complete; releasing sooner can race a delayed child.
+                        terminated = bool(terminate_tree(None))
+                elif hasattr(process, "terminate"):
+                    process.terminate()
+                    process.wait(timeout=termination_timeout)
+                    terminated = True
+            except Exception:
+                terminated = False
+            if terminated:
+                lifecycle.restore_child_terminated = True
+                try:
+                    if hasattr(process, "release_job"):
+                        process.release_job()
+                except Exception:
+                    pass
+            else:
+                # Keep Install owned until this process exits. Closing the Job
+                # on teardown kills the descendant tree instead of exposing a
+                # newly committed pointer to a late old-build child.
+                lifecycle.hold_install_until_process_exit = True
+                try:
+                    close_job = getattr(process, "close_job", None)
+                    if close_job is not None:
+                        close_job()
+                except Exception:
+                    pass
         raise SafetyError(f"Setup could not restore the previously running Branchglance: {exc}") from exc
     finally:
-        _remove_owned_restart_handoff(handoff, token)
+        _clear_owned_restore_handoff(paths, token)
 
 
 def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
@@ -350,7 +455,8 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
         return already.result
 
     def pre_stop() -> None:
-        _setup_preflight(paths, native, manifest, version_full, deadline)
+        _recover_expired_restore_handoff(paths)
+        _setup_preflight(paths, native, manifest, version_full, deadline, check_handoff=True)
         test_timeout = 30.0
         if deadline is not None:
             test_timeout = deadline - time.monotonic() - 9.0  # reserve bounded restore health time
