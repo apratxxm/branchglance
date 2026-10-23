@@ -2597,11 +2597,15 @@ class ClaudeDesktopProvider:
     _file_cache: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
     _cache_lock = threading.Lock()
     def __init__(self, local_app_data: str | None = None) -> None:
-        base = Path(local_app_data or os.environ.get("LOCALAPPDATA", "")) / "Packages"
-        matches = sorted(base.glob("Claude_*"))
-        self.root = (
-            matches[0] / "LocalCache" / "Roaming" / "Claude" if matches else Path("__missing__")
-        )
+        local = Path(local_app_data or os.environ.get("LOCALAPPDATA", ""))
+        # Claude Desktop moved its user data out of the MSIX package into
+        # %LOCALAPPDATA%\Claude-Data\claude_<package>; the package path remains
+        # behind with only a marker file. Prefer whichever root holds usage history.
+        candidates = sorted(local.glob("Claude-Data/claude_*")) + [
+            match / "LocalCache" / "Roaming" / "Claude" for match in sorted((local / "Packages").glob("Claude_*"))
+        ]
+        self.root = next((path for path in candidates if (path / "plan-usage-history.json").is_file()),
+                         candidates[0] if candidates else Path("__missing__"))
         self.transcript_root = Path(os.environ.get("CLAUDE_HOME", Path.home() / ".claude")) / "projects"
 
     def _usage(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:

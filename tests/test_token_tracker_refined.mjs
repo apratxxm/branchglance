@@ -340,8 +340,11 @@ assert.equal(T.notch.mode, "controls", "the current hover remains suppressed aft
 widgetListeners.get("pointerleave")();
 
 T.keepOpenState.value = true; T.notch.hover = false; T.notch.qualifiedHover = false; T.notch.active = 0;
-T.setNotch(false, true); T.handleKey(escapeEvent());
+T.setNotch(false, true);
+assert.equal(T.notch.mode, "controls", "keep-open does not open an empty panel when no chats are active");
+T.notch.active = 1; T.setNotch(false, true); T.handleKey(escapeEvent());
 assert.equal(T.keepOpenState.value, true); assert.equal(T.notch.mode, "inspect", "Escape cannot clear persistent keep-open");
+T.notch.active = 0;
 
 T.setupWindowDrag();
 const dragBegins = [], dragEnds = []; let nextGeneration = 40, acceptCompactDrag = true;

@@ -129,6 +129,22 @@ def test_claude_provider_filters_latest_org(tmp_path, monkeypatch):
     assert snap["chats"][0]["title"] == "Real chat"
 
 
+def test_claude_provider_prefers_relocated_claude_data_root(tmp_path):
+    # Claude Desktop moved user data out of the package, leaving only a marker there.
+    stale = tmp_path / "Packages" / "Claude_test" / "LocalCache" / "Roaming" / "Claude"
+    stale.mkdir(parents=True)
+    (stale / ".user-data-left.claude_test").write_text("", encoding="utf-8")
+    moved = tmp_path / "Claude-Data" / "claude_test"
+    moved.mkdir(parents=True)
+    (moved / "plan-usage-history.json").write_text(json.dumps({
+        "version": 2, "samples": [{"t": 2000, "org": "current", "u": {"fh": 20, "sd": 30}}],
+    }), encoding="utf-8")
+    assert ClaudeDesktopProvider(str(tmp_path)).root == moved
+    (moved / "plan-usage-history.json").unlink()
+    (stale / "plan-usage-history.json").write_text("{}", encoding="utf-8")
+    assert ClaudeDesktopProvider(str(tmp_path)).root == stale
+
+
 def test_usage_limits_preserve_zero_and_expose_absent_values_as_unknown(tmp_path):
     package = tmp_path / "Packages" / "Claude_test" / "LocalCache" / "Roaming" / "Claude"
     package.mkdir(parents=True)
