@@ -1541,30 +1541,37 @@ def test_background_snapshot_failure_keeps_cache_and_allows_retry(monkeypatch):
     assert len(attempts) == 2
 
 
-def test_background_request_without_snapshot_waits_for_real_first_build(monkeypatch):
+def test_background_request_without_snapshot_returns_promptly_and_starts_one_real_build(monkeypatch):
+    # A cold first build can outlast the widget's 25 s fetch timeout, so a background
+    # request with no snapshot answers at once (503 upstream) and the widget retries.
     cache = server.SnapshotCache()
     started, release = threading.Event(), threading.Event()
     built = {"generation": 1}
+    calls = []
 
     def slow_build():
+        calls.append(1)
         started.set()
         assert release.wait(2)
         return built
 
     monkeypatch.setattr(server, "build_snapshot", slow_build)
-    result = []
-    caller = threading.Thread(target=lambda: result.append(cache.get(background=True)))
-    caller.start()
     try:
+        assert cache.get(background=True) is None
         assert started.wait(2)
-        assert result == []
+        assert cache.get(background=True) is None, "a second cold request starts no second build"
     finally:
         release.set()
-        caller.join(timeout=2)
-    assert not caller.is_alive()
-    assert len(result) == 1 and result[0] is not built
-    assert result[0]["generation"] == built["generation"]
-    assert result[0]["snapshotCache"]["generation"] == 1
+    deadline = time.monotonic() + 2
+    result = None
+    while result is None and time.monotonic() < deadline:
+        result = cache.get(background=True)
+        if result is None:
+            time.sleep(0.01)
+    assert len(calls) == 1
+    assert result is not None and result is not built
+    assert result["generation"] == built["generation"]
+    assert result["snapshotCache"]["generation"] == 1
 
 
 def test_stats_handler_enables_background_only_for_opt_in_query(monkeypatch):
