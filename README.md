@@ -8,14 +8,13 @@ Claude Code collection is off until you enable it in Reset Action Settings. It u
 
 ## Screenshots
 
-No screenshots are included yet. Add reviewed, privacy-safe images at these paths before publishing; do not use real account data or private chat titles.
+Rendered from synthetic sample data; no real chats or accounts.
 
-| Preview | Placeholder |
-| --- | --- |
-| Widget overview | `docs/release/screenshots/widget-overview.png` — pending |
-| Codex limits and chat tree | `docs/release/screenshots/codex-view.png` — pending |
-| Claude source and usage | `docs/release/screenshots/claude-view.png` — pending |
-| Claude consent setting | `docs/release/screenshots/claude-consent.png` — pending |
+![Compact widget with Codex limits](docs/release/screenshots/widget-overview.png)
+
+![Codex chats: a running chat with its worker agent, and one waiting for input](docs/release/screenshots/codex-view.png)
+
+![Claude source with its orange theme](docs/release/screenshots/claude-view.png)
 
 ## Install
 
