@@ -21,6 +21,8 @@ from typing import Any, Iterable
 
 from .codex_client import CodexAppServer, CodexUnavailable
 from .claude_cache import reset_info, usage_info
+
+CLAUDE_DISPLAY_USAGE_AGE_SECONDS = 600  # matches the widget's quota freshness (app.js resetView)
 from .provider_policy import POLICIES, policy_for, public_policies
 
 # Full transcript collection is intentionally limited to providers listed here.
@@ -2919,9 +2921,10 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     def snapshot(self) -> dict[str, Any]:
         samples, latest = self._usage()
         usage = latest.get("u") or {}
-        info = usage_info(self.root, samples)
-        # A Desktop response cached within the last 90 seconds is fresher than the
-        # periodic history sample; its percentages are only set while that recent.
+        # Claude Desktop refetches usage only every few minutes, so a 90-second window
+        # leaves the meters blank most of the time. Display accepts a response up to the
+        # widget's own 10-minute quota freshness; the greeter keeps the strict default.
+        info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
         five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else usage.get("fh")
         weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else usage.get("sd")
