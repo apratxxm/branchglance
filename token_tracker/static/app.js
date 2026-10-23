@@ -712,6 +712,14 @@ function ageShort(ms) {
   const m=Math.max(0,Math.floor((Date.now()-ms)/60000));
   return m<1?"now":m<60?m+"m":m<1440?Math.floor(m/60)+"h":Math.floor(m/1440)+"d";
 }
+function quotaAgeLabel(ms) {
+  const minutes=Math.max(0,Math.floor((Date.now()-ms)/60000));
+  if(minutes<60)return minutes+"m";
+  const hours=Math.floor(minutes/60),remaining=minutes%60;
+  if(hours<24)return remaining?hours+"h "+remaining+"m":hours+"h";
+  const days=Math.floor(hours/24),remainingHours=hours%24;
+  return remainingHours?days+"d "+remainingHours+"h":days+"d";
+}
 function dayWord(ms, alwaysDate=false) {
   const today=new Date();today.setHours(0,0,0,0);
   const d=new Date(ms),start=new Date(d);start.setHours(0,0,0,0);
@@ -1400,16 +1408,21 @@ function resetView(provider, key) {
   const quotaAt=provider._quotaWindowObservedAt&&Object.prototype.hasOwnProperty.call(provider._quotaWindowObservedAt,key)?provider._quotaWindowObservedAt[key]:provider.limitsUpdatedAt;
   const sampled=stamp(quotaAt),age=sampled?Date.now()-sampled:null;
   const measured=!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000);
-  const shownUsed=measured&&used!=null?Math.max(0,Math.min(100,used)):null;
-  const parts=measured?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
-  const hasReset=Boolean(measured&&parts.target);
+  const observedParts=used!=null&&sampled&&age!=null&&age>=0?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
+  const maxAge=key==="weekly"?7*86400000:86400000;
+  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&age<maxAge&&observedParts.target!=null&&observedParts.seconds>0);
+  const expired=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&observedParts.target!=null&&observedParts.seconds<=0);
+  const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
+  const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
+  const hasReset=Boolean((measured&&parts.target)||(lastKnown&&parts.target&&parts.seconds>0));
   const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m "+pad2(parts.seconds%60)+"s":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
-  const usedLabel=shownUsed==null?"":Math.round(shownUsed)+"%",usedText=usedLabel?usedLabel+" used":"";
-  return {measured,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,
-    tone:shownUsed==null?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset&&(!PHONE||key==="fiveHour")?runwayCountdown:""):parts.countdown,due:parts.due,
-    // Both limits come from one sample, so its age is stated once, on the 5-hour row.
-    stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"—"):"",
-    tip:RUNWAY?(sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"—")};
+  const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
+  const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
+  return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,
+    tone:shownUsed==null||lastKnown?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset&&(!PHONE||key==="fiveHour")?runwayCountdown:""):parts.countdown,due:parts.due,
+    // Keep the last-known age beside each independently rendered quota value.
+    stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
+    tip:RUNWAY?(lastKnown?"Last reported by "+(provider.name==="Claude"?"Claude Desktop":provider.name)+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014")};
 }
 function clearRunwayArrival(el) {
   if(!el)return;
@@ -1456,32 +1469,32 @@ function renderResets(providers) {
     node.dataset.shape=shape;
     const markup=(key)=>providers.map((p,i)=>{
       const id="r"+i+"-"+key;
-      return '<div class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
+      return '<div id="'+id+'-row" class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
         (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>used</i>':'—')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span><small class="rr-last-known-age"></small>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("");
     if(REFINED){node.innerHTML=markup("fiveHour");if(weeklyNode)weeklyNode.innerHTML=markup("weekly");}
     else node.innerHTML=providers.map((p,i)=>["fiveHour","weekly"].map(key=>{
       const id="r"+i+"-"+key;
-      return '<div class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
+      return '<div id="'+id+'-row" class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
         (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<b>—</b><i>used</i>':'—')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span><small class="rr-last-known-age"></small>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("")).join("");
   }
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
-    const id="#r"+i+"-"+key,view=resetView(p,key);
+    const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");if(row)row.title=view.tip;
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
-    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<b>'+esc(view.usedLabel)+'</b><i>used</i>':'<b></b><i></i>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
+    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>used</i></span>'+(view.lastKnown?'<small class="rr-last-known-age">'+esc(view.lastKnownAge)+'</small>':''):view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span><small class="rr-last-known-age"></small>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
     else set("-left",view.usedText);
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
-    const left=$(id+"-left");if(left){left.className="rr-left"+(view.tone?" t-"+view.tone:"");left.title=view.tip;}
+    const left=$(id+"-left");if(left){left.className="rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:"");left.title=view.tip;}
     const cd=$(id+"-cd");if(cd){cd.className="rr-cd"+(view.due?" t-attn":"");if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;cd.title=countdownText?'Resets '+view.day+' '+view.time:'';cd.setAttribute?.('aria-hidden',String(!countdownText));}}
-    const meter=$(id+"-meter");if(meter){if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{meter.setAttribute("aria-valuenow",String(Math.round(view.usedPercent)));meter.setAttribute?.('aria-valuetext',Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
-    const bar=$(id+"-bar");if(bar){bar.style.width=(view.usedPercent??0)+"%";bar.className=view.tone?"t-"+view.tone:"";}
+    const meter=$(id+"-meter");if(meter){meter.className="meter"+(view.lastKnown?" last-known":"");if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{meter.setAttribute("aria-valuenow",String(Math.round(view.usedPercent)));meter.setAttribute?.('aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
+    const bar=$(id+"-bar");if(bar){bar.style.width=(view.usedPercent??0)+"%";bar.className=view.lastKnown?"last-known":view.tone?"t-"+view.tone:"";}
     if(key==="fiveHour"&&!PHONE){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
   }));
   if(RUNWAY&&!PHONE)renderGreeterStatus(providers);

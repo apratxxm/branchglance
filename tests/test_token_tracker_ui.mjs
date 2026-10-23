@@ -99,6 +99,8 @@ async function acceptRunwayLive(sample){
   const cachedProvider=R.state.snapshot.providers[0];
   assert.equal(R.resetView(cachedProvider,"fiveHour").measured,false);
   assert.equal(R.resetView(cachedProvider,"weekly").measured,false);
+  assert.equal(R.resetView(cachedProvider,"fiveHour").lastKnown,false,"restored snapshots with null quota are not treated as last known values");
+  assert.equal(R.resetView(cachedProvider,"weekly").lastKnown,false,"restored snapshots with null quota are not treated as last known values");
   assert.equal(runwayNode("#r0-fiveHour-meter").getAttribute("aria-valuenow"),null);
   assert.equal(runwayNode("#r0-weekly-meter").getAttribute("aria-valuenow"),null);
   assert.equal(runwayNode("#r0-fiveHour-meter").getAttribute("aria-hidden"),"true");

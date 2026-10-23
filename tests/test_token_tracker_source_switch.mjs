@@ -93,7 +93,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour,undefined,"an unapproved sample stays unrendered while policy is pending");
   await early.T.loadProviderPolicy();early.T.setSource("Claude");
   assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour.percent,43);
-  assert.equal(early.node("#r0-fiveHour-left").innerHTML,"<b>43%</b><i>used</i>");
+  assert.equal(early.node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>43%</b><i>used</i></span>');
 }
 
 // Startup's first active snapshot chooses the provider with work before painting and ignores a stale saved manual window.
