@@ -21,6 +21,12 @@ def _build_module():
     return module
 
 
+def test_release_build_has_one_final_version_default():
+    module = _build_module()
+    assert module.RELEASE_VERSION == "1.0.0"
+    assert 'parser.add_argument("--version", default=RELEASE_VERSION)' in (ROOT / "packaging" / "build.py").read_text()
+
+
 def test_build_entry_dispatches_claude_hook_by_module_name_to_stub(tmp_path):
     module = _build_module()
     source = tmp_path / "source"

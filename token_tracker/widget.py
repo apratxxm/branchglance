@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pystray
 import webview
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
@@ -26,6 +26,28 @@ from . import product, reset_delivery, server as server_module
 _WAIT_OBJECT_0 = 0x0
 _WAIT_ABANDONED = 0x80
 _WAIT_TIMEOUT = 0x102
+
+
+def claim_install_mutex(timeout: float = 20.0) -> tuple[object | None, str]:
+    """Wait briefly for setup to finish before importing the frozen policy snapshot."""
+    if not product.is_frozen():
+        return None, "acquired"
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = product.create_secured_mutex(product.INSTALL_MUTEX_NAME)
+    except (AttributeError, OSError):
+        return None, "failed"
+    result = kernel32.WaitForSingleObject(handle, max(0, min(int(timeout * 1000), 0xFFFFFFFE)))
+    if result == _WAIT_OBJECT_0:
+        return handle, "acquired"
+    if result == _WAIT_ABANDONED:
+        product.release_secured_mutex(handle)
+        return None, "abandoned"
+    kernel32.CloseHandle(handle)
+    return None, "busy" if result == _WAIT_TIMEOUT else "failed"
 
 
 def claim_instance_mutex(name: str | None = None) -> tuple[object | None, str]:
@@ -819,7 +841,7 @@ RESET_ACTIONS_URL = f"http://{HTTP_HOST}:{HTTP_PORT}/reset_actions.html"
 
 class WidgetApp:
     def __init__(self, *, start_hidden: bool = False, compact_profile: bool = True,
-                 recenter_on_start: bool = False) -> None:
+                 recenter_on_start: bool = False, appdata_redirected: bool = False) -> None:
         self.window = None
         self.reset_actions_window = None
         self._reset_actions_token = None
@@ -853,7 +875,9 @@ class WidgetApp:
         self._lifecycle = threading.RLock()
         self._shutdown_requested = threading.Event()
         self._maintenance_thread: threading.Thread | None = None
+        self._startup_install_mutex = None
         self._policy_notice_shown = False
+        self._appdata_redirected = appdata_redirected
         self._webview_storage: Path | None = None
         # Reopen where the user left it: last normal bounds plus the maximized flag.
         self.window_state_path = _window_state_path()
@@ -1835,13 +1859,8 @@ class WidgetApp:
 
     @staticmethod
     def icon_image() -> Image.Image:
-        image = Image.new("RGBA", (64, 64), "#08080a")
-        draw = ImageDraw.Draw(image)
-        draw.rounded_rectangle((3, 3, 60, 60), radius=14, outline="#34343a", width=3)
-        draw.rectangle((17, 17, 47, 23), fill="#e8813f")
-        draw.rectangle((17, 30, 39, 36), fill="#4a95e0")
-        draw.rectangle((17, 43, 51, 49), fill="#41d267")
-        return image
+        with Image.open(product.brand_icon_path()) as source:
+            return source.convert("RGBA").resize((64, 64), Image.Resampling.LANCZOS)
 
     def show(self, *_args) -> None:
         if not self.window:
@@ -2524,6 +2543,10 @@ class WidgetApp:
         """pystray setup hook: show the icon, then report startup policy problems once."""
         icon.visible = True
         warnings = product.startup_policy_warnings()
+        if self._appdata_redirected in (True, "redirected", "unknown") and not self._policy_notice_shown:
+            self._policy_notice_shown = True
+            with suppress(Exception):
+                icon.notify("Branchglance may not see settings created by another app's terminal.", product.PRODUCT)
         if warnings and not self._policy_notice_shown:
             self._policy_notice_shown = True
             text = "Provider settings problem: " + "; ".join(warnings)
@@ -2550,18 +2573,30 @@ class WidgetApp:
         # Installed storage must not be redirected (junctions into TokenTracker or
         # the legacy WebView2 profile); refuse before anything is written.
         try:
-            product.validate_storage()
-            self._webview_storage = product.prepare_webview_storage(product.webview_storage_path())
-        except product.StorageRedirectedError as exc:
-            show_message(product.PRODUCT, "Branchglance did not start because its data folder is "
-                         f"redirected to another location, which it will not modify:\n\n{exc}")
-            return
-        if not self.claim_instance():
-            return
-        try:
-            self._run_claimed()
-        except _StartupCancelled:
-            self._finish_cancelled_startup()
+            try:
+                product.validate_storage()
+                self._webview_storage = product.prepare_webview_storage(product.webview_storage_path())
+            except product.StorageRedirectedError as exc:
+                show_message(product.PRODUCT, "Branchglance did not start because its data folder is "
+                             f"redirected to another location, which it will not modify:\n\n{exc}")
+                return
+            if not self.claim_instance():
+                return
+            # The policy is already loaded by LimitResetService.__init__. The
+            # control listener is now bound, so a waiting installer can safely
+            # discover and stop this instance.
+            self._release_startup_install_mutex()
+            try:
+                self._run_claimed()
+            except _StartupCancelled:
+                self._finish_cancelled_startup()
+        finally:
+            self._release_startup_install_mutex()
+
+    def _release_startup_install_mutex(self) -> None:
+        handle, self._startup_install_mutex = self._startup_install_mutex, None
+        if handle is not None:
+            product.release_secured_mutex(handle)
 
     def _run_claimed(self) -> None:
         if not self._startup_step(self.start_http):
@@ -2576,7 +2611,8 @@ class WidgetApp:
         self._startup_step(self._create_main_window)
         self._startup_step(self._start_tray)
         storage = self._startup_step(lambda: self._webview_storage)
-        webview.start(gui="edgechromium", debug=False, private_mode=False, storage_path=str(storage))
+        webview.start(gui="edgechromium", debug=False, private_mode=False, storage_path=str(storage),
+                      icon=str(product.brand_icon_path()))
 
     def _create_main_window(self) -> None:
         window_width, window_height, x, y = self.initial_bounds()
@@ -2623,28 +2659,65 @@ class WidgetApp:
 
 
 def main(argv=None) -> None:
-    # The very first action: own (or be refused) the single-instance mutex.
-    handle, status = claim_instance_mutex()
-    if status == "busy":
-        if not WidgetApp.notify_existing():
-            show_message(product.PRODUCT, "Branchglance is already running, or is being updated. "
-                         "Wait a moment and try again; if it keeps happening, quit it from the tray icon.")
-        return
-    if status == "failed":
-        show_message(product.PRODUCT, "Branchglance could not check whether it is already running, "
-                     "so it did not start. Try again in a moment.")
-        return
-    if status == "abandoned":
-        recover_abandoned_instance()
-    global _INSTANCE_HANDLE
-    _INSTANCE_HANDLE = handle  # held until the process exits
-    product.set_app_user_model_id()
     parser = argparse.ArgumentParser(description="Run the Branchglance widget")
     parser.add_argument("--background", action="store_true", help="start hidden in the tray")
     parser.add_argument("--recenter", action="store_true",
                         help="recenter the widget once on startup")
+    parser.add_argument("--install-handoff", help=argparse.SUPPRESS)
+    parser.add_argument("--redirect-relaunch", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--launcher-appdata-ok", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--launcher-appdata-unknown", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    WidgetApp(start_hidden=args.background, recenter_on_start=args.recenter).run()
+    # Wait for any setup transaction before taking the Instance lock or loading
+    # provider policy. A timeout exits quietly so repeated Start-menu clicks do
+    # not leave message-box processes behind.
+    install_handle = None
+    install_status = "busy"
+    if args.install_handoff and product.consume_install_handoff(args.install_handoff):
+        # Bypass is accepted only while the owner that wrote the one-use marker
+        # still holds Install; a stale or forged marker falls back to normal wait.
+        probe_handle, probe_status = claim_install_mutex(timeout=0)
+        if probe_status == "busy":
+            install_status = "acquired"
+        elif probe_status == "acquired":
+            install_handle, install_status = probe_handle, probe_status
+    if install_status != "acquired":
+        install_handle, install_status = claim_install_mutex()
+    if install_status != "acquired":
+        logging.getLogger(__name__).warning("Install mutex unavailable (%s); exiting without UI", install_status)
+        return
+    instance_handle = None
+    product.set_app_user_model_id()
+    try:
+        instance_handle, status = claim_instance_mutex()
+        if status == "busy":
+            product.release_secured_mutex(install_handle)
+            install_handle = None
+            if not WidgetApp.notify_existing():
+                show_message(product.PRODUCT, "Branchglance is already running; its control endpoint did not respond.")
+            return
+        if status == "failed":
+            product.release_secured_mutex(install_handle)
+            install_handle = None
+            show_message(product.PRODUCT, "Branchglance could not check whether it is already running, "
+                         "so it did not start. Try again in a moment.")
+            return
+        if status == "abandoned":
+            recover_abandoned_instance()
+        global _INSTANCE_HANDLE
+        _INSTANCE_HANDLE = instance_handle  # held until the process exits
+        redirected = ("unknown" if args.launcher_appdata_unknown else "not_redirected"
+                      if args.launcher_appdata_ok or not product.is_frozen() else product.appdata_probe()[0])
+        if redirected == "unknown":
+            logging.getLogger(__name__).warning("AppData redirection probe is unknown; continuing with notice")
+        app = WidgetApp(start_hidden=args.background, recenter_on_start=args.recenter)
+        app._appdata_redirected = redirected
+        app._startup_install_mutex = install_handle
+        install_handle = None  # ownership transferred; WidgetApp releases after control bind
+        app.run()
+    finally:
+        if install_handle is not None:
+            product.release_secured_mutex(install_handle)
 
 
 if __name__ == "__main__":

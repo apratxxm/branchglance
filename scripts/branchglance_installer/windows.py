@@ -301,6 +301,11 @@ class WindowsControl:
             return None
         return who if isinstance(who, dict) and who.get("product") == self.product.PRODUCT else None
 
+    def health(self) -> dict:
+        """Return the app identity only after proving the current nonce and challenge."""
+        nonce = self.product.read_nonce_file(self.nonce_path)
+        return self.product.control_health(nonce, port=self.port, timeout=0.6)
+
     def maintenance_exit(self) -> str | None:
         nonce = self.product.read_nonce_file(self.nonce_path)
         return self.product.control_command("maintenance-exit", nonce, port=self.port, timeout=2)

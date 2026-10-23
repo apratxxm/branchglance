@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -169,6 +170,27 @@ def test_policy_file_oversized_or_missing(tmp_path):
     assert read_policy_file(tmp_path).status == "malformed"  # a directory is not a policy file
 
 
+def test_policy_file_unreadable_is_distinct_from_absent(monkeypatch, tmp_path):
+    from pathlib import Path
+    path = _write_policy(tmp_path / "policy.json", {})
+    monkeypatch.setattr(Path, "read_bytes", lambda _self: (_ for _ in ()).throw(PermissionError("denied")))
+    result = read_policy_file(path)
+    assert result.status == "malformed"
+    assert "unreadable" in result.warning
+    assert read_policy_file(None).status == "absent"
+
+
+def test_fork_icon_contains_all_sizes_and_is_used_for_tray():
+    from PIL import Image
+    icon = product.brand_icon_path()
+    assert icon.is_file()
+    with Image.open(icon) as image:
+        assert image.format == "ICO"
+        assert set(image.info["sizes"]) == {(size, size) for size in (16, 20, 24, 32, 40, 48, 64, 256)}
+    tray = widget.WidgetApp.icon_image()
+    assert tray.size == (64, 64) and tray.getpixel((0, 0))[3] == 0
+
+
 def test_env_flags_override_file_and_explicit_zero_vetoes(tmp_path):
     path = _write_policy(tmp_path / "policy.json", {"Codex": {"collect": True, "show": True, "send": True}})
     vetoed = load_policies_resilient({"TOKEN_TRACKER_CODEX_SEND": "0"}, policy_path=path)
@@ -331,6 +353,299 @@ def test_main_when_mutex_held_by_running_instance_focuses_it_silently(monkeypatc
     monkeypatch.setattr(widget, "WidgetApp", type("X", (), {"notify_existing": staticmethod(lambda: True)}))
     widget.main([])
     assert messages == []
+
+
+def test_app_import_during_upgrade_does_not_snapshot_policy_before_install_gate():
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    script = """
+from token_tracker import product
+def fail_if_read_before_gate():
+    raise RuntimeError('policy read before Install mutex gate')
+product.policy_file_path = fail_if_read_before_gate
+import token_tracker.widget
+"""
+    result = subprocess.run([sys.executable, "-c", script], cwd=root, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+def test_app_launches_during_setup_do_not_stack_dialogs(monkeypatch):
+    messages, instance_checks = [], []
+    monkeypatch.setattr(widget, "claim_install_mutex", lambda *_a, **_k: (None, "busy"), raising=False)
+    monkeypatch.setattr(widget, "claim_instance_mutex",
+                        lambda name=None: instance_checks.append(name) or (None, "busy"))
+    monkeypatch.setattr(widget.WidgetApp, "notify_existing", staticmethod(lambda: False))
+    monkeypatch.setattr(widget, "show_message", lambda *args: messages.append(args))
+    for _ in range(6):
+        widget.main([])
+    assert instance_checks == [] and messages == []
+
+
+def test_cutover_handoff_skips_install_wait_only_while_install_owner_holds_gate(monkeypatch):
+    calls, messages = [], []
+    monkeypatch.setattr(product, "consume_install_handoff", lambda token: token == "valid")
+    monkeypatch.setattr(widget, "claim_install_mutex",
+                        lambda timeout=20.0: (calls.append(timeout) or (None, "busy")))
+    monkeypatch.setattr(widget, "claim_instance_mutex", lambda name=None: (123, "acquired"))
+    monkeypatch.setattr(product, "set_app_user_model_id", lambda: None)
+    monkeypatch.setattr(widget, "show_message", lambda *args: messages.append(args))
+    class FakeApp:
+        def __init__(self, **_kwargs): self._startup_install_mutex = None
+        def run(self): calls.append("run")
+    monkeypatch.setattr(widget, "WidgetApp", FakeApp)
+    widget.main(["--install-handoff", "valid"])
+    assert calls == [0, "run"] and messages == []
+
+
+def test_invalid_cutover_handoff_uses_normal_install_wait(monkeypatch):
+    calls = []
+    monkeypatch.setattr(product, "consume_install_handoff", lambda _token: False)
+    monkeypatch.setattr(widget, "claim_install_mutex",
+                        lambda timeout=20.0: (calls.append(timeout) or (None, "acquired")))
+    monkeypatch.setattr(widget, "claim_instance_mutex", lambda name=None: (123, "acquired"))
+    monkeypatch.setattr(product, "set_app_user_model_id", lambda: None)
+    class FakeApp:
+        def __init__(self, **_kwargs): self._startup_install_mutex = None
+        def run(self): calls.append("run")
+    monkeypatch.setattr(widget, "WidgetApp", FakeApp)
+    widget.main(["--install-handoff", "invalid"])
+    assert calls == [20.0, "run"]
+
+
+@pytest.mark.parametrize("redirected", [False, True])
+def test_appdata_redirection_probe_cleans_real_and_package_cache_paths(tmp_path, redirected):
+    class FakeFS:
+        def __init__(self): self.files = set(); self.directories = set()
+        def exists(self, path): return path in self.files or path in self.directories
+        def mkdir(self, path): self.directories.add(path)
+        def create_probe(self, path):
+            target_dir = package_root / path.name if redirected else path
+            self.directories.add(package_root) if redirected else None
+            self.directories.add(target_dir)
+            self.files.add(target_dir / "probe.bin")
+        def package_branch_roots(self, _packages):
+            return [package_root] if package_root in self.directories else []
+        def unlink(self, path): self.files.discard(path)
+        def rmdir(self, path):
+            if any(item.parent == path for item in self.files) or any(item.parent == path for item in self.directories):
+                raise OSError("not empty")
+            self.directories.discard(path)
+    local = tmp_path / "Local"
+    root = local / "Branchglance"
+    package_root = local / "Packages" / "Claude" / "LocalCache" / "Local" / "Branchglance"
+    fs = FakeFS()
+    status, _reason = product.appdata_probe({"LOCALAPPDATA": str(local)}, fs=fs)
+    assert status == ("redirected" if redirected else "not_redirected")
+    assert not fs.files
+    assert root not in fs.directories and package_root not in fs.directories
+
+
+def test_appdata_redirection_probe_unknown_is_distinct_and_warned(caplog, tmp_path):
+    class BrokenFS:
+        def exists(self, _path): return False
+        def mkdir(self, _path): raise PermissionError("probe denied")
+        def package_branch_roots(self, _path): return []
+        def unlink(self, _path): pass
+        def rmdir(self, _path): pass
+    status, reason = product.appdata_probe({"LOCALAPPDATA": str(tmp_path)}, fs=BrokenFS())
+    assert status == "unknown" and "probe denied" in reason
+    assert "AppData redirection probe is unknown" in caplog.text
+
+
+def test_python_appdata_probe_scans_beyond_128_package_roots(tmp_path):
+    local = tmp_path / "Local"
+    product_root = local / "Branchglance"
+    package_roots = [local / "Packages" / f"P{index:03d}" / "LocalCache" / "Local" / "Branchglance"
+                     for index in range(150)]
+    class FakeFS:
+        def __init__(self):
+            self.files = set()
+            self.directories = set(package_roots)
+        def exists(self, path): return path in self.files or path in self.directories
+        def mkdir(self, path): self.directories.add(path)
+        def create_probe(self, path):
+            self.directories.add(path)
+            self.files.add(path / "probe.bin")
+            redirected = package_roots[-1] / path.name
+            self.directories.add(redirected)
+            self.files.add(redirected / "probe.bin")
+        def package_branch_roots(self, _packages): return package_roots
+        def package_cache_dirs(self, _packages): return []
+        def unlink(self, path): self.files.discard(path)
+        def rmdir(self, path):
+            if any(item.parent == path for item in self.files) or any(item.parent == path for item in self.directories):
+                raise OSError("not empty")
+            self.directories.discard(path)
+    fs = FakeFS()
+    status, _reason = product.appdata_probe({"LOCALAPPDATA": str(local)}, fs=fs)
+    assert status == "redirected"
+    assert not fs.files
+    assert product_root not in fs.directories
+    assert not any(path.name.startswith(".branchglance-probe-") for path in fs.directories)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junction test requires Windows")
+def test_python_appdata_probe_leaves_unrelated_junction_cache_untouched(tmp_path):
+    local = tmp_path / "Local"
+    package = local / "Packages" / "LinkedApp"
+    package.mkdir(parents=True)
+    target = tmp_path / "external-cache"
+    branch_root = target / "Local" / "Branchglance"
+    branch_root.mkdir(parents=True)
+    sentinel = branch_root / "keep.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    _junction(package / "LocalCache", target)
+    status, _reason = product.appdata_probe({"LOCALAPPDATA": str(local)})
+    assert status == "not_redirected"
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    assert not list(branch_root.glob(".branchglance-probe-*"))
+
+
+def test_python_appdata_probe_scans_more_than_128_packages_and_detects_last(tmp_path):
+    local = tmp_path / "Local"
+    root = local / "Branchglance"
+    packages = [local / "Packages" / f"P{index:03d}" / "LocalCache" / "Local" / "Branchglance"
+                for index in range(150)]
+    class FakeFS:
+        files = set()
+        directories = set(packages)
+        def exists(self, path): return path in self.files or path in self.directories
+        def mkdir(self, path): self.directories.add(path)
+        def create_probe(self, path):
+            self.directories.add(path)
+            self.files.add(path / "probe.bin")
+            target = packages[-1] / path.name
+            self.directories.add(target)
+            self.files.add(target / "probe.bin")
+        def package_branch_roots(self, _path): return packages
+        def package_cache_dirs(self, _path): return []
+        def unlink(self, path): self.files.discard(path)
+        def rmdir(self, path):
+            if any(item.parent == path for item in self.files) or any(item.parent == path for item in self.directories):
+                raise OSError("not empty")
+            self.directories.discard(path)
+    fs = FakeFS()
+    status, _reason = product.appdata_probe({"LOCALAPPDATA": str(local)}, fs=fs)
+    assert status == "redirected"
+    assert not fs.files and not any(path.name.startswith(".branchglance-probe-") for path in fs.directories)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junction test requires Windows")
+def test_python_appdata_probe_leaves_unrelated_junctioned_cache_untouched(tmp_path):
+    local = tmp_path / "Local"
+    package = local / "Packages" / "LinkedApp"
+    package.mkdir(parents=True)
+    target = tmp_path / "external-cache"
+    branch_root = target / "Local" / "Branchglance"
+    branch_root.mkdir(parents=True)
+    sentinel = branch_root / "keep.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    _junction(package / "LocalCache", target)
+    status, _reason = product.appdata_probe({"LOCALAPPDATA": str(local)})
+    assert status == "not_redirected"
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    assert not list(branch_root.glob(".branchglance-probe-*"))
+
+
+def test_python_probe_detects_and_cleans_only_its_marker_through_fake_junction(tmp_path):
+    local = tmp_path / "Local"
+    package_root = local / "Packages" / "Junctioned" / "LocalCache" / "Local" / "Branchglance"
+    sentinel = package_root / "unrelated.txt"
+
+    class JunctionFS:
+        def __init__(self):
+            self.files = {sentinel}
+            self.directories = {package_root}
+            self.removed = []
+        def exists(self, path): return path in self.files or path in self.directories
+        def mkdir(self, path): self.directories.add(path)
+        def create_probe(self, path):
+            self.directories.add(path)
+            self.files.add(path / "probe.bin")
+            redirected = package_root / path.name
+            self.directories.add(redirected)
+            self.files.add(redirected / "probe.bin")
+        def package_branch_roots(self, _packages): return [package_root]
+        def package_cache_dirs(self, _packages): return []
+        def is_reparse_path(self, path): return path == package_root or package_root in path.parents
+        def unlink(self, path):
+            self.removed.append(path)
+            self.files.discard(path)
+        def rmdir(self, path):
+            self.removed.append(path)
+            if any(child.parent == path for child in self.files | self.directories):
+                raise OSError("not empty")
+            self.directories.discard(path)
+
+    fs = JunctionFS()
+    status, _reason = product.appdata_probe({"LOCALAPPDATA": str(local)}, fs=fs)
+    assert status == "redirected"
+    assert fs.files == {sentinel}
+    through_junction = [path for path in fs.removed if len(path.parts) > len(package_root.parts)
+                        and path.parts[:len(package_root.parts)] == package_root.parts]
+    assert len(through_junction) == 2
+    assert sum(path.name == "probe.bin" for path in through_junction) == 1
+    probe_dir = next(path for path in through_junction if path.name.startswith(".branchglance-probe-"))
+    assert {path for path in through_junction} == {probe_dir, probe_dir / "probe.bin"}
+    assert package_root in fs.directories
+
+
+def test_install_handoff_is_expiring_and_one_use(tmp_path):
+    marker = tmp_path / ".cutover-handoff.json"
+    token = "a" * 64
+    marker.write_text(json.dumps({"schemaVersion": 1, "nonce": token, "expires": 130.0}), encoding="utf-8")
+    assert product.consume_install_handoff(token, path=marker, now=100.0)
+    assert not marker.exists()
+    marker.write_text(json.dumps({"schemaVersion": 1, "nonce": token, "expires": 200.0}), encoding="utf-8")
+    assert not product.consume_install_handoff(token, path=marker, now=100.0)
+    assert marker.exists()
+
+
+def test_redirected_appdata_startup_notifies_once_without_blocking(monkeypatch):
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._appdata_redirected = True
+    app._policy_notice_shown = False
+    notifications = []
+    class Tray:
+        visible = False
+        def notify(self, message, title): notifications.append((message, title))
+    monkeypatch.setattr(product, "startup_policy_warnings", lambda: [])
+    tray = Tray()
+    app._tray_ready(tray)
+    app._tray_ready(tray)
+    assert len(notifications) == 1 and "terminal" in notifications[0][0]
+
+
+def test_widget_import_does_not_read_policy_before_startup_mutex_gate(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    script = """
+from token_tracker import product
+def premature_policy_read():
+    raise RuntimeError('policy read before startup mutex gate')
+product.policy_file_path = premature_policy_read
+import token_tracker.widget
+"""
+    result = subprocess.run([sys.executable, "-c", script], cwd=root, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+def test_six_launches_during_install_exit_quietly_without_stacking_dialogs(monkeypatch):
+    messages, instance_checks, launches = [], [], []
+    monkeypatch.setattr(widget, "claim_install_mutex", lambda timeout=20: (None, "busy"), raising=False)
+    monkeypatch.setattr(widget, "claim_instance_mutex", lambda name=None: instance_checks.append(name) or (None, "busy"))
+    monkeypatch.setattr(widget.WidgetApp, "notify_existing", staticmethod(lambda: False))
+    monkeypatch.setattr(widget, "show_message", lambda *args: messages.append(args))
+    monkeypatch.setattr(widget, "WidgetApp", type("App", (), {
+        "notify_existing": staticmethod(lambda: launches.append("handoff") or False),
+        "__init__": lambda self, **kwargs: launches.append("construct")}))
+    for _ in range(6):
+        widget.main([])
+    assert instance_checks == [] and launches == [] and messages == []
 
 
 @pytest.fixture

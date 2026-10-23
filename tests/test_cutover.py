@@ -36,7 +36,14 @@ class FakeCutover:
     def remove_branchglance_shortcut(self, record=None):
         self.calls.append("remove-new")
         if record is not None and self.new_link == record: self.new_link = False
-    def start_branchglance(self): self.calls.append("start-new"); self.running = True; return self.pid
+    def start_branchglance(self, handoff_token):
+        assert len(handoff_token) == 64
+        marker = self.state_root.parent.parent / "Programs" / "Branchglance" / ".cutover-handoff.json"
+        if marker.exists():
+            record = json.loads(marker.read_text())
+            assert record["nonce"] == handoff_token
+            marker.unlink()
+        self.calls.append("start-new"); self.running = True; return self.pid
     def identity(self): return {"product": "Branchglance", "build": "build-a", "pid": self.pid, "stateRoot": str(self.state_root)}
     def branchglance_running(self): return self.running
     def quit_branchglance(self): self.calls.append("quit-new"); self.running = False; return True
@@ -52,6 +59,7 @@ def setup(tmp_path):
     (legacy / "limit-reset.jsonl").write_text('{"event":"old"}\n')
     (legacy / "window-state.json").write_text('{"x":1}')
     root = tmp_path / "Branchglance"
+    (root.parent / "Programs" / "Branchglance").mkdir(parents=True)
     state = root / "state"
     adapter = FakeCutover(state)
 
@@ -62,7 +70,8 @@ def setup(tmp_path):
         data["providers"] = {"Codex": {"lastTriggerAt": 123}}
         path.write_text(json.dumps(data))
 
-    cutover = Cutover(adapter, legacy, root, Path(r"C:\old\pythonw.exe"), Path(r"C:\old"), migrate)
+    cutover = Cutover(adapter, legacy, root, Path(r"C:\old\pythonw.exe"), Path(r"C:\old"), migrate,
+                      desktop_path=tmp_path / "Desktop")
     return cutover, adapter, legacy, root
 
 
@@ -85,6 +94,43 @@ def test_cutover_copies_verifies_migrates_and_checks_launched_identity(tmp_path)
     assert json.loads((root / "policy.json").read_text())["providers"]["Codex"]["send"] is True
     assert (legacy / "limit-reset-state.json").read_text().find("resetAction") >= 0
     assert adapter.renamed and adapter.new_link and not (root / "cutover-journal.json").exists()
+    assert not (root.parent / "Programs" / "Branchglance" / ".cutover-handoff.json").exists()
+
+
+def test_cutover_recovery_removes_expired_owned_handoff_and_allows_retry(tmp_path, monkeypatch):
+    import branchglance_installer.cutover as cutover_module
+    cutover, adapter, _legacy, root = setup(tmp_path)
+    def crash_after_marker(name):
+        if name == "handoff-written": raise PowerLoss("crash after marker write")
+    cutover.after_mutation = crash_after_marker
+    with pytest.raises(PowerLoss, match="after marker write"):
+        cutover.run()
+    marker = root.parent / "Programs" / "Branchglance" / ".cutover-handoff.json"
+    journal = json.loads((root / "cutover-journal.json").read_text())
+    assert marker.is_file() and journal["handoff"]["nonce"]
+    now = journal["handoff"]["expires"] + 1
+    monkeypatch.setattr(cutover_module.time, "time", lambda: now)
+    assert cutover.recover() == "rolled-back"
+    assert not marker.exists()
+    cutover.after_mutation = lambda _name: None
+    assert cutover.run()["pid"] == adapter.pid
+
+
+def test_cutover_recovery_preserves_mismatched_handoff_marker(tmp_path, monkeypatch):
+    import branchglance_installer.cutover as cutover_module
+    cutover, _adapter, _legacy, root = setup(tmp_path)
+    cutover.after_mutation = lambda name: (_ for _ in ()).throw(PowerLoss("crash")) if name == "handoff-written" else None
+    with pytest.raises(PowerLoss):
+        cutover.run()
+    marker = root.parent / "Programs" / "Branchglance" / ".cutover-handoff.json"
+    journal = json.loads((root / "cutover-journal.json").read_text())
+    foreign = {"schemaVersion": 1, "nonce": "f" * 64, "expires": journal["handoff"]["expires"]}
+    marker.write_text(json.dumps(foreign), encoding="utf-8")
+    before = marker.read_bytes()
+    monkeypatch.setattr(cutover_module.time, "time", lambda: journal["handoff"]["expires"] + 1)
+    with pytest.raises(SafetyError, match="does not match its journal"):
+        cutover.recover()
+    assert marker.read_bytes() == before
 
 
 def test_cutover_run_refuses_old_app_or_port_conflict_without_writes(tmp_path):
@@ -229,9 +275,11 @@ def test_cutover_cli_releases_instance_before_app_launch(tmp_path, monkeypatch, 
     legacy = appdata / "TokenTracker"
     legacy.mkdir(parents=True)
     root = appdata / "Branchglance"
+    (appdata / "Programs" / "Branchglance").mkdir(parents=True)
     paths = Paths(appdata / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
-                  root, tmp_path / "Temp")
+                  root, tmp_path / "Temp", desktop=tmp_path / "KnownFolderDesktop")
     monkeypatch.setattr(cli, "local_app_data", lambda: appdata)
+    monkeypatch.setattr(cli.product, "appdata_probe", lambda: ("not_redirected", None))
     monkeypatch.setattr(cli.Paths, "for_user", classmethod(lambda _cls: paths))
     state = {"instance": False, "install": False, "handoff": False}
     class Mutex:
@@ -247,16 +295,18 @@ def test_cutover_cli_releases_instance_before_app_launch(tmp_path, monkeypatch, 
     class Processes:
         def wait_for_instance_exit(self, _timeout): return True
     native = types.SimpleNamespace(mutex=Mutex(), control=Control(), processes=Processes())
+    created_adapters = []
     class Adapter:
-        def __init__(self, *_args): pass
+        def __init__(self, *_args): self.created_link = None; created_adapters.append(self)
         def old_pythonw_running(self): return False
         def port_is_free(self, _port): return True
         def snapshot_old_shortcut(self):
             return {"target": r"C:\old\pythonw.exe", "workdir": r"C:\old", "arguments": OLD_ARGUMENTS}
         def rename_old_shortcut(self, _snapshot): pass
-        def create_branchglance_shortcut(self, _record): pass
-        def start_branchglance(self):
+        def create_branchglance_shortcut(self, _record): self.created_link = dict(_record)
+        def start_branchglance(self, token):
             assert state["install"] and not state["instance"]
+            assert len(token) == 64
             state["handoff"] = True
             return 500
         def identity(self):
@@ -270,6 +320,7 @@ def test_cutover_cli_releases_instance_before_app_launch(tmp_path, monkeypatch, 
                        "--old-workdir", r"C:\old"], native_factory=lambda _paths: native,
                       adapter_factory=Adapter)
     assert result == 0 and state["handoff"] and not state["instance"] and not state["install"]
+    assert created_adapters[0].created_link["path"] == str(paths.desktop / "Branchglance.lnk")
     assert json.loads(capsys.readouterr().out)["pid"] == 501
 
 
@@ -287,6 +338,7 @@ def test_fresh_cutover_commands_use_instance_mutex_as_app_absence_proof(tmp_path
     paths = Paths(appdata / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
                   product_root, tmp_path / "Temp")
     monkeypatch.setattr(cli, "local_app_data", lambda: appdata)
+    monkeypatch.setattr(cli.product, "appdata_probe", lambda: ("not_redirected", None))
     monkeypatch.setattr(cli.Paths, "for_user", classmethod(lambda _cls: paths))
     if command == "recover":
         journal_path.write_text(json.dumps({
@@ -334,6 +386,7 @@ def test_cutover_rollback_refuses_interrupted_journal_after_reboot_without_aband
     import cutover_branchglance as cli
     from branchglance_installer.app import Paths
     monkeypatch.setattr(cli, "local_app_data", lambda: tmp_path)
+    monkeypatch.setattr(cli.product, "appdata_probe", lambda: ("not_redirected", None))
     paths = Paths(tmp_path / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
                   root, tmp_path / "Temp")
     monkeypatch.setattr(cli.Paths, "for_user", classmethod(lambda _cls: paths))
@@ -351,6 +404,16 @@ def test_cutover_rollback_refuses_interrupted_journal_after_reboot_without_aband
                  adapter_factory=lambda *_args: FakeCutover(root / "state"))
     assert journal.read_bytes() == before
     assert calls[0][0] == "acquire" and calls[0][1].endswith("-Install")
+
+
+def test_cutover_refuses_redirected_context_before_adapter_or_state_access(monkeypatch):
+    import cutover_branchglance as cli
+    monkeypatch.setattr(cli.product, "appdata_probe", lambda: ("redirected", "package LocalCache"))
+    touched = []
+    with pytest.raises(SafetyError, match="File Explorer or the Start menu"):
+        cli.main(["run", "--old-pid", "1", "--old-target", r"C:\old\pythonw.exe",
+                  "--old-workdir", r"C:\old"], adapter_factory=lambda *_args: touched.append(True))
+    assert not touched
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows process and COM adapter proof")
