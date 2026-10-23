@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
+import json
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -245,3 +248,216 @@ def test_age_and_generation_do_not_advance_on_repeated_cached_reads(monkeypatch)
     assert first["snapshotCache"]["builtAt"] == second["snapshotCache"]["builtAt"]
     assert second["snapshotCache"]["ageSeconds"] == 7.25
     assert second["snapshotCache"]["stale"] is False
+
+
+def _persistable_snapshot(*, status="running", pending="Choose?"):
+    return {
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "enabledProviders": ["Codex"],
+        "limitProviders": [],
+        "providers": [{
+            "name": "Codex", "connected": True,
+            "chats": [{
+                "id": "persisted-only", "status": status, "statusSource": "app",
+                "executionStatus": status, "executionSource": "app",
+                "executionObservedAt": datetime.now(timezone.utc).isoformat(),
+                "pendingQuestion": pending, "pendingOptions": ["yes", "no"],
+                "latestRequest": "private old request", "tokens": 42,
+            }],
+        }],
+    }
+
+
+def test_persisted_snapshot_is_display_only_stale_and_refreshes(monkeypatch, tmp_path):
+    path = tmp_path / "stats-snapshot.json"
+    compatibility = "policy-and-source-a"
+    original = _persistable_snapshot()
+    monkeypatch.setattr(server, "build_snapshot", lambda: original)
+    writer = server.SnapshotCache(persist_path=path, compatibility=compatibility)
+    built = writer.get()
+    assert built["snapshotCache"]["stale"] is False
+    assert path.is_file()
+
+    started, release = threading.Event(), threading.Event()
+    refreshed = _persistable_snapshot(status="idle", pending=None)
+
+    def slow_build():
+        started.set()
+        assert release.wait(2)
+        return refreshed
+
+    monkeypatch.setattr(server, "build_snapshot", slow_build)
+    restored = server.SnapshotCache(persist_path=path, compatibility=compatibility)
+    assert restored.value is None  # Cached chat IDs cannot authorize actions.
+    shown = restored.get_background()
+    assert started.wait(1)
+    assert shown["snapshotCache"]["stale"] is True
+    assert shown["snapshotCache"]["building"] is True
+    assert shown["providers"][0]["stale"] is True
+    chat = shown["providers"][0]["chats"][0]
+    assert chat["status"] == "unknown" and chat["telemetryUnavailable"] is True
+    assert chat["executionStatus"] == "unavailable"
+    assert chat["pendingQuestion"] is None and chat["pendingOptions"] == []
+    assert "latestRequest" not in chat
+
+    release.set()
+    _wait_idle(restored)
+    assert restored.value["providers"][0]["chats"][0]["status"] == "idle"
+    assert restored.get_background()["snapshotCache"]["stale"] is False
+
+
+def test_disk_snapshot_rejects_mismatched_compatibility_and_malformed_data(tmp_path):
+    path = tmp_path / "stats-snapshot.json"
+    snapshot = _persistable_snapshot()
+    envelope = {
+        "schemaVersion": server.SnapshotCache.PERSISTED_SCHEMA_VERSION,
+        "compatibility": "source-a", "generation": 4,
+        "builtAt": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot,
+    }
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    assert server.SnapshotCache(persist_path=path, compatibility="source-b").value is None
+
+    envelope["compatibility"] = "source-a"
+    envelope["snapshot"] = {"providers": "not-a-list"}
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    assert server.SnapshotCache(persist_path=path, compatibility="source-a").value is None
+
+
+def test_restored_codex_id_does_not_authorize_open(monkeypatch, tmp_path):
+    snapshot = _persistable_snapshot(status="idle", pending=None)
+    snapshot["providers"][0]["chats"][0]["id"] = "12345678-1234-1234-1234-123456789abc"
+    path = tmp_path / "stats-snapshot.json"
+    monkeypatch.setattr(server, "build_snapshot", lambda: snapshot)
+    server.SnapshotCache(persist_path=path, compatibility="source-a").get()
+    restored = server.SnapshotCache(persist_path=path, compatibility="source-a")
+    monkeypatch.setattr(server, "CACHE", restored)
+    monkeypatch.setattr(server, "_codex_allows", lambda _action: True)
+    monkeypatch.setattr(server.LIVE_CACHE, "value", None)
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{httpd.server_port}/api/open?thread=12345678-1234-1234-1234-123456789abc"
+        )
+        with pytest.raises(urllib.error.HTTPError) as response:
+            urllib.request.urlopen(request, timeout=2)
+        assert response.value.code == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_failed_refresh_keeps_prior_persisted_snapshot(monkeypatch, tmp_path):
+    path = tmp_path / "stats-snapshot.json"
+    compatibility = "source-a"
+    original = _persistable_snapshot(status="idle", pending=None)
+    monkeypatch.setattr(server, "build_snapshot", lambda: original)
+    server.SnapshotCache(persist_path=path, compatibility=compatibility).get()
+    before = path.read_bytes()
+
+    def fail():
+        raise OSError("temporary source failure")
+
+    monkeypatch.setattr(server, "build_snapshot", fail)
+    restored = server.SnapshotCache(persist_path=path, compatibility=compatibility)
+    assert restored.get_background()["snapshotCache"]["stale"] is True
+    _wait_idle(restored)
+    assert path.read_bytes() == before
+    assert server.SnapshotCache(persist_path=path, compatibility=compatibility).value is None
+
+
+def test_unavailable_provider_does_not_replace_cached_snapshot(monkeypatch, tmp_path):
+    path = tmp_path / "stats-snapshot.json"
+    compatibility = "source-a"
+    original = _persistable_snapshot(status="idle", pending=None)
+    monkeypatch.setattr(server, "build_snapshot", lambda: original)
+    server.SnapshotCache(persist_path=path, compatibility=compatibility).get()
+    before = path.read_bytes()
+
+    degraded = _persistable_snapshot(status="unknown", pending=None)
+    degraded["providers"][0]["connected"] = False
+    monkeypatch.setattr(server, "build_snapshot", lambda: degraded)
+    restored = server.SnapshotCache(persist_path=path, compatibility=compatibility)
+    result = restored.get(force=True)
+    assert result["providers"][0]["connected"] is False
+    assert path.read_bytes() == before
+
+
+def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
+    from token_tracker import provider_policy, providers
+
+    class EnabledClaude:
+        def allows(self, action):
+            return action in {"collect", "show"}
+
+    monkeypatch.setattr(provider_policy, "policy_for", lambda name, policies=None: EnabledClaude())
+    calls = []
+
+    def limits_snapshot():
+        calls.append(1)
+        return {"fiveHour": {"percent": 17}, "weekly": {"percent": 8},
+                "limitsUpdatedAt": "observed", "chats": []}
+
+    class FakeLimitsProvider:
+        def __init__(self):
+            self.root = tmp_path
+
+        def snapshot(self):
+            return limits_snapshot()
+
+    history = tmp_path / "plan-usage-history.json"
+    # The bounded reader checks this metadata before entering the provider.
+    history.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(providers, "ClaudeLimitsProvider", FakeLimitsProvider)
+    cache = server.FastClaudeLimits()
+    snapshot = {"providers": [{"name": "Claude", "fiveHour": None, "weekly": None,
+                               "limitsUpdatedAt": None, "chats": [{"id": "chat"}]}]}
+    first = cache.overlay(snapshot)
+    second = cache.overlay(snapshot)
+    provider = first["providers"][0]
+    assert provider["fiveHour"] == {"percent": 17}
+    assert provider["weekly"] == {"percent": 8}
+    assert provider["limitsUpdatedAt"] == "observed"
+    assert provider["chats"] == [{"id": "chat"}]
+    assert second["providers"][0]["fiveHour"] == {"percent": 17}
+    assert calls == [1]
+
+
+def test_cold_background_stats_and_quota_requests_do_not_wait_for_full_build(monkeypatch, tmp_path):
+    from token_tracker import limit_reset
+
+    cache = server.SnapshotCache(persist_path=tmp_path / "stats-snapshot.json", compatibility="test")
+    monkeypatch.setattr(server, "CACHE", cache)
+    started, release = threading.Event(), threading.Event()
+
+    def slow_build():
+        started.set()
+        assert release.wait(3)
+        return _persistable_snapshot(status="idle", pending=None)
+
+    monkeypatch.setattr(server, "build_snapshot", slow_build)
+    monkeypatch.setattr(limit_reset, "codex_quota_http_view", lambda: {"providers": {"Codex": {}}, "quotaCache": {"ready": False}})
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+    try:
+        began = time.perf_counter()
+        with pytest.raises(urllib.error.HTTPError) as pending:
+            urllib.request.urlopen(base + "/api/stats?background=1", timeout=2)
+        assert pending.value.code == 503
+        stats_elapsed = time.perf_counter() - began
+        assert started.wait(1)
+
+        began = time.perf_counter()
+        with urllib.request.urlopen(base + "/api/quota", timeout=2) as response:
+            quota = json.loads(response.read())
+        quota_elapsed = time.perf_counter() - began
+        assert response.status == 200 and quota["quotaCache"]["ready"] is False
+        assert stats_elapsed < 1 and quota_elapsed < 1
+        assert cache.building is True
+    finally:
+        release.set()
+        httpd.shutdown()
+        httpd.server_close()
