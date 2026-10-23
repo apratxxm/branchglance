@@ -1641,13 +1641,13 @@ def test_widget_visibility_and_close_lifecycle():
 def test_forked_rollout_keeps_its_own_session_meta(tmp_path):
     rollout = tmp_path / "fork.jsonl"
     rollout.write_text("\n".join(json.dumps(row) for row in [
-        {"type": "session_meta", "payload": {"id": "child", "parent_thread_id": "root", "agent_path": "/root/worker"}},
+        {"type": "session_meta", "payload": {"id": "child", "parent_thread_id": "root", "agent_path": "/agents/worker"}},
         {"type": "session_meta", "payload": {"id": "root"}},  # source thread's meta copied by the fork
     ]), encoding="utf-8")
     insights = providers._session_insights(rollout)
     assert insights["sessionId"] == "child"
     assert insights["parentId"] == "root"
-    assert insights["agentName"] == "/root/worker"
+    assert insights["agentName"] == "/agents/worker"
 
 
 def test_claude_repeated_response_lines_keep_the_complete_usage(tmp_path):

@@ -125,10 +125,10 @@ assert.equal(node('#chats-head').hidden,true);assert.equal(node('#search-toggle'
 T.setupNotch();assert.equal(context.window.tokenTrackerInspect(),false,'manual inspection is blocked before a valid active snapshot');
 T.setNotch(true);assert.equal(T.notch.expanded,false,'the empty roster cannot expand before active work exists');
 const root={id:"root",title:"Live parent",model:"gpt-6.1-sol",contextModel:"gpt-6.1-sol",contextObservedAt:ago(2),status:"running",contextTokens:160000,contextWindow:258400,contextPercent:62,
-  runStartedAt:ago(300),activeRunStartedAt:ago(3),updatedAt:ago(1),usageUpdatedAt:ago(2),workspace:"A:\\pisha\\memoir",lastRequest:{input:1000,cached:800},latestUpdate:"Private last message",objective:"Private objective"};
-const child={id:"child",parentId:"root",agentName:"/root/worker",title:"Child worker",model:"gpt-6.1-sol",status:"running",
+  runStartedAt:ago(300),activeRunStartedAt:ago(3),updatedAt:ago(1),usageUpdatedAt:ago(2),workspace:"D:\\work\\sample app",lastRequest:{input:1000,cached:800},latestUpdate:"Fix login test",objective:"Refactor parser"};
+const child={id:"child",parentId:"root",agentName:"agent-worker",title:"Child worker",model:"gpt-6.1-sol",status:"running",
   contextTokens:10000,contextWindow:258400,runStartedAt:ago(4),updatedAt:ago(1),usageUpdatedAt:ago(4)};
-const grandchild={...child,id:"grandchild",parentId:"child",agentName:"/root/worker/nested",title:"Nested worker"};
+const grandchild={...child,id:"grandchild",parentId:"child",agentName:"agent-worker/nested",title:"Nested worker"};
 const done={...child,id:"done",status:"idle"};
 const provider={name:"Codex",connected:true,chats:[root,child,grandchild,done],cacheWarmth:{warmSeconds:1800,coldSeconds:5400,learned:true,samples:100},
   fiveHour:{percent:92,resetAt:fixedNow/1000+1500},weekly:{percent:78,resetAt:fixedNow/1000+80000},limitsUpdatedAt:ago(1)};
@@ -212,7 +212,7 @@ assert.doesNotMatch(html,/Elapsed in current state|data-runway-slot="elapsed"/,"
 assert.doesNotMatch(html,/runway-cache|Cache \d+%/);
 assert.match(html,/runway-telemetry-state t-live/);
 assert.match(html,/runway-telemetry-context"><span class="ctx-tokens"/);
-assert.match(html,/runway-workspace[^>]*><span class="runway-path-drive">A:\\<\/span><span class="runway-path-middle">pisha<\/span><span class="runway-path-leaf">\\memoir<\/span>/);
+assert.match(html,/runway-workspace[^>]*><span class="runway-path-drive">D:\\<\/span><span class="runway-path-middle">work<\/span><span class="runway-path-leaf">\\sample app<\/span>/);
 assert.doesNotMatch(html,/Inherited workspace|runway-workspace-inherited/,"child rows do not inherit the parent's workspace as if it were measured for them");
 assert.equal((html.match(/data-runway-slot="workspace"/g)||[]).length,1,"the measured parent workspace is shown without copying it onto children");
 assert.equal((html.match(/data-runway-slot="activity"/g)||[]).length,0,"missing execution evidence leaves the reserved activity slot empty");
@@ -316,7 +316,7 @@ assert.match(invalidDeclaredFallback,/runway-agent-objective">Use the current le
 assert.doesNotMatch(invalidDeclaredFallback,/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
 assert.doesNotMatch(invalidDeclaredFallback,/Reviewing safe cleanup targets/);
 assert.doesNotMatch(childRowHTML({objective:"AGENTS.md instructions\\n# Must not show policy text",latestRequest:"Useful raw prompt fallback"}),/runway-agent-objective|Useful raw prompt fallback|Must not show policy text/,"policy instructions and raw request text do not become an assignment fallback");
-assert.doesNotMatch(childRowHTML({agentName:"/root/worker",title:"Generic worker",objective:"",assignment:"",latestRequest:""}),/runway-agent-objective/,"unknown assignment stays absent rather than falling back to a title");
+assert.doesNotMatch(childRowHTML({agentName:"agent-worker",title:"Generic worker",objective:"",assignment:"",latestRequest:""}),/runway-agent-objective/,"unknown assignment stays absent rather than falling back to a title");
 const timedRoot=T.rowHTML({...root,stateSince:ago(2),runStartedAt:ago(10),activeRunStartedAt:ago(4)});
 assert.match(timedRoot,/data-runway-slot="model-timing" class="runway-model-timing"><span data-runway-slot="model"[\s\S]*?data-runway-slot="run-time" class="runway-run-time runway-run-clock" title="Elapsed in current run">[\s\S]*?4:00/,"root rows show the measured current-run duration beside the model");
 assert.equal((timedRoot.match(/data-runway-slot="run-time"/g)||[]).length,1,"a root has one current-run timer");
@@ -366,14 +366,14 @@ assert.match(childRowHTML({activity:{kind:"editing",files:["A:\\src\\widget.py"]
 assert.doesNotMatch(childRowHTML({status:"running",activity:null}),/Working/);
 assert.match(childRowHTML({status:"needs-input",pendingQuestion:"Wait?",pendingQuestionAt:ago(1),activity:null}),/Waiting for input/);
 assert.doesNotMatch(childRowHTML({status:"compacting",activity:null}),/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
-assert.match(T.rowHTML(root),/data-runway-slot="workspace" class="runway-workspace" title="Workspace · A:\\pisha\\memoir"/);
+assert.match(T.rowHTML(root),/data-runway-slot="workspace" class="runway-workspace" title="Workspace · D:\\work\\sample app"/);
 assert.match(T.rowHTML({...root,status:'compacting',compactionStartedAt:ago(1)}),/runway-status-dot[^>]*aria-label="Compacting"/);
 const waitingRow=T.rowHTML({...root,status:'needs-input',pendingQuestion:'Wait?',pendingQuestionAt:ago(1)});
 assert.match(waitingRow,/data-runway-slot="state"[^>]*><button class="runway-state-word runway-waiting-link"[^>]*>Waiting<\/button>/);
 assert.doesNotMatch(waitingRow,/runway-state-glyph is-waiting|data-runway-slot="question"|>\?</);
 assert.doesNotMatch(html,/until cold|likely warm|likely cold|~1h|cold time unknown/);
-assert.match(html,/A:\\pisha\\memoir/);
-assert.doesNotMatch(html,/Private last message|Private objective|ctx-ring|ctx-pct|toggle-chat|toggle-agent-details|toggle-agents|Open chat|Copy resume|Headroom|Recorded context/);
+assert.match(html,/D:\\work\\sample app/);
+assert.doesNotMatch(html,/Fix login test|Refactor parser|ctx-ring|ctx-pct|toggle-chat|toggle-agent-details|toggle-agents|Open chat|Copy resume|Headroom|Recorded context/);
 assert.equal((html.match(/6\.1 Sol/g)||[]).length,3);
 assert.match(html,/data-runway-slot="model" class="runway-telemetry-model" title="gpt-6\.1-sol"><span class="runway-model-name">6\.1 Sol/);
 assert.deepEqual(Array.from(T.trayEntries(T.state.forest.roots[0],T.parseQuery("")),entry=>entry.key),["Codex:child","Codex:grandchild"]);
@@ -516,7 +516,7 @@ const pendingMessageAgents=manyAgents.filter(chat=>Date.parse(chat.latestRequest
 assert.ok(pendingMessageAgents.length,"fixture must include pending parent messages");
 assert.ok(manyAgents.some(chat=>Date.parse(chat.latestRequestAt)<Date.parse(chat.latestUpdateAt)),"fixture must include replies after parent messages");
 assert.deepEqual([...new Set(manyAgents.map(chat=>chat.status))].sort(),["compacting","needs input","running"]);
-assert.equal(T.runwayTitle({...root,title:'Memoir sol wake learning'},true),'wake learning');
+assert.equal(T.runwayTitle({...root,title:'Sample app sol wake learning'},true),'wake learning');
 assert.equal(T.runwayTitle({...root,title:'Memoir sol wake learning'}),'Memoir sol wake learning');
 // Orchestration job briefs collapse to worker and task for root chats and agents alike.
 assert.equal(T.runwayTitle({...root,title:'# [Orchestrator] Luna · positioning — draft product positioning, brand concepts and demo plan'}),'Luna · positioning');
@@ -555,7 +555,7 @@ testNow=fixedNow;
 const staleMetricsRow=T.rowHTML({...root,metricsUnavailable:true});
 assert.doesNotMatch(staleMetricsRow,/Current lifecycle state is available|Last cache|Last known|data-runway-slot="context"|runway-cache|Cache \d+%/);
 assert.match(staleMetricsRow,/runway-telemetry-state t-live[^>]*aria-label="Running"[^>]*>.*?runway-status-dot[^>]*aria-label="Running"/);
-assert.match(T.rowHTML({...root,workspaceKind:'codex-chat'}),/runway-workspace[^>]*title="Codex per-chat working folder; not a project checkout · A:\\pisha\\memoir"/);
+assert.match(T.rowHTML({...root,workspaceKind:'codex-chat'}),/runway-workspace[^>]*title="Codex per-chat working folder; not a project checkout · D:\\work\\sample app"/);
 const modelSnapshot={...snapshot,providers:[{...provider,chats:[{...root,model:'Codex',statusSource:'transcript'}]}]};
 T.applyLive(modelSnapshot,{generatedAt:ago(0),chats:[{key:'Codex:root',id:'root',provider:'Codex',title:'Live-renamed root',parentId:null,agentName:'',agentRole:null,workspace:'A:\\projects\\renamed',workspaceKind:'project',source:'rollout',activityAt:ago(0),status:'running',model:'gpt-6-luna',latestRequestAt:ago(2),contextDelta:140,contextDeltaObservedAt:ago(0),modelChangeAt:ago(1),trackerUpdate:declaredPhase,trackerUpdateAt:ago(1),activity:{kind:'using_tool',label:'Using tool',files:[],observedAt:ago(0)}}]});
 assert.equal(modelSnapshot.providers[0].chats[0].model,'gpt-6-luna');
@@ -573,7 +573,7 @@ assert.equal(modelSnapshot.providers[0].chats[0].executionSince,null,'live expli
 const liveIdentitySnapshot={...snapshot,providers:[{name:'Codex',connected:true,chats:[{...root}]}]};
 const liveIdentity={generatedAt:ago(0),chats:[
   {key:'Codex:live-parent',id:'live-parent',provider:'Codex',parentId:null,title:'Live idle anchor',agentName:'',agentRole:null,workspace:'A:\\projects\\live',workspaceKind:'project',source:'rollout',status:'idle',statusSource:'transcript',telemetryUnavailable:false,activityAt:ago(0)},
-  {key:'Codex:live-child',id:'live-child',provider:'Codex',parentId:'live-parent',title:'Live child',agentName:'/root/live-child',agentRole:'worker',workspace:'A:\\projects\\live',workspaceKind:'project',source:'rollout',status:'running',statusSource:'app',telemetryUnavailable:false,activeRunStartedAt:ago(1),runStartedAt:ago(2),model:'gpt-6.1-sol',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),executionSince:ago(1),executionActivity:{kind:'reading',files:['A:\\projects\\live\\src\\a.js'],observedAt:ago(0)},activityAt:ago(0)},
+  {key:'Codex:live-child',id:'live-child',provider:'Codex',parentId:'live-parent',title:'Live child',agentName:'agent-live-child',agentRole:'worker',workspace:'A:\\projects\\live',workspaceKind:'project',source:'rollout',status:'running',statusSource:'app',telemetryUnavailable:false,activeRunStartedAt:ago(1),runStartedAt:ago(2),model:'gpt-6.1-sol',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),executionSince:ago(1),executionActivity:{kind:'reading',files:['A:\\projects\\live\\src\\a.js'],observedAt:ago(0)},activityAt:ago(0)},
   {key:'Codex:mismatch',id:'bad-id',provider:'Codex',parentId:null,title:'Invalid identity',status:'running',activityAt:ago(0)}
 ]};
 T.applyLive(liveIdentitySnapshot,liveIdentity);

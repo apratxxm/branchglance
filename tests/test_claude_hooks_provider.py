@@ -34,7 +34,7 @@ def usage(inp, cached, creation, out):
 
 
 def assistant(ts, mid, model="claude-opus-5", use=None, blocks=None, stop=None, entry="cli"):
-    return {"type": "assistant", "entrypoint": entry, "timestamp": stamp(ts), "cwd": "C:\\Users\\x\\client-secret\\proj",
+    return {"type": "assistant", "entrypoint": entry, "timestamp": stamp(ts), "cwd": "C:\\Users\\dev\\client-secret\\proj",
             "message": {"id": mid, "model": model, "usage": use or usage(10, 900, 90, 50),
                         "content": blocks or [{"type": "text", "text": SECRET}], "stop_reason": stop}}
 
@@ -108,7 +108,7 @@ def test_public_rows_expose_only_allowlisted_fields_and_no_private_text(world):
         {"type": "last-prompt", "lastPrompt": SECRET}, {"type": "ai-title", "aiTitle": SECRET}])
     # Hook lines go through the real writer's allowlist from hostile payloads.
     hostile = {"session_id": SID, "session_title": SECRET + " C:/private/transcript.txt",
-               "prompt": SECRET, "cwd": "C:\\Users\\x\\client-secret\\proj",
+               "prompt": SECRET, "cwd": "C:\\Users\\dev\\client-secret\\proj",
                "tool_input": {"file_path": f"C:/x/{SECRET_FILE}"}, "model": f"C:/x/{SECRET_FILE}",
                "agent_type": SECRET_FILE, "source": SECRET, "reason": SECRET_FILE}
     world.hooks([claude_hook.build_record({**hostile, "hook_event_name": "UserPromptSubmit"}, NOW - 90, 4242, 777),
@@ -361,7 +361,7 @@ def test_desktop_origin_session_is_not_resumable(world):
 def test_public_title_model_and_agent_values_are_restricted(world):
     """F1: render-time title, model and agent values cannot carry paths or free text."""
     world.transcript(SID, [
-        {"type": "custom-title", "customTitle": f"Fix parser C:\\Users\\x\\{SECRET_FILE} and ~/notes/{SECRET_FILE}"},
+        {"type": "custom-title", "customTitle": f"Fix parser C:\\Users\\dev\\{SECRET_FILE} and ~/notes/{SECRET_FILE}"},
         user(NOW - 100), assistant(NOW - 60, "m1", model=f"C:/models/{SECRET_FILE}")])
     child_dir = world.projects / SID / "subagents"
     child_dir.mkdir(parents=True)

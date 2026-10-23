@@ -55,9 +55,9 @@ def data_env(tmp_path, monkeypatch):
 
 PAYLOAD = {
     "hook_event_name": "PreToolUse", "session_id": SID, "tool_name": "Write", "tool_use_id": "toolu_01",
-    "cwd": "C:\\Users\\someone\\secret-client\\project",
-    "tool_input": {"file_path": "C:/Users/someone/passwords.txt", "content": "TOP-SECRET-CONTENT"},
-    "prompt": "my private prompt", "transcript_path": "C:/Users/someone/.claude/projects/x/y.jsonl",
+    "cwd": "C:\\Users\\dev\\secret-client\\project",
+    "tool_input": {"file_path": "C:/Users/dev/passwords.txt", "content": "TOP-SECRET-CONTENT"},
+    "prompt": "my private prompt", "transcript_path": "C:/Users/dev/.claude/projects/x/y.jsonl",
     "session_title": "TOP SECRET PROMPT MUST NEVER BE STORED",
     "model": "C:/private/model.json",
     "agent_type": "C:/private/agent-name.txt",
@@ -93,7 +93,7 @@ def test_consent_present_writes_one_allowlisted_line(data_env):
                "claude_pid", "claude_pid_created", "ask", "workspace"}
     assert set(record) <= allowed
     text = lines[0]
-    for forbidden in ("TOP-SECRET", "passwords", "private prompt", "someone", "secret-client", "transcript",
+    for forbidden in ("TOP-SECRET", "passwords", "private prompt", "dev", "secret-client", "transcript",
                       "TOP SECRET PROMPT", "private/model.json", "agent-name.txt", "source.txt", "reason.txt",
                       "notification.txt", "marker"):
         assert forbidden not in text
@@ -190,14 +190,14 @@ def test_nearest_claude_ancestor():
 
 
 def test_workspace_label_is_drive_and_leaf():
-    assert claude_hook.workspace_label("A:\\pisha\\orchestrator") == "A:/orchestrator"
+    assert claude_hook.workspace_label("D:\\work\\orchestrator") == "D:/orchestrator"
     assert claude_hook.workspace_label("A:\\") == "A:"
     assert claude_hook.workspace_label("") is None
     # Non-absolute values are not a working directory; shell/control characters never pass.
     assert claude_hook.workspace_label("my private prompt") is None
     assert claude_hook.workspace_label("../../etc") is None
     assert claude_hook.workspace_label("C:\\work\\$(touch x)") == "C:"
-    assert claude_hook.workspace_label("/home/someone/proj") == "proj"
+    assert claude_hook.workspace_label("/home/dev/proj") == "proj"
 
 
 # --------------------------------------------------------------- reducer
@@ -463,7 +463,7 @@ def test_hook_bound_keeps_observed_time_of_last_event(tmp_path):
 # ------------------------------------------------- review fixes F1, F6-F10
 
 HOSTILE = "SECRET prompt text"
-HOSTILE_PATH = "C:/Users/someone/private/notes.txt"
+HOSTILE_PATH = "C:/Users/dev/private/notes.txt"
 
 
 @pytest.mark.parametrize("field", ["agent_id", "prompt_id", "tool_use_id", "agent_type", "model",
@@ -479,7 +479,7 @@ def test_hostile_stdin_leaves_no_text_or_path_in_any_field(data_env, field, valu
                "tool_use_id": "toolu_01ABCdef", field: value}
     claude_hook.handle(json.dumps(payload).encode(), NOW)
     text = "".join(p.read_text() for p in (data_env / claude_hook.EVENTS_DIR_NAME).glob("*.jsonl"))
-    fragments = ["SECRET", "someone", "private", "notes", ".txt", "passwd", "..", "pwned", "C:/x",
+    fragments = ["SECRET", "dev", "private", "notes", ".txt", "passwd", "..", "pwned", "C:/x",
                  "x" * 64, "session_title"]
     if field == "cwd" and value == HOSTILE_PATH:
         # The agreed workspace exposure: drive plus the last folder name only.

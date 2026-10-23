@@ -218,7 +218,7 @@ def test_session_expiry_invalidates_cookie(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("endpoint", [
-    "http://fcm.googleapis.com/send/x", "https://user:pass@fcm.googleapis.com/send/x",
+    "http://fcm.googleapis.com/send/x", "https://user:pass@example.test/send/x",
     "https://localhost/send/x", "https://192.168.1.1/send/x", "https://unknown.example/send/x",
     "https://evil.push.services.mozilla.com/send/x",
 ])
@@ -241,7 +241,7 @@ def test_accepts_known_push_hosts_and_rejects_bad_key_shapes():
 
 
 def test_vapid_state_is_private_and_only_public_config_is_exposed(tmp_path, monkeypatch):
-    monkeypatch.setenv("TOKEN_TRACKER_VAPID_SUBJECT", "mailto:operator@example.com")
+    monkeypatch.setenv("TOKEN_TRACKER_VAPID_SUBJECT", "mailto:operator@example.test")
     store = phone_server.PhoneState(tmp_path / "state.json")
     state_text = (tmp_path / "state.json").read_text(encoding="utf-8")
     assert store.pairing_code() in state_text
