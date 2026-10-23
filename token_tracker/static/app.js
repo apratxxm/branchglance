@@ -111,8 +111,9 @@ function compactHasFocus(){
 }
 function compactModeForState(){
   if(!COMPACT)return notch.expanded?'inspect':'idle';
-  const focus=compactHasFocus(),persistent=keepOpenState.value||notch.manual||notch.keyboardInspecting||notch.autoExpanded||state.searchOpen||Boolean(state.popover);
-  if(persistent||notch.active>0&&(notch.inspecting||focus))return 'inspect';
+  const focus=compactHasFocus(),explicit=notch.manual||notch.keyboardInspecting||state.searchOpen||Boolean(state.popover);
+  // With no active chats there is nothing to show: keep-open, hover and focus stay on the toolbar.
+  if(explicit||notch.active>0&&(keepOpenState.value||notch.autoExpanded||notch.inspecting||focus))return 'inspect';
   return 'controls';
 }
 function blurPointerToolbarFocus(mode){

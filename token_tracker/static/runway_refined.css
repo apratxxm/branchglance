@@ -269,7 +269,8 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{display:flex;flex:0 0 48px;width:48px;min-width:48px;max-width:48px;height:30px;align-items:center;line-height:30px;margin:0;text-align:center;}
 body.runway-refined.runway-compact:not(.phone) #sync-age.is-loading::before{display:none;}
-body.runway-refined.runway-compact:not(.phone) #sync-age.is-loading>.ic{animation:sync-spin .8s linear infinite,sync-appear var(--motion-info) var(--ease-standard) 250ms both;}
+/* Delay the spin rather than fading the icon in: sub-250ms background refreshes then leave the icon untouched instead of blinking it out. */
+body.runway-refined.runway-compact:not(.phone) #sync-age.is-loading>.ic{animation:sync-spin .8s linear 250ms infinite;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar>.brand,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar>.brand,
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar>.tb-fill,
@@ -307,7 +308,9 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar{gap:1px;background:radial-gradient(ellipse at 0 0,#7040ff18,transparent 48%),radial-gradient(ellipse at 100% 100%,#425df61a,transparent 52%),#05070b;border-radius:5px;box-shadow:inset 0 0 0 1px #39364d,inset 0 0 18px #7040ff12;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{background:radial-gradient(ellipse at 0 0,#7040ff18,transparent 48%),radial-gradient(ellipse at 100% 100%,#425df61a,transparent 52%),#05070b;box-shadow:inset 0 1px #514176,inset 1px 0 #39364d,inset -1px 0 #34405c,0 4px 0 #05070b,inset 0 0 18px #7040ff12;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{position:absolute;top:0;left:50%;z-index:2;transform:translateX(-50%);pointer-events:none;color:var(--green);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;margin-left:auto;pointer-events:none;color:var(--green);}
+body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .window-controls,
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .window-controls{order:2;}
 body.runway-refined.runway-compact:not(.phone) .compact-clock,
 body.runway-refined.runway-compact:not(.phone) #compact-clock{color:var(--green);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .notch-counts,
