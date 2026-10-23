@@ -154,27 +154,27 @@ function fixtures(which){
   const now=Date.now(),iso=minutes=>new Date(now-minutes*60000).toISOString(),seconds=minutes=>Math.floor((now+minutes*60000)/1000);
   const fixtureFiveHourReset=4*60+18+2/60,fixtureWeeklyReset=6*24*60+23*60;
   const observed=chat=>({...chat,contextObservedAt:chat.usageUpdatedAt,contextModel:chat.model});
-  const root=(id,title,minutes,extra={})=>observed({id,title,model:"gpt-6.1-sol",status:"running",contextPercent:62,contextTokens:160000,contextWindow:258400,tokens:1_140_000,turns:12,toolCalls:42,filesEdited:6,runStartedAt:iso(64),activeRunStartedAt:iso(12),stateSince:iso(12),updatedAt:iso(minutes),usageUpdatedAt:iso(minutes),lastRequest:{input:1_000_000,cached:910_000},activity:{kind:"coordinating"},workspace:"A:\\pisha\\memoir",dailyTokens:{[new Date(now).toLocaleDateString("en-CA")]:142000},...extra});
-  const child=(id,parentId,agentName,title,minutes,extra={})=>observed({id,parentId,agentName,title,assignment:title,model:"gpt-6.1-luna",status:"running",contextPercent:34,contextTokens:87000,contextWindow:258400,tokens:180000,turns:4,toolCalls:11,filesEdited:2,runStartedAt:iso(21),updatedAt:iso(minutes),usageUpdatedAt:iso(minutes),lastRequest:{input:100_000,cached:84_000},activity:{kind:"reading",files:["A:\\pisha\\memoir\\token_tracker\\static\\app.js"]},workspace:"A:\\pisha\\memoir",...extra});
+  const root=(id,title,minutes,extra={})=>observed({id,title,model:"gpt-6.1-sol",status:"running",contextPercent:62,contextTokens:160000,contextWindow:258400,tokens:1_140_000,turns:12,toolCalls:42,filesEdited:6,runStartedAt:iso(64),activeRunStartedAt:iso(12),stateSince:iso(12),updatedAt:iso(minutes),usageUpdatedAt:iso(minutes),lastRequest:{input:1_000_000,cached:910_000},activity:{kind:"coordinating"},workspace:"D:\\work\\sample-app",dailyTokens:{[new Date(now).toLocaleDateString("en-CA")]:142000},...extra});
+  const child=(id,parentId,agentName,title,minutes,extra={})=>observed({id,parentId,agentName,title,assignment:title,model:"gpt-6.1-luna",status:"running",contextPercent:34,contextTokens:87000,contextWindow:258400,tokens:180000,turns:4,toolCalls:11,filesEdited:2,runStartedAt:iso(21),updatedAt:iso(minutes),usageUpdatedAt:iso(minutes),lastRequest:{input:100_000,cached:84_000},activity:{kind:"reading",files:["D:\\work\\sample-app\\token_tracker\\static\\app.js"]},workspace:"D:\\work\\sample-app",...extra});
   const chats=[
-    root("run-main","Runway preview · review the Codex activity panel",1),
-    root("voice","Diagnose missed wake word activations on the laptop",52,{model:"gpt-6.1-sol",status:"idle",contextPercent:48,contextTokens:124000,tokens:284000,runEndedAt:iso(45)}),
-    root("schema","Keep provider snapshots isolated from live updates",138,{model:"gpt-6.1-sol",contextPercent:79,contextTokens:204000,tokens:640000}),
-    root("docs","Document the narrow widget layout and data provenance",204,{status:"needs input",pendingQuestion:"Should the review use the compact or default window?",pendingOptions:["Compact, 300 × 600","Default, 420 × 880","Both sizes"],contextPercent:66}),
-    root("history","Reconcile local token counts with the daily activity chart",294,{status:"idle",contextPercent:39,contextTokens:101000,tokens:910000,runEndedAt:iso(260)})
+    root("run-main","Review compact layout",1),
+    root("voice","Fix login test",52,{model:"gpt-6.1-sol",status:"idle",contextPercent:48,contextTokens:124000,tokens:284000,runEndedAt:iso(45)}),
+    root("schema","Refactor parser",138,{model:"gpt-6.1-sol",contextPercent:79,contextTokens:204000,tokens:640000}),
+    root("docs","Review settings flow",204,{status:"needs input",pendingQuestion:"Which layout should be reviewed?",pendingOptions:["Compact, 300 × 600","Default, 420 × 880","Both sizes"],contextPercent:66}),
+    root("history","Update usage summary",294,{status:"idle",contextPercent:39,contextTokens:101000,tokens:910000,runEndedAt:iso(260)})
   ];
   chats.push(
-    child("ask-review","run-main","/root/interaction_audit","Check pending question and preview controls",3,{status:"needs input",pendingQuestion:"Should this preview include active child agents?",pendingOptions:["Yes, show the active roster","Keep the roster collapsed","Use a longer choice that wraps onto multiple lines in the compact preview"] ,model:"gpt-6.1-sol"}),
-    child("work-api","run-main","/root/api_contract","Review range handling and snapshot fields",5,{model:"gpt-6.1-luna"}),
-    child("work-layout","run-main","/root/layout_review","Inspect narrow frame and quota meter layout",8,{model:"gpt-6.1-sol",contextPercent:81}),
-    child("done-child","run-main","/root/completed","Finished fixture work",42,{status:"idle",stateDetail:"completed",runEndedAt:iso(40),updatedAt:iso(40)}),
-    child("stopped-child","run-main","/root/stopped","Stopped historical fixture",120,{status:"failed",stateDetail:"interrupted",updatedAt:iso(120)}),
-    child("empty-review","run-main","/root/auto-review","Subagent",122,{status:"idle",stateDetail:"completed",agentRole:"auto-review",model:"Codex",tokens:null,toolCalls:null,filesEdited:null,updatedAt:iso(122)})
+    child("ask-review","run-main","agent-interaction-audit","Check pending question and preview controls",3,{status:"needs input",pendingQuestion:"Should the preview include child rows?",pendingOptions:["Yes, show the active roster","Keep the roster collapsed","Use a longer choice that wraps onto multiple lines in the compact preview"] ,model:"gpt-6.1-sol"}),
+    child("work-api","run-main","agent-api-contract","Review range handling and snapshot fields",5,{model:"gpt-6.1-luna"}),
+    child("work-layout","run-main","agent-layout-review","Inspect narrow frame and quota meter layout",8,{model:"gpt-6.1-sol",contextPercent:81}),
+    child("done-child","run-main","agent-completed","Finished fixture work",42,{status:"idle",stateDetail:"completed",runEndedAt:iso(40),updatedAt:iso(40)}),
+    child("stopped-child","run-main","agent-stopped","Stopped historical fixture",120,{status:"failed",stateDetail:"interrupted",updatedAt:iso(120)}),
+    child("empty-review","run-main","agent-auto-review","Subagent",122,{status:"idle",stateDetail:"completed",agentRole:"auto-review",model:"Codex",tokens:null,toolCalls:null,filesEdited:null,updatedAt:iso(122)})
   );
   if(which==="idle")chats.length=0;
   if(which==="question"){
     chats.find(chat=>chat.id==="run-main").status="running";
-    chats.find(chat=>chat.id==="ask-review").pendingQuestion="Did the 30-day selection load the correct activity window?";
+    chats.find(chat=>chat.id==="ask-review").pendingQuestion="Did the selected range load correctly?";
     chats.find(chat=>chat.id==="ask-review").pendingOptions=["Yes, the selected range is correct","No, check the server range mapping"];
   }
   if(which==="agents"){
@@ -182,7 +182,7 @@ function fixtures(which){
     for(let i=chats.length-1;i>=0;i--)if(baselineActive.has(chats[i].id))chats.splice(i,1);
     const tasks=["Check live updates", "Review compact layout", "Verify question actions", "Inspect agent lineage"];
     const updates=["Checking that fresh activity preserves the focused control.", "Measuring text contrast and spacing at the narrow width.", "Verifying that closing a banner preserves its pending question.", "Checking each child stays grouped under its owning chat."];
-    for(let i=0;i<12;i++)chats.push(child("active-"+i,"run-main","/root/"+tasks[i%4].toLowerCase().replaceAll(" ","_"),tasks[i%4],i+1,{
+    for(let i=0;i<12;i++)chats.push(child("active-"+i,"run-main","agent-"+tasks[i%4].toLowerCase().replaceAll(" ","-"),tasks[i%4],i+1,{
       model:i%2?"gpt-6-luna":"gpt-6.1-sol",assignment:tasks[i%4],
       status:i===2?"compacting":i===3?"quiet":"running",contextPercent:i===2?93:i===1?79:34,
       activeRunStartedAt:iso(i+2),latestUpdate:updates[i%4],latestUpdateAt:iso(i===3?4:1)
@@ -196,7 +196,7 @@ function fixtures(which){
     for(let i=0;i<count;i++){
       const state=i%5,awaitingParentMessage=which==="single-agent"||i%3===0;
       const longTitle=which==="agents-23"&&i===0?"VerifyContextSynchronizationAcrossCompaction":null;
-      const task=longTitle||tasks[i%tasks.length],agentName=longTitle||"/root/"+task.toLowerCase().replaceAll(" ","_");
+      const task=longTitle||tasks[i%tasks.length],agentName=longTitle||"agent-"+task.toLowerCase().replaceAll(" ","-");
       const latestRequestAt=awaitingParentMessage?iso((1+i%8)/60):iso(5);
       const latestUpdateAt=awaitingParentMessage?iso(2):iso(1);
       const status=state===1?"compacting":state===2?"needs input":"running";

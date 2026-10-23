@@ -51,11 +51,11 @@ assert.equal(T.compact, true);
 const parent = { id: "exact-thread-id", title: "Parent title", model: "gpt-6.1-sol", contextModel: "gpt-6.1-sol",
   contextObservedAt: stamp(1), status: "needs-input", pendingQuestion: "Continue this exact task?", pendingQuestionId: "q-17",
   pendingOptions: ["Continue", "Wait"], stateSince: stamp(2), updatedAt: stamp(1), usageUpdatedAt: stamp(1),
-  contextTokens: 160000, contextWindow: 258400, contextPercent: 62, workspace: "A:\\pisha\\memoir",
+  contextTokens: 160000, contextWindow: 258400, contextPercent: 62, workspace: "D:\\work\\sample-app",
   lastRequest: { input: 1000, cached: 800 }, latestUpdate: "must not appear", objective: "must not appear either" };
-const child = { id: "child-id", parentId: parent.id, title: "/root/check_live_updates", agentName: "/root/check_live_updates", model: "gpt-6.1-sol",
+const child = { id: "child-id", parentId: parent.id, title: "agent-check-live-updates", agentName: "agent-check-live-updates", model: "gpt-6.1-sol",
   contextModel: "gpt-6.1-sol", contextObservedAt: stamp(1), status: "running", stateSince: stamp(3), updatedAt: stamp(1),
-  usageUpdatedAt: stamp(1), contextTokens: 10000, contextWindow: 258400, contextPercent: 4, workspace: "A:\\pisha\\memoir",
+  usageUpdatedAt: stamp(1), contextTokens: 10000, contextWindow: 258400, contextPercent: 4, workspace: "D:\\work\\sample-app",
   lastRequest: { input: 200, cached: 100 }, latestMessageAt: stamp(0), latestMessageDirection: "agent-to-parent" };
 const provider = { name: "Codex", connected: true, chats: [parent, child], fiveHour: { percent: 90, resetAt: now / 1000 + 600 },
   weekly: { percent: 75, resetAt: now / 1000 + 86400 }, limitsUpdatedAt: stamp(1) };
@@ -71,14 +71,14 @@ assert.match(parentHTML, /data-runway-slot="status"[^>]*data-own-waiting="true" 
 assert.match(parentHTML, /data-runway-slot="tree-anchor"/);
 assert.match(parentHTML, /runway-state-glyph/);
 assert.doesNotMatch(parentHTML, /runway-context-label">Context/, "the context label remains omitted");
-assert.match(parentHTML, /A:\\pisha\\memoir/);
+assert.match(parentHTML, /D:\\work\\sample-app/);
 assert.doesNotMatch(parentHTML, /must not appear/);
 assert.match(parentHTML, /data-action="runway-question" data-key="Codex:exact-thread-id"/);
 assert.match(childHTML, /data-runway-slot="message-lane"/);
 assert.match(childHTML, /data-runway-slot="status"[^>]*data-own-waiting="false" data-child-waiting="false"/);
 const childAgentHTML = T.runwayTelemetryHTML(child, true);
-assert.match(childAgentHTML, /title="Check live updates"/);
-assert.match(childAgentHTML, /data-runway-slot="label"[^>]*>Check live updates<\/span>/);
+assert.match(childAgentHTML, /title="Agent check live updates"/);
+assert.match(childAgentHTML, /data-runway-slot="label"[^>]*>Agent check live updates<\/span>/);
 assert.doesNotMatch(childAgentHTML, /\/root\//);
 assert.equal((childAgentHTML.match(/class="runway-message-indicator"/g) || []).length, 1);
 assert.ok(childAgentHTML.indexOf('data-runway-slot="label"') < childAgentHTML.indexOf('class="runway-message-indicator"'));

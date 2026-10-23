@@ -73,8 +73,8 @@ function runwayChats(at,options={}){
   const messageAt=options.messageAt??fixedNow-1000,started=options.started??fixedNow-60000;
   return [
     {id:"run-root",title:"Current parent run",model:"gpt-5.6-sol",status:"running",statusSource:"transcript",statusObservedAt:runwayIso(at),updatedAt:runwayIso(at),activityAt:runwayIso(at),
-      executionStatus:"running",executionSource:"transcript",executionObservedAt:runwayIso(at),executionSince:runwayIso(started),executionActivity:{kind:"reading",files:["A:\\memoir\\live_telemetry.py"],observedAt:runwayIso(at)},
-      workspace:"A:\\memoir",activity:{kind:"reading",detail:"Read live telemetry"},latestRequest:"Verify the current run",latestRequestAt:runwayIso(at),latestUpdate:"Current parent checkpoint",latestUpdateAt:runwayIso(at),
+      executionStatus:"running",executionSource:"transcript",executionObservedAt:runwayIso(at),executionSince:runwayIso(started),executionActivity:{kind:"reading",files:["D:\\work\\sample-app\\live_telemetry.py"],observedAt:runwayIso(at)},
+      workspace:"D:\\work\\sample-app",activity:{kind:"reading",detail:"Read live telemetry"},latestRequest:"Verify the current run",latestRequestAt:runwayIso(at),latestUpdate:"Current parent checkpoint",latestUpdateAt:runwayIso(at),
       runStartedAt:runwayIso(started),activeRunStartedAt:runwayIso(started),stateSince:runwayIso(started),contextModel:"gpt-5.6-sol",contextTokens:80000,contextWindow:200000,contextPercent:40,contextObservedAt:runwayIso(at),usageUpdatedAt:runwayIso(at),toolCalls:4,filesEdited:2},
     {id:"run-worker",parentId:"run-root",agentName:"/root/check_live",title:"Check live telemetry",model:"gpt-5.6-luna",status:options.childStatus??"needs-input",statusSource:"transcript",statusObservedAt:runwayIso(at),updatedAt:runwayIso(at),activityAt:runwayIso(at),
       pendingQuestion:options.pendingQuestion===false?null:"May I inspect the updated cache?",pendingOptions:["Yes","No"],pendingQuestionId:"question-1",questionId:"question-1",pendingQuestionAt:runwayIso(at),
@@ -397,7 +397,7 @@ T.render(tree);
     {id:"q1",title:"Ask newer",status:"needs-input",pendingQuestion:"B?",updatedAt:ago(1)},
     {id:"q2",title:"Ask older",status:"needs-input",pendingQuestion:"A?",updatedAt:ago(9)},
     {id:"par",title:"Parent",status:"running",updatedAt:ago(0)},
-    {id:"sub",parentId:"par",agentName:"/root/worker",title:"worker",status:"needs-input",pendingQuestion:"C?",updatedAt:ago(5)},
+    {id:"sub",parentId:"par",agentName:"/agents/worker",title:"worker",status:"needs-input",pendingQuestion:"C?",updatedAt:ago(5)},
     {id:"cool",title:"Cooling",status:"idle",usageUpdatedAt:new Date(fixedNow-(1800-300)*1000).toISOString(),updatedAt:ago(25),contextTokens:90000},
     {id:"old",title:"Old ctx",status:"idle",contextPercent:99,updatedAt:ago(200),usageUpdatedAt:ago(200)},
   ]);
@@ -620,9 +620,9 @@ console.log("Token Tracker UI tests passed");
     {id:"p",title:"Parent",status:"running",updatedAt:ago(0)},
     {id:"old-review",parentId:"p",agentRole:"auto-review",title:"Old review",status:"idle",tokens:12000,toolCalls:4,updatedAt:ago(120)},
     {id:"quiet-review",parentId:"p",agentRole:"auto-review",title:"Subagent",model:"Codex",status:"quiet",tokens:24800,toolCalls:0,updatedAt:ago(7)},
-    {id:"done",parentId:"p",agentName:"/root/done",title:"Done",status:"idle",stateDetail:"completed",tokens:3300,updatedAt:ago(0)},
-    {id:"failed",parentId:"p",agentName:"/root/failed",title:"Failed",status:"failed",tokens:4300,updatedAt:ago(0)},
-    {id:"worker",parentId:"p",agentName:"/root/worker",title:"Worker",status:"running",tokens:900,toolCalls:3,updatedAt:ago(0)}
+    {id:"done",parentId:"p",agentName:"/agents/done",title:"Done",status:"idle",stateDetail:"completed",tokens:3300,updatedAt:ago(0)},
+    {id:"failed",parentId:"p",agentName:"/agents/failed",title:"Failed",status:"failed",tokens:4300,updatedAt:ago(0)},
+    {id:"worker",parentId:"p",agentName:"/agents/worker",title:"Worker",status:"running",tokens:900,toolCalls:3,updatedAt:ago(0)}
   ]));
   const parent=T.state.forest.roots[0];
   assert.equal(T.trayState(parent),"active");
