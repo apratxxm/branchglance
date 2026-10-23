@@ -2917,6 +2917,26 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     No transcript scan: this stays cheap while Claude chats are not tracked.
     """
 
+    # Chromium rewrites its cache index, so a scan can briefly miss the newest
+    # usage response and find only an older one. Never step back to it.
+    _last_live: dict[str, dict[str, Any]] = {}
+    _last_live_lock = threading.Lock()
+
+    def _newest_live(self, info: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+        now = time.time() if now is None else now
+        key = str(self.root)
+        with self._last_live_lock:
+            last = self._last_live.get(key)
+            observed = info.get("observedAt")
+            has_percent = info.get("fiveHourPercent") is not None or info.get("weeklyPercent") is not None
+            if observed is not None and has_percent and (last is None or observed >= last["observedAt"]):
+                self._last_live[key] = dict(info)
+                return info
+            if last is not None and now - last["observedAt"] <= CLAUDE_DISPLAY_USAGE_AGE_SECONDS and (
+                    observed is None or observed < last["observedAt"] or not has_percent):
+                return dict(last)
+            return info
+
     @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
         samples, latest = self._usage()
@@ -2925,6 +2945,7 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
         # leaves the meters blank most of the time. Display accepts a response up to the
         # widget's own 10-minute quota freshness; the greeter keeps the strict default.
         info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
+        info = self._newest_live(info)
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
         five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else usage.get("fh")
         weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else usage.get("sd")
