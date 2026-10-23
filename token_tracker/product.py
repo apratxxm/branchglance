@@ -142,6 +142,17 @@ def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def launcher_path(executable: str | os.PathLike[str] | None = None) -> Path:
+    """The install root's stable ``Branchglance.exe`` for a frozen app.
+
+    The app runs from ``<root>/releases/<version>/BranchglanceApp.exe``; anything
+    persisted outside the install (Claude Code hook commands) must name the
+    launcher, which survives upgrades and relays hook stdio.
+    """
+    app = Path(executable or sys.executable).resolve()
+    return app.parent.parent.parent / "Branchglance.exe"
+
+
 def _environ(environ: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if environ is None else environ
 
