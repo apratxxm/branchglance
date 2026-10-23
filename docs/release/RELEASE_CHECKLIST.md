@@ -90,7 +90,7 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 - [ ] Confirm Codex and Claude monitoring are local reads and no transcript or hook event is uploaded to a Branchglance service.
 - [ ] Confirm provider usage reads go through their local application integrations and that an enabled greeting invokes the provider CLI with a short request. Release copy must not say “nothing is ever sent anywhere.”
 - [ ] Re-run the private-material scan on the exact final tree and release assets. Record any hits and their disposition.
-- [ ] Add and review the four README screenshots using synthetic content. Inspect pixels and metadata for usernames, local paths, titles, tokens and account identifiers.
+- [ ] Review the three README screenshots (rendered from synthetic fixtures; no EXIF or text metadata). Inspect pixels and metadata for usernames, local paths, titles, tokens and account identifiers.
 - [ ] Confirm release assets, version and checksum match the signed-off build. Verify the private GitHub release draft renders correctly.
 
 ## Sign-off
