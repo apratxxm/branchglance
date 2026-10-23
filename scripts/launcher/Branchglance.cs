@@ -59,7 +59,7 @@ public static class BranchglanceLauncher
     const int RelaunchRequestLimit = 64 * 1024;
     static Stopwatch ActiveHookClock;
 
-    sealed class RelaunchRequest
+    public sealed class RelaunchRequest
     {
         public string Id;
         public string[] Arguments;
@@ -106,19 +106,9 @@ public static class BranchglanceLauncher
                     string localCache = Path.Combine(package, "LocalCache");
                     string local = Path.Combine(localCache, "Local");
                     string packageRoot = Path.Combine(local, Product);
-                    bool cacheBefore, localBefore, rootBefore;
-                    try
-                    {
-                        cacheBefore = DirectoryExistsStrict(localCache);
-                        localBefore = DirectoryExistsStrict(local);
-                        rootBefore = DirectoryExistsStrict(packageRoot);
-                    }
-                    catch (IOException)
-                    {
-                        // Apps installed on another drive junction their LocalCache there.
-                        // Never probe or delete through a reparse point; skip that package.
-                        continue;
-                    }
+                    bool cacheBefore = DirectoryExistsFollow(localCache);
+                    bool localBefore = DirectoryExistsFollow(local);
+                    bool rootBefore = DirectoryExistsFollow(packageRoot);
                     packageDirs.Add(package);
                     packageCacheDirs.Add(localCache);
                     packageCacheDirs.Add(local);
@@ -155,9 +145,9 @@ public static class BranchglanceLauncher
             {
                 foreach (string localCache in packageRoots)
                 {
-                    if (!DirectoryExistsStrict(localCache)) continue;
+                    if (!DirectoryExistsFollow(localCache)) continue;
                     string candidate = Path.Combine(localCache, name);
-                    if (DirectoryExistsStrict(candidate) && FileExistsStrict(Path.Combine(candidate, "probe.bin")))
+                    if (Directory.Exists(candidate) && File.Exists(Path.Combine(candidate, "probe.bin")))
                     {
                         result = "redirected";
                         reason = "probe subfolder appeared under a package LocalCache";
@@ -174,17 +164,19 @@ public static class BranchglanceLauncher
             foreach (string packageRoot in packageRoots)
             {
                 string candidate = Path.Combine(packageRoot, name);
-                try { if (FileExistsStrict(Path.Combine(candidate, "probe.bin"))) File.Delete(Path.Combine(candidate, "probe.bin")); } catch { result = "unknown"; reason = "redirected probe cleanup failed"; }
-                try { if (DirectoryExistsStrict(candidate)) Directory.Delete(candidate, false); } catch { result = "unknown"; reason = "redirected probe folder cleanup failed"; }
+                try { if (File.Exists(Path.Combine(candidate, "probe.bin"))) File.Delete(Path.Combine(candidate, "probe.bin")); } catch { result = "unknown"; reason = "redirected probe cleanup failed"; }
+                try { if (Directory.Exists(candidate) && Directory.GetFileSystemEntries(candidate).Length == 0) Directory.Delete(candidate, false); } catch { result = "unknown"; reason = "redirected probe folder cleanup failed"; }
             }
             try { if (DirectoryExistsStrict(probeDir)) Directory.Delete(probeDir, false); } catch { result = "unknown"; reason = "probe folder cleanup failed"; }
             foreach (string packageRoot in packageRoots)
             {
+                if (PathHasReparseAncestor(packageRoot)) continue;
                 if (!packageRootsBefore.Contains(packageRoot))
                 { try { if (DirectoryExistsStrict(packageRoot) && Directory.GetFileSystemEntries(packageRoot).Length == 0) Directory.Delete(packageRoot, false); } catch { } }
             }
             foreach (string cacheDir in packageCacheDirs)
             {
+                if (PathHasReparseAncestor(cacheDir)) continue;
                 if (!packageCacheDirsBefore.Contains(cacheDir))
                 { try { if (DirectoryExistsStrict(cacheDir) && Directory.GetFileSystemEntries(cacheDir).Length == 0) Directory.Delete(cacheDir, false); } catch { } }
             }
@@ -206,6 +198,26 @@ public static class BranchglanceLauncher
         }
         catch (FileNotFoundException) { return false; }
         catch (DirectoryNotFoundException) { return false; }
+    }
+
+    static bool DirectoryExistsFollow(string path)
+    {
+        try { return (File.GetAttributes(path) & FileAttributes.Directory) != 0; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+    }
+
+    static bool PathHasReparseAncestor(string path)
+    {
+        string current = Path.GetFullPath(path);
+        while (!String.IsNullOrEmpty(current))
+        {
+            try { if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return true; } catch { }
+            string parent = Path.GetDirectoryName(current);
+            if (parent == current) break;
+            current = parent;
+        }
+        return false;
     }
 
     static bool FileExistsStrict(string path)
@@ -231,7 +243,7 @@ public static class BranchglanceLauncher
         string id = Guid.NewGuid().ToString("N");
         string path = Path.Combine(root, ".relaunch-" + id + ".json");
         var record = new Dictionary<string, object> {
-            { "schemaVersion", 1 }, { "id", id }, { "argv", argv },
+            { "schemaVersion", 1 }, { "id", id }, { "argv", argv }, { "hops", 1 },
             { "created", DateTime.UtcNow.Ticks }, { "expires", (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds + 30 },
             { "guard", true }
         };
@@ -265,11 +277,12 @@ public static class BranchglanceLauncher
                         var record = Object(Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)), "relaunch request");
                         string id = GetString(record, "id");
                         if (!String.Equals(id, match.Groups[1].Value, StringComparison.Ordinal)) continue;
-                        object schema, expiry, created, guard, rawArgs;
+                        object schema, expiry, created, guard, rawArgs, hops;
                         if (!record.TryGetValue("schemaVersion", out schema) || !(schema is int) || (int)schema != 1
                             || !record.TryGetValue("expires", out expiry) || !(expiry is long || expiry is int)
                             || !record.TryGetValue("created", out created) || !(created is long || created is int)
                             || !record.TryGetValue("guard", out guard) || !(guard is bool) || !(bool)guard
+                            || !record.TryGetValue("hops", out hops) || !(hops is int) || (int)hops != 1
                             || !record.TryGetValue("argv", out rawArgs) || !(rawArgs is object[])) continue;
                         long expiryValue = Convert.ToInt64(expiry);
                         object[] items = (object[])rawArgs;
@@ -295,6 +308,14 @@ public static class BranchglanceLauncher
             finally { if (held) mutex.ReleaseMutex(); }
         }
     }
+
+    // Shared by Main and the harness: redirected/unknown probes never consume
+    // another process's request and therefore never receive an appdata-ok token.
+    public static bool MayConsumeRelaunchRequest(string appDataState)
+    { return String.Equals(appDataState, "not_redirected", StringComparison.Ordinal); }
+
+    public static RelaunchRequest TryConsumeRelaunchRequest(string root, string appDataState)
+    { return MayConsumeRelaunchRequest(appDataState) ? ConsumeRelaunchRequest(root) : null; }
 
     static Dictionary<string, object> Object(object value, string label)
     {
@@ -541,9 +562,19 @@ public static class BranchglanceLauncher
             string ownPath = Process.GetCurrentProcess().MainModule.FileName;
             RelaunchRequest request = null;
             string[] launchArgs = args;
-            if (args.Length == 0)
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            long probeMilliseconds;
+            string appDataState = ProbeAppData(local, out probeMilliseconds);
+            if (appDataState == "redirected")
             {
-                request = ConsumeRelaunchRequest(root);
+                WriteRelaunchRequest(root, launchArgs);
+                Process explorer = Process.Start(new ProcessStartInfo("explorer.exe", Quote(ownPath)) { UseShellExecute = true });
+                if (explorer == null) throw new InvalidOperationException("Explorer did not accept the launcher request");
+                return 0;
+            }
+            if (args.Length == 0 && MayConsumeRelaunchRequest(appDataState))
+            {
+                request = TryConsumeRelaunchRequest(root, appDataState);
                 if (request != null)
                 {
                     if (request.TestReport != null)
@@ -555,20 +586,6 @@ public static class BranchglanceLauncher
                     launchArgs = request.Arguments;
                 }
             }
-            string appDataState = "not_redirected";
-            if (request == null)
-            {
-                string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-                long probeMilliseconds;
-                appDataState = ProbeAppData(local, out probeMilliseconds);
-                if (appDataState == "redirected")
-                {
-                    WriteRelaunchRequest(root, launchArgs);
-                    Process explorer = Process.Start(new ProcessStartInfo("explorer.exe", Quote(ownPath)) { UseShellExecute = true });
-                    if (explorer == null) throw new InvalidOperationException("Explorer did not accept the launcher request");
-                    return 0;
-                }
-            }
             string release = ResolveRelease(root, Path.Combine(root, "current.json"));
             string app = Path.Combine(release, "BranchglanceApp.exe");
             var start = new ProcessStartInfo(app);
@@ -576,7 +593,7 @@ public static class BranchglanceLauncher
             start.UseShellExecute = false;
             var forwardedArgs = new List<string>(launchArgs);
             forwardedArgs.RemoveAll(a => a == "--launcher-appdata-ok" || a == "--launcher-appdata-unknown");
-            if (request != null || appDataState == "not_redirected") forwardedArgs.Add("--launcher-appdata-ok");
+            if (appDataState == "not_redirected") forwardedArgs.Add("--launcher-appdata-ok");
             else if (appDataState == "unknown") forwardedArgs.Add("--launcher-appdata-unknown");
             start.Arguments = String.Join(" ", forwardedArgs.ConvertAll(Quote).ToArray());
             Process.Start(start);

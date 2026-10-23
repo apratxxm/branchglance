@@ -28,6 +28,13 @@ HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { 
     if (a[0] == "appdata-simulate") { long ms; string status = BranchglanceLauncher.ProbeAppData(a[1], out ms, a[2]);
         Console.Write(status + "|" + ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
         return status == "redirected" ? 10 : status == "unknown" ? 11 : 0; }
+    if (a[0] == "request-gate") {
+        Directory.CreateDirectory(a[1]); string id = Guid.NewGuid().ToString("N"); string file = Path.Combine(a[1], ".relaunch-" + id + ".json");
+        long expires = (long)(DateTime.UtcNow - new DateTime(1970,1,1)).TotalSeconds + 30;
+        File.WriteAllText(file, "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"argv\":[\"--background\"],\"hops\":1,\"created\":" + DateTime.UtcNow.Ticks + ",\"expires\":" + expires + ",\"guard\":true}");
+        var request = BranchglanceLauncher.TryConsumeRelaunchRequest(a[1], a[2]);
+        Console.Write((request == null ? "preserve" : "consume") + "|" + File.Exists(file) + "|" + (request == null ? "no-appdata-ok" : "appdata-ok"));
+        return 0; }
     if (a[0] == "mac") { Console.Write(BranchglanceLauncher.ControlMac(a[1], a[2], a.Skip(3).ToArray())); return 0; }
     if (a[0] == "ask") { Console.Write(BranchglanceLauncher.AskMaintenanceExit(a[1], int.Parse(a[2])) ? "true" : "false"); return 0; }
     if (a[0] == "hook") { BranchglanceLauncher.HookDeadlineMs = int.Parse(a[1]);
@@ -111,7 +118,7 @@ def test_csharp_appdata_probe_scans_more_than_128_packages(launcher, tmp_path):
     assert result.returncode == 0 and result.stdout.startswith("not_redirected|")
 
 
-def test_csharp_appdata_probe_skips_junctioned_package_cache(launcher, tmp_path):
+def test_csharp_appdata_probe_keeps_unrelated_junction_untouched(launcher, tmp_path):
     _folder, harness = launcher
     local = tmp_path / "Local"
     package = local / "Packages" / "Junctioned"
@@ -129,6 +136,40 @@ def test_csharp_appdata_probe_skips_junctioned_package_cache(launcher, tmp_path)
     assert result.returncode == 0 and result.stdout.startswith("not_redirected|")
     assert sentinel.read_text(encoding="utf-8") == "untouched"
     assert not list(branch_root.glob(".branchglance-probe-*"))
+
+
+def test_csharp_appdata_probe_detects_and_cleans_its_marker_through_junction(launcher, tmp_path):
+    _folder, harness = launcher
+    local = tmp_path / "Local"
+    package = local / "Packages" / "Junctioned"
+    package.mkdir(parents=True)
+    target = tmp_path / "external-cache"
+    branch_root = target / "Local" / "Branchglance"
+    branch_root.mkdir(parents=True)
+    sentinel = branch_root / "keep.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    link = package / "LocalCache"
+    made = subprocess.run(["cmd.exe", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+    if made.returncode:
+        pytest.skip("junction creation unavailable")
+    redirected_alias = package / "LocalCache" / "Local" / "Branchglance"
+    result = _probe(harness, ["appdata-simulate", str(local), str(redirected_alias)])
+    assert result.returncode == 10 and result.stdout.startswith("redirected|")
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    assert not list(branch_root.glob(".branchglance-probe-*"))
+
+
+def test_redirected_bare_launcher_preserves_concurrent_relaunch_request(launcher, tmp_path):
+    _folder, harness = launcher
+    redirected_root = tmp_path / "redirected"
+    result = _probe(harness, ["request-gate", str(redirected_root), "redirected"])
+    assert result.returncode == 0 and result.stdout == "preserve|True|no-appdata-ok"
+    unknown_root = tmp_path / "unknown"
+    unknown = _probe(harness, ["request-gate", str(unknown_root), "unknown"])
+    assert unknown.returncode == 0 and unknown.stdout == "preserve|True|no-appdata-ok"
+    clean_root = tmp_path / "clean"
+    clean = _probe(harness, ["request-gate", str(clean_root), "not_redirected"])
+    assert clean.returncode == 0 and clean.stdout == "consume|False|appdata-ok"
 
 
 def test_csharp_appdata_probe_detects_redirected_probe_in_plain_package(launcher, tmp_path):

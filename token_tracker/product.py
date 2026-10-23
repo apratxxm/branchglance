@@ -224,6 +224,22 @@ def _is_plain_directory(path: Path) -> bool:
     return stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and not (attributes & reparse)
 
 
+def _path_has_reparse_component(path: Path) -> bool:
+    current = path
+    while True:
+        try:
+            info = os.lstat(current)
+        except OSError:
+            info = None
+        if info is not None:
+            attributes = getattr(info, "st_file_attributes", 0)
+            if stat.S_ISLNK(info.st_mode) or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+                return True
+        if current.parent == current:
+            return False
+        current = current.parent
+
+
 # A developer machine easily has more than 128 packages; each costs one existence check.
 _MAX_PROBE_PACKAGES = 4096
 
@@ -232,6 +248,9 @@ class _AppDataProbeFS:
     """Small seam for the redirected-AppData probe; tests use an in-memory fake."""
     def exists(self, path: Path) -> bool:
         return path.exists()
+
+    def is_reparse_path(self, path: Path) -> bool:
+        return _path_has_reparse_component(path)
 
     def mkdir(self, path: Path) -> None:
         path.mkdir()
@@ -255,7 +274,10 @@ class _AppDataProbeFS:
                         continue
                     cache = package / "LocalCache"
                     candidate = cache / "Local"
-                    if not _is_plain_directory(cache) or not _is_plain_directory(candidate):
+                    # Follow package-cache junctions only far enough to look for
+                    # this invocation's unpredictable marker. Cleanup below is
+                    # restricted to that marker and its own empty child folder.
+                    if not cache.is_dir() or not candidate.is_dir():
                         continue
                     try:
                         with os.scandir(candidate) as children:
@@ -263,7 +285,7 @@ class _AppDataProbeFS:
                                 if len(results) >= _MAX_PROBE_PACKAGES:
                                     break
                                 if (child.name.casefold().startswith(PRODUCT.casefold())
-                                        and _is_plain_directory(Path(child.path))):
+                                        and Path(child.path).is_dir()):
                                     results.append(Path(child.path))
                     except FileNotFoundError:
                         continue
@@ -348,7 +370,10 @@ def appdata_probe(environ: Mapping[str, str] | None = None, *, fs=None) -> tuple
             cleanup_errors.append(exc)
         for package_root in package_roots_after:
             try:
-                filesystem.unlink(package_root / token / "probe.bin")
+                marker = package_root / token / "probe.bin"
+                if not filesystem.exists(marker):
+                    continue
+                filesystem.unlink(marker)
                 try:
                     filesystem.rmdir(package_root / token)
                 except FileNotFoundError:
@@ -367,6 +392,9 @@ def appdata_probe(environ: Mapping[str, str] | None = None, *, fs=None) -> tuple
         except OSError:
             pass  # pre-existing data raced with cleanup; never remove a non-empty root
         for package_root in package_roots_after:
+            # Never prune a Branchglance root reached through a package junction.
+            if getattr(filesystem, "is_reparse_path", _path_has_reparse_component)(package_root):
+                continue
             if package_root not in package_roots_before:
                 try:
                     filesystem.rmdir(package_root)
