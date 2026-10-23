@@ -2,22 +2,27 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import hmac
 import ipaddress
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
+import stat
 import subprocess
+import tempfile
 import threading
 import time
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer as _BaseThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse, urlsplit
 
+from . import product, providers as provider_module
 from .providers import build_snapshot, live_state, today_usage, trim_chats
 
 
@@ -252,13 +257,29 @@ LIVE_CACHE = LiveCache()
 
 class SnapshotCache:
     RETRY_COOLDOWN_SECONDS = 5.0
+    PERSISTED_SCHEMA_VERSION = 1
+    PERSISTED_MAX_BYTES = 32 * 1024 * 1024
+    PERSISTED_KEY_NAME = "snapshot-cache.key"
+    PERSISTED_KEY_BYTES = 32
 
-    def __init__(self, ttl: float = 120.0) -> None:
+    def __init__(self, ttl: float = 120.0, *, persist_path: Path | None = None,
+                 compatibility: str | None = None) -> None:
         self.ttl = ttl
+        self.persist_path = Path(persist_path) if persist_path is not None else None
+        # Compatibility reads provider policy, which the app may load only after its
+        # Install gate; the key and the disk restore are therefore resolved on first use.
+        self._compatibility = compatibility
+        self._restore_once = threading.Lock()
+        self._restore_pending = self.persist_path is not None
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
         self._value = None
+        # Only a snapshot built in this process may authorize chat actions.
+        self._trusted_value = None
         self._at = 0.0
+        self._restored_age = 0.0
+        self._restored_at = 0.0
+        self._restored = False
         self.generation = 0
         self.built_at: str | None = None
         self.building = False
@@ -270,16 +291,40 @@ class SnapshotCache:
         self._completed_attempt = 0
 
     @property
+    def compatibility(self) -> str | None:
+        if self._compatibility is None and self.persist_path is not None:
+            self._compatibility = _snapshot_cache_compatibility()
+        return self._compatibility
+
+    def _ensure_restored(self) -> None:
+        if not self._restore_pending:
+            return
+        # First-use callers wait here until the restore has finished, so none can
+        # publish a fresh build that the restore would then overwrite.
+        with self._restore_once:
+            if self._restore_pending:
+                try:
+                    self._restore_persisted()
+                finally:
+                    self._restore_pending = False
+
+    @property
     def value(self):
-        """Compatibility inspection hook; callers receive a defensive copy."""
+        """Return only a current-process build for action authorization."""
+        self._ensure_restored()
         with self.condition:
-            value = self._value
+            value = self._trusted_value
+            if value is None and not self._restored:
+                # Preserve compatibility with in-memory test and integration seeding.
+                value = self._value
         return copy.deepcopy(value)
 
     @value.setter
     def value(self, value) -> None:
         with self.condition:
             self._value = copy.deepcopy(value)
+            self._trusted_value = copy.deepcopy(value)
+            self._restored = False
 
     @property
     def at(self) -> float:
@@ -307,6 +352,208 @@ class SnapshotCache:
     def _utc_now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    @staticmethod
+    def _parse_utc(value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return None
+            return parsed.astimezone(timezone.utc)
+        except (OverflowError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _authenticated_bytes(envelope: dict) -> bytes:
+        body = {key: value for key, value in envelope.items() if key != "mac"}
+        return json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def _snapshot_mac(cls, envelope: dict, key: bytes) -> str:
+        return hmac.new(key, cls._authenticated_bytes(envelope), hashlib.sha256).hexdigest()
+
+    @property
+    def _key_path(self) -> Path | None:
+        return self.persist_path.parent / self.PERSISTED_KEY_NAME if self.persist_path is not None else None
+
+    def _read_persistence_key(self) -> bytes:
+        path = self._key_path
+        if path is None:
+            raise OSError("snapshot persistence is disabled")
+        info = os.lstat(path)
+        reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if not stat.S_ISREG(info.st_mode) or reparse or info.st_size != self.PERSISTED_KEY_BYTES:
+            raise ValueError("snapshot key is not a regular 32-byte file")
+        key = path.read_bytes()
+        if len(key) != self.PERSISTED_KEY_BYTES:
+            raise ValueError("snapshot key is not a regular 32-byte file")
+        return key
+
+    @staticmethod
+    def _atomic_write(path: Path, payload: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _ensure_persistence_key(self) -> bytes:
+        try:
+            return self._read_persistence_key()
+        except FileNotFoundError:
+            pass
+        except ValueError:
+            path = self._key_path
+            if path is None:
+                raise
+            info = os.lstat(path)
+            reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if not stat.S_ISREG(info.st_mode) or reparse:
+                raise OSError("snapshot key path is not a regular file")
+        key = secrets.token_bytes(self.PERSISTED_KEY_BYTES)
+        self._atomic_write(self._key_path, key)
+        return key
+
+    def _delete_persisted(self) -> None:
+        if self.persist_path is not None:
+            try:
+                self.persist_path.unlink()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _shown_provider_names() -> set[str]:
+        from .provider_policy import POLICIES, PROVIDERS, policy_for
+        return {name for name in PROVIDERS if policy_for(name, POLICIES).allows("show")}
+
+    @staticmethod
+    def _safe_snapshot_shape(snapshot: object) -> bool:
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("providers"), list):
+            return False
+        if not isinstance(snapshot.get("enabledProviders"), list):
+            return False
+        if SnapshotCache._parse_utc(snapshot.get("generatedAt")) is None:
+            return False
+        return all(
+            isinstance(provider, dict) and isinstance(provider.get("name"), str)
+            and isinstance(provider.get("chats"), list)
+            for provider in snapshot["providers"]
+        )
+
+    def _restore_persisted(self) -> None:
+        path = self.persist_path
+        if path is None:
+            return
+        try:
+            info = os.lstat(path)
+            reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if (not stat.S_ISREG(info.st_mode) or reparse or info.st_size <= 0
+                    or info.st_size > self.PERSISTED_MAX_BYTES):
+                return
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(envelope, dict):
+                self._delete_persisted()
+                return
+            try:
+                key = self._read_persistence_key()
+            except (OSError, ValueError):
+                self._delete_persisted()
+                return
+            mac = envelope.get("mac")
+            if not isinstance(mac, str) or len(mac) != hashlib.sha256().digest_size * 2:
+                self._delete_persisted()
+                return
+            try:
+                bytes.fromhex(mac)
+                expected_mac = self._snapshot_mac(envelope, key)
+            except (TypeError, ValueError, RecursionError):
+                self._delete_persisted()
+                return
+            if not hmac.compare_digest(mac, expected_mac):
+                self._delete_persisted()
+                return
+            if (envelope.get("schemaVersion") != self.PERSISTED_SCHEMA_VERSION
+                    or envelope.get("compatibility") != self.compatibility
+                    or type(envelope.get("generation")) is not int or envelope["generation"] < 1):
+                return
+            built_at = self._parse_utc(envelope.get("builtAt"))
+            snapshot = envelope.get("snapshot")
+            now = datetime.now(timezone.utc)
+            if (built_at is None or built_at > now + timedelta(seconds=1)
+                    or not self._safe_snapshot_shape(snapshot)):
+                return
+            provider_names = {provider["name"] for provider in snapshot["providers"]}
+            if not provider_names <= self._shown_provider_names():
+                self._delete_persisted()
+                return
+            snapshot = copy.deepcopy(snapshot)
+            snapshot.pop("snapshotCache", None)
+            with self.condition:
+                if self._value is not None:
+                    return  # a fresh build won; disk data must never replace it
+                self._value = snapshot
+                self._trusted_value = None
+                self._at = time.monotonic()
+                self._restored_age = max(0.0, (now - built_at).total_seconds())
+                self._restored_at = self._at
+                self._restored = True
+                self.generation = envelope["generation"]
+                self.built_at = built_at.isoformat()
+        except (OSError, OverflowError, ValueError, TypeError, RecursionError):
+            # A missing or damaged disk cache only loses the warm display path.
+            return
+
+    def _persistable(self, snapshot: dict) -> bool:
+        if self.persist_path is None or self.compatibility is None or not self._safe_snapshot_shape(snapshot):
+            return False
+        expected = set(snapshot.get("enabledProviders") or []) | set(snapshot.get("limitProviders") or [])
+        providers = {row.get("name"): row for row in snapshot.get("providers", [])}
+        return bool(expected) and all(
+            name in providers and providers[name].get("connected") is True
+            and not providers[name].get("stale")
+            for name in expected
+        )
+
+    def _write_persisted(self, snapshot: dict, generation: int, built_at: str) -> None:
+        path = self.persist_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                existing = os.lstat(path)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                reparse = getattr(existing, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                if not stat.S_ISREG(existing.st_mode) or reparse:
+                    raise OSError("snapshot cache path is not a regular file")
+            key = self._ensure_persistence_key()
+            envelope = {
+                "schemaVersion": self.PERSISTED_SCHEMA_VERSION,
+                "compatibility": self.compatibility,
+                "generation": generation,
+                "builtAt": built_at,
+                "snapshot": snapshot,
+            }
+            envelope["mac"] = self._snapshot_mac(envelope, key)
+            payload = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(payload) > self.PERSISTED_MAX_BYTES:
+                raise OSError("snapshot cache exceeds size limit")
+            self._atomic_write(path, payload)
+        except OSError as exc:
+            logging.getLogger(__name__).warning("Snapshot cache persistence failed (%s)", type(exc).__name__)
+
     def _record_failure_locked(self, exc: Exception, *, worker_start: bool = False) -> None:
         self.building = False
         self.retry_after = time.monotonic() + self.RETRY_COOLDOWN_SECONDS
@@ -316,28 +563,58 @@ class SnapshotCache:
         self._completed_attempt = self._attempt
 
     def _metadata_locked(self, now: float) -> dict:
-        age = max(0.0, now - self._at) if self._value is not None else None
+        age = (max(0.0, self._restored_age + now - self._restored_at) if self._restored
+               else max(0.0, now - self._at) if self._value is not None else None)
         return {
             "generation": self.generation,
             "builtAt": self.built_at,
             "ageSeconds": round(age, 3) if age is not None else None,
             "building": self.building,
-            "stale": (self._value is None or age is None or age > self.ttl
+            "stale": (self._value is None or age is None or self._restored or age > self.ttl
                       or self.last_failure_category is not None),
             "lastFailureAt": self.last_failure_at,
             "lastFailureCategory": self.last_failure_category,
         }
 
     @staticmethod
-    def _egress(value, metadata: dict):
+    def _egress(value, metadata: dict, *, restored: bool = False):
         if value is None:
             return None
         result = copy.deepcopy(value)
+        if restored:
+            for provider in result.get("providers", []):
+                if not isinstance(provider, dict):
+                    continue
+                provider["stale"] = True
+                for field in ("fiveHour", "weekly"):
+                    quota = provider.get(field)
+                    if not isinstance(quota, dict):
+                        quota = {}
+                        provider[field] = quota
+                    quota["percent"] = None
+                provider["limitsUpdatedAt"] = None
+                provider.pop("_quotaWindowObservedAt", None)
+                for chat in provider.get("chats", []):
+                    if not isinstance(chat, dict):
+                        continue
+                    previous = chat.get("status")
+                    chat.update(
+                        status="unknown", previousStatus=previous, statusSource="unavailable",
+                        telemetryUnavailable=True, metricsUnavailable=True,
+                        executionStatus="unavailable", executionSource="unavailable",
+                        executionObservedAt=None, executionSince=None,
+                        executionCompactionStartedAt=None, executionTerminalAt=None,
+                        executionActivity=None, pendingQuestion=None, pendingQuestionAt=None,
+                        pendingOptions=[], pendingQuestionId=None, pendingQuestionIds=[],
+                    )
+                    for field in ("latestRequest", "latestRequestAt", "latestUpdate", "latestUpdateAt",
+                                  "trackerUpdate", "trackerUpdateAt", "lastRequest", "activity"):
+                        chat.pop(field, None)
         result["snapshotCache"] = metadata
         return result
 
     def _selected_locked(self):
-        return self._value, self._metadata_locked(time.monotonic())
+        return self._value, self._metadata_locked(time.monotonic()), self._restored
 
     def _build(self, *, background: bool = False, attempt: int | None = None):
         try:
@@ -354,12 +631,21 @@ class SnapshotCache:
                 logging.getLogger(__name__).warning("Snapshot refresh failed (%s)", type(exc).__name__)
                 return None
             raise
+        built_at = self._utc_now()
         with self.condition:
             published_at = time.monotonic()
+            generation = self.generation + 1
+        if self._persistable(value):
+            self._write_persisted(value, generation, built_at)
+        with self.condition:
             self._value = value
+            self._trusted_value = copy.deepcopy(value)
             self._at = published_at
-            self.generation += 1
-            self.built_at = self._utc_now()
+            self.generation = generation
+            self.built_at = built_at
+            self._restored = False
+            self._restored_age = 0.0
+            self._restored_at = 0.0
             self.building = False
             self.retry_after = 0.0
             self.last_failure_at = None
@@ -368,7 +654,7 @@ class SnapshotCache:
             self._completed_attempt = attempt if attempt is not None else self._attempt
             selected = self._selected_locked()
             self.condition.notify_all()
-        return self._egress(*selected)
+        return self._egress(selected[0], selected[1], restored=selected[2])
 
     def _start_background_locked(self) -> None:
         self._attempt += 1
@@ -382,10 +668,25 @@ class SnapshotCache:
             self.condition.notify_all()
 
     def get(self, force: bool = False, background: bool = False):
+        self._ensure_restored()
         with self.condition:
             while True:
                 now = time.monotonic()
-                stale = self._value is None or now - self._at > self.ttl
+                stale = self._restored or self._value is None or now - self._at > self.ttl
+                if self._restored and self._value is not None and not force:
+                    if not self.building and now >= self.retry_after:
+                        self._start_background_locked()
+                    selected = self._selected_locked()
+                    break
+                if background and self._value is None:
+                    if self.building:
+                        return None
+                    if now < self.retry_after:
+                        if force and self._last_build_error is not None:
+                            raise self._last_build_error
+                        return None
+                    self._start_background_locked()
+                    return None
                 if background and self._value is not None:
                     if (force or stale) and not self.building:
                         if now >= self.retry_after:
@@ -422,12 +723,107 @@ class SnapshotCache:
                 break
 
         if "selected" in locals():
-            return self._egress(*selected)
+            return self._egress(selected[0], selected[1], restored=selected[2])
         # Never hold the cache lock while provider work performs disk or app IO.
         return self._build(attempt=attempt)
 
+    def get_background(self, force: bool = False):
+        """Return cached data immediately, or start a cold build and return no snapshot."""
+        self._ensure_restored()
+        with self.condition:
+            now = time.monotonic()
+            if self._value is not None:
+                stale = self._restored or now - self._at > self.ttl
+                if (force or stale) and not self.building and now >= self.retry_after:
+                    self._start_background_locked()
+                selected = self._selected_locked()
+            else:
+                if not self.building and now >= self.retry_after:
+                    self._start_background_locked()
+                return None
+        return self._egress(selected[0], selected[1], restored=selected[2])
 
-CACHE = SnapshotCache()
+
+def _snapshot_cache_compatibility() -> str:
+    from .provider_policy import POLICIES, public_policies
+    full, limits = provider_module._provider_collection_sets(POLICIES)
+    roots = [
+        os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"),
+        os.environ.get("CLAUDE_HOME") or str(Path.home() / ".claude"),
+        os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local"),
+    ]
+    normalized = []
+    for root in roots:
+        try:
+            value = str(Path(root).resolve(strict=False))
+        except OSError:
+            value = str(Path(root).absolute())
+        normalized.append(value.casefold() if os.name == "nt" else value)
+    material = {
+        "policy": public_policies(POLICIES)["generation"],
+        "full": full,
+        "limits": limits,
+        "roots": normalized,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+class FastClaudeLimits:
+    """Bound repeated reads of Claude's local Desktop quota cache."""
+
+    TTL_SECONDS = 2.0
+    MAX_USAGE_HISTORY_BYTES = 1024 * 1024
+
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.value = None
+        self.at = 0.0
+        self.loading = False
+
+    def overlay(self, snapshot: dict) -> dict:
+        from .provider_policy import POLICIES, policy_for
+        if not policy_for("Claude", POLICIES).allows("show"):
+            return snapshot
+        with self.condition:
+            now = time.monotonic()
+            if self.value is not None and now - self.at <= self.TTL_SECONDS:
+                limits = copy.deepcopy(self.value)
+            elif self.loading:
+                return snapshot
+            else:
+                self.loading = True
+                limits = None
+        if limits is None:
+            try:
+                from .providers import ClaudeLimitsProvider
+                provider = ClaudeLimitsProvider()
+                history = provider.root / "plan-usage-history.json"
+                if history.stat().st_size > self.MAX_USAGE_HISTORY_BYTES:
+                    return snapshot
+                limits = provider.snapshot()
+                if not isinstance(limits, dict):
+                    return snapshot
+            except Exception:
+                return snapshot
+            finally:
+                with self.condition:
+                    self.loading = False
+                    self.condition.notify_all()
+            with self.condition:
+                self.value = copy.deepcopy(limits)
+                self.at = time.monotonic()
+        result = copy.deepcopy(snapshot)
+        for provider in result.get("providers", []):
+            if isinstance(provider, dict) and provider.get("name") == "Claude":
+                for field in ("fiveHour", "weekly", "limitsUpdatedAt"):
+                    if field in limits:
+                        provider[field] = copy.deepcopy(limits[field])
+                break
+        return result
+
+
+CACHE = SnapshotCache(persist_path=product.state_root() / "stats-snapshot.json")
+FAST_CLAUDE_LIMITS = FastClaudeLimits()
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -473,6 +869,11 @@ class Handler(SimpleHTTPRequestHandler):
                 snapshot = CACHE.get(force=force, background=True)
             else:
                 snapshot = CACHE.get(force=force)
+            if snapshot is None:
+                self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
+                return
+            if query.get("background", [""])[0] == "1":
+                snapshot = FAST_CLAUDE_LIMITS.overlay(snapshot)
             if "limit" in query:
                 try:
                     limit = max(1, min(200, int(query["limit"][0])))
