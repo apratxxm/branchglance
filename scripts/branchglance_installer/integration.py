@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -8,6 +9,7 @@ from .core import SafetyError
 from token_tracker.product import APP_USER_MODEL_ID
 
 MARKER = "Branchglance managed shortcut"
+_LEGACY_MARKER = re.compile(re.escape(MARKER) + r" [0-9a-f]{32}")
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Branchglance"
 
 
@@ -45,9 +47,13 @@ class Integrations:
         found = self.adapter.read_shortcut(path)
         if found is None:
             return None
-        if (found.get("description") != MARKER
+        description = found.get("description")
+        # Pre-1.0 cutovers stamped "<MARKER> <32-hex id>" and set no AppUserModelID;
+        # adopt only that exact form, still bound to this launcher and install root.
+        legacy = isinstance(description, str) and _LEGACY_MARKER.fullmatch(description) is not None
+        if ((description != MARKER and not legacy)
                 or Path(found.get("target", "")).resolve() != self.launcher.resolve()
-                or found.get("app_id") != APP_USER_MODEL_ID
+                or found.get("app_id") not in ((APP_USER_MODEL_ID, "", None) if legacy else (APP_USER_MODEL_ID,))
                 or found.get("arguments", "") not in ("", "--background")
                 or Path(found.get("workdir", "")).resolve() != self.root.resolve()):
             raise SafetyError(f"Foreign shortcut collision: {path}")
