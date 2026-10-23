@@ -64,9 +64,11 @@ def _bash_quote(value: str | os.PathLike[str]) -> str:
 def default_command(executable: str | os.PathLike[str] | None = None,
                    script: str | os.PathLike[str] | None = None) -> str:
     """Stable hook command: the frozen launcher, or the hook script in a source checkout."""
-    executable = executable or Path(sys.executable).as_posix()
     if getattr(sys, "frozen", False):
-        return f"{_bash_quote(executable)} --claude-hook {MARKER}"
+        from . import product
+        launcher = executable or product.launcher_path().as_posix()
+        return f"{_bash_quote(str(launcher).replace(chr(92), '/'))} --claude-hook {MARKER}"
+    executable = executable or Path(sys.executable).as_posix()
     script = script or Path(claude_hook.__file__).resolve().as_posix()
     return f"{_bash_quote(executable)} {_bash_quote(script)} {MARKER}"
 

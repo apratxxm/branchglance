@@ -594,3 +594,17 @@ def test_ownership_requires_configured_executable(env):
     dev = installer._group(installer.default_command())
     assert installer.is_ours(dev) is True
     assert installer.is_ours(installer._group(CMD), installer._known_executables(data_dir, CMD)) is True
+
+
+def test_frozen_default_command_targets_the_stable_install_launcher(monkeypatch, tmp_path):
+    """A frozen app runs from releases/<version>/; hooks must name the root launcher."""
+    root = tmp_path / "Programs" / "Branchglance"
+    app = root / "releases" / "1.0.0+b1" / "BranchglanceApp.exe"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(app))
+    command = installer.default_command()
+    launcher = (root / "Branchglance.exe").resolve().as_posix()
+    assert command.startswith(f'"{launcher}" --claude-hook') or command.startswith(f"'{launcher}' --claude-hook") \
+        or command.startswith(f"{launcher} --claude-hook")
+    assert "BranchglanceApp" not in command and "releases" not in command
+    assert installer._executable_of(command) in installer.default_executables()
