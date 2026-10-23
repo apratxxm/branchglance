@@ -257,6 +257,10 @@ def _persistable_snapshot(*, status="running", pending="Choose?"):
         "limitProviders": [],
         "providers": [{
             "name": "Codex", "connected": True,
+            "fiveHour": {"percent": 23, "resetAt": 1_800_000_000},
+            "weekly": {"percent": 41, "resetAt": 1_800_100_000},
+            "limitsUpdatedAt": datetime.now(timezone.utc).isoformat(),
+            "_quotaWindowObservedAt": {"fiveHour": "old-five", "weekly": "old-weekly"},
             "chats": [{
                 "id": "persisted-only", "status": status, "statusSource": "app",
                 "executionStatus": status, "executionSource": "app",
@@ -277,6 +281,10 @@ def test_persisted_snapshot_is_display_only_stale_and_refreshes(monkeypatch, tmp
     built = writer.get()
     assert built["snapshotCache"]["stale"] is False
     assert path.is_file()
+    key_path = path.parent / server.SnapshotCache.PERSISTED_KEY_NAME
+    key_info = key_path.lstat()
+    assert key_info.st_size == server.SnapshotCache.PERSISTED_KEY_BYTES
+    assert not (getattr(key_info, "st_file_attributes", 0) & getattr(server.stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
     started, release = threading.Event(), threading.Event()
     refreshed = _persistable_snapshot(status="idle", pending=None)
@@ -294,6 +302,10 @@ def test_persisted_snapshot_is_display_only_stale_and_refreshes(monkeypatch, tmp
     assert shown["snapshotCache"]["stale"] is True
     assert shown["snapshotCache"]["building"] is True
     assert shown["providers"][0]["stale"] is True
+    assert shown["providers"][0]["fiveHour"]["percent"] is None
+    assert shown["providers"][0]["weekly"]["percent"] is None
+    assert shown["providers"][0]["limitsUpdatedAt"] is None
+    assert "_quotaWindowObservedAt" not in shown["providers"][0]
     chat = shown["providers"][0]["chats"][0]
     assert chat["status"] == "unknown" and chat["telemetryUnavailable"] is True
     assert chat["executionStatus"] == "unavailable"
@@ -306,21 +318,84 @@ def test_persisted_snapshot_is_display_only_stale_and_refreshes(monkeypatch, tmp
     assert restored.get_background()["snapshotCache"]["stale"] is False
 
 
-def test_disk_snapshot_rejects_mismatched_compatibility_and_malformed_data(tmp_path):
+def test_disk_snapshot_rejects_mismatched_compatibility_and_malformed_data(tmp_path, monkeypatch):
     path = tmp_path / "stats-snapshot.json"
     snapshot = _persistable_snapshot()
-    envelope = {
-        "schemaVersion": server.SnapshotCache.PERSISTED_SCHEMA_VERSION,
-        "compatibility": "source-a", "generation": 4,
-        "builtAt": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot,
-    }
-    path.write_text(json.dumps(envelope), encoding="utf-8")
+    monkeypatch.setattr(server, "build_snapshot", lambda: snapshot)
+    server.SnapshotCache(persist_path=path, compatibility="source-a").get()
     assert server.SnapshotCache(persist_path=path, compatibility="source-b").value is None
 
+    envelope = json.loads(path.read_text(encoding="utf-8"))
     envelope["compatibility"] = "source-a"
     envelope["snapshot"] = {"providers": "not-a-list"}
+    key = (path.parent / server.SnapshotCache.PERSISTED_KEY_NAME).read_bytes()
+    envelope["mac"] = server.SnapshotCache._snapshot_mac(envelope, key)
     path.write_text(json.dumps(envelope), encoding="utf-8")
     assert server.SnapshotCache(persist_path=path, compatibility="source-a").value is None
+
+
+def test_tampered_snapshot_with_valid_key_is_deleted(tmp_path, monkeypatch):
+    path = tmp_path / "stats-snapshot.json"
+    snapshot = _persistable_snapshot()
+    monkeypatch.setattr(server, "build_snapshot", lambda: snapshot)
+    server.SnapshotCache(persist_path=path, compatibility="source-a").get()
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert (path.parent / server.SnapshotCache.PERSISTED_KEY_NAME).stat().st_size == 32
+    envelope["snapshot"]["providers"][0]["chats"][0]["tokens"] = 999
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    restored = server.SnapshotCache(persist_path=path, compatibility="source-a")
+    assert restored.value is None
+    assert not path.exists()
+
+
+def test_hidden_provider_with_valid_mac_is_rejected(monkeypatch, tmp_path):
+    from token_tracker import provider_policy
+
+    path = tmp_path / "stats-snapshot.json"
+    snapshot = _persistable_snapshot()
+    monkeypatch.setattr(server, "build_snapshot", lambda: snapshot)
+    server.SnapshotCache(persist_path=path, compatibility="source-a").get()
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    envelope["snapshot"]["providers"].append({"name": "Claude", "connected": True, "chats": []})
+    key = (path.parent / server.SnapshotCache.PERSISTED_KEY_NAME).read_bytes()
+    envelope["mac"] = server.SnapshotCache._snapshot_mac(envelope, key)
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    monkeypatch.setattr(provider_policy, "POLICIES", provider_policy.load_policies(environ={}))
+
+    restored = server.SnapshotCache(persist_path=path, compatibility="source-a")
+    assert restored.value is None
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("key_state", ["missing", "short"])
+def test_missing_or_short_key_rejects_and_deletes_snapshot(monkeypatch, tmp_path, key_state):
+    path = tmp_path / "stats-snapshot.json"
+    monkeypatch.setattr(server, "build_snapshot", lambda: _persistable_snapshot())
+    server.SnapshotCache(persist_path=path, compatibility="source-a").get()
+    key_path = path.parent / server.SnapshotCache.PERSISTED_KEY_NAME
+    if key_state == "missing":
+        key_path.unlink()
+    else:
+        key_path.write_bytes(b"short")
+
+    restored = server.SnapshotCache(persist_path=path, compatibility="source-a")
+    assert restored.value is None
+    assert not path.exists()
+
+
+def test_extreme_built_at_is_rejected_without_escaping(tmp_path, monkeypatch):
+    path = tmp_path / "stats-snapshot.json"
+    monkeypatch.setattr(server, "build_snapshot", lambda: _persistable_snapshot())
+    server.SnapshotCache(persist_path=path, compatibility="source-a").get()
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    envelope["builtAt"] = "0001-01-01T00:00:00+01:00"
+    key = (path.parent / server.SnapshotCache.PERSISTED_KEY_NAME).read_bytes()
+    envelope["mac"] = server.SnapshotCache._snapshot_mac(envelope, key)
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    restored = server.SnapshotCache(persist_path=path, compatibility="source-a")
+    assert restored.value is None
 
 
 def test_restored_codex_id_does_not_authorize_open(monkeypatch, tmp_path):
