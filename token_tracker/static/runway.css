@@ -5,6 +5,8 @@
 @property --source-muted{syntax:"<color>";inherits:true;initial-value:#8490ad}
 @property --source-glow-primary{syntax:"<color>";inherits:true;initial-value:#7040ff}
 @property --source-glow-secondary{syntax:"<color>";inherits:true;initial-value:#425df6}
+@property --source-edge{syntax:"<color>";inherits:true;initial-value:#303543}
+@property --source-edge-strong{syntax:"<color>";inherits:true;initial-value:#303543}
 @property --blue{syntax:"<color>";inherits:true;initial-value:#425df6}
 @property --blue-soft{syntax:"<color>";inherits:true;initial-value:#171d34}
 :root {
@@ -14,7 +16,7 @@
   --green:#85d6a8; --source-accent:#425df6; --source-accent-soft:#171d34; --source-hover:#172638; --source-focus:#9bb0ff;
   --source-muted:#8490ad; --source-glow-primary:#7040ff; --source-glow-secondary:#425df6;
   --focus:var(--source-focus); --gutter:12px; --ease-standard:cubic-bezier(.16,1,.3,1);
-  --motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms;
+  --motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms; --motion-source:240ms;
   --sans:"Instrument Sans","Segoe UI Variable","Segoe UI",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
 }
@@ -23,7 +25,7 @@
 html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--paper)}
 body{color:var(--ink);font:13px/1.4 var(--sans);font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
 button,input{font:inherit;color:inherit}
-body{transition:--source-accent var(--motion-info) var(--ease-standard),--source-accent-soft var(--motion-info) var(--ease-standard),--source-hover var(--motion-info) var(--ease-standard),--source-focus var(--motion-info) var(--ease-standard),--source-muted var(--motion-info) var(--ease-standard),--source-glow-primary var(--motion-info) var(--ease-standard),--source-glow-secondary var(--motion-info) var(--ease-standard),--blue var(--motion-info) var(--ease-standard),--blue-soft var(--motion-info) var(--ease-standard)}
+body{transition:--source-accent var(--motion-source) var(--ease-standard),--source-accent-soft var(--motion-source) var(--ease-standard),--source-hover var(--motion-source) var(--ease-standard),--source-focus var(--motion-source) var(--ease-standard),--source-muted var(--motion-source) var(--ease-standard),--source-glow-primary var(--motion-source) var(--ease-standard),--source-glow-secondary var(--motion-source) var(--ease-standard),--source-edge var(--motion-source) var(--ease-standard),--source-edge-strong var(--motion-source) var(--ease-standard),--blue var(--motion-source) var(--ease-standard),--blue-soft var(--motion-source) var(--ease-standard)}
 body[data-source="Claude"]{--source-accent:#e8813f;--source-accent-soft:#301e17;--source-hover:#3a2319;--source-focus:#ffb98c;--source-muted:#ad826f;--source-glow-primary:#ffb14a;--source-glow-secondary:#d64a2f;--blue:var(--source-accent);--blue-soft:var(--source-accent-soft);--focus:var(--source-focus)}
 body:not(.phone) button{cursor:pointer;transition:transform var(--motion-fast) var(--ease-standard),opacity var(--motion-fast) var(--ease-standard),background-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}
 body:not(.phone) .icon-btn:active,body:not(.phone) .sync-age:active,body:not(.phone) .window-controls button:active,body:not(.phone) .greet:active{transform:scale(.97)}
@@ -47,9 +49,9 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 /* Source switch: two segments in the controls band; the dot marks attention in the unselected source. */
 :root{--claude:#e8813f;--source-dot:#ffd24a}
 .source-switch{position:relative;display:inline-flex;align-items:center;flex:none;height:22px;margin:0 2px;padding:1px;border-radius:7px;background:var(--source-accent-soft);isolation:isolate}
-.source-switch::before{content:"";position:absolute;z-index:-1;inset:1px auto 1px 1px;width:calc(50% - 1px);border-radius:6px;background:var(--source-accent-soft);transform:translateX(0);transition:transform var(--motion-info) var(--ease-standard),background-color var(--motion-info) var(--ease-standard)}
+.source-switch::before{content:"";position:absolute;z-index:-1;inset:1px auto 1px 1px;width:calc(50% - 1px);border-radius:6px;background:var(--source-accent-soft);transform:translateX(0);transition:transform var(--motion-source) var(--ease-standard),background-color var(--motion-source) var(--ease-standard)}
 body[data-source="Claude"] .source-switch::before{transform:translateX(100%)}
-.source-seg{position:relative;display:flex;align-items:center;justify-content:center;gap:2px;height:20px;min-width:54px;flex:1 1 0;padding:0 4px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:600 11px var(--sans);letter-spacing:0}
+.source-seg{position:relative;display:flex;align-items:center;justify-content:center;gap:2px;height:20px;min-width:54px;flex:1 1 0;padding:0 4px;border:0;border-radius:6px;background:transparent;color:var(--muted);font:600 11px var(--sans);letter-spacing:0;transition:color var(--motion-source) var(--ease-standard)}
 .source-seg:hover{color:var(--ink)}
 .source-seg[aria-pressed="true"]{background:transparent;color:var(--source-accent)}
 .source-mark{width:8px;height:8px;stroke-width:1.6;opacity:.55;transition:opacity var(--motion-info) var(--ease-standard)}
@@ -73,7 +75,7 @@ body:not(.phone) #widget-lock[aria-pressed="true"]:hover{background:var(--source
 body:not(.phone) #widget-keep-open[aria-pressed="true"]{background:var(--source-accent-soft);color:var(--source-accent)}
 body.phone #widget-lock{display:none}
 .notch-count{font:12px var(--mono)}
-.layout{order:2;width:100%;min-width:0;flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#444 transparent}
+.layout{order:2;width:100%;min-width:0;flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;scrollbar-width:none}
 
 /* Two large readings. Color means remaining quota, never decoration. */
 .resets{position:relative;order:1;height:66px;min-height:66px;flex:0 0 66px;overflow:hidden;padding:3px var(--gutter) 6px}
@@ -91,7 +93,7 @@ body.phone #widget-lock{display:none}
 .rr-cd.unknown{font-size:17px;color:var(--muted);letter-spacing:-.3px}
 .meter{height:3px;background:#2b2b2b;border-radius:3px;overflow:hidden}
 .meter[aria-hidden="true"]{visibility:hidden}
-.meter i{display:block;height:100%;background:var(--source-accent);border-radius:inherit;transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-info) var(--ease-standard)}
+.meter i{display:block;height:100%;background:var(--source-accent);border-radius:inherit;transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-source) var(--ease-standard)}
 .meter i.t-attn{background:var(--orange)}
 .meter i.t-err{background:var(--red)}
 .greet{width:16px;height:16px;display:grid;place-items:center;border:0;background:none;padding:0}
@@ -107,20 +109,16 @@ body.phone #widget-lock{display:none}
 .chats{order:3;flex:none;min-height:auto;display:flex;flex-direction:column;transition:opacity var(--motion-info) var(--ease-standard)}
 .chats-head{flex:none;padding:9px var(--gutter) 7px;border-top:1px solid var(--line)}
 .chats-head:not(.searching){display:none}
-.chats-head:has(.hidden-chats-toggle:not([hidden])):not(.searching){display:flex}
-.ch-normal,.ch-search{display:flex;align-items:center;gap:7px}
-.ch-normal{flex:1}
-.ch-title{font-size:12px;font-weight:500;color:var(--muted)}
+.ch-search{display:flex;align-items:center;gap:7px}
 .ch-count{flex:none;font:12px var(--mono);color:var(--ink);white-space:nowrap}
 .ch-search{display:none}
-.searching .ch-normal{display:none}
 .searching .ch-search{display:flex;width:100%}
-.searching .hidden-chats-toggle{display:none}
-.ch-search input{min-width:0;width:100%;border:0;background:none;padding:3px 0;font-size:12px}
-.hidden-chats-toggle{border:0;background:none;color:var(--muted);font-size:12px;padding:0;white-space:nowrap}
+.ch-search input{flex:1 1 auto;min-width:0;width:100%;border:0;background:none;padding:3px 0;font-size:12px}
+.ch-search>.ic,.ch-search>.ch-count,.ch-search>.icon-btn,.ch-search>.hidden-chats-toggle{flex:none}
+.hidden-chats-toggle{min-height:22px;border:0;border-radius:4px;background:var(--source-accent-soft);color:var(--source-accent);font-size:10px;padding:2px 4px;white-space:nowrap;transition:background-color var(--motion-source) var(--ease-standard),color var(--motion-source) var(--ease-standard)}
 .hidden-chats-toggle:hover{color:#fff}
 .chat>.row:focus-visible,.runway-agent-glance:focus-visible,.runway-question-trigger:focus-visible{outline:1px solid var(--focus);outline-offset:-2px;border-radius:6px}
-.chat-list{flex:none;min-height:auto;overflow:visible;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#444 transparent}
+.chat-list{position:relative;flex:none;min-height:auto;overflow:visible;overscroll-behavior:contain;scrollbar-width:none}
 .chat{margin:0 8px;border-bottom:1px solid #202020}
 .chat:last-child{border-bottom:0}
 .row{width:100%;display:grid;grid-template-columns:minmax(0,1fr) 146px;grid-template-rows:auto auto;gap:2px 6px;align-items:center;min-height:0;padding:7px 6px;border:0;border-radius:9px;background:none;text-align:left;cursor:default}
@@ -230,7 +228,7 @@ body.phone #widget-lock{display:none}
 .runway-question{padding:0 9px 2px 21px}
 .runway-question-toggle{width:100%;border:0;background:none;display:flex;align-items:center;gap:6px;text-align:left;padding:0 0 3px;min-height:22px}
 .runway-question-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--muted)}
-.runway-question-detail{max-height:none;overflow:visible;background:var(--card);border-radius:7px;padding:8px;scrollbar-width:thin;overscroll-behavior:contain}
+.runway-question-detail{max-height:none;overflow:visible;background:var(--card);border-radius:7px;padding:8px;scrollbar-width:none;overscroll-behavior:contain}
 .runway-question-full{font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}
 .si-opts{padding:3px 9px 5px 21px}
 .si-ask{font-size:12px;padding:3px 9px}
@@ -267,7 +265,6 @@ body:not(.phone).notch-expanded .chats,body:not(.phone).notch-expanded .totals{o
 @keyframes runway-question-arrival{from{opacity:.55;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
 @keyframes runway-message-expiry{0%,90%{opacity:1}100%{opacity:0}}
 @keyframes runway-message-dot-arrival{from{opacity:0;transform:scale(.65)}to{opacity:1;transform:scale(1)}}
-@keyframes source-list-crossfade{0%,100%{opacity:1}42%,58%{opacity:0}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 /* Live telemetry, with expanded content kept in the same scroll surface. */
@@ -329,7 +326,7 @@ body:not(.phone).notch-expanded .chats,body:not(.phone).notch-expanded .totals{o
 .runway-question-trigger{width:24px;height:24px;min-width:24px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--orange);font-weight:700;line-height:1;flex:none}
 .runway-question-trigger:hover,.runway-question-trigger:focus-visible{background:#282116}
 .popover:has(.runway-question-panel){width:min(380px,calc(100vw - 16px));max-width:min(380px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:hidden}
-.runway-question-panel{position:relative;max-height:calc(100vh - 48px);overflow:auto;overscroll-behavior:contain;padding:18px 4px 4px;scrollbar-width:thin}
+.runway-question-panel{position:relative;max-height:calc(100vh - 48px);overflow:auto;overscroll-behavior:contain;padding:18px 4px 4px;scrollbar-width:none}
 .runway-question-panel .runway-question-full{font-size:13px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;white-space:pre-wrap}
 .runway-question-panel .q-opts{margin-top:12px}
 .runway-question-close{position:absolute;right:0;top:-3px;width:28px;height:28px;padding:0;border:0;background:none;color:var(--muted);font-size:20px}
@@ -344,8 +341,9 @@ body:not(.phone) .popover:not([hidden]){animation:runway-panel-open var(--motion
 .runway-message-indicator.message-arrived .runway-message-dots i{animation:runway-message-dot-arrival var(--motion-fast) var(--ease-standard) both}
 .runway-message-indicator.message-arrived .runway-message-dots i:nth-child(2){animation-delay:60ms}
 .runway-message-indicator.message-arrived .runway-message-dots i:nth-child(3){animation-delay:120ms}
-.chat-list.source-switching{animation:source-list-crossfade var(--motion-panel) var(--ease-standard)}
-.chat-list.source-switching .runway-row-enter{animation:none}
+.source-switch-snapshot{position:absolute;inset:0 auto auto 0;z-index:5;width:100%;min-height:100%;overflow:hidden;pointer-events:none;background:transparent}
+.source-switch-snapshot.is-fading{animation:source-switch-fade 240ms var(--ease-standard) forwards}
+@keyframes source-switch-fade{to{opacity:0}}
 .hidden-chats-toggle{min-height:22px}
 .policy-notice{max-width:100%;margin:0 0 7px;overflow:hidden;color:var(--muted);font-size:11px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}
 
@@ -393,9 +391,8 @@ body:not(.phone) .notch-counts{justify-content:flex-end;gap:4px;width:128px;over
 body:not(.phone) .runway-count{width:auto;min-width:40px;gap:2px}
 body:not(.phone) .count-value{width:auto;min-width:28px;text-align:left;font-size:11px}
 body:not(.phone) #notch-counts:not(:has(.runway-count:nth-child(3)))::after{display:none}
-body:not(.phone) .layout{scrollbar-gutter:auto}
 body:not(.phone) *{scrollbar-width:none;-ms-overflow-style:none}
-body:not(.phone) *::-webkit-scrollbar{display:none;width:0;height:0}
+body:not(.phone) *::-webkit-scrollbar{display:none!important;width:0;height:0}
 body:not(.phone) .runway-model-timing{grid-column:1;grid-row:2;min-width:0;width:100%;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;overflow:visible}
 body:not(.phone) .row>.runway-model-timing{padding-left:4px}
 body:not(.phone) .runway-model-timing .runway-telemetry-model{grid-column:auto;grid-row:auto;flex:0 1 auto;width:auto;max-width:100%;min-width:0;font-size:12px;white-space:normal;overflow:visible}

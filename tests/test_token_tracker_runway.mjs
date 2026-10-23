@@ -11,6 +11,8 @@ const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name]
 assert.match(page,/window\.__TOKEN_TRACKER_RUNWAY__=true/);
 assert.doesNotMatch(page,/Active work|data-action="pin"/);
 assert.match(page,/id="hidden-chats-toggle"[^>]*data-action="show-hidden"/);
+assert.doesNotMatch(page,/<div class="ch-normal">|class="ch-title"[^>]*>Chats/);
+assert.match(page,/<div class="ch-search">[\s\S]*id="hidden-chats-toggle"[^>]*data-action="show-hidden"/);
 assert.match(page,/id="sync-age"[^>]*data-action="refresh"[^>]*aria-label="Refresh usage"/);
 assert.match(page,/id="monitor-toggle"[^>]*aria-label="Move to next monitor"/);
 assert.match(page,/id="window-recenter"[^>]*aria-label="Recenter widget"/);
@@ -45,8 +47,8 @@ assert.match(cssRule('body:not(.phone) .runway-count'),/min-width:40px/);assert.
 assert.match(cssRule('.runway-count-waiting.is-empty'),/visibility:hidden/);
 assert.match(cssRule('.titlebar'),/gap:1px/);assert.match(cssRule('.titlebar'),/padding:0 8px/);
 assert.match(cssRule('.titlebar'),/height:30px/);assert.match(cssRule('.resets'),/order:1/);assert.match(cssRule('.resets'),/height:66px/);
-assert.match(cssRule('.layout'),/order:2/);assert.match(cssRule('.layout'),/scrollbar-gutter:stable/); // Base layout remains the phone behavior.
-assert.match(cssRule('body:not(.phone) .layout'),/scrollbar-gutter:auto/);
+assert.match(cssRule('.layout'),/order:2/);assert.match(cssRule('.layout'),/scrollbar-width:none/);
+assert.doesNotMatch(css,/scrollbar-gutter:\s*stable/);
 assert.match(cssRule('body:not(.phone) *'),/scrollbar-width:none/);assert.match(cssRule('body:not(.phone) *::-webkit-scrollbar'),/display:none/);
 assert.match(cssRule('.row'),/display:grid/);assert.match(cssRule('.row'),/grid-template-columns:minmax\(0,1fr\) 146px/);assert.match(cssRule('.row'),/grid-template-rows:auto auto/);
 assert.match(cssRule('.runway-agent-glance'),/display:grid/);assert.match(cssRule('.runway-agent-glance'),/grid-template-columns:minmax\(0,1fr\) 146px/);assert.match(cssRule('.runway-agent-glance'),/grid-template-rows:auto auto/);
@@ -772,7 +774,7 @@ for(const [used,tone] of [[49,""],[50,"attn"],[69,"attn"],[70,"err"]]){
 // Expanded height tracks visible list content and excludes hidden blocks and padding buffers.
 T.syncNotch(1);T.setNotch(true);
 node(".titlebar").offsetHeight=30;node(".resets").offsetHeight=66;
-node(".chats-head").offsetHeight=18;node(".chats-head").hidden=true;
+node("#chats-head").offsetHeight=18;node("#chats-head").hidden=true;
 node(".totals").offsetHeight=28;node(".totals").hidden=true;
 node("#strip").offsetHeight=10;node("#strip").hidden=true;
 const measuredList=node("#chat-list"),originalListQuerySelectorAll=measuredList.querySelectorAll;measuredList.scrollHeight=200;measuredList.children=[];
@@ -780,14 +782,26 @@ measuredList.querySelectorAll=selector=>selector===".chat"?[{offsetHeight:900}]:
 assert.equal(T.notchHeight(),296,"height is the 96px fixed rail plus actual list content, without a buffer or parent flex height");
 measuredList.scrollHeight=265;
 assert.equal(T.notchHeight(),361,"wrapped rows increase height by their measured content growth");
-node(".chats-head").hidden=false;
-assert.equal(T.notchHeight(),379,"a visible heading contributes its measured height");
-node(".chats-head").hidden=true;measuredList.scrollHeight=0;measuredList.children=[{className:"empty",offsetHeight:40}];measuredList.querySelectorAll=()=>[];
+node("#chats-head").hidden=false;
+assert.equal(T.notchHeight(),361,"the removed chats heading contributes no height while search is closed");
+T.state.searchOpen=true;
+assert.equal(T.notchHeight(),379,"the visible search row contributes its measured height");
+T.state.searchOpen=false;
+node("#chats-head").hidden=true;measuredList.scrollHeight=0;measuredList.children=[{className:"empty",offsetHeight:40}];measuredList.querySelectorAll=()=>[];
 assert.equal(T.notchHeight(),136,"a non-chat empty-state node contributes its real height");
 measuredList.querySelectorAll=originalListQuerySelectorAll;
 T.syncNotch(0);assert.equal(T.notch.expanded,false);
 T.state.hiddenChats.add("Codex:root");T.render(snapshot);
 assert.doesNotMatch(node("#chat-list").innerHTML,/Live parent/);
+T.state.query="is:hidden";
+assert.deepEqual(Array.from(T.visibleRoots(T.state.forest),chat=>chat.key),["Codex:root"],"is:hidden finds a dismissed root without exposing all hidden chats");
+assert.equal(T.parseQuery("is:hidden").flags.has("hidden"),true);
+T.state.query="";
+const dismissedIdle={...root,status:"idle"};
+T.state.query="is:hidden";T.state.searchOpen=true;
+T.render({...snapshot,providers:[{...provider,chats:[dismissedIdle]}]});
+assert.match(node("#chat-list").innerHTML,/Live parent/,"is:hidden can render a dismissed chat with no live activity");
+T.state.query="";T.state.searchOpen=false;
 T.state.hiddenChats.clear();
 
 // Exact question dismissal survives live refresh, without answering or queueing.

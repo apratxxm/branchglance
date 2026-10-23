@@ -22,7 +22,15 @@ assert.match(css,/--source-glow-primary:#ffb14a/);assert.match(css,/--source-glo
 assert.match(refined,/--blue:var\(--source-accent\)/,"the source accent replaces fixed blue in refined mode");
 assert.doesNotMatch(refined,/#425df6|#7040ff|#b99aff/,"the refined Claude palette leaves no fixed Codex blue or purple accent");
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);assert.match(mainCss,/\.meter i\{[^}]*background:var\(--source-accent\)/);
-assert.match(css,/transition:--source-accent var\(--motion-info\)/,"source colors transition with the selected provider");
+assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
+assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
+assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 240ms/);
+assert.match(page,/placeholder="[^"]*is:hidden/);
+assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
+assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 48px/);
+assert.match(refined,/compact-toolbar \.notch-counts\{display:none/);
+assert.match(refined,/compact-toolbar \.source-seg\{width:auto;height:20px;min-width:45px/);
+assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);
 
 function boot(initialStorage={}, {compact=false}={}) {
   const nodes=new Map(),saved=new Map(Object.entries(initialStorage)),timers=new Map();let sequence=0;
@@ -56,6 +64,26 @@ const running=(extra={})=>({status:"running",activeRunStartedAt:ago(2),runStarte
 const quota={fiveHour:{percent:80,resetAt:fixedNow/1000+1500},weekly:{percent:60,resetAt:fixedNow/1000+80000},limitsUpdatedAt:ago(1)};
 const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>({generatedAt:ago(0),enabledProviders:["Codex","Claude"],providerPolicies:policy,
   providers:[{name:"Codex",connected:true,chats:codex,...quota,fiveHour:{percent:92,resetAt:fixedNow/1000+1500}},{name:"Claude",connected:true,chats:claude,...claudeQuota}]});
+
+// The source-change overlay retains the old content and palette until it fades over the new rows.
+{
+  const {T,node,context}=boot(),list=node("#chat-list"),frameCallbacks=[],added=[],removed=[],styleValues={};
+  list.innerHTML='<div class="chat" id="old-chat">old rows</div>';
+  list.children=[{outerHTML:list.innerHTML,classList:{contains:()=>false}}];
+  list.appendChild=overlay=>{added.push(overlay);};list.querySelectorAll=()=>[];
+  const ids=[{removeAttribute(name){removed.push(name);}}];
+  context.document.createElement=()=>({style:{setProperty(name,value){styleValues[name]=value;}},classList:{add(name){this[name]=true;}},
+    attributes:{},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){this.attributes[name]=null;},querySelectorAll:()=>ids,
+    addEventListener(name,handler){this[name]=handler;},removeEventListener(){},remove(){this.removed=true;}});
+  context.window.getComputedStyle=()=>({getPropertyValue:name=>name==="--source-accent"?"rgb(66, 93, 246)":""});
+  context.requestAnimationFrame=callback=>{frameCallbacks.push(callback);return frameCallbacks.length;};
+  const overlay=T.captureSourceSnapshot(list);
+  assert.match(overlay.innerHTML,/old rows/);assert.equal(styleValues["--source-accent"],"rgb(66, 93, 246)");
+  assert.deepEqual(removed,["id"]);
+  T.revealSourceSnapshot(list,overlay);assert.equal(added[0],overlay);
+  frameCallbacks[0]();assert.equal(overlay.classList["is-fading"],true);
+  overlay.animationend();assert.equal(overlay.removed,true,"the old layer is removed after the crossfade completes");
+}
 
 // 1. Hidden with one provider, visible with two.
 {

@@ -206,7 +206,8 @@ function notchHeight() {
   const list=$('#chat-list');
   if(!notch.expanded||!list?.querySelectorAll)return REFINED?148:96;
   const visibleHeight=selector=>{const node=$(selector);if(!node||node.hidden||node.getAttribute?.('aria-hidden')==='true')return 0;const rects=node.getClientRects?.();if(rects&&rects.length===0)return 0;return node.offsetHeight||0;};
-  const fixed=['.titlebar','.resets','#weekly-resets','.chats-head','.totals','#strip'].reduce((sum,selector)=>sum+visibleHeight(selector),0);
+  const fixed=['.titlebar','.resets','#weekly-resets','.totals','#strip'].reduce((sum,selector)=>sum+visibleHeight(selector),0)+
+    (state.searchOpen?visibleHeight('#chats-head'):0);
   // The list's own content height includes variable wrapped rows and the empty state,
   // while avoiding the flex-filled height of its parent layout.
   const content=list.scrollHeight||[...list.querySelectorAll('.chat')].reduce((sum,row)=>sum+(row.offsetHeight||0),0)||[...list.children||[]].reduce((sum,node)=>sum+(node.offsetHeight||0),0);
@@ -1051,7 +1052,7 @@ function stabilizeRunwayForest(forest, previous) {
 function parseQuery(text) {
   const flags=new Set(),words=[];
   for(const part of String(text||"").trim().toLowerCase().split(/\s+/).filter(Boolean)) {
-    const m=part.match(/^is:(needs|running|failed)$/);
+    const m=part.match(/^is:(needs|running|failed|hidden)$/);
     if(m)flags.add(m[1]);else words.push(part);
   }
   return {flags,text:words.join(" "),active:Boolean(flags.size||words.length)};
@@ -1061,6 +1062,7 @@ function matchesQuery(chat, query) {
   if(query.flags.has("needs")&&!isAsking(chat))return false;
   if(query.flags.has("running")&&chat.status!=="running")return false;
   if(query.flags.has("failed")&&chat.status!=="failed")return false;
+  if(query.flags.has("hidden")&&!state.hiddenChats.has(chat.key))return false;
   return !query.text||[chat.title,agentLabel(chat),chat.model,modelLabel(chat),chat.workspace,...(RUNWAY?[chat.assignment,chat.objective,chat.latestRequest,chat.latestUpdate]:[])].join(" ").toLowerCase().includes(query.text);
 }
 const inWindow = (chat, days) => Date.now()-chat.latest<=days*86400000;
@@ -1068,7 +1070,12 @@ const inWindow = (chat, days) => Date.now()-chat.latest<=days*86400000;
 function visibleRoots(forest, days=state.windowDays) {
   const query=parseQuery(state.query);
   const byLatest=[...forest.roots].sort((a,b)=>b.latest-a.latest);
-  if(RUNWAY)return byLatest.filter(chat=>(PHONE||state.showHidden||!state.hiddenChats.has(chat.key))&&[chat,...chat.descendants].some(runwayVisibleActive)&&(!query.active||[chat,...chat.descendants].some(c=>matchesQuery(c,query))));
+  if(RUNWAY)return byLatest.filter(chat=>{
+    const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
+    const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
+    return (PHONE||state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
+      (hiddenMatch||rows.some(runwayVisibleActive))&&matches;
+  });
   const keep=chat=>query.active ? [chat,...chat.descendants].some(c=>matchesQuery(c,query)) : state.pins.has(chat.key)||(RUNWAY&&state.showHidden&&state.hiddenChats.has(chat.key))||inWindow(chat,days);
   return byLatest.filter(chat=>(!RUNWAY||state.showHidden||!state.hiddenChats.has(chat.key))&&keep(chat));
 }
@@ -1990,17 +1997,34 @@ function setSource(name,{persist=true,manual=true}={}) {
   if(state.popover)closePopover({restoreFocus:false});
   closeRunwayDetails();state.lastOrder=null;
   const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
-  const list=$('#chat-list');
-  if(list&&!reducedMotion()){
-    list.classList.remove('source-switching');void list.offsetWidth;
-    const finish=event=>{if(event.animationName!=='source-list-crossfade')return;list.classList.remove('source-switching');list.removeEventListener?.('animationend',finish);list.removeEventListener?.('animationcancel',finish);};
-    list.addEventListener?.('animationend',finish);list.addEventListener?.('animationcancel',finish);list.classList.add('source-switching');
-  }
+  const list=$('#chat-list'),sourceSnapshot=captureSourceSnapshot(list);
   state.sourceSwitching=true;
   try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);}
   finally{state.sourceSwitching=false;}
   updateSourceSwitch();
+  revealSourceSnapshot(list,sourceSnapshot);
   return true;
+}
+function captureSourceSnapshot(list) {
+  if(!list?.innerHTML||!list.appendChild||reducedMotion()||typeof document.createElement!=="function")return null;
+  const snapshot=document.createElement("div");snapshot.className="source-switch-snapshot";
+  snapshot.innerHTML=[...list.children].filter(child=>!child.classList?.contains("source-switch-snapshot")).map(child=>child.outerHTML).join("");
+  snapshot.setAttribute("aria-hidden","true");snapshot.inert=true;
+  const computed=window.getComputedStyle?.(document.body);
+  for(const property of ["--source-accent","--source-accent-soft","--source-hover","--source-focus","--source-muted","--source-glow-primary","--source-glow-secondary","--source-edge","--source-edge-strong","--blue","--blue-soft"]){
+    const value=computed?.getPropertyValue?.(property)?.trim();if(value)snapshot.style.setProperty(property,value);
+  }
+  snapshot.removeAttribute("id");for(const element of snapshot.querySelectorAll?.("[id]")||[])element.removeAttribute("id");
+  return snapshot;
+}
+function revealSourceSnapshot(list,snapshot) {
+  if(!snapshot||!list?.appendChild)return;
+  for(const previous of list.querySelectorAll?.(".source-switch-snapshot")||[])previous.remove();
+  const finish=()=>{snapshot.removeEventListener?.("animationend",finish);snapshot.removeEventListener?.("animationcancel",finish);snapshot.remove?.();};
+  snapshot.addEventListener?.("animationend",finish);snapshot.addEventListener?.("animationcancel",finish);
+  list.appendChild(snapshot);
+  const reveal=()=>snapshot.classList.add("is-fading");
+  if(typeof requestAnimationFrame==="function")requestAnimationFrame(reveal);else reveal();
 }
 function selectSourceForNewWork(items) {
   if(!COMPACT||!state.snapshot||(state.sourceManualAt>0&&Date.now()-state.sourceManualAt<60000)||notch.manual||notch.keyboardInspecting||state.searchOpen||state.popover||(widgetLock.locked&&widgetLock.expanded))return false;
@@ -2074,13 +2098,14 @@ function renderChats(providers) {
   const seg=$("#window-seg");if(seg?.style)seg.style.setProperty("--i",String(WINDOWS.indexOf(state.windowDays)));
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
+  const hiddenSearch=RUNWAY&&query.flags.has("hidden");
   if(!realDom(list)) {
-    const html=RUNWAY&&!PHONE&&!notch.active?'':roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):emptyHTML(forest,providers);
+    const html=RUNWAY&&!PHONE&&!notch.active&&!hiddenSearch?'':roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):emptyHTML(forest,providers);
     if(list.innerHTML!==html)list.innerHTML=html;
     return;
   }
   if(!roots.length){
-    const noActive=RUNWAY&&!PHONE&&!notch.active,html=noActive?'':emptyHTML(forest,providers);
+    const noActive=RUNWAY&&!PHONE&&!notch.active&&!hiddenSearch,html=noActive?'':emptyHTML(forest,providers);
     if(list._empty!==html){
       for(const el of [...list.children])if(el.classList.contains('chat')){if(!el._leaving)runwayExit(el);}else el.remove();
       if(html)list.insertAdjacentHTML?.('beforeend',html);list._empty=html;
@@ -2783,7 +2808,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
+window.__tokenTrackerTest={state,render,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,

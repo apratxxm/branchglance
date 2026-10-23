@@ -148,11 +148,12 @@ def test_reordered_monitors_keep_selected_stable_target_and_manual_anchor(native
 
 
 @pytest.mark.parametrize("native_notch", [True], indirect=True)
-def test_compact_profile_sizes_modes_and_validates_before_mutating(native_notch):
+def test_compact_profile_sizes_modes_and_validates_before_mutating(native_notch, monkeypatch):
     app, _monitors, rect, _calls = native_notch
     assert widget.WidgetApp.__init__.__kwdefaults__["compact_profile"] is True
     assert app.compact_profile is True
     assert app._compact_notch_mode == "controls", "new compact profiles start with persistent toolbar controls"
+    assert widget.COMPACT_NOTCH_TRANSITION_SECONDS == 0.22
     assert app.initial_bounds() == (420, 110, 750, 0)
     assert rect == [750, 0, 420, 110]
     assert rect[0] + rect[2] / 2 == 960
@@ -177,6 +178,10 @@ def test_compact_profile_sizes_modes_and_validates_before_mutating(native_notch)
     app.set_notch(False, True, False, "inspect")
     assert (app.compact_profile, app._compact_notch_mode, app.notch_expanded,
             app.notch_height, tuple(rect)) == before
+    monkeypatch.setattr(widget, "_notch_animation_enabled", lambda: True)
+    app._notch_thread = SimpleNamespace(join=lambda timeout=None: None)
+    app.set_notch(False, None, False, "controls")
+    assert app._notch_transition[3] == widget.COMPACT_NOTCH_TRANSITION_SECONDS
 
 
 @pytest.mark.parametrize("native_notch", [True], indirect=True)
