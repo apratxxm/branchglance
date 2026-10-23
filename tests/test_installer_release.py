@@ -773,6 +773,31 @@ def test_integration_manager_refuses_foreign_collision_before_writes(tmp_path):
     assert adapter.writes == 0
 
 
+def test_integration_adopts_only_exact_legacy_cutover_shortcuts(tmp_path):
+    class Adapter:
+        def __init__(self): self.links = {}; self.registry = None
+        def read_shortcut(self, path): return self.links.get(str(path))
+        def replace_shortcut(self, path, **values): pass
+        def remove_shortcut(self, path): pass
+        def read_uninstall(self): return self.registry
+        def write_uninstall(self, values): pass
+        def remove_uninstall(self, *, expected=None): pass
+    root = tmp_path / "Programs" / "Branchglance"
+    path = tmp_path / "Menu" / "Branchglance.lnk"
+    legacy = {"description": "Branchglance managed shortcut " + "c" * 32, "target": str(root / "Branchglance.exe"),
+              "arguments": "", "workdir": str(root), "app_id": ""}
+    adapter = Adapter()
+    adapter.links[str(path)] = legacy
+    integration = Integrations(adapter, root, root / "Branchglance.exe", "1.0.0", tmp_path / "Menu")
+    assert integration.snapshot()["shortcuts"][str(path)] == legacy
+    for change in ({"target": str(tmp_path / "Other.exe")}, {"workdir": str(tmp_path)},
+                   {"description": "Branchglance managed shortcut evil"}, {"arguments": "--evil"},
+                   {"app_id": "Other.App"}):
+        adapter.links[str(path)] = {**legacy, **change}
+        with pytest.raises(SafetyError, match="Foreign shortcut"):
+            integration.snapshot()
+
+
 def test_registry_recovery_removes_only_values_written_by_interrupted_install(tmp_path):
     class Adapter:
         registry = None
