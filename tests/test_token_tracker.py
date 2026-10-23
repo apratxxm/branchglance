@@ -145,6 +145,21 @@ def test_claude_provider_prefers_relocated_claude_data_root(tmp_path):
     assert ClaudeDesktopProvider(str(tmp_path)).root == stale
 
 
+def test_claude_limits_never_step_back_to_an_older_cached_response(tmp_path, monkeypatch):
+    from token_tracker.providers import ClaudeLimitsProvider, CLAUDE_DISPLAY_USAGE_AGE_SECONDS
+    monkeypatch.setattr(ClaudeLimitsProvider, "_last_live", {})
+    provider = ClaudeLimitsProvider(str(tmp_path))
+    newest = {"observedAt": 1000.0, "fiveHourPercent": 51, "weeklyPercent": 50, "fiveHour": 9000, "weekly": 99000}
+    older = {"observedAt": 400.0, "fiveHourPercent": None, "weeklyPercent": None, "fiveHour": 9000, "weekly": 99000}
+    assert provider._newest_live(newest, now=1010) == newest
+    assert provider._newest_live(older, now=1020) == newest  # index briefly missed the newest response
+    assert provider._newest_live({**older, "observedAt": None}, now=1030) == newest
+    newer = {**newest, "observedAt": 1100.0, "fiveHourPercent": 55}
+    assert provider._newest_live(newer, now=1110)["fiveHourPercent"] == 55
+    expired = 1100 + CLAUDE_DISPLAY_USAGE_AGE_SECONDS + 1
+    assert provider._newest_live(older, now=expired) == older  # never resurrect beyond the display window
+
+
 def test_usage_limits_preserve_zero_and_expose_absent_values_as_unknown(tmp_path):
     package = tmp_path / "Packages" / "Claude_test" / "LocalCache" / "Roaming" / "Claude"
     package.mkdir(parents=True)
