@@ -45,7 +45,7 @@ def check_host(host: HostInfo) -> None:
         raise SafetyError("Preflight failed: " + "; ".join(failures))
 
 
-def staged_self_test(release: Path, *, runner: Callable = subprocess.run) -> dict:
+def staged_self_test(release: Path, *, runner: Callable = subprocess.run, timeout: float = 30.0) -> dict:
     """Headless native check of a staged release before anything is promoted.
 
     The windowed app has no usable stdout, so it writes a JSON report file
@@ -59,7 +59,7 @@ def staged_self_test(release: Path, *, runner: Callable = subprocess.run) -> dic
         report = Path(folder) / "self-test.json"
         try:
             result = runner([str(exe), "--self-test", str(report)], cwd=release, capture_output=True,
-                            timeout=30, check=False)
+                            timeout=max(0.1, float(timeout)), check=False)
         except subprocess.TimeoutExpired as exc:
             raise SafetyError("Staged self-test timed out") from exc
         try:

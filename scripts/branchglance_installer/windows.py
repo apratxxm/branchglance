@@ -306,9 +306,9 @@ class WindowsControl:
         nonce = self.product.read_nonce_file(self.nonce_path)
         return self.product.control_health(nonce, port=self.port, timeout=0.6)
 
-    def maintenance_exit(self) -> str | None:
+    def maintenance_exit(self, timeout: float = 2.0) -> str | None:
         nonce = self.product.read_nonce_file(self.nonce_path)
-        return self.product.control_command("maintenance-exit", nonce, port=self.port, timeout=2)
+        return self.product.control_command("maintenance-exit", nonce, port=self.port, timeout=timeout)
 
 
 class NoWait:

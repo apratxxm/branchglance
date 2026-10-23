@@ -130,7 +130,7 @@ def _warm_snapshot() -> None:
     try:
         CACHE.get()
     except Exception:
-        logging.getLogger(__name__).exception("Token Tracker snapshot warmup failed")
+        logging.getLogger(__name__).exception("Branchglance snapshot warmup failed")
 
 
 class _StartupCancelled(Exception):
@@ -1853,7 +1853,7 @@ class WidgetApp:
             self._remove_control_nonce()
             if not self.notify_existing():
                 show_message(product.PRODUCT, "Branchglance could not start because its control port "
-                             f"({CONTROL_PORT}) is in use by another program. If the older Token Tracker "
+                             f"({CONTROL_PORT}) is in use by another program. If another Branchglance instance "
                              f"is running, quit it from its tray icon and start Branchglance again.\n\n{exc}")
             return False
 
@@ -2565,7 +2565,7 @@ class WidgetApp:
             pystray.MenuItem("Refresh", self.show),
             pystray.MenuItem("Quit", self.quit),
         )
-        self.tray = pystray.Icon("token-tracker", self.icon_image(), "Token Tracker", menu)
+        self.tray = pystray.Icon("branchglance", self.icon_image(), "Branchglance", menu)
         tray = self.tray
         threading.Thread(target=lambda: tray.run(setup=self._tray_ready), daemon=True).start()
 
@@ -2604,7 +2604,7 @@ class WidgetApp:
                 self.control.close()
             self._remove_control_nonce()
             show_message(product.PRODUCT, "Branchglance could not start because its page server port "
-                         f"({HTTP_PORT}) is in use by another program. If the older Token Tracker "
+                         f"({HTTP_PORT}) is in use by another program. If another Branchglance instance "
                          "is running, quit it from its tray icon and start Branchglance again.")
             return
         self._startup_step(self.limit_reset.start)
@@ -2617,7 +2617,7 @@ class WidgetApp:
     def _create_main_window(self) -> None:
         window_width, window_height, x, y = self.initial_bounds()
         self.window = webview.create_window(
-            "Token Tracker",
+            "Branchglance",
             f"http://{HTTP_HOST}:{HTTP_PORT}/runway.html",
             width=window_width,
             height=window_height,

@@ -1350,7 +1350,7 @@ def test_snapshot_warmup_logs_failures_without_raising(monkeypatch, caplog):
     monkeypatch.setattr(server.CACHE, "get", lambda: (_ for _ in ()).throw(RuntimeError("private detail")))
     with caplog.at_level(logging.ERROR, logger=widget.__name__):
         widget._warm_snapshot()
-    assert "Token Tracker snapshot warmup failed" in caplog.text
+    assert "Branchglance snapshot warmup failed" in caplog.text
 
 
 def test_live_endpoint_returns_bounded_failure_and_rate_limits_logs(monkeypatch, caplog):
