@@ -7,6 +7,7 @@ const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.me
 const refined=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const script=fs.readFileSync(new URL("../token_tracker/static/runway_review.js",import.meta.url),"utf8");
 const page=fs.readFileSync(new URL("../token_tracker/static/runway_review.html",import.meta.url),"utf8");
+const widgetPage=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 
 assert.match(page,/runway_review\.js/);
 assert.match(script,/review:"1"/,"the replay is only available in the review fixture");
@@ -39,12 +40,17 @@ assert.match(refined,/::-webkit-scrollbar\{[^}]*display:none!important[^}]*\}/);
 // pinning it absolutely let the weekly row jump above the chats.
 assert.match(refined,/data-notch-mode="controls"\]:not\(\.phone\) \.layout\{display:none;\}/);
 assert.match(refined,/data-notch-mode="inspect"\]:not\(\.phone\) \.layout\{order:2;display:flex;[^}]*animation:compact-layout-reveal/);
+assert.match(widgetPage,/data-notch-mode="controls"/,"the static first paint matches the native controls size");
 assert.doesNotMatch(refined,/\.layout\{position:absolute/);
+assert.match(refined,/compact-toolbar\{[^}]*align-items:center/);
+assert.match(refined,/data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{[^}]*align-items:center/);
+assert.match(css,/\.ch-search\{display:flex;align-items:center/);
 assert.match(refined,/@keyframes compact-layout-reveal\{from\{opacity:0;transform:translateY\(3px\);\}to\{opacity:1;transform:translateY\(0\);\}\}/);
 assert.doesNotMatch(refined,/compact-content-enter/);
 assert.match(app,/COMPACT\?60:120/);assert.match(app,/COMPACT\?110:160/);
 assert.match(css,/--motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms/);
 assert.match(css,/--ease-standard:cubic-bezier\(\.16,1,\.3,1\)/);
+assert.match(app,/Date\.now\(\)<state\.startupCalmUntil/,"first-thirty-second row arrivals stay still");
 assert.match(refined,/--motion-info:110ms;--motion-panel:140ms;--motion-reveal:220ms;--motion-source:240ms/,"compact source and panel motion are aligned to the reveal");
 assert.match(refined,/compact-edge-drift 8s var\(--ease-standard\) infinite alternate/,"the approved quota edge drift remains");
 assert.match(css,/animation:runway-message-expiry 10s linear both/);

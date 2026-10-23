@@ -12,6 +12,7 @@ function saveDismissed() { while(state.dismissed.size>200)state.dismissed.delete
 const WINDOWS=RUNWAY?[1,7,30]:[1,2,5,7];
 function loadWindow() { try { const days=Number(localStorage.getItem(RUNWAY?"tokenTrackerRunwayWindow":"tokenTrackerWindow")); return WINDOWS.includes(days)?days:1; } catch { return 1; } }
 const SOURCES=["Codex","Claude"],SOURCE_KEY="branchglanceSource",SOURCE_MANUAL_AT_KEY="branchglanceSourceManualAt";
+const STARTUP_CALM_MS=30000,STARTUP_STARTED_AT=Date.now();
 function loadSource() { try { const value=localStorage.getItem(SOURCE_KEY); return SOURCES.includes(value)?value:"Codex"; } catch { return "Codex"; } }
 function loadSourceManualAt() { try {const value=Number(localStorage.getItem(SOURCE_MANUAL_AT_KEY));return Number.isFinite(value)&&value>0&&value<=Date.now()?value:0;}catch{return 0;} }
 function loadHiddenChats() {
@@ -31,12 +32,14 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   snapshotCache:null,snapshotCacheInvalid:false,watcherFetchError:null,watcherAcceptedSequence:new Map(),
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
-  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,
+  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
   source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceBase:new Map(), sourceSwitching:false, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
-const quotaBootstrap={provider:{name:'Codex'},metadata:null,fetchError:null,unsupported:false};
+const codexQuotaBootstrap={name:'Codex'};
+const quotaBootstrap={provider:codexQuotaBootstrap,providers:{Codex:codexQuotaBootstrap,Claude:{name:'Claude'}},metadata:null,fetchError:null,unsupported:false,samplePayload:null,sampleSequence:0};
 const quotaLoader={promise:null,sequence:0,retryAfter:0,retryMs:2000,unsupported:false};
+const providerPolicyLoader={promise:null};
 const RUNWAY_EVIDENCE_MAX_AGE_MS=8000;
 function runwayCurrentEvidenceFresh(now=Date.now()) {
   if(!RUNWAY||PHONE)return true;
@@ -370,14 +373,23 @@ function syncCompactNotch(count,items) {
   }
   const nextStates=new Map(current);for(const [key,item] of notch.workStates)if(!current.has(key))nextStates.set(key,{...item,active:false});
   notch.workStates=nextStates;notch.activeKeys=activeKeys;notch.active=fresh?count:0;
-  if(!fresh||!notch.active){
+  if(!fresh){
     clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
     notch.inspectTimer=notch.exitTimer=notch.autoTimer=notch.timer=null;notch.autoExpanded=false;notch.autoClosePending=false;
     if(!notch.manual&&!notch.keyboardInspecting&&!state.popover&&!(notch.hover&&!notch.hoverSuppressed))notch.inspecting=false;
     if(!notch.hover&&!compactHasFocus())notch.contentHover=false;
     setNotch(false);return;
   }
-  if(newWork){selectSourceForNewWork(newWorkItems);expandForNewWork();}else setNotch(false);
+  if(newWork&&!notch.active)notch.autoExpanded=true;
+  if(newWork)selectSourceForNewWork(newWorkItems);
+  if(!notch.active){
+    clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
+    notch.inspectTimer=notch.exitTimer=notch.autoTimer=notch.timer=null;notch.autoExpanded=false;notch.autoClosePending=false;
+    if(!notch.manual&&!notch.keyboardInspecting&&!state.popover&&!(notch.hover&&!notch.hoverSuppressed))notch.inspecting=false;
+    if(!notch.hover&&!compactHasFocus())notch.contentHover=false;
+    setNotch(false);return;
+  }
+  if(newWork)expandForNewWork();else setNotch(false);
 }
 function syncNotch(count,items=[]) {
   if(PHONE)return;
@@ -960,8 +972,18 @@ function resetParts(item, observedAt, period="fiveHour") {
   const seconds=Math.ceil((target-Date.now())/1000);
   return {day:dayWord(target,period==="weekly"),time:clock(target),countdown:seconds>0?countdown(seconds):"due",due:seconds<=0,historical,target,seconds};
 }
+function validPublicProviderPolicy(metadata) {
+  if(!metadata||typeof metadata!=='object'||Array.isArray(metadata)||metadata.schemaVersion!==1||typeof metadata.generation!=='string'||!metadata.generation||!Array.isArray(metadata.providers))return false;
+  const rows=metadata.providers.filter(row=>row&&typeof row==='object'&&!Array.isArray(row));
+  return rows.length===metadata.providers.length&&rows.some(row=>row.name==='Codex')&&rows.every(row=>SOURCES.includes(row.name)&&typeof row.collect==='boolean'&&typeof row.show==='boolean');
+}
+function policyForSources(snapshot) {
+  if(validPublicProviderPolicy(state.providerPolicy))return state.providerPolicy;
+  if(validPublicProviderPolicy(snapshot?.providerPolicies))return snapshot.providerPolicies;
+  return null;
+}
 function visibleProviderNames(snapshot) {
-  const metadata=snapshot?.providerPolicies;
+  const metadata=policyForSources(snapshot);
   if(!metadata||metadata.schemaVersion!==1||typeof metadata.generation!=="string"||!metadata.generation||!Array.isArray(metadata.providers))return new Set(["Codex"]);
   const known=new Set(["Codex","Claude"]),policies=metadata.providers.filter(policy=>policy&&known.has(policy.name)&&typeof policy.collect==="boolean"&&typeof policy.show==="boolean");
   if(!policies.some(policy=>policy.name==="Codex"))return new Set(["Codex"]);
@@ -976,7 +998,7 @@ function restrictSnapshotProviders(snapshot) {
   return snapshot;
 }
 function syncProviderPolicyGeneration(snapshot) {
-  const metadata=snapshot?.providerPolicies;
+  const metadata=policyForSources(snapshot);
   const generation=metadata?.schemaVersion===1&&typeof metadata.generation==="string"&&metadata.generation?metadata.generation:"fallback-codex-only";
   if(state.providerPolicyGeneration!==generation){
     if(state.providerPolicyGeneration!==null||state.watcher){
@@ -985,6 +1007,28 @@ function syncProviderPolicyGeneration(snapshot) {
     }
     state.providerPolicyGeneration=generation;
   }
+}
+function loadProviderPolicy() {
+  if(!RUNWAY||PHONE)return Promise.resolve(false);
+  if(providerPolicyLoader.promise)return providerPolicyLoader.promise;
+  const operation=(async()=>{
+    let policy=null;
+    try{
+      const response=await fetch('/api/provider-policy',{cache:'no-store',signal:AbortSignal.timeout(5000)});
+      if(response.ok){const value=await response.json();if(validPublicProviderPolicy(value))policy=value;}
+    }catch{}
+    state.providerPolicy=policy;state.providerPolicyReady=true;
+    if(policy&&quotaBootstrap.samplePayload)applyQuotaSamples(quotaBootstrap.samplePayload,quotaBootstrap.sampleSequence,quotaBootstrapTargets(),{requireDated:true});
+    if(state.snapshot){
+      syncProviderPolicyGeneration(state.snapshot);
+      restrictSnapshotProviders(state.snapshot);
+      if(!sourceNames(state.snapshot).includes(state.source))state.source=effectiveSource(state.snapshot);
+      tick();
+    }else{updateSourceSwitch();renderQuotaState();}
+    return Boolean(policy);
+  })();
+  let shared;shared=operation.finally(()=>{if(providerPolicyLoader.promise===shared)providerPolicyLoader.promise=null;});
+  providerPolicyLoader.promise=shared;return shared;
 }
 // Sources the switch can offer: visible chat providers under policy, in a fixed order.
 function sourceNames(snapshot) { const visible=visibleProviderNames(snapshot);return SOURCES.filter(name=>visible.has(name)); }
@@ -1000,7 +1044,10 @@ function limitProvidersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=snapshot?.providers||[];
   const enabled=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
   const names=[...enabled,...(RUNWAY?[]:(snapshot?.limitProviders||[]).filter(name=>!enabled.includes(name)))].filter(name=>visible.has(name));
-  return [...new Set(names)].map(name=>available.find(provider=>provider.name===name)||{name,connected:false,limitsOnly:!enabled.includes(name),chats:[]});
+  return [...new Set(names)].map(name=>{
+    const provider=available.find(item=>item.name===name);if(provider)return provider;
+    return {...(quotaBootstrap.providers[name]||{name,connected:false,chats:[]}),name,limitsOnly:!enabled.includes(name)};
+  });
 }
 function buildForest(providers) {
   const map=new Map();
@@ -1371,14 +1418,14 @@ function clearRunwayArrival(el) {
   el._runwayArrivalEnd=null;el.classList?.remove('runway-row-enter');
 }
 function runwayArrivalEnter(el) {
-  if(!el||reducedMotion()||state.sourceSwitching)return;
+  if(!el||reducedMotion()||state.sourceSwitching||COMPACT&&Date.now()<state.startupCalmUntil)return;
   clearRunwayArrival(el);el.classList.add('runway-row-enter');
   const finish=event=>{if(event&& (event.target!==el||event.animationName!=='runway-row-arrival'))return;clearRunwayArrival(el);};
   el._runwayArrivalEnd=finish;el.addEventListener?.('animationend',finish);
   el._runwayArrivalTimer=setTimeout(()=>finish(),350);
 }
 function runwayMotionOnce(el,className,animationName,targetSelector=null) {
-  if(!el||reducedMotion())return;
+  if(!el||reducedMotion()||COMPACT&&Date.now()<state.startupCalmUntil)return;
   el._runwayMotionHandlers||=new Map();
   const previous=el._runwayMotionHandlers.get(className);if(previous){el.removeEventListener?.('animationend',previous.finish);el.removeEventListener?.('animationcancel',previous.cancel);}
   el.classList?.remove(className);void el.offsetWidth;
@@ -1395,7 +1442,7 @@ function runwayMotionOnce(el,className,animationName,targetSelector=null) {
 }
 function runwayExit(el) {
   if(!el)return;
-  if(reducedMotion()||el.getClientRects&&el.getClientRects().length===0){el.remove();return;}
+  if(reducedMotion()||COMPACT&&Date.now()<state.startupCalmUntil||el.getClientRects&&el.getClientRects().length===0){el.remove();return;}
   el._leaving=true;clearRunwayArrival(el);el.classList?.add('runway-exit');
   const finish=event=>{if(event?.animationName!=='runway-row-exit')return;el.removeEventListener?.('animationend',finish);el.removeEventListener?.('animationcancel',finish);el.remove();if(COMPACT)scheduleNotchSize();};
   el.addEventListener?.('animationend',finish);el.addEventListener?.('animationcancel',finish);
@@ -1899,6 +1946,7 @@ function chatBlockHTML(chat, query) {
     (open?'<div class="l2 open"><div class="l2-in">'+panelHTML(chat)+'</div></div>':'')+tray+'</div>';
 }
 function emptyHTML(forest, providers) {
+  if(COMPACT)return parseQuery(state.query).active?'<div class="empty">No matches</div>':'';
   if(!forest.rows.length) {
     const down=providers.filter(p=>p.connected===false);
     return '<div class="empty">'+(down.length?"No data":"No "+esc(providers.map(p=>p.name).join(" or "))+" chats")+'</div>';
@@ -1974,11 +2022,15 @@ function trackSourceAttention(name, items, selected, fresh) {
 function updateSourceSwitch() {
   if(!RUNWAY||PHONE)return;
   const group=$('#source-switch');if(!group)return;
-  const names=state.snapshot?sourceNames(state.snapshot):[],visible=names.length>=2,current=state.snapshot?effectiveSource(state.snapshot):state.source;
+  const policyReady=validPublicProviderPolicy(state.snapshot?.providerPolicies)||state.providerPolicyReady,names=policyReady?sourceNames(state.snapshot):SOURCES,visible=names.length>=2;
+  const current=state.snapshot?effectiveSource(state.snapshot):policyReady&&names.includes(state.source)?state.source:'Codex';
   if(group.hidden!==!visible)group.hidden=!visible;
+  group.setAttribute?.('aria-busy',String(!policyReady));
   const segments=[...(document.querySelectorAll?.('#source-switch [data-source]')||[])];
   for(const segment of segments){
-    const name=segment.dataset?.source,pressed=String(name===current),flagged=visible&&name!==current&&state.sourceAttention.has(name);
+    const name=segment.dataset?.source,enabled=policyReady&&names.includes(name),pressed=String(name===current),flagged=visible&&name!==current&&state.sourceAttention.has(name);
+    segment.disabled=!enabled;
+    segment.setAttribute?.('aria-disabled',String(!enabled));
     if(segment.getAttribute?.('aria-pressed')!==pressed)segment.setAttribute?.('aria-pressed',pressed);
     segment.classList?.toggle?.('has-attention',flagged);
     const label=name+(flagged?' (needs attention)':'');
@@ -1988,9 +2040,9 @@ function updateSourceSwitch() {
   const body=document.body;if(body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
 }
 function setSource(name,{persist=true,manual=true}={}) {
-  if(!RUNWAY||PHONE||!SOURCES.includes(name)||!state.snapshot)return;
-  if(!sourceNames(state.snapshot).includes(name))return false;
+  if(!RUNWAY||PHONE||!SOURCES.includes(name)||!policyForSources(state.snapshot)||!sourceNames(state.snapshot).includes(name))return false;
   if(manual){state.sourceManualAt=Date.now();if(persist)try{localStorage.setItem(SOURCE_KEY,name);localStorage.setItem(SOURCE_MANUAL_AT_KEY,String(state.sourceManualAt));}catch{}}
+  if(!state.snapshot){state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();renderQuotaState();return true;}
   if(effectiveSource(state.snapshot)===name){state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();return true;}
   state.source=name;
   state.sourceAttention.delete(name);
@@ -2027,7 +2079,8 @@ function revealSourceSnapshot(list,snapshot) {
   if(typeof requestAnimationFrame==="function")requestAnimationFrame(reveal);else reveal();
 }
 function selectSourceForNewWork(items) {
-  if(!COMPACT||!state.snapshot||(state.sourceManualAt>0&&Date.now()-state.sourceManualAt<60000)||notch.manual||notch.keyboardInspecting||state.searchOpen||state.popover||(widgetLock.locked&&widgetLock.expanded))return false;
+  // Fresh work determines the auto-open source; only an explicit active inspection locks the current view.
+  if(!COMPACT||!state.snapshot||notch.manual||notch.keyboardInspecting||state.searchOpen||state.popover||(widgetLock.locked&&widgetLock.expanded))return false;
   const available=sourceNames(state.snapshot),candidates=(items||[]).filter(item=>available.includes(item.provider));
   if(!candidates.length)return false;
   candidates.sort((a,b)=>Number(Boolean(b.waiting))-Number(Boolean(a.waiting))||(b.activityAt||0)-(a.activityAt||0));
@@ -2080,8 +2133,9 @@ function renderChats(providers) {
         state.liveRecoveryPending=false;
       }
       if(evidenceFresh)for(const item of workItems)if(item.questionId){if(state.seenQuestions.size>500)state.seenQuestions.clear();state.seenQuestions.add(item.questionId);}
-      syncNotch(activeCount+otherActive,workItems);
+      syncNotch(COMPACT?activeCount:activeCount+otherActive,workItems);
       updateSourceSwitch();
+      if(COMPACT&&state.snapshot&&providers[0]?.name!==effectiveSource(state.snapshot))return;
     const available=activeCount>0||state.hiddenChats.size>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
     const header=$('#chats-head'),searchToggle=$('#search-toggle');
     if(header)header.hidden=!available;if(searchToggle)searchToggle.hidden=!available;
@@ -2098,14 +2152,14 @@ function renderChats(providers) {
   const seg=$("#window-seg");if(seg?.style)seg.style.setProperty("--i",String(WINDOWS.indexOf(state.windowDays)));
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
-  const hiddenSearch=RUNWAY&&query.flags.has("hidden");
+  const searchCanShowEmpty=COMPACT&&state.searchOpen&&query.active;
   if(!realDom(list)) {
-    const html=RUNWAY&&!PHONE&&!notch.active&&!hiddenSearch?'':roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):emptyHTML(forest,providers);
+    const html=roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!PHONE&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers);
     if(list.innerHTML!==html)list.innerHTML=html;
     return;
   }
   if(!roots.length){
-    const noActive=RUNWAY&&!PHONE&&!notch.active&&!hiddenSearch,html=noActive?'':emptyHTML(forest,providers);
+    const noActive=RUNWAY&&!PHONE&&!notch.active&&!searchCanShowEmpty,html=noActive?'':emptyHTML(forest,providers);
     if(list._empty!==html){
       for(const el of [...list.children])if(el.classList.contains('chat')){if(!el._leaving)runwayExit(el);}else el.remove();
       if(html)list.insertAdjacentHTML?.('beforeend',html);list._empty=html;
@@ -2209,7 +2263,7 @@ function acceptSnapshotCache(snapshot,now=Date.now()){
   return {kind:'metadata',advanced:!result.metadata.stale,builtAt:result.builtAt};
 }
 function refreshControlTitle(){
-  const parts=[];if(state.refreshing||state.loading)parts.push('Refreshing usage');
+  const parts=[];if(state.refreshing||state.loading||state.initialBootstrapPending)parts.push('Loading usage');
   parts.push(state.refreshedAt?'Last successful refresh at '+clock(state.refreshedAt):'Refresh usage');
   const cache=state.snapshotCache;
   if(state.snapshotCacheInvalid)parts.push('Snapshot metadata unavailable');
@@ -2224,7 +2278,7 @@ function renderTitle(providers) {
   const name=$("#brand-name");if(name)name.textContent=providers.map(p=>p.name).join(" · ")||"Codex";
   syncCompactClock();
   const age=$("#sync-age");if(!age)return;
-  if(state.refreshing||state.loading){if(COMPACT){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();}else age.textContent="";age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
+  if(state.refreshing||state.loading||state.initialBootstrapPending){if(COMPACT){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();}else age.textContent="";age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
   if(RUNWAY){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=REFINED&&!PHONE?refreshControlTitle():(state.lastOkAt?"Last successful refresh at "+clock(state.lastOkAt):"Refresh usage");age.className="sync-age";age.setAttribute?.("aria-busy","false");return;}
   age.className="sync-age";age.setAttribute?.("aria-busy","false");
   if(!state.lastOkAt){age.textContent=state.failSince?"offline":"—";age.className="sync-age"+(state.failSince?" t-err":"");return;}
@@ -2299,17 +2353,39 @@ function closePopover({restoreFocus=false,updateNotch=true}={}) {
 
 /* ---------- render ---------- */
 function renderStripNow() { if(state.snapshot)renderStrip(attentionItems(state.forest,limitProvidersFor(state.snapshot))); }
+function initialActiveSource(snapshot){
+  if(!COMPACT||!runwayCurrentEvidenceFresh())return null;
+  const candidates=[];
+  for(const provider of snapshot?.providers||[]){
+    if(!sourceNames(snapshot).includes(provider.name))continue;
+    const forest=buildForest([provider]);
+    for(const root of forest.roots){
+      if(!state.showHidden&&state.hiddenChats.has(root.key))continue;
+      for(const chat of [root,...root.descendants]){
+        if(!runwayActive(chat)||chat.telemetryUnavailable||chat.statusSource==='unavailable')continue;
+        candidates.push({provider:provider.name,waiting:runwayWaiting(chat),activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt))});
+      }
+    }
+  }
+  candidates.sort((a,b)=>Number(Boolean(b.waiting))-Number(Boolean(a.waiting))||(b.activityAt||0)-(a.activityAt||0));
+  return candidates[0]?.provider||null;
+}
 function render(snapshot) {
+  const firstRunwayPaint=COMPACT&&!state.runwaySnapshotPainted;
   syncProviderPolicyGeneration(snapshot);
   restrictSnapshotProviders(snapshot);
   acceptSnapshotCache(snapshot);
   reconcileSnapshotQuotas(snapshot);
   state.snapshot=snapshot;
+  if(RUNWAY&&!PHONE)state.initialBootstrapPending=false;
+  if(firstRunwayPaint){const activeSource=initialActiveSource(snapshot);if(activeSource)state.source=activeSource;}
   if(!state.lastOkAt)state.lastOkAt=Date.now();
   if(RUNWAY&&!PHONE)state.runwaySnapshotPainted=true;
   const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot);
   $(".widget")?.classList?.remove("loading");
-  renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);renderAnalytics(snapshot);
+  const priorSourceSwitching=state.sourceSwitching;if(firstRunwayPaint)state.sourceSwitching=true;
+  try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);renderAnalytics(snapshot);}
+  finally{state.sourceSwitching=priorSourceSwitching;}
   renderStrip(attentionItems(state.forest,limits));
 }
 function renderLoading() {
@@ -2317,12 +2393,13 @@ function renderLoading() {
   const list=$("#chat-list");
   if(list)list.innerHTML=RUNWAY&&!PHONE?'':Array.from({length:6},()=>'<div class="sk"><i></i><i></i></div>').join("");
   if(RUNWAY&&!PHONE){const header=$('#chats-head'),search=$('#search-toggle');if(header)header.hidden=true;if(search)search.hidden=true;}
-  renderResets([{name:"Codex"}]);
+  if(RUNWAY&&!PHONE)updateSourceSwitch();
+  renderQuotaState();
   if(RUNWAY){const greeter=$("#runway-greeter-status");if(greeter)greeter.textContent="";}
 }
 function tick() {
   syncCompactClock();
-  if(!state.snapshot){renderTitle([]);renderResets([quotaBootstrap.provider]);if(state.failSince)renderStrip(attentionItems(null,[]));return;}
+  if(!state.snapshot){renderTitle([]);renderQuotaState();if(state.failSince)renderStrip(attentionItems(null,[]));return;}
   const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
   renderTitle(providers);renderResets(limits);renderChats(providers);renderAnalytics(state.snapshot);
   renderStrip(attentionItems(state.forest,limits));
@@ -2440,7 +2517,11 @@ function validQuotaMetadata(payload,now=Date.now()){
 }
 function renderQuotaState(){
   renderTitle(state.snapshot?providersFor(state.snapshot):[]);
-  renderResets(state.snapshot?limitProvidersFor(state.snapshot):[quotaBootstrap.provider]);
+  renderResets(state.snapshot?limitProvidersFor(state.snapshot):[quotaBootstrap.providers[effectiveSource(null)]||quotaBootstrap.provider]);
+}
+function quotaBootstrapTargets(){
+  const providers=state.snapshot?.providers||[],present=new Set(providers.map(provider=>provider.name));
+  return [...providers,...sourceNames(state.snapshot).filter(name=>!present.has(name)).map(name=>quotaBootstrap.providers[name]).filter(Boolean)];
 }
 function loadQuota(){
   if(!RUNWAY||PHONE||document.hidden||quotaLoader.unsupported||Date.now()<quotaLoader.retryAfter)return Promise.resolve(false);
@@ -2456,7 +2537,7 @@ function loadQuota(){
       if(!validated){kind='invalid_response';throw new Error();}
       if(sequence!==quotaLoader.sequence)return false;
       quotaBootstrap.metadata=validated.metadata;quotaBootstrap.fetchError=null;
-      if(validated.sample)applyQuotaSamples(payload.providers,sequence,state.snapshot?.providers||[quotaBootstrap.provider],{requireDated:true});
+      if(validated.sample){quotaBootstrap.samplePayload=payload.providers;quotaBootstrap.sampleSequence=sequence;applyQuotaSamples(payload.providers,sequence,quotaBootstrapTargets(),{requireDated:true});}
       quotaLoader.retryAfter=0;quotaLoader.retryMs=2000;renderQuotaState();return true;
     }catch{
       if(sequence===quotaLoader.sequence){quotaBootstrap.fetchError={at:Date.now(),kind};quotaLoader.retryAfter=Date.now()+quotaLoader.retryMs;quotaLoader.retryMs=Math.min(30000,quotaLoader.retryMs*2);renderQuotaState();}
@@ -2523,9 +2604,9 @@ async function refresh(force=false) {
     else state.refreshPending=true;
   } catch { markFail(); tick(); }
   finally{clearTimeout(timeout);state.loading=false;}
-  if(state.snapshot&&!PHONE)await loadWatcher();
   state.refreshing=false;
   renderTitle(providersFor(state.snapshot||{providers:[]}));
+  if(state.snapshot&&!PHONE)await loadWatcher();
   if(state.snapshot)tick();
   if(state.refreshPending){const queuedForce=state.refreshPendingForce;state.refreshPending=false;state.refreshPendingForce=false;refresh(queuedForce);return;}
   if(!state.snapshot)scheduleBootstrapRetry();
@@ -2813,7 +2894,7 @@ window.__tokenTrackerTest={state,render,tick,renderChats,renderStrip,renderReset
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   if(!PHONE)loadAvatars();
   document.addEventListener("click",handleClick);
@@ -2831,6 +2912,6 @@ if(!window.__TOKEN_TRACKER_TEST__){
     $("#window-close")?.addEventListener("click",()=>window.pywebview?.api?.close?.());
   }
   $(".widget").classList.add("loading");
-  if(RUNWAY&&!PHONE){setupNotch();setupWindowDrag();}else if(!PHONE)setupResize();renderLoading();if(RUNWAY&&!PHONE)void loadQuota();refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);if(!PHONE)setInterval(pollToday,TODAY_REFRESH_MS);
+  if(RUNWAY&&!PHONE){setupNotch();setupWindowDrag();}else if(!PHONE)setupResize();renderLoading();if(RUNWAY&&!PHONE){void loadProviderPolicy();void loadQuota();}refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);if(!PHONE)setInterval(pollToday,TODAY_REFRESH_MS);
   document.addEventListener("visibilitychange",handleVisibilityChange);
 }

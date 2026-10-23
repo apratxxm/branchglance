@@ -401,7 +401,7 @@ testNow += 10000;
 T.render({ generatedAt: new Date(testNow - 60000).toISOString(), enabledProviders: ["Codex"], providers: [provider] });
 assert.equal(T.state.searchOpen, true); assert.equal(T.state.query, "preserved query");
 assert.equal(node("#chats-head").hidden, false); assert.equal(T.state.popover, safePopover);
-assert.equal(node("#chat-list").innerHTML, "", "stale evidence cannot leave old chat rows on screen");
+assert.equal(node("#chat-list").innerHTML, '<div class="empty">No matches</div>', "stale evidence cannot leave old chat rows on screen; a searched empty result stays quiet");
 
 // A compact refresh keeps its icon while pending, then clears busy state on either outcome.
 node("#popover").hidden = true; T.state.popover = null; T.state.searchOpen = false; T.state.query = "";
