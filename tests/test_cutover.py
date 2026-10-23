@@ -70,7 +70,8 @@ def setup(tmp_path):
         data["providers"] = {"Codex": {"lastTriggerAt": 123}}
         path.write_text(json.dumps(data))
 
-    cutover = Cutover(adapter, legacy, root, Path(r"C:\old\pythonw.exe"), Path(r"C:\old"), migrate)
+    cutover = Cutover(adapter, legacy, root, Path(r"C:\old\pythonw.exe"), Path(r"C:\old"), migrate,
+                      desktop_path=tmp_path / "Desktop")
     return cutover, adapter, legacy, root
 
 
@@ -276,7 +277,7 @@ def test_cutover_cli_releases_instance_before_app_launch(tmp_path, monkeypatch, 
     root = appdata / "Branchglance"
     (appdata / "Programs" / "Branchglance").mkdir(parents=True)
     paths = Paths(appdata / "Programs" / "Branchglance", tmp_path / "Menu", tmp_path / "Startup",
-                  root, tmp_path / "Temp")
+                  root, tmp_path / "Temp", desktop=tmp_path / "KnownFolderDesktop")
     monkeypatch.setattr(cli, "local_app_data", lambda: appdata)
     monkeypatch.setattr(cli.product, "appdata_probe", lambda: ("not_redirected", None))
     monkeypatch.setattr(cli.Paths, "for_user", classmethod(lambda _cls: paths))
@@ -294,14 +295,15 @@ def test_cutover_cli_releases_instance_before_app_launch(tmp_path, monkeypatch, 
     class Processes:
         def wait_for_instance_exit(self, _timeout): return True
     native = types.SimpleNamespace(mutex=Mutex(), control=Control(), processes=Processes())
+    created_adapters = []
     class Adapter:
-        def __init__(self, *_args): pass
+        def __init__(self, *_args): self.created_link = None; created_adapters.append(self)
         def old_pythonw_running(self): return False
         def port_is_free(self, _port): return True
         def snapshot_old_shortcut(self):
             return {"target": r"C:\old\pythonw.exe", "workdir": r"C:\old", "arguments": OLD_ARGUMENTS}
         def rename_old_shortcut(self, _snapshot): pass
-        def create_branchglance_shortcut(self, _record): pass
+        def create_branchglance_shortcut(self, _record): self.created_link = dict(_record)
         def start_branchglance(self, token):
             assert state["install"] and not state["instance"]
             assert len(token) == 64
@@ -318,6 +320,7 @@ def test_cutover_cli_releases_instance_before_app_launch(tmp_path, monkeypatch, 
                        "--old-workdir", r"C:\old"], native_factory=lambda _paths: native,
                       adapter_factory=Adapter)
     assert result == 0 and state["handoff"] and not state["instance"] and not state["install"]
+    assert created_adapters[0].created_link["path"] == str(paths.desktop / "Branchglance.lnk")
     assert json.loads(capsys.readouterr().out)["pid"] == 501
 
 

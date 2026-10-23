@@ -48,6 +48,7 @@ class Cutover:
     migrate: Callable[[Path], None]
     after_mutation: Callable[[str], None] = lambda _name: None
     replace: Callable[[Path, Path], None] = os.replace
+    desktop_path: Path | None = None
 
     def _preconditions(self) -> dict:
         self._validate_state_paths(allow_missing_product=True)
@@ -97,7 +98,8 @@ class Cutover:
         handoff_token = secrets.token_hex(32)
         handoff_written = False
         handoff_record = {"file": handoff_path.name, "nonce": handoff_token, "expires": time.time() + 30.0}
-        new_shortcut = {"path": str(Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop" / "Branchglance.lnk"),
+        desktop = self.desktop_path or (Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop")
+        new_shortcut = {"path": str(desktop / "Branchglance.lnk"),
                         "target": launcher, "arguments": "", "workdir": str(Path(launcher).parent),
                         "app_id": APP_USER_MODEL_ID, "description": MARKER}
         journal = {"schemaVersion": 1, "id": txid, "phase": "planned", "staging": staging.name,

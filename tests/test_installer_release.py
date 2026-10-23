@@ -571,6 +571,7 @@ def test_app_main_resumes_markerless_uninstall_journal(tmp_path, monkeypatch):
     from branchglance_installer import app
     from branchglance_installer.app import Native, Paths, Ui
     from branchglance_installer.core import JOURNAL
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     root = tmp_path / "Programs" / "Branchglance"
     root.mkdir(parents=True)
     record = {"schemaVersion": 1, "id": "b" * 32, "operation": "uninstall", "target": "uninstall",
@@ -580,7 +581,8 @@ def test_app_main_resumes_markerless_uninstall_journal(tmp_path, monkeypatch):
     temp.mkdir()
     worker = temp / ("Branchglance-uninstall-" + "c" * 32 + ".exe")
     worker.write_bytes(b"worker")
-    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "AppData", temp)
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "AppData", temp,
+                  home=tmp_path / "Home")
     class Mutex:
         def acquire(self, name, timeout): return object(), "acquired"
         def release(self, handle): pass
@@ -914,3 +916,115 @@ def test_missing_owner_marker_is_reported_as_ownership(tmp_path):
     (bare / OWNER_FILE).write_text("{bad")
     with pytest.raises(SafetyError, match="ownership marker is unreadable"):
         require_owned_root(bare)
+
+
+def _claude_uninstall_fixture(tmp_path, monkeypatch, settings_bytes=None):
+    from token_tracker import claude_hook_install
+    from branchglance_installer.app import Paths
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
+    monkeypatch.setattr(claude_hook_install, "find_git_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    root = _root(tmp_path)
+    home = tmp_path / "Home"
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    if settings_bytes is not None:
+        settings.write_bytes(settings_bytes)
+    product_root = tmp_path / "LocalAppData" / "Branchglance"
+    product_root.mkdir(parents=True)
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", product_root, tmp_path / "Temp",
+                  desktop=tmp_path / "Desktop", home=home)
+    events = []
+    native = _fake_installer_native(paths, running=False, events=events)
+    return claude_hook_install, paths, native, settings
+
+
+def test_uninstall_removes_owned_claude_hooks_and_consent_but_preserves_user_settings(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    original = {"model": "opus", "permissions": {"allow": ["Bash(ls)"]}, "hooks": {
+        "Stop": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo keep", "timeout": 5}]}]},
+        "customSetting": {"keep": [1, "two"]}}
+    settings.write_text(json.dumps(original, indent=2), encoding="utf-8")
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    installed = json.loads(settings.read_text(encoding="utf-8"))
+    assert any(installer.is_ours(group) for groups in installed["hooks"].values() for group in groups)
+    assert (paths.product_root / "claude-consent.json").exists()
+    result = uninstall(paths, native)
+    assert result["claudeIntegration"]["ok"] is True
+    assert json.loads(settings.read_text(encoding="utf-8")) == original
+    assert not (paths.product_root / "claude-consent.json").exists()
+    assert paths.product_root.exists()
+
+
+def test_uninstall_malformed_claude_settings_are_untouched_and_reported(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    raw = b'{"hooks": [broken}'
+    _installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch, raw)
+    (paths.product_root / "claude-consent.json").write_text(
+        json.dumps({"schemaVersion": 1, "executable": sys.executable}), encoding="utf-8")
+    result = uninstall(paths, native)
+    assert result["claudeIntegration"]["ok"] is False
+    assert result["claudeIntegration"]["error"]
+    assert settings.read_bytes() == raw
+    assert not (paths.product_root / "claude-consent.json").exists()
+    assert not paths.root.exists() and paths.product_root.exists()
+
+
+def test_uninstall_twice_is_idempotent_for_claude_hooks_and_consent(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text(json.dumps({"hooks": {"Stop": []}, "keep": True}), encoding="utf-8")
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    first = uninstall(paths, native)
+    after_first = settings.read_bytes()
+    second = uninstall(paths, native)
+    assert first["claudeIntegration"]["ok"] and second["claudeIntegration"]["ok"]
+    assert second["claudeIntegration"]["changed"] is False
+    assert settings.read_bytes() == after_first
+    assert paths.product_root.exists() and not (paths.product_root / "claude-consent.json").exists()
+
+
+def test_uninstall_writes_claude_settings_backup_before_replacing_file(tmp_path, monkeypatch):
+    from branchglance_installer import app
+    from token_tracker import claude_hook_install
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text(json.dumps({"hooks": {"Stop": []}, "other": {"keep": True}}, indent=4), encoding="utf-8")
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    before = settings.read_bytes()
+    original_unique = claude_hook_install._unique_adjacent
+    observed = []
+    def check_backup_first(path, tag, payload):
+        created = original_unique(path, tag, payload)
+        if tag.startswith("backup-"):
+            assert settings.read_bytes() == before
+            assert created.read_bytes() == before
+            observed.append(created)
+        elif tag == "tmp" and observed:
+            assert settings.read_bytes() == before
+            assert observed[-1].read_bytes() == before
+        return created
+    monkeypatch.setattr(claude_hook_install, "_unique_adjacent", check_backup_first)
+    result = app.uninstall(paths, native)
+    assert result["claudeIntegration"]["ok"] and observed
+    assert settings.read_bytes() != before
+
+
+def test_paths_use_known_folder_resolver_with_env_fallback(tmp_path):
+    from branchglance_installer.app import FOLDERID_DESKTOP, FOLDERID_PROGRAMS, FOLDERID_STARTUP, Paths
+    env = {"LOCALAPPDATA": str(tmp_path / "Local"), "APPDATA": str(tmp_path / "Roaming"),
+           "USERPROFILE": str(tmp_path / "Profile"), "TEMP": str(tmp_path / "Temp")}
+    found = {FOLDERID_DESKTOP: tmp_path / "OneDriveDesktop", FOLDERID_PROGRAMS: tmp_path / "KnownPrograms",
+             FOLDERID_STARTUP: tmp_path / "KnownStartup"}
+    paths = Paths.for_user(env, known_folder_resolver=lambda guid: found.get(guid))
+    assert paths.desktop == found[FOLDERID_DESKTOP]
+    assert paths.start_menu == found[FOLDERID_PROGRAMS]
+    assert paths.startup == found[FOLDERID_STARTUP]
+    fallback = Paths.for_user(env, known_folder_resolver=lambda _guid: None)
+    assert fallback.desktop == Path(env["USERPROFILE"]) / "Desktop"
+    assert fallback.start_menu == Path(env["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    assert fallback.startup == fallback.start_menu / "Startup"
+    def failed(_guid): raise OSError("known folder lookup failed")
+    failed_fallback = Paths.for_user(env, known_folder_resolver=failed)
+    assert failed_fallback.desktop == fallback.desktop
+    assert failed_fallback.start_menu == fallback.start_menu
+    assert failed_fallback.startup == fallback.startup

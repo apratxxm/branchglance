@@ -27,15 +27,16 @@ def main(argv=None, *, native_factory=None, adapter_factory=None) -> int:
                         help="inventoried pythonw PID; inspected read-only and never terminated")
     parser.add_argument("--old-target", type=Path, required=True)
     parser.add_argument("--old-workdir", type=Path, required=True)
-    parser.add_argument("--desktop-shortcut", type=Path,
-                        default=Path.home() / "Desktop" / "Token Tracker.lnk")
+    parser.add_argument("--desktop-shortcut", type=Path)
     args = parser.parse_args(argv)
     if args.command != "plan":
         probe_status, reason = product.appdata_probe()
         if probe_status != "not_redirected":
             raise SafetyError("Run Branchglance cutover from File Explorer or the Start menu, not from inside another app's terminal. "
                               f"AppData probe: {probe_status}; {reason or 'destination could not be verified'}")
-    old_link = args.desktop_shortcut.resolve()
+    paths = Paths.for_user()
+    desktop = paths.desktop or Path(os.environ.get("USERPROFILE", Path.home())) / "Desktop"
+    old_link = (args.desktop_shortcut or desktop / "Token Tracker.lnk").resolve()
     renamed = old_link.with_name("Token Tracker (old).lnk")
     appdata = local_app_data()
     root = appdata / "Branchglance"
@@ -43,11 +44,11 @@ def main(argv=None, *, native_factory=None, adapter_factory=None) -> int:
                                                          args.old_workdir.resolve(), root)
     operation = Cutover(adapter, appdata / "TokenTracker", root, args.old_target.resolve(),
                         args.old_workdir.resolve(), migrate_state_copy,
-                        replace=getattr(getattr(adapter, "file_system", None), "replace", None) or os.replace)
+                        replace=getattr(getattr(adapter, "file_system", None), "replace", None) or os.replace,
+                        desktop_path=paths.desktop)
     if args.command == "plan":
         result = operation.plan()
     else:
-        paths = Paths.for_user()
         native = (native_factory or Native.real)(paths)
         def recover_while_locked():
             adapter.instance_mutex_held = True
