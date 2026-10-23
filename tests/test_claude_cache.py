@@ -6,7 +6,7 @@ from email.utils import format_datetime
 import pytest
 import zstandard
 
-from token_tracker.claude_cache import MAX_BODY, _body, _stream, reset_info
+from token_tracker.claude_cache import MAX_BODY, _body, _stream, reset_info, usage_info
 
 NOW = 1_789_315_200
 ORG = "00000000-0000-0000-0000-000000000001"
@@ -90,6 +90,15 @@ def test_truncated_or_evicted_cache_is_unknown(tmp_path):
     struct.pack_into("<i", data, 8192+20, 1)
     path.write_bytes(data)
     assert reset_info(tmp_path, samples(), NOW)["observedAt"] is None
+
+
+def test_usage_percent_age_defaults_strict_and_display_window_is_explicit(tmp_path):
+    record(tmp_path)
+    assert usage_info(tmp_path, samples(), NOW+60)["fiveHourPercent"] == 50
+    assert usage_info(tmp_path, samples(), NOW+300)["fiveHourPercent"] is None  # greeter default stays 90 s
+    shown = usage_info(tmp_path, samples(), NOW+300, max_usage_age=600)
+    assert (shown["fiveHourPercent"], shown["weeklyPercent"]) == (50, 40)
+    assert usage_info(tmp_path, samples(), NOW+601, max_usage_age=600)["weeklyPercent"] is None
 
 
 def test_bounded_decompression_and_block_addresses(tmp_path):

@@ -110,7 +110,8 @@ def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = None) -> dict[str, Any]:
+def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = None,
+               max_usage_age: float = MAX_USAGE_AGE_SECONDS) -> dict[str, Any]:
     """Return usage and deadlines only from a recent authenticated Desktop response.
 
     ``plan-usage-history.json`` is a convenient historical cache but may stop
@@ -181,7 +182,7 @@ def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = No
         if not isinstance(window, dict):
             continue
         utilization = window.get("utilization")
-        if _number(utilization) and 0 <= utilization <= 100 and now - observed <= MAX_USAGE_AGE_SECONDS:
+        if _number(utilization) and 0 <= utilization <= 100 and now - observed <= max_usage_age:
             invalid_usage = False
             previous_usage = utilization
             for sample in sorted(samples, key=lambda s: s.get("t", 0)):
