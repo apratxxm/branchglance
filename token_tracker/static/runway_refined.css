@@ -71,6 +71,7 @@ body.runway-refined:not(.phone) .meter[aria-hidden="true"]{visibility:hidden;}
 body.runway-refined:not(.phone) .meter i{display:block;height:100%;border-radius:inherit;background:var(--blue);transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-source) var(--ease-standard);}
 body.runway-refined:not(.phone) .meter i.t-attn{background:var(--orange);}
 body.runway-refined:not(.phone) .meter i.t-err{background:var(--red);}
+body.runway-refined:not(.phone) .meter.last-known i{background:var(--muted);}
 
 /* Matching 66px parent and child rows. Four internal fields share two fixed tracks. */
 body.runway-refined:not(.phone) .chat{min-width:0;margin:0;padding:0;border:0;}
@@ -215,6 +216,7 @@ body.runway-refined.runway-compact:not(.phone) .rr-moment{position:relative;z-in
 body.runway-refined.runway-compact:not(.phone) .rr-cd{width:100%;height:100%;max-width:none;display:grid;place-items:center;color:var(--ink);font-size:20px;line-height:24px;font-weight:650;text-align:center;white-space:nowrap;}
 body.runway-refined.runway-compact:not(.phone) .rr-cd.unknown{font-size:16px;color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) .rr-left{position:relative;z-index:1;grid-column:3;grid-row:1;width:100%;height:100%;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;color:var(--ink);}
+body.runway-refined.runway-compact:not(.phone) .rr-value{gap:6px;}
 body.runway-refined.runway-compact:not(.phone) .rr-left b,body.runway-refined.runway-compact:not(.phone) .rr-left i{font-size:18px;line-height:22px;font-weight:600;}
 body.runway-refined.runway-compact:not(.phone) .rr-left b{flex:0 0 auto;min-width:0;width:auto;text-align:right;}
 body.runway-refined.runway-compact:not(.phone) .rr-left i{flex:0 0 auto;min-width:0;width:auto;font-style:normal;}
@@ -225,6 +227,7 @@ body.runway-refined.runway-compact:not(.phone) .meter[aria-hidden="true"]{visibi
 body.runway-refined.runway-compact:not(.phone) .meter i{display:block;height:100%;border-radius:inherit;background:var(--blue);transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-source) var(--ease-standard);}
 body.runway-refined.runway-compact:not(.phone) .meter i.t-attn{background:var(--orange);}
 body.runway-refined.runway-compact:not(.phone) .meter i.t-err{background:var(--red);}
+body.runway-refined.runway-compact:not(.phone) .meter.last-known i{background:var(--muted);}
 
 /* Idle 100px: quota bands and clock summary; the clipped toolbar stays keyboard-focusable. */
 body.runway-refined.runway-compact[data-notch-mode="idle"]:not(.phone) .compact-toolbar{position:absolute;top:0;left:0;width:1px;height:1px;min-height:0;overflow:hidden;clip-path:inset(50%);opacity:0;pointer-events:none;}

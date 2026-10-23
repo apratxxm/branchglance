@@ -5,6 +5,7 @@ import vm from "node:vm";
 const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
 const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
+const refinedCss=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const reviewPage=fs.readFileSync(new URL("../token_tracker/static/runway_review.html",import.meta.url),"utf8");
 const reviewScript=fs.readFileSync(new URL("../token_tracker/static/runway_review.js",import.meta.url),"utf8");
 const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector)?.[2]||"";
@@ -32,6 +33,9 @@ assert.match(cssRule('.meter i'),/background:var\(--source-accent\)/);
 assert.match(cssRule('.meter i.t-attn'),/background:var\(--orange\)/);
 assert.match(cssRule('.meter i.t-err'),/background:var\(--red\)/);
 assert.doesNotMatch(css,/^\.t-live,\.t-attn,\.t-err/m); // telemetry overrides cannot recolor quotas
+assert.match(css,/\.rr-left\.last-known[^{}]*\{[^}]*opacity:\.62/);
+assert.match(css,/\.meter\.last-known i\{background:var\(--muted\)\}/);
+assert.match(refinedCss,/\.meter\.last-known i\{background:var\(--muted\);\}/);
 assert.match(cssRule('.runway-count.t-live'),/color:var\(--green\)/);
 assert.match(cssRule('.runway-count.t-attn'),/color:var\(--orange\)/);
 assert.match(css,/\.row:has\(\[data-own-waiting=true\]\) \.r-title/);
@@ -105,7 +109,7 @@ const fakeSetTimeout=(callback,delay)=>{const id=++timerSequence;scheduledTimers
 const fakeClearTimeout=id=>scheduledTimers.delete(id);
 const node=selector=>{
   if(!nodes.has(selector))nodes.set(selector,{innerHTML:"",textContent:"",value:"",hidden:false,title:"",className:"",dataset:{},attributes:{},offsetHeight:0,
-    style:{setProperty(k,v){this[k]=v;}},contains(){return false;},querySelectorAll(){return [];},setAttribute(k,v){this.attributes[k]=String(v);},getAttribute(k){return this.attributes[k]??null;},
+    style:{setProperty(k,v){this[k]=v;}},contains(){return false;},querySelectorAll(){return [];},setAttribute(k,v){this.attributes[k]=String(v);},getAttribute(k){return this.attributes[k]??null;},removeAttribute(k){delete this.attributes[k];},
     classList:{toggle(){},add(){},remove(){}},addEventListener(){},removeEventListener(){},hasAttribute(){return true;},focus(){}});
   return nodes.get(selector);
 };
@@ -746,12 +750,34 @@ assert.equal(T.resetView({...provider,weekly:{percent:78},limitsUpdatedAt:new Da
 assert.equal(T.watcherPopoverHTML('Codex'),'<p class="policy-notice" data-policy-warning hidden></p><button class="ghost" data-action="reset-settings">Reset action settings</button>');
 assert.equal(T.watcherTone(null,'Codex').tip,'');
 const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
-assert.equal(staleQuota.measured,false);assert.equal(staleQuota.usedLabel,"");assert.equal(staleQuota.day,"");assert.equal(staleQuota.time,"");assert.equal(staleQuota.countdown,"");assert.equal(staleQuota.stale,"");
-assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"");
+assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);assert.equal(staleQuota.usedLabel,"92%");assert.equal(staleQuota.lastKnownAge,"11m ago");assert.equal(staleQuota.countdown,"25m 00s");assert.equal(staleQuota.tone,"");assert.equal(staleQuota.stale,"");
+assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"22h 13m");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);
-assert.equal(node('#r0-fiveHour-left').innerHTML,'<b></b><i></i>');
-assert.equal(node('#r0-fiveHour-day').textContent,'');assert.equal(node('#r0-fiveHour-time').textContent,'');assert.equal(node('#r0-fiveHour-cd').textContent,'');
+assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>used</i></span><small class="rr-last-known-age">11m ago</small>');
+assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Last reported by Codex 11m ago');
+assert.equal(node('#r0-fiveHour-row').title,'Last reported by Codex 11m ago');
+assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuetext'),'Last known: 92% used');assert.equal(node('#r0-fiveHour-bar').className,'last-known');
+assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.notEqual(node('#r0-fiveHour-cd').textContent,'');
 assert.doesNotMatch(node('#r0-fiveHour-cd').className,/unknown/);
+{
+  const staleAt=ago(110),claude={name:"Claude",connected:true,fiveHour:{percent:14,resetAt:fixedNow/1000+3600},weekly:{percent:27,resetAt:fixedNow/1000+6*86400},limitsUpdatedAt:staleAt};
+  const fiveHour=T.resetView(claude,"fiveHour"),weekly=T.resetView(claude,"weekly");
+  assert.equal(fiveHour.measured,false);assert.equal(fiveHour.lastKnown,true);assert.equal(fiveHour.usedLabel,"14%");assert.equal(fiveHour.lastKnownAge,"1h 50m ago");assert.equal(fiveHour.tone,"");
+  assert.equal(fiveHour.tip,"Last reported by Claude Desktop 1h 50m ago");assert.notEqual(fiveHour.countdown,"");
+  assert.equal(weekly.lastKnown,true);assert.equal(weekly.usedLabel,"27%");
+  const nearWeeklyLimit=T.resetView({...claude,limitsUpdatedAt:ago(6*24*60+23*60),weekly:{percent:27,resetAt:fixedNow/1000+3600}},"weekly");
+  assert.equal(nearWeeklyLimit.lastKnown,true);assert.equal(nearWeeklyLimit.lastKnownAge,"6d 23h ago");
+  const expired=T.resetView({...claude,limitsUpdatedAt:ago(60),fiveHour:{percent:14,resetAt:fixedNow/1000-1}},"fiveHour");
+  assert.equal(expired.measured,false);assert.equal(expired.lastKnown,false);assert.equal(expired.expired,true);assert.equal(expired.usedLabel,"reset");assert.equal(expired.hasValue,false);assert.equal(expired.countdown,"");
+  T.renderResets([{...claude,limitsUpdatedAt:ago(60),fiveHour:{percent:14,resetAt:fixedNow/1000-1}}]);
+  assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-reset-label">reset</span>');
+  assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuenow'),null);assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-hidden'),'true');assert.equal(node('#r0-fiveHour-bar').style.width,'0%');
+  const tooOld=T.resetView({...claude,limitsUpdatedAt:ago(24*60+1),fiveHour:{percent:14,resetAt:fixedNow/1000+3600}},"fiveHour");
+  assert.equal(tooOld.lastKnown,false);assert.equal(tooOld.expired,false);assert.equal(tooOld.hasValue,false);assert.equal(tooOld.usedPercent,null);assert.equal(tooOld.usedLabel,"");assert.equal(tooOld.countdown,"");
+  const weeklyTooOld=T.resetView({...claude,limitsUpdatedAt:ago(7*24*60+1),weekly:{percent:27,resetAt:fixedNow/1000+3600}},"weekly");
+  assert.equal(weeklyTooOld.lastKnown,false);assert.equal(weeklyTooOld.usedLabel,"");
+  assert.equal(T.watcherTone(null,"Codex").tone,"mute","last-known quota does not change greeter state");
+}
 T.renderResets([provider]);
 {
   const countdown=node('#r0-fiveHour-cd');let writes=0,value=countdown.textContent;
@@ -1136,7 +1162,7 @@ const P=phoneContext.window.__tokenTrackerTest;
 assert.equal(P.phone,true);assert.equal(P.runway,true);
 assert.equal(P.resetView(provider,"fiveHour").countdown,"25m 00s");
 assert.equal(P.resetView(provider,"fiveHour").usedText,"92% used");
-P.renderResets([{name:"Codex",...provider}]);assert.equal(node("#r0-fiveHour-left").innerHTML,"<b>92%</b><i>used</i>");
+P.renderResets([{name:"Codex",...provider}]);assert.equal(node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>92%</b><i>used</i></span>');
 assert.equal(P.resetView(provider,"weekly").countdown,"","phone mode keeps the weekly countdown slot blank");
 const phoneRoot={...root,id:"phone-root"},phoneChild={...child,id:"phone-child",parentId:"phone-root",activity:{kind:"reading",files:["A:\\src\\phone.js"],observedAt:ago(0)}},
   phoneQuestionChild={...child,id:"phone-question-child",parentId:"phone-root",status:"needs-input",pendingQuestion:"Choose a safe action",pendingQuestionAt:ago(1),pendingOptions:["Read only","Wait"],activity:null};
