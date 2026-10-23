@@ -35,8 +35,12 @@ assert.match(refined,/width:var\(--runway-inspect-layout-width,556px\)/,"inspect
 assert.doesNotMatch(refined,/scrollbar-gutter:stable/);
 assert.match(refined,/scrollbar-width:none!important;-ms-overflow-style:none;scrollbar-gutter:auto!important/);
 assert.match(refined,/::-webkit-scrollbar\{[^}]*display:none!important[^}]*\}/);
-assert.match(refined,/data-notch-mode="controls"\]:not\(\.phone\) \.layout,[\s\S]*?data-notch-mode="inspect"\]:not\(\.phone\) \.layout\{position:absolute/);
-assert.match(refined,/visibility:hidden;pointer-events:none;transform:translateY\(3px\);transition:opacity var\(--motion-reveal\)[^}]*visibility 0s linear var\(--motion-reveal\)/);
+// The chat surface stays in flow between the toolbar (order 1) and the weekly row (order 3);
+// pinning it absolutely let the weekly row jump above the chats.
+assert.match(refined,/data-notch-mode="controls"\]:not\(\.phone\) \.layout\{display:none;\}/);
+assert.match(refined,/data-notch-mode="inspect"\]:not\(\.phone\) \.layout\{order:2;display:flex;[^}]*animation:compact-layout-reveal/);
+assert.doesNotMatch(refined,/\.layout\{position:absolute/);
+assert.match(refined,/@keyframes compact-layout-reveal\{from\{opacity:0;transform:translateY\(3px\);\}to\{opacity:1;transform:translateY\(0\);\}\}/);
 assert.doesNotMatch(refined,/compact-content-enter/);
 assert.match(app,/COMPACT\?60:120/);assert.match(app,/COMPACT\?110:160/);
 assert.match(css,/--motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms/);

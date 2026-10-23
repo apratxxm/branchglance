@@ -218,6 +218,18 @@ def _checked_at(sample: LimitSample) -> str | None:
     return _iso_from_epoch(observed)
 
 
+def _claude_checked_at(sample: LimitSample, now_iso: str) -> str | None:
+    """A Claude poll with no fresh-enough percent is not a dated observation.
+
+    The greeter's strict freshness gate leaves both percents empty between Claude
+    Desktop's few-minute refetches. Dating that gap with the poll time would make it
+    look newer than the display's valid meters and blank them as an explicit null.
+    """
+    if sample.five_hour_percent is None and sample.weekly_percent is None:
+        return None
+    return now_iso
+
+
 def _codex_quota_error_category(exc: Exception, *, worker_start: bool = False) -> str:
     if worker_start:
         return "worker_start_failed"
@@ -719,7 +731,7 @@ class LimitResetService:
             if name in self._sending:
                 return
             state = self._provider_state(name)
-            checked_at = _checked_at(sample) if name == "Codex" else self._now_iso()
+            checked_at = _checked_at(sample) if name == "Codex" else _claude_checked_at(sample, self._now_iso())
             state["lastStatus"] = {**asdict(sample), "checkedAt": checked_at}
             five = sample.five_hour_percent
             weekly = sample.weekly_percent
@@ -800,7 +812,7 @@ class LimitResetService:
     def _record_collected_status(self, name: str, sample: LimitSample) -> None:
         with self._lock:
             state = self._provider_state(name)
-            checked_at = _checked_at(sample) if name == "Codex" else self._now_iso()
+            checked_at = _checked_at(sample) if name == "Codex" else _claude_checked_at(sample, self._now_iso())
             state["lastStatus"] = {**asdict(sample), "checkedAt": checked_at}
             state["lastPollError"] = None
             self._save_state()
