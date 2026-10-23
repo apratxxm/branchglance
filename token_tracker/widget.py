@@ -2673,9 +2673,15 @@ def main(argv=None) -> None:
     # not leave message-box processes behind.
     install_handle = None
     install_status = "busy"
-    if args.install_handoff and product.consume_install_handoff(args.install_handoff):
+    handoff_valid = False
+    if args.install_handoff:
+        handoff_valid = product.consume_install_handoff(args.install_handoff)
+        if not handoff_valid:
+            logging.getLogger(__name__).warning("Rejected invalid or expired install handoff; startup refused")
+            raise SystemExit(2)
+    if handoff_valid:
         # Bypass is accepted only while the owner that wrote the one-use marker
-        # still holds Install; a stale or forged marker falls back to normal wait.
+        # still holds Install; an invalid or stale token exited above.
         probe_handle, probe_status = claim_install_mutex(timeout=0)
         if probe_status == "busy":
             install_status = "acquired"

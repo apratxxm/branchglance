@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from ctypes import wintypes
 from pathlib import Path
@@ -309,6 +310,198 @@ class WindowsControl:
     def maintenance_exit(self, timeout: float = 2.0) -> str | None:
         nonce = self.product.read_nonce_file(self.nonce_path)
         return self.product.control_command("maintenance-exit", nonce, port=self.port, timeout=timeout)
+
+
+class _JOB_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD)]
+
+
+class _IO_COUNTERS(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_ulonglong) for name in
+                ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount", "ReadTransferCount",
+                 "WriteTransferCount", "OtherTransferCount")]
+
+
+class _JOB_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _JOB_BASIC_LIMIT_INFORMATION), ("IoInfo", _IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+class _JOB_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    _fields_ = [("TotalUserTime", ctypes.c_longlong), ("TotalKernelTime", ctypes.c_longlong),
+                ("ThisPeriodTotalUserTime", ctypes.c_longlong), ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+                ("TotalPageFaultCount", wintypes.DWORD), ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD), ("TotalTerminatedProcesses", wintypes.DWORD)]
+
+
+class _THREADENTRY32(ctypes.Structure):
+    _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", ctypes.c_long), ("tpDeltaPri", ctypes.c_long), ("dwFlags", wintypes.DWORD)]
+
+
+class _JobTrackedProcess:
+    """Suspended launcher assigned to a kill-on-close Job before its first instruction."""
+    KILL_ON_JOB_CLOSE = 0x2000
+    BASIC_LIMIT_CLASS = 2
+    EXTENDED_LIMIT_CLASS = 9
+    BASIC_ACCOUNTING_CLASS = 1
+    SNAP_THREAD = 0x4
+    THREAD_SUSPEND_RESUME = 0x2
+    CREATE_SUSPENDED = 0x4
+    CREATE_NO_WINDOW = 0x08000000
+
+    def __init__(self, process, job):
+        self.process = process
+        self.job = job
+        self.pid = process.pid
+
+    @classmethod
+    def spawn(cls, arguments, *, cwd):
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, wintypes.INT, ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        job = kernel.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        process = None
+        try:
+            limits = _JOB_EXTENDED_LIMIT_INFORMATION()
+            limits.BasicLimitInformation.LimitFlags = cls.KILL_ON_JOB_CLOSE
+            if not kernel.SetInformationJobObject(job, cls.EXTENDED_LIMIT_CLASS, ctypes.byref(limits),
+                                                  ctypes.sizeof(limits)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            process = subprocess.Popen(arguments, cwd=str(cwd), close_fds=True,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL,
+                                       creationflags=cls.CREATE_SUSPENDED | cls.CREATE_NO_WINDOW)
+            kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+            kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+            if not kernel.AssignProcessToJobObject(job, wintypes.HANDLE(int(process._handle))):
+                raise ctypes.WinError(ctypes.get_last_error())
+            cls._resume_initial_thread(kernel, process.pid)
+            return cls(process, job)
+        except BaseException:
+            if process is not None:
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+            kernel.CloseHandle(job)
+            raise
+
+    @classmethod
+    def _resume_initial_thread(cls, kernel, pid: int) -> None:
+        kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        snapshot = kernel.CreateToolhelp32Snapshot(cls.SNAP_THREAD, 0)
+        invalid = ctypes.c_void_p(-1).value
+        if not snapshot or snapshot == invalid:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            entry = _THREADENTRY32()
+            entry.dwSize = ctypes.sizeof(entry)
+            kernel.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(_THREADENTRY32)]
+            kernel.Thread32First.restype = wintypes.BOOL
+            kernel.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(_THREADENTRY32)]
+            kernel.Thread32Next.restype = wintypes.BOOL
+            if not kernel.Thread32First(snapshot, ctypes.byref(entry)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            while True:
+                if entry.th32OwnerProcessID == pid:
+                    kernel.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                    kernel.OpenThread.restype = wintypes.HANDLE
+                    thread = kernel.OpenThread(cls.THREAD_SUSPEND_RESUME, False, entry.th32ThreadID)
+                    if not thread:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    try:
+                        kernel.ResumeThread.argtypes = [wintypes.HANDLE]
+                        kernel.ResumeThread.restype = wintypes.DWORD
+                        if kernel.ResumeThread(thread) == 0xFFFFFFFF:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    finally:
+                        kernel.CloseHandle(thread)
+                    return
+                if not kernel.Thread32Next(snapshot, ctypes.byref(entry)):
+                    break
+            raise OSError(f"Could not find suspended launcher thread for PID {pid}")
+        finally:
+            kernel.CloseHandle(snapshot)
+
+    def wait(self, timeout=None):
+        return self.process.wait(timeout=timeout)
+
+    def close_job(self) -> None:
+        if self.job:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            kernel.CloseHandle(wintypes.HANDLE(self.job))
+            self.job = None
+
+    def terminate_tree(self, timeout: float | None) -> bool:
+        if not self.job:
+            return self.process.poll() is not None
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateJobObject.restype = wintypes.BOOL
+        if not kernel.TerminateJobObject(self.job, 1):
+            return False
+        kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, wintypes.INT, ctypes.c_void_p,
+                                                      wintypes.DWORD, ctypes.c_void_p]
+        kernel.QueryInformationJobObject.restype = wintypes.BOOL
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while deadline is None or time.monotonic() < deadline:
+            info = _JOB_BASIC_ACCOUNTING_INFORMATION()
+            if not kernel.QueryInformationJobObject(self.job, self.BASIC_ACCOUNTING_CLASS, ctypes.byref(info),
+                                                    ctypes.sizeof(info), None):
+                return False
+            if info.ActiveProcesses == 0:
+                try:
+                    self.process.wait(timeout=None if deadline is None else max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    return False
+                return True
+            time.sleep(0.05 if deadline is None else min(0.05, max(0.0, deadline - time.monotonic())))
+        return False
+
+    def release_job(self) -> None:
+        if not self.job:
+            return
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, wintypes.INT, ctypes.c_void_p, wintypes.DWORD]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        limits = _JOB_BASIC_LIMIT_INFORMATION()  # clear KILL_ON_JOB_CLOSE after authenticated health succeeds
+        if not kernel.SetInformationJobObject(self.job, self.BASIC_LIMIT_CLASS, ctypes.byref(limits),
+                                              ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.close_job()
+
+    def __del__(self):
+        if getattr(self, "job", None):
+            try:
+                # A leaked restore process must not outlive installer exclusion.
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+                kernel.CloseHandle.restype = wintypes.BOOL
+                kernel.CloseHandle(wintypes.HANDLE(self.job))
+            except Exception:
+                pass
+            self.job = None
+
+
+def spawn_restore_job(arguments, *, cwd):
+    return _JobTrackedProcess.spawn(arguments, cwd=cwd)
 
 
 class NoWait:

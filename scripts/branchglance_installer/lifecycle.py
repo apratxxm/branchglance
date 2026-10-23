@@ -62,6 +62,7 @@ class Lifecycle:
         self.stopped_running_app = False
         self.relaunch_attempted = False
         self.entered = False
+        self.hold_install_until_process_exit = False
 
     def _remaining(self, maximum: float) -> float:
         if self.deadline is None:
@@ -123,7 +124,8 @@ class Lifecycle:
         if getattr(self, "instance_handle", None) is not None:
             self.mutex.release(self.instance_handle)
             self.instance_handle = None
-        if getattr(self, "install_handle", None) is not None:
+        if (getattr(self, "install_handle", None) is not None
+                and not self.hold_install_until_process_exit):
             self.mutex.release(self.install_handle)
             self.install_handle = None
 
