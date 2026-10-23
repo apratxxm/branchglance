@@ -784,3 +784,13 @@ def test_slow_greeting_keeps_status_responsive_and_prevents_duplicate_send(tmp_p
     watcher.check_provider("Codex", LimitSample(100, 10, T0+18000))
     assert provider(watcher, "Codex")["resetObservedAt"] is None
     assert provider(watcher, "Codex")["lastResetAt"] == previous
+
+
+def test_claude_poll_without_fresh_percent_is_undated_so_it_cannot_blank_display_meters(tmp_path):
+    watcher = make(tmp_path, Claude=Sender())
+    watcher.check_provider("Claude", LimitSample(40, 20, T0))
+    assert provider(watcher, "Claude")["lastStatus"]["checkedAt"] is not None
+    # Between Claude Desktop refetches the strict greeter gate yields no percent.
+    watcher.check_provider("Claude", LimitSample(None, None, 0))
+    status = provider(watcher, "Claude")["lastStatus"]
+    assert status["five_hour_percent"] is None and status["checkedAt"] is None
