@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" role="img" aria-labelledby="title desc">
-  <title id="title">Branchglance fork mark concept</title>
-  <desc id="desc">One root connected to two child nodes by rounded branches.</desc>
-  <path d="M3.5 3.5v6a3 3 0 0 0 3 3h6M3.5 5.5h6a3 3 0 0 0 3-3" fill="none" stroke="#B9AEFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="3.5" cy="3.5" r="1.5" fill="#B9AEFF"/>
-  <circle cx="12.5" cy="3.5" r="1.5" fill="#89B6FF"/>
-  <circle cx="12.5" cy="12.5" r="1.5" fill="#89B6FF"/>
-</svg>

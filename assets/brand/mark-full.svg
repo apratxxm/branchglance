@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Live Stack full-colour mark</title>
+  <desc id="desc">Four stacked rounded bars: off-white, lavender, a slanted bar, and a tapered wedge.</desc>
+<rect x="0" y="40" width="399" height="91" rx="32" fill="#F2F0EA"/>
+<path d="M36 161 H476 Q512 161 512 197 V271 Q512 303 480 297 L126 236 C112 234 104 244 104 257 V278 Q104 310 72 310 H36 Q0 310 0 274 V197 Q0 161 36 161 Z" fill="#B9ADF5"/>
+<path d="M125 296 Q125 264 156.53 269.46 L480.47 325.54 Q512 331 512 363 L512 399 Q512 431 480.47 425.54 L156.53 369.46 Q125 364 125 332 Z" fill="#F2F0EA"/>
+<path d="M20 376 L374 437 C386 439 405 446 400 459 C397 468 388 472 374 472 H20 Q0 472 0 452 V396 Q0 376 20 376 Z" fill="#F2F0EA"/>
+</svg>
