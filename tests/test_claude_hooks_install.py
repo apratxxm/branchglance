@@ -183,10 +183,13 @@ def test_concurrent_modification_retries_and_preserves_newer_settings(env, monke
     settings, data_dir = env
     settings.write_text(json.dumps({"hooks": {}}), encoding="utf-8")
     real_create = installer._unique_adjacent
+    injected = False
 
     def racing_create(path, tag, payload):
+        nonlocal injected
         created = real_create(path, tag, payload)
-        if tag.startswith("backup-"):
+        if tag.startswith("backup-") and not injected:
+            injected = True
             # Model a concurrent Claude/user update after backup creation.
             path.write_text(json.dumps({"hooks": {}, "model": "changed-meanwhile"}), encoding="utf-8")
         return created
@@ -522,6 +525,53 @@ def test_uninstall_retries_when_settings_change_before_replace_and_preserves_new
     assert "hooks" not in final
     backups = list(settings.parent.glob("settings.json.branchglance-backup-*"))
     assert backups and any(b"concurrentClaudeChange" in backup.read_bytes() for backup in backups)
+
+
+def test_install_compare_and_swap_retries_and_preserves_formatting(env, monkeypatch):
+    settings, data_dir = env
+    settings.write_bytes(b'\xef\xbb\xbf{\r\n    "custom": {"value": "keep"}\r\n}\r\n')
+    original_unique_adjacent = installer._unique_adjacent
+    injected = False
+
+    def race_on_temp(path, label, payload):
+        nonlocal injected
+        result = original_unique_adjacent(path, label, payload)
+        if label == "tmp" and not injected:
+            injected = True
+            settings.write_bytes(b'\xef\xbb\xbf{\r\n    "custom": {"value": "newer"}\r\n}\r\n')
+        return result
+
+    monkeypatch.setattr(installer, "_unique_adjacent", race_on_temp)
+    result = installer.install(settings, CMD, data_dir)
+    raw = settings.read_bytes()
+    assert result["ok"] is True and result["changed"] is True
+    assert raw.startswith(b"\xef\xbb\xbf") and b"\r\n" in raw and b"\r\n    \"hooks\":" in raw
+    decoded = json.loads(raw.decode("utf-8-sig"))
+    assert decoded["custom"] == {"value": "newer"}
+    assert all(event in decoded["hooks"] for event in installer.EVENTS)
+
+
+def test_settings_compare_and_swap_exhaustion_leaves_latest_concurrent_bytes_untouched(env, monkeypatch):
+    settings, data_dir = env
+    settings.write_text('{"initial": true}', encoding="utf-8")
+    original_unique_adjacent = installer._unique_adjacent
+    writes = []
+
+    def race_every_attempt(path, label, payload):
+        result = original_unique_adjacent(path, label, payload)
+        if label == "tmp":
+            latest = json.dumps({"foreignEdit": len(writes) + 1}, separators=(",", ":")).encode("utf-8")
+            writes.append(latest)
+            settings.write_bytes(latest)
+        return result
+
+    monkeypatch.setattr(installer, "_unique_adjacent", race_every_attempt)
+    with pytest.raises(installer.HookInstallError, match="kept changing.*left untouched"):
+        installer.install(settings, CMD, data_dir)
+    assert len(writes) == 3
+    assert settings.read_bytes() == writes[-1]
+    assert "hooks" not in json.loads(settings.read_text(encoding="utf-8"))
+    assert not (data_dir / claude_hook.CONSENT_NAME).exists()
 
 
 def test_frozen_build_refuses_install_until_launcher_supports_hook(env, monkeypatch):
