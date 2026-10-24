@@ -7,6 +7,7 @@
 @property --source-glow-secondary{syntax:"<color>";inherits:true;initial-value:#425df6}
 @property --source-edge{syntax:"<color>";inherits:true;initial-value:#303543}
 @property --source-edge-strong{syntax:"<color>";inherits:true;initial-value:#303543}
+@property --source-edge-end{syntax:"<color>";inherits:true;initial-value:#303543}
 @property --blue{syntax:"<color>";inherits:true;initial-value:#425df6}
 @property --blue-soft{syntax:"<color>";inherits:true;initial-value:#171d34}
 :root {
@@ -25,7 +26,7 @@
 html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--paper)}
 body{color:var(--ink);font:13px/1.4 var(--sans);font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
 button,input{font:inherit;color:inherit}
-body{transition:--source-accent var(--motion-source) var(--ease-standard),--source-accent-soft var(--motion-source) var(--ease-standard),--source-hover var(--motion-source) var(--ease-standard),--source-focus var(--motion-source) var(--ease-standard),--source-muted var(--motion-source) var(--ease-standard),--source-glow-primary var(--motion-source) var(--ease-standard),--source-glow-secondary var(--motion-source) var(--ease-standard),--source-edge var(--motion-source) var(--ease-standard),--source-edge-strong var(--motion-source) var(--ease-standard),--blue var(--motion-source) var(--ease-standard),--blue-soft var(--motion-source) var(--ease-standard)}
+body{transition:--source-accent var(--motion-source) var(--ease-standard),--source-accent-soft var(--motion-source) var(--ease-standard),--source-hover var(--motion-source) var(--ease-standard),--source-focus var(--motion-source) var(--ease-standard),--source-muted var(--motion-source) var(--ease-standard),--source-glow-primary var(--motion-source) var(--ease-standard),--source-glow-secondary var(--motion-source) var(--ease-standard),--source-edge var(--motion-source) var(--ease-standard),--source-edge-strong var(--motion-source) var(--ease-standard),--source-edge-end var(--motion-source) var(--ease-standard),--blue var(--motion-source) var(--ease-standard),--blue-soft var(--motion-source) var(--ease-standard)}
 body[data-source="Claude"]{--source-accent:#e8813f;--source-accent-soft:#301e17;--source-hover:#3a2319;--source-focus:#ffb98c;--source-muted:#ad826f;--source-glow-primary:#ffb14a;--source-glow-secondary:#d64a2f;--blue:var(--source-accent);--blue-soft:var(--source-accent-soft);--focus:var(--source-focus)}
 body:not(.phone) button{cursor:pointer;transition:transform var(--motion-fast) var(--ease-standard),opacity var(--motion-fast) var(--ease-standard),background-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}
 body:not(.phone) .icon-btn:active,body:not(.phone) .sync-age:active,body:not(.phone) .window-controls button:active,body:not(.phone) .greet:active{transform:scale(.97)}
