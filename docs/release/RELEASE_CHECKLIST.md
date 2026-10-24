@@ -14,7 +14,7 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 - [ ] Launch Setup by opening it in File Explorer. Confirm the preflight accepts the clean VM and does not request administrator elevation.
 - [ ] Complete installation. Confirm files are under `%LOCALAPPDATA%\Programs\Branchglance` and the Start menu shortcut opens the widget.
 - [ ] Confirm Setup offers optional sign-in startup with the intended default. Select **No** on one clean snapshot; verify no Startup shortcut is registered.
-- [ ] Verify Setup creates Start menu and Desktop shortcuts at Windows-known-folder locations, plus an optional Startup shortcut when selected. Confirm the Desktop link follows a OneDrive-relocated Desktop and all shortcuts show the fork icon.
+- [ ] Verify Setup creates Start menu and Desktop shortcuts at Windows-known-folder locations, plus an optional Startup shortcut when selected. Confirm the Desktop link follows a OneDrive-relocated Desktop and all shortcuts show the Live Stack icon.
 - [ ] Confirm no user data or provider settings are changed by installation alone. Claude Code hooks must remain absent and consent disabled.
 
 ### Upgrade from release candidate
@@ -22,7 +22,7 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 - [ ] Install the approved RC in a separate snapshot. Add synthetic local settings/history and record current version and integrations.
 - [ ] Run 1.0 Setup from File Explorer over the Branchglance-owned RC install. Confirm it recognizes the owned location and preserves settings/history.
 - [ ] Confirm the active release changes to 1.0.0 only after staging/self-check succeeds; interrupt at each approved failure point if the build provides a documented test hook, then verify the previous release remains launchable.
-- [ ] Verify Start menu and Desktop shortcuts, optional sign-in Startup shortcut and uninstall registration after upgrade. Confirm locations are resolved from Windows known folders and shortcuts use the fork icon.
+- [ ] Verify Start menu and Desktop shortcuts, optional sign-in Startup shortcut and uninstall registration after upgrade. Confirm locations are resolved from Windows known folders and shortcuts use the Live Stack icon.
 
 ### Startup at sign-in
 
