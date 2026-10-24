@@ -433,6 +433,21 @@ def test_ai_title_is_the_row_title_when_no_custom_title(world, monkeypatch):
     assert "Generated" not in json.dumps(record)
 
 
+def test_title_and_model_survive_the_transcript_rewrite_during_compaction(world):
+    """Claude rewrites the transcript on compaction; the row keeps its last title and model meanwhile."""
+    world.transcript(SID, [{"type": "custom-title", "customTitle": "Ship the parser"},
+                           user(NOW - 100), assistant(NOW - 60, "m1")])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit")])
+    assert world.rows()[SID]["title"] == "Ship the parser"
+    world.transcript(SID, [{"type": "system", "subtype": "compact_boundary", "timestamp": stamp(NOW - 5)}])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit"), ev(NOW - 5, "PreCompact")])
+    row = world.rows()[SID]
+    assert row["status"] == "compacting"
+    assert row["title"] == "Ship the parser" and row["model"] == "claude-opus-5"
+    world.transcript(SID, [{"type": "custom-title", "customTitle": "Renamed"}, user(NOW - 3)])
+    assert world.rows()[SID]["title"] == "Renamed"
+
+
 # ------------------------------------------------- parity: provider aggregates
 
 def _local_day(epoch):

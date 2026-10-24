@@ -33,7 +33,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
   hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
-  source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceBase:new Map(), sourceSwitching:false, policyWarnings:[] };
+  source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
 const codexQuotaBootstrap={name:'Codex'};
@@ -1471,7 +1471,7 @@ function renderResets(providers) {
       const id="r"+i+"-"+key;
       return '<div id="'+id+'-row" class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
         (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span><small class="rr-last-known-age"></small>':'—')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("");
@@ -1480,7 +1480,7 @@ function renderResets(providers) {
       const id="r"+i+"-"+key;
       return '<div id="'+id+'-row" class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
         (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span><small class="rr-last-known-age"></small>':'—')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span>':'—')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("")).join("");
@@ -1488,7 +1488,7 @@ function renderResets(providers) {
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
     const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");if(row)row.title=view.tip;
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
-    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>used</i></span>'+(view.lastKnown?'<small class="rr-last-known-age">'+esc(view.lastKnownAge)+'</small>':''):view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span><small class="rr-last-known-age"></small>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
+    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
     else set("-left",view.usedText);
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
     const left=$(id+"-left");if(left){left.className="rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:"");left.title=view.tip;}
@@ -1816,7 +1816,8 @@ function runwayTelemetryHTML(chat,agent=false) {
     const path=runwayWorkspaceHTML(chat);
     const cleanPath=path?path.replace('data-runway-slot="workspace"','data-runway-slot="workspace"'):'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
-    const visibleActivityHTML=activityHTML;
+    // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
+    const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span></span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'<span data-runway-slot="cache" class="runway-refined-cache">'+(cachePercent==null?'':'Cache '+cachePercent+'%')+'</span></span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+contextValue+'</span></div>';
   }
   return agent?messageLane+topline+'<span class="runway-agent-secondary">'+modelTiming+'</span>'+contextSlot+objectiveSlot:messageLane+topline+modelTiming+contextSlot;
@@ -2020,6 +2021,8 @@ function updateChatEl(el, chat, query) {
 function trackSourceAttention(name, items, selected, fresh) {
   const base=state.sourceBase.get(name)||new Map();
   if(!fresh)return;
+  // Ongoing work in a source that isn't on screen keeps a quieter live dot on its segment.
+  if(!selected&&items.some(item=>item.active))state.sourceLive.add(name);else state.sourceLive.delete(name);
   let newWork=false;
   for(const item of items){
     if(!item.active)continue;
@@ -2045,10 +2048,12 @@ function updateSourceSwitch() {
     segment.disabled=!enabled;
     segment.setAttribute?.('aria-disabled',String(!enabled));
     if(segment.getAttribute?.('aria-pressed')!==pressed)segment.setAttribute?.('aria-pressed',pressed);
+    const live=visible&&name!==current&&!flagged&&state.sourceLive.has(name);
     segment.classList?.toggle?.('has-attention',flagged);
-    const label=name+(flagged?' (needs attention)':'');
+    segment.classList?.toggle?.('has-live',live);
+    const label=name+(flagged?' (needs attention)':live?' (active)':'');
     if(segment.getAttribute?.('aria-label')!==label)segment.setAttribute?.('aria-label',label);
-    const dot=segment.querySelector?.('.source-dot');dot?.setAttribute?.('aria-hidden',String(!flagged));
+    const dot=segment.querySelector?.('.source-dot');dot?.setAttribute?.('aria-hidden',String(!flagged&&!live));
   }
   const body=document.body;if(body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
 }

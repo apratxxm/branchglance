@@ -91,6 +91,12 @@ assert.doesNotMatch(T.runwayTelemetryHTML(nearExpiryMessage, true), /class="runw
 testNow = now;
 assert.match(T.runwayQuestionPopover(T.state.forest.rows.find(chat => chat.id === parent.id)), /data-thread="exact-thread-id"/);
 
+// The status column already names the state; the activity column never repeats it.
+const compacting = { ...T.state.forest.rows.find(chat => chat.id === child.id), status: "compacting", compactionStartedAt: stamp(0), stateSince: stamp(0), latestMessageAt: null };
+const compactingHTML = T.rowHTML(compacting);
+assert.equal((compactingHTML.match(/>Compacting</g) || []).length, 1, "Compacting appears once");
+assert.doesNotMatch(parentHTML, /Waiting for input/, "Waiting is not repeated as activity");
+
 const noCache = T.rowHTML({ ...T.state.forest.rows.find(chat => chat.id === child.id), lastRequest: { input: 0, cached: 0 } });
 assert.doesNotMatch(noCache, /Cache \d+%/);
 const unavailable = T.rowHTML({ ...T.state.forest.rows.find(chat => chat.id === child.id), telemetryUnavailable: true });

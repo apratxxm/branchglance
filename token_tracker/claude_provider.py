@@ -92,6 +92,21 @@ def public_row(row: dict[str, Any]) -> dict[str, Any]:
 
 _PATHS: dict[str, str] = {}
 _PATHS_LOCK = threading.Lock()
+# Claude rewrites a transcript when it compacts, so for a moment the file has
+# no title or model yet. Keep the last ones seen per session/agent.
+_IDENTITY: dict[str, tuple[str | None, str | None]] = {}
+_IDENTITY_LOCK = threading.Lock()
+_IDENTITY_MAX = 512
+
+
+def _remembered_identity(key: str, title: str | None, model: str | None) -> tuple[str | None, str | None]:
+    with _IDENTITY_LOCK:
+        known_title, known_model = _IDENTITY.pop(key, (None, None))
+        title, model = title or known_title, model or known_model
+        _IDENTITY[key] = (title, model)
+        while len(_IDENTITY) > _IDENTITY_MAX:
+            _IDENTITY.pop(next(iter(_IDENTITY)))
+    return title, model
 
 
 def find_transcript(session_id: str, agent_id: str = "", root: Path | None = None) -> Path | None:
@@ -278,12 +293,14 @@ def _hook_row(entry: dict[str, Any], root_entry: dict[str, Any] | None, now: flo
                          executionObservedAt=None, executionSince=None, executionCompactionStartedAt=None,
                          executionTerminalAt=None, executionActivity=None, stateDetail=None)
         status = "unavailable"
+    title, model = _remembered_identity(f"{sid}:{aid or ''}", None if aid else row_title(transcript),
+                                        public_model(transcript.get("model")) or public_model(state.get("model")))
     row: dict[str, Any] = {
         "id": sid if not aid else f"{sid}:{aid}",
-        "title": None if aid else row_title(transcript),
+        "title": title,
         # Per-agent model facts: a child uses its own transcript or hook model,
         # never the parent's. Process/workspace stay session-wide (root_state).
-        "model": public_model(transcript.get("model")) or public_model(state.get("model")),
+        "model": model,
         "workspace": root_state.get("workspace") or transcript.get("workspace"),
         "recordSource": "hook",
         "updatedAt": claude_events.iso(max(state["last"] or 0, transcript.get("last_conv_ts") or 0) or None),
@@ -588,6 +605,8 @@ _MEMO_LOCK = threading.Lock()
 def reset_memo() -> None:
     with _MEMO_LOCK:
         _MEMO.update(at=0.0, rows=None)
+    with _IDENTITY_LOCK:
+        _IDENTITY.clear()
 
 
 def _cached_rows() -> list[dict[str, Any]]:
