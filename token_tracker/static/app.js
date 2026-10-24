@@ -533,6 +533,7 @@ function updateMonitorButton(){
   if(current)button.textContent=current.kind==='internal'?'Laptop':current.kind==='external'?'Monitor':current.label||current.name||'Monitor';
   button.disabled=!monitorState.known||monitorState.pending||!widgetLock.known||widgetLock.pending||widgetLock.locked||monitorSelectionPending||monitorState.monitors.length<2;
   button.title=monitorSelectionPending?'Changing monitor':monitorState.pending?'Checking available monitors':!monitorState.known?(monitorState.error?'Monitor information unavailable':'Checking available monitors'):!widgetLock.known||widgetLock.pending?'Checking widget lock':widgetLock.locked?'Unlock the widget to move monitors':monitorState.monitors.length<2?'One monitor available':'Move to next monitor';
+  if(current?.label&&monitorState.known&&!monitorState.pending&&!monitorSelectionPending)button.title=current.label+' · '+button.title;
 }
 function predictedInspectLayoutWidth(monitor){
   const signature=monitorSignature(monitor);if(!signature)return null;
