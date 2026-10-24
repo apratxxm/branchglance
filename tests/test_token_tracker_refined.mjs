@@ -556,3 +556,9 @@ assert.doesNotMatch(css, /grid-template-columns:minmax\(0,calc\(var\(--runway-in
 }
 // Activity/cache and path columns are equal fixed shares, so cache and path line up across rows.
 assert.match(css, /grid-template-columns:calc\(var\(--runway-inspect-clock-axis,278px\) - 80px\) 84px minmax\(0,1fr\) minmax\(0,1fr\);/);
+
+// The yellow waiting count is the way to the waiting chat.
+T.renderRunwayCounts({ roots: 2, total: 3, waiting: 1 });
+assert.match(node("#notch-counts").innerHTML, /data-count-slot="waiting"[^>]*data-action="jump-waiting"[^>]*role="button"/);
+T.renderRunwayCounts({ roots: 2, total: 3, waiting: 0 });
+assert.doesNotMatch(node("#notch-counts").innerHTML, /jump-waiting/, "no jump target when nothing waits");
