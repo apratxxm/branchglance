@@ -554,3 +554,5 @@ assert.doesNotMatch(css, /grid-template-columns:minmax\(0,calc\(var\(--runway-in
   assert.match(T.runwayQuestionPopover(asked), /Where should it run\?/);
   assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
 }
+// Activity/cache and path columns are equal fixed shares, so cache and path line up across rows.
+assert.match(css, /grid-template-columns:calc\(var\(--runway-inspect-clock-axis,278px\) - 80px\) 84px minmax\(0,1fr\) minmax\(0,1fr\);/);
