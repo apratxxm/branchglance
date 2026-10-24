@@ -83,7 +83,7 @@ def mutex_name(purpose: str, sid: str | None = None) -> str:
 
 
 def brand_icon_path() -> Path:
-    """Path to the packaged fork mark used by windows and tray integration."""
+    """Path to the packaged Live Stack mark used by the window and tray."""
     frozen_root = getattr(sys, "_MEIPASS", None)
     if frozen_root:
         return Path(frozen_root) / "assets" / "brand" / "branchglance.ico"

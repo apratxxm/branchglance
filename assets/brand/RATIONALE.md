@@ -1,21 +1,15 @@
-# Branchglance mark concepts
+# Live Stack brand
 
-Drafts for approval. Hand-written SVG; no dependencies, external assets, embedded fonts or app changes. All three marks use a 16 x 16 coordinate grid and can be placed at 16 px. XML validity will be checked; tray raster quality and contrast in the native shell still need visual acceptance.
+The selected mark is a four-band stack: a short cap, a lavender step, a slanted bar and a tapered lower wedge. The lavender L-shaped notch creates the stepped join; the descending white bands suggest parallel work continuing through the stack. Use the full-colour mark on dark charcoal, the off-white mono mark on dark surfaces, and the near-black mono mark knocked out of an off-white rounded tile on light surfaces.
 
-| File | Idea | Why it fits | Tradeoff |
-| --- | --- | --- | --- |
-| `mark-fork.svg` | One root branches to two visible children. | The most direct connection to the live chat/subagent tree; rounded Git-like joins and endpoint dots. **Recommended.** | A familiar branch symbol; does not carry the attention concept alone. |
-| `mark-bands.svg` | One spine connects three stacked endpoints. | Suggests the widget's three blocky bands and several work lanes held in one view. | Can read as a list/settings symbol. |
-| `mark-signal.svg` | Root splits into two children; one endpoint has a larger ring. | Adds an attention focal point to the tree without a play/send/control icon. | More detail at tray size; ring is structural rather than a live status indicator. |
+`mark-full.svg`, `mark-mono-dark.svg` and `mark-mono-light.svg` are the three mark variants. `wordmark.svg` contains outlined Branchglance lettering traced from the bundled Geist SemiBold variable font with -2% tracking. Geist was selected over Inter for its closer geometric forms and single-storey `g`. `lockup.svg` combines the full-colour mark and outlined wordmark on charcoal. The small header in the visual reference is presentation text and is not part of the logo.
 
-`wordmark.svg` pairs the recommended fork with literal `Branchglance` text. This is a layout variant, not a fourth mark. Font fallback is `Segoe UI, sans-serif`; after naming approval, remeasure the actual name before outlining or exporting. No final typography is implied.
+`generate_icon.py` uses Pillow, already available in the build environment, to reproduce the vectors as the multi-size `.ico`, tray/app icon, favicon, Apple touch icon and PWA icons. The generator also creates the social preview and icon review sheet. The app has no added runtime font or image dependency.
 
-## Visual use
+## Small-size use
 
-- Transparent marks for a charcoal background (`#101116`); primary violet `#B9AEFF`, supporting blue `#89B6FF`. No blurred glow is required for legibility at 16 px.
-- Keep at least 2 px clear space around a 16 px mark. Do not shrink the wordmark to tray size; use a mark alone.
-- For a single-color native tray asset, make all strokes/fills one high-contrast color while retaining the geometry. No monochrome export or ICO is included in this draft scope.
-- Reserve green for the centered in-widget clock and yellow for real waiting states. Brand marks do not simulate live activity or display status colors.
-- In launch layouts, use deep charcoal/black and restrained purple-blue surroundings. Preserve the existing three-band interface; these concepts do not authorize a widget redesign.
+The generator hand-tunes the small raster silhouette: the 16 px mark uses a horizontal third bar and integer-pixel edges; 20, 24 and 32 px restore the descending slant with half-pixel edge snapping. It uses the canonical geometry for 40, 48, 64, 128 and 256 px. The `.ico` contains every size in that set. The tray/app tile uses a charcoal rounded square with off-white and lavender bands so it remains distinct on light and dark taskbars.
 
-Approval requested: choose one mark and final name, then inspect actual 16 px rendering before any tray replacement. These assets are not installed or published.
+The 1280 × 640 social preview is a dark presentation card; it is not a replacement icon. `docs/brand/compare.png` compares the reference mark and wordmark with the vector redraw at matched dimensions. `docs/brand/icon-sheet.png` shows the raster sizes against both dark and light surfaces. Review those at native scale before replacing any installed assets.
+
+The Codex blue and Claude orange interface accents remain provider colours. The brand mark does not change the widget palette or imitate a live status.

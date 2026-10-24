@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" role="img" aria-labelledby="title desc">
-  <title id="title">Branchglance signal mark concept</title>
-  <desc id="desc">A root branches to two children, with a ring emphasizing one child.</desc>
-  <path d="M8 3v3a2 2 0 0 1-2 2H5a2 2 0 0 0-2 2v2M8 6a2 2 0 0 0 2 2h1a2 2 0 0 1 2 2" fill="none" stroke="#B9AEFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="8" cy="3" r="1.5" fill="#B9AEFF"/>
-  <circle cx="3" cy="12.5" r="1.5" fill="#89B6FF"/>
-  <circle cx="12.5" cy="12.5" r="2" fill="none" stroke="#89B6FF" stroke-width="1.5"/>
-</svg>
