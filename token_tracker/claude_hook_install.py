@@ -9,11 +9,9 @@ Safety rules:
 * Refuse on an unparseable or non-object settings file, and when any path
   component from %USERPROFILE% down to settings.json is a symlink, junction
   or other reparse point.
-* Best-effort update, not an atomic compare-and-swap: write a uniquely named
-  backup first (exclusive create), then a uniquely named temp file, re-read
-  and hash-compare immediately before replacement, and verify the exact bytes
-  afterward. Uninstall retries a changing file up to three times. The final
-  race cannot be closed without Claude Code's cooperation.
+* Writes use a bounded compare-before-replace protocol: capture bytes and file
+  identity, write a unique backup and temp file, then immediately re-read and
+  compare before replacement. A concurrent edit restarts the transform.
 * The consent marker (what lets the hook write anything) is created last on
   install and removed on uninstall.
 """
@@ -30,6 +28,7 @@ import shutil
 import stat
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +36,8 @@ from . import claude_hook
 
 MARKER = "--branchglance-hook"
 HOOK_TIMEOUT_SECONDS = 10  # Claude Code's own bound; the hook also self-exits sooner
-WRITE_SAFETY = ("Best-effort settings update: backup first, hash recheck before replace and verify afterward; "
-                "Windows cannot close the final race without Claude Code cooperation. This is not atomic CAS.")
+WRITE_SAFETY = ("Best-effort compare-and-swap: bytes and file identity are rechecked immediately before replacement, "
+                "concurrent edits are retried, but this is not atomic CAS against another process.")
 EVENTS = (
     "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
     "PermissionRequest", "Notification", "Stop", "StopFailure", "SubagentStart", "SubagentStop",
@@ -48,6 +47,24 @@ EVENTS = (
 
 class HookInstallError(Exception):
     """The settings file cannot be edited safely; nothing was changed."""
+
+
+class _ConcurrentSettingsEdit(Exception):
+    """The target changed while one consistent snapshot was being captured."""
+
+
+@dataclass(frozen=True)
+class _SettingsSnapshot:
+    raw: bytes | None
+    digest: str | None
+    mtime_ns: int | None
+    device: int | None
+    inode: int | None
+    size: int | None
+
+    def matches(self, other: "_SettingsSnapshot") -> bool:
+        return (self.raw == other.raw and self.digest == other.digest and self.mtime_ns == other.mtime_ns
+                and self.device == other.device and self.inode == other.inode and self.size == other.size)
 
 
 def default_settings_path() -> Path:
@@ -224,13 +241,13 @@ def _validate_path_chain(path: Path) -> None:
             raise HookInstallError("settings path contains a symlink or reparse point; refusing to edit it")
 
 
-def _read(path: Path) -> tuple[bytes | None, dict[str, Any], bool]:
-    """(raw bytes or None, parsed settings, had_bom). Refuses unsafe files."""
+def _snapshot_file(path: Path) -> _SettingsSnapshot:
+    """Capture bytes and identity from one stable regular-file observation."""
     _validate_path_chain(path)
     try:
         info = path.lstat()
     except FileNotFoundError:
-        return None, {}, False
+        return _SettingsSnapshot(None, None, None, None, None, None)
     except OSError as exc:
         raise HookInstallError(f"cannot inspect settings.json ({exc.__class__.__name__})") from None
     if _is_reparse(path, info):
@@ -240,14 +257,35 @@ def _read(path: Path) -> tuple[bytes | None, dict[str, Any], bool]:
     try:
         raw = path.read_bytes()
     except OSError as exc:
+        if isinstance(exc, FileNotFoundError):
+            raise _ConcurrentSettingsEdit from None
         raise HookInstallError(f"cannot read settings.json ({exc.__class__.__name__})") from None
+    try:
+        after = path.lstat()
+    except FileNotFoundError:
+        raise _ConcurrentSettingsEdit from None
+    except OSError as exc:
+        raise HookInstallError(f"cannot recheck settings.json ({exc.__class__.__name__})") from None
+    if _is_reparse(path, after) or not stat.S_ISREG(after.st_mode):
+        raise HookInstallError("settings.json changed to an unsafe file; aborted")
+    before_identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if before_identity != after_identity or len(raw) != after.st_size:
+        raise _ConcurrentSettingsEdit
+    return _SettingsSnapshot(raw, _digest(raw), after.st_mtime_ns, after.st_dev, after.st_ino, after.st_size)
+
+
+def _parse_snapshot(snapshot: _SettingsSnapshot) -> tuple[dict[str, Any], bool]:
+    raw = snapshot.raw
+    if raw is None:
+        return {}, False
     bom = raw.startswith(b"\xef\xbb\xbf")
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise HookInstallError("settings.json is not valid UTF-8") from exc
     if not text.strip():
-        return raw, {}, bom
+        return {}, bom
     try:
         data = json.loads(text)
     except ValueError as exc:
@@ -260,11 +298,38 @@ def _read(path: Path) -> tuple[bytes | None, dict[str, Any], bool]:
     for event, groups in (hooks or {}).items():
         if not isinstance(groups, list):
             raise HookInstallError(f"hooks.{event} is not a list")
-    return raw, data, bom
+    return data, bom
 
 
-def _serialize(data: dict[str, Any], bom: bool) -> bytes:
-    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+def _read_versioned(path: Path) -> tuple[_SettingsSnapshot, dict[str, Any], bool]:
+    snapshot = _snapshot_file(path)
+    data, bom = _parse_snapshot(snapshot)
+    return snapshot, data, bom
+
+
+def _read(path: Path) -> tuple[bytes | None, dict[str, Any], bool]:
+    """(raw bytes or None, parsed settings, had_bom). Refuses unsafe files."""
+    snapshot, data, bom = _read_versioned(path)
+    return snapshot.raw, data, bom
+
+
+def _serialize(data: dict[str, Any], bom: bool, original: bytes | None = None) -> bytes:
+    if original is None:
+        indent, compact, newline, trailing_newline, ensure_ascii = 2, False, "\n", True, False
+    else:
+        source = original.decode("utf-8-sig")
+        newline = "\r\n" if "\r\n" in source else "\n"
+        trailing_newline = source.endswith(("\n", "\r"))
+        match = re.search(r"(?m)^([ \t]+)\"[^\"\r\n]+\"\s*:", source)
+        indent = match.group(1) if match else 2
+        compact = not ("\n" in source or "\r" in source)
+        ensure_ascii = not any(ord(char) > 127 for char in source)
+    options = ({"separators": (",", ":")} if compact else {"indent": indent})
+    text = json.dumps(data, ensure_ascii=ensure_ascii, **options)
+    if newline != "\n":
+        text = text.replace("\n", newline)
+    if trailing_newline:
+        text += newline
     return (b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8")
 
 
@@ -335,63 +400,36 @@ def _prune_backups(path: Path, keep: int = KEEP_BACKUPS) -> list[str]:
     return removed
 
 
-def _write_checked(path: Path, original: bytes | None, payload: bytes, now: float) -> str | None:
-    """Best-effort backup, hash recheck, then replace; this is not atomic CAS.
-
-    Any OS error becomes a HookInstallError (a clean refusal, no traceback).
-    """
-    backup: str | None = None
-    temp: Path | None = None
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        _validate_path_chain(path)
-        if original is not None:
-            stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
-            backup_path = _unique_adjacent(path, f"backup-{stamp}", original)
-            backup = str(backup_path)
-        temp = _unique_adjacent(path, "tmp", payload)
-        _validate_path_chain(path)
+def _replace_with_retry(temp: Path, path: Path, expected: _SettingsSnapshot) -> None:
+    """Recheck and replace, briefly retrying Windows sharing violations."""
+    for retry in range(3):
+        current = _snapshot_file(path)
+        if not expected.matches(current):
+            raise _ConcurrentSettingsEdit
         try:
-            info = path.lstat()
-        except FileNotFoundError:
-            current = None
-        else:
-            if _is_reparse(path, info) or not stat.S_ISREG(info.st_mode):
-                raise HookInstallError("settings.json changed to an unsafe file; aborted")
-            current = path.read_bytes()
-        if _digest(current) != _digest(original):
-            raise HookInstallError("settings.json changed while editing; aborted without writing")
-        # The remaining hash-check/replace race cannot be excluded while Claude
-        # Code may write this file; this is best-effort protection, not CAS.
-        os.replace(temp, path)
-    except OSError as exc:
-        where = "backup" if backup is None and original is not None else "update"
-        raise HookInstallError(f"could not write the settings {where} ({exc.__class__.__name__}); "
-                               "settings.json was left unchanged") from None
-    finally:
-        if temp is not None:
-            try:
-                temp.unlink()
-            except OSError:
-                pass
-    _prune_backups(path)
-    return backup
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            if retry == 2:
+                raise
+            time.sleep(0.025 * (retry + 1))
 
 
 def _write_transform_checked(path: Path, transform, now: float) -> str | None:
-    """Retry a hook transform when another writer changes settings mid-edit.
-
-    Claude Code exposes no lock/CAS for settings.json. Hash checks immediately
-    before and after replacement narrow the race; a writer can still race in
-    the final interval, so this is best-effort protection rather than atomicity.
-    """
+    """Apply a transform only to a stable, freshly rechecked snapshot."""
     saw_existing = False
     for attempt in range(3):
-        original, data, bom = _read(path)
+        try:
+            snapshot, data, bom = _read_versioned(path)
+        except _ConcurrentSettingsEdit:
+            if attempt == 2:
+                raise HookInstallError("settings.json kept changing; latest content was left untouched") from None
+            continue
+        original = snapshot.raw
         if original is None and saw_existing:
             raise HookInstallError("settings.json changed while editing; it disappeared and was left untouched")
         saw_existing = saw_existing or original is not None
-        payload = transform(data, bom)
+        payload = transform(data, bom, original)
         if payload is None:
             return None
         backup: str | None = None
@@ -403,30 +441,22 @@ def _write_transform_checked(path: Path, transform, now: float) -> str | None:
                 stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
                 backup = str(_unique_adjacent(path, f"backup-{stamp}", original))
             temp = _unique_adjacent(path, "tmp", payload)
-            _validate_path_chain(path)
             try:
-                info = path.lstat()
-            except FileNotFoundError:
-                current = None
-            else:
-                if _is_reparse(path, info) or not stat.S_ISREG(info.st_mode):
-                    raise HookInstallError("settings.json changed to an unsafe file; aborted")
-                current = path.read_bytes()
-            if _digest(current) != _digest(original):
+                _replace_with_retry(temp, path, snapshot)
+            except _ConcurrentSettingsEdit:
                 if attempt == 2:
-                    raise HookInstallError("settings.json kept changing; left the latest version untouched")
+                    raise HookInstallError("settings.json kept changing; latest content was left untouched") from None
                 continue
-            os.replace(temp, path)
             temp = None
             try:
-                written = path.read_bytes()
-            except OSError:
-                written = None
-            if written == payload:
+                after = _snapshot_file(path)
+            except _ConcurrentSettingsEdit:
+                after = None
+            if after is not None and after.raw == payload:
                 _prune_backups(path)
                 return backup
             if attempt == 2:
-                raise HookInstallError("settings.json changed during verification; latest content was preserved")
+                raise HookInstallError("settings.json changed during verification; update refused")
         except OSError as exc:
             action = "backup" if original is not None and backup is None else "update"
             raise HookInstallError(f"could not write settings {action} ({exc.__class__.__name__}); settings were left unchanged") from None
@@ -505,7 +535,7 @@ def install(settings_path: str | os.PathLike[str] | None = None, command: str | 
     desired = _group(command)
     changed = False
 
-    def ensure_hooks(data, bom):
+    def ensure_hooks(data, bom, original):
         nonlocal changed
         changed = False
         hooks = data.setdefault("hooks", {})
@@ -516,7 +546,7 @@ def install(settings_path: str | os.PathLike[str] | None = None, command: str | 
                 continue
             hooks[event] = [g for g in groups if not is_ours(g, known)] + [desired]
             changed = True
-        return _serialize(data, bom) if changed else None
+        return _serialize(data, bom, original) if changed else None
 
     backup = _write_transform_checked(path, ensure_hooks, now)
     try:
@@ -554,7 +584,7 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
         changed = False
         left_mixed: list[str] = []
 
-        def remove_owned(data, bom):
+        def remove_owned(data, bom, original):
             nonlocal changed, left_mixed
             hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
             changed, left_mixed = False, []
@@ -570,7 +600,7 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
                         del hooks[event]
             if changed and not hooks:
                 data.pop("hooks", None)
-            return _serialize(data, bom) if changed else None
+            return _serialize(data, bom, original) if changed else None
 
         backup = _write_transform_checked(path, remove_owned, now)
     except HookInstallError as exc:
