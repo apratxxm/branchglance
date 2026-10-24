@@ -10,6 +10,7 @@ import secrets
 import socket
 import threading
 import time
+import unicodedata
 from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
@@ -278,19 +279,29 @@ def _load_window_bounds(path: Path) -> dict | None:
     return bounds
 
 
+# Placement, lock, hotkey and monitor-name writes all merge into one file from
+# different threads; the whole read-merge-write must not interleave.
+_WINDOW_STATE_LOCK = threading.Lock()
+
+
 def _save_window_bounds(path: Path, bounds: dict) -> None:
-    state = {}
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(saved, dict):
-            state.update(saved)
-    except (OSError, ValueError):
-        pass
-    state.update(bounds)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-    os.replace(temporary, path)
+    with _WINDOW_STATE_LOCK:
+        state = {}
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                state.update(saved)
+        except (OSError, ValueError):
+            pass
+        state.update(bounds)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            with suppress(OSError):
+                temporary.unlink()
 
 
 def _system_scale() -> float:
@@ -571,7 +582,7 @@ def _monitor_names(path: Path) -> dict[str, str]:
             return {}
         return {key.casefold(): value.strip() for key, value in values.items()
                 if _is_stable_monitor_id(key) and isinstance(value, str)
-                and 0 < len(value.strip()) <= 32 and not any(ord(char) < 32 for char in value)}
+                and _valid_monitor_name(value) is not None}
     except (OSError, ValueError, TypeError):
         return {}
 
@@ -580,7 +591,9 @@ def _valid_monitor_name(value) -> str | None:
     if not isinstance(value, str):
         return None
     name = value.strip()
-    if not name or len(name) > 32 or any(ord(char) < 32 for char in name):
+    # Control, format (bidi overrides, zero-width) and line/paragraph separators
+    # could reorder or hide text in the Settings list.
+    if not name or len(name) > 32 or any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"} for char in name):
         return None
     return name
 
@@ -2344,6 +2357,8 @@ class WidgetApp:
                 _width, height = _compact_notch_dimensions(mode, height)
         except ValueError:
             return
+        if mode != "dashboard":
+            self._revoke_dashboard_settings_token()
         if not self.window or not self.notch_mode or self.quitting:
             return
         with self._notch_lock:
@@ -2592,7 +2607,9 @@ class WidgetApp:
 
     def get_dashboard_settings_token(self):
         with self._lifecycle:
-            if self.quitting:
+            # Only the open dashboard may hold the settings token; the main page
+            # renders untrusted chat strings the rest of the time.
+            if self.quitting or self._compact_notch_mode != "dashboard":
                 return None
             with self._reset_actions_lock:
                 token = self._reset_actions_token or secrets.token_urlsafe(32)
@@ -2600,6 +2617,15 @@ class WidgetApp:
                 self._dashboard_settings_active = True
                 server_module.set_settings_token(token)
                 return token
+
+    def _revoke_dashboard_settings_token(self) -> None:
+        with self._reset_actions_lock:
+            if not self._dashboard_settings_active:
+                return
+            self._dashboard_settings_active = False
+            if self.reset_actions_window is None:
+                self._reset_actions_token = None
+                server_module.set_settings_token(None)
 
     def release_dashboard_settings_token(self, token):
         with self._reset_actions_lock:

@@ -103,7 +103,14 @@
       if(policyResponse.ok)state.policy=await policyResponse.json();else throw new Error("Provider policy is unavailable.");
       if(identityResponse.ok)state.identity=await identityResponse.json();
       if(typeof api?.get_monitors==="function"){const result=await api.get_monitors();state.monitors=Array.isArray(result)?result:[];}else state.monitors=[];
-      if(typeof api?.get_dashboard_settings_token==="function")state.settingsToken=await api.get_dashboard_settings_token();
+      if(typeof api?.get_dashboard_settings_token==="function"){
+        // The native side issues the token only once it is in dashboard mode, which can lag the click briefly.
+        for(let attempt=0;attempt<6&&state.open&&!state.settingsToken;attempt++){
+          state.settingsToken=await api.get_dashboard_settings_token();
+          if(!state.settingsToken)await new Promise(resolve=>setTimeout(resolve,150));
+        }
+        if(state.settingsToken&&!state.open){void api.release_dashboard_settings_token?.(state.settingsToken);state.settingsToken=null;return;}
+      }
       if(!state.settingsToken)state.settingsStatus="Reset settings are unavailable in this window.";
       else state.settingsStatus="";
       state.settingsLoaded=true;
@@ -139,6 +146,7 @@
     state.open=true;if(typeof source==="string")state.source=source;
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
     render();void loadLimitHistory();
+    if(state.tab==="settings"&&!state.settingsLoaded)void loadSettings();
   }
   function close(){
     state.open=false;const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
