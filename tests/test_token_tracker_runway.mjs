@@ -627,7 +627,7 @@ context.fetch=priorFetch;T.state.live=priorLive;T.state.loading=false;T.state.re
 T.render(waitingSnapshot);
 assert.equal(node('#strip').hidden,true);assert.equal(node('#strip').innerHTML,'');
 assert.ok(T.attentionItems(T.state.forest,waitingSnapshot.providers).some(item=>item.kind==='ask'));
-assert.equal(T.notch.counts.waiting,1);assert.match(node('#notch-counts').innerHTML,/aria-label="1 waiting"/);
+assert.equal(T.notch.counts.waiting,1);assert.match(node('#notch-counts').innerHTML,/aria-label="1 waiting[",]/);
 assert.equal(T.notch.counts.roots,1);assert.equal(T.notch.counts.total,1);
 assert.match(node('#chat-list').innerHTML,/Waiting parent/);
 assert.match(node('#chat-list').innerHTML,/runway-telemetry-state t-attn[^>]*><button class="runway-state-word runway-waiting-link"[^>]*>Waiting<\/button>/);
@@ -665,7 +665,7 @@ const countSnapshot={...snapshot,providers:[{...provider,chats:countChats}]};
 T.state.query='no matching title';T.render(countSnapshot);
 assert.match(node('#notch-counts').innerHTML,/aria-label="4 visible chat groups"/);
 assert.match(node('#notch-counts').innerHTML,/aria-label="8 active"/);
-assert.match(node('#notch-counts').innerHTML,/aria-label="2 waiting"/);
+assert.match(node('#notch-counts').innerHTML,/aria-label="2 waiting[",]/);
 assert.equal((node('#notch-counts').innerHTML.match(/class="count-value"/g)||[]).length,3);
 assert.equal(T.notch.counts.roots,4);assert.equal(T.notch.counts.total,8);assert.equal(T.notch.counts.waiting,2);
 assert.ok(T.notch.active>0);
@@ -1180,7 +1180,7 @@ assert.doesNotMatch(phoneMarkup,/runway-agent-secondary|runway-topline/,"phone r
 assert.match(phoneMarkup,/Reading phone\.js/);
 assert.equal(node("#notch-counts").title,"1 chat group, 3 active, 1 waiting");
 assert.match(node("#notch-counts").innerHTML,/aria-label="3 active"/);
-assert.match(node("#notch-counts").innerHTML,/aria-label="1 waiting"/);
+assert.match(node("#notch-counts").innerHTML,/aria-label="1 waiting[",]/);
 assert.equal(P.notch.autoTimer,null);assert.equal(P.notch.expanded,false);
 P.setNotch(true);P.syncNotch(1,[{key:"Codex:phone-root",active:true}]);
 assert.equal(P.notch.expanded,false);assert.equal(P.notch.autoTimer,null);

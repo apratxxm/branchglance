@@ -409,3 +409,6 @@ body:not(.phone) .runway-agent-glance>.runway-telemetry-context{grid-column:2;gr
 body:not(.phone) .runway-waiting-link{display:inline;border:0;border-radius:0;background:transparent;padding:0;margin:0;width:auto;min-width:0;height:auto;min-height:0;box-shadow:none;color:inherit;font:inherit;line-height:inherit;text-align:inherit;vertical-align:baseline;white-space:inherit}
 body:not(.phone) .runway-waiting-link:hover{color:#ffd08a;text-decoration:underline;text-underline-offset:2px}
 body:not(.phone) .runway-waiting-link:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.runway-count[data-action="jump-waiting"]{cursor:pointer;border-radius:4px}
+.runway-count[data-action="jump-waiting"]:hover{background:#ffffff12}
+.runway-count[data-action="jump-waiting"]:focus-visible{outline:1px solid var(--orange);outline-offset:1px}
