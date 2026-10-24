@@ -541,3 +541,7 @@ assert.equal(rowClasses.has("runway-root-stuck"), false, "negative above-flow di
 rowClasses.add("runway-tall-root"); rowTop = rootTop; onLayoutScroll(); runGeometryFrame();
 assert.equal(rowClasses.has("runway-root-stuck"), false, "nonsticky tall roots clear the stuck surface"); rowClasses.delete("runway-tall-root");
 delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
+
+// Times and statuses share one centred column: the title track is fixed, so long activity text can't shift it per row.
+assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{[^}]*grid-template-columns:calc\(var\(--runway-inspect-clock-axis,278px\) - 80px\) 84px /);
+assert.doesNotMatch(css, /grid-template-columns:minmax\(0,calc\(var\(--runway-inspect-clock-axis/);
