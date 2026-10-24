@@ -448,6 +448,34 @@ def test_title_and_model_survive_the_transcript_rewrite_during_compaction(world)
     assert world.rows()[SID]["title"] == "Renamed"
 
 
+def test_question_survives_the_permission_events_claude_sends_after_it(world):
+    """Claude sends AskUserQuestion, then PermissionRequest and a permission_prompt Notification for the same wait."""
+    ask = {"type": "tool_use", "id": "toolu_q1", "name": "AskUserQuestion",
+           "input": {"questions": [{"question": "Where should it run?", "header": "Run",
+                                    "options": [{"label": "Hosted"}, {"label": "Local"}]}]}}
+    world.transcript(SID, [user(NOW - 30), assistant(NOW - 10, "m1", blocks=[ask])])
+    world.hooks([ev(NOW - 30, "UserPromptSubmit", prompt_id="p1"),
+                 ev(NOW - 10, "PreToolUse", tool_name="AskUserQuestion", tool_use_id="toolu_q1", prompt_id="p1"),
+                 ev(NOW - 9.99, "PermissionRequest", tool_name="AskUserQuestion", prompt_id="p1"),
+                 ev(NOW - 4, "Notification", notification_type="permission_prompt", prompt_id="p1")])
+    row = world.rows()[SID]
+    assert row["status"] == "needs input" and row["executionStatus"] == "waiting"
+    assert row["pendingQuestion"] == "Where should it run?"
+    assert row["pendingOptions"] == ["Hosted", "Local"] and row["pendingQuestionId"] == "toolu_q1"
+    # Answering clears it; a later plain permission prompt carries no question.
+    world.hooks([ev(NOW - 30, "UserPromptSubmit", prompt_id="p1"),
+                 ev(NOW - 10, "PreToolUse", tool_name="AskUserQuestion", tool_use_id="toolu_q1", prompt_id="p1"),
+                 ev(NOW - 9.99, "PermissionRequest", tool_name="AskUserQuestion", prompt_id="p1"),
+                 ev(NOW - 4, "Notification", notification_type="permission_prompt", prompt_id="p1"),
+                 ev(NOW - 3, "PostToolUse", tool_name="AskUserQuestion", tool_use_id="toolu_q1", prompt_id="p1"),
+                 ev(NOW - 2, "PermissionRequest", tool_name="Bash", prompt_id="p1")])
+    world.transcript(SID, [user(NOW - 30), assistant(NOW - 10, "m1", blocks=[ask]),
+                           {"type": "user", "timestamp": stamp(NOW - 3),
+                            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_q1"}]}}])
+    row = world.rows()[SID]
+    assert row["status"] == "needs input" and row["pendingQuestion"] is None
+
+
 # ------------------------------------------------- parity: provider aggregates
 
 def _local_day(epoch):

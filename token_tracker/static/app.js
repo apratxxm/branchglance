@@ -1792,7 +1792,7 @@ function runwayTelemetryHTML(chat,agent=false) {
   const run=currentEvidence?runInfo(chat):null,runTimeHTML=run?'<span data-runway-slot="run-time" class="runway-run-time runway-run-clock" title="'+(run.live?'Elapsed in current run':'Recorded run duration')+'">'+ICON.clock+esc(runSpan(run.seconds))+'</span>':'';
   const modelTiming=(modelHTML||runTimeHTML)?'<span data-runway-slot="model-timing" class="runway-model-timing">'+modelHTML+runTimeHTML+'</span>':'';
   const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!chat.parentId?(chat.descendants||[]).find(runwayWaiting):null);
-  const stateContents=status==='Waiting'&&waitingTarget&&!PHONE?'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="Open '+esc(waitingTarget.title||runwayTitle(waitingTarget,Boolean(waitingTarget.parentId)))+' in Codex" title="Open waiting chat in Codex">Waiting</button>':!PHONE?((agent||!status?'':runwayStatusDot(status,tone))+activityHTML):(status?runwayStatusGlyph(statusCode)+'<span class="runway-state-word">'+esc(status)+'</span>':'');
+  const stateContents=status==='Waiting'&&waitingTarget&&!PHONE?'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc((isCodexChat(waitingTarget)?'Open ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,Boolean(waitingTarget.parentId)))+(isCodexChat(waitingTarget)?' in Codex':''))+'" title="'+(isCodexChat(waitingTarget)?'Open waiting chat in Codex':'Show what Claude is waiting for')+'">Waiting</button>':!PHONE?((agent||!status?'':runwayStatusDot(status,tone))+activityHTML):(status?runwayStatusGlyph(statusCode)+'<span class="runway-state-word">'+esc(status)+'</span>':'');
   const stateHTML=status||activityHTML?'<span data-runway-slot="state" class="runway-telemetry-state t-'+tone+(agent&&!PHONE||activityHTML?' runway-agent-state':'')+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'"'+(!PHONE&&status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+(!statusUnavailable||PHONE?stateContents:'')+(!PHONE&&(status==='Waiting'||statusUnavailable)?activityHTML:'')+'</span>':'';
   const primary='<span data-runway-slot="primary" class="runway-primary">'+titleHTML+
     stateHTML+(PHONE?elapsedHTML:'')+'</span>'+ 
@@ -1807,7 +1807,7 @@ function runwayTelemetryHTML(chat,agent=false) {
   if(REFINED){
     const stateIcon=runwayStatusGlyph(status==='Waiting'?'needs-input':status==='Compacting'?'compacting':status==='Running'||status==='Agents running'?'running':statusCode);
     const visibleStatus=COMPACT&&status==='Agents running'?'Agents active':status;
-    const stateContent=status?((status==='Waiting'&&waitingTarget?stateIcon+'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="Open '+esc(waitingTarget.title||runwayTitle(waitingTarget,Boolean(waitingTarget.parentId)))+' in Codex" title="Open waiting chat in Codex">Waiting</button>':stateIcon+'<span class="runway-state-word"'+(visibleStatus!==status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+esc(visibleStatus)+'</span>')):'';
+    const stateContent=status?((status==='Waiting'&&waitingTarget?stateIcon+'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc((isCodexChat(waitingTarget)?'Open ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,Boolean(waitingTarget.parentId)))+(isCodexChat(waitingTarget)?' in Codex':''))+'" title="'+(isCodexChat(waitingTarget)?'Open waiting chat in Codex':'Show what Claude is waiting for')+'">Waiting</button>':stateIcon+'<span class="runway-state-word"'+(visibleStatus!==status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+esc(visibleStatus)+'</span>')):'';
     const treeAnchor='<span data-runway-slot="tree-anchor" class="runway-name-status runway-refined-tree-anchor t-'+tone+'" aria-hidden="true">'+(status?runwayStatusDot(status,tone):'')+'</span>';
     const elapsedTarget=ownCurrent?chat:waitingTarget;
     const elapsed=currentEvidence&&elapsedTarget&&!statusUnavailable?runwayStateElapsed(elapsedTarget):'';
@@ -1824,7 +1824,9 @@ function runwayTelemetryHTML(chat,agent=false) {
 }
 function runwayQuestionPopover(chat) {
   if(!runwayCurrentEvidenceFresh()||chat?.telemetryUnavailable)return '';
-  if(!chat||!runwayWaiting(chat)||!chat.pendingQuestion)return '';
+  if(!chat||!runwayWaiting(chat))return '';
+  if(!PHONE&&!isCodexChat(chat)&&!chat.pendingQuestion)return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close" title="Close">×</button><div class="runway-question-full">Waiting for your approval in Claude.</div></div>';
+  if(!chat.pendingQuestion)return '';
   if(!PHONE&&!isCodexChat(chat)){
     const command=resumeCommand(chat);
     return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close question" title="Close question">×</button><div class="runway-question-full">'+richText(chat.pendingQuestion)+'</div>'+plainOptionsHTML(chat.pendingOptions)+(command?'<button class="q-open" data-action="copy" data-copy="'+esc(command)+'" title="'+esc(command)+'">'+ICON.copy+'<span>Copy resume command</span>'+ICON.check+'</button>':'')+'</div>';
@@ -2863,7 +2865,6 @@ function handleClick(event) {
     }
     const chat=state.forest?.rows.find(item=>item.key===key);if(!chat||!runwayWaiting(chat))return;
     if(!isCodexChat(chat)){
-      if(!chat.pendingQuestion)return;
       notch.manual=true;setNotch(true);openPopover(runwayQuestionPopover(chat),button);button.__questionId=chat.pendingQuestionId??chat.questionId??null;button.__questionAt=chat.pendingQuestionAt||null;button.__questionText=chat.pendingQuestion;button.__questionOptions=JSON.stringify(chat.pendingOptions||[]);return;
     }
     openInCodex(chat.id,button);return;

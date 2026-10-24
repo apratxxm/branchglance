@@ -545,3 +545,12 @@ delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
 // Times and statuses share one centred column: the title track is fixed, so long activity text can't shift it per row.
 assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{[^}]*grid-template-columns:calc\(var\(--runway-inspect-clock-axis,278px\) - 80px\) 84px /);
 assert.doesNotMatch(css, /grid-template-columns:minmax\(0,calc\(var\(--runway-inspect-clock-axis/);
+
+// A Claude chat waiting on a permission prompt has no question text but still explains itself.
+{
+  const claudeWaiting = { id: "s-perm", key: "Claude:s-perm", provider: "Claude", title: "Perm", status: "needs-input", executionStatus: "waiting", stateSince: stamp(1), updatedAt: stamp(0) };
+  assert.match(T.runwayQuestionPopover(claudeWaiting), /Waiting for your approval in Claude/);
+  const asked = { ...claudeWaiting, pendingQuestion: "Where should it run?", pendingOptions: ["Hosted", "Local"], pendingQuestionAt: stamp(0) };
+  assert.match(T.runwayQuestionPopover(asked), /Where should it run\?/);
+  assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
+}
