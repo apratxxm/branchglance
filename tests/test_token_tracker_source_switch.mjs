@@ -57,6 +57,17 @@ function boot(initialStorage={}, {compact=false}={}) {
   vm.createContext(context);vm.runInContext(app,context);
   return {T:context.window.__tokenTrackerTest,node,saved,segments,context,timers};
 }
+{
+  const instance=boot({}, {compact:true});instance.T.notch.mode="controls";
+  assert.equal(instance.T.openDashboard(),true);assert.equal(instance.T.notch.mode,"dashboard");
+  assert.equal(instance.node("#dashboard-view").hidden,false);
+  assert.equal(instance.T.closeDashboard(),true);assert.equal(instance.T.notch.mode,"controls");
+  assert.equal(instance.node("#dashboard-view").hidden,true,"closing returns to the previous compact mode");
+  instance.T.openDashboard();
+  const escape={key:"Escape",target:{tagName:"BODY"},preventDefault(){this.prevented=true;},stopImmediatePropagation(){}};
+  instance.T.handleKey(escape);
+  assert.equal(escape.prevented,true);assert.equal(instance.T.notch.mode,"controls");assert.equal(instance.node("#dashboard-view").hidden,true,"Escape closes the dashboard and restores the compact widget");
+}
 const policies=(codex=true,claude=true)=>({schemaVersion:1,generation:"g"+codex+claude,providers:[
   {name:"Codex",collect:codex,show:codex,send:false,sendOrigin:"default",capabilities:{greet:false,continue:false}},
   {name:"Claude",collect:claude,show:claude,send:false,sendOrigin:"default",capabilities:{greet:false,continue:false}}]});

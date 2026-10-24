@@ -6,6 +6,7 @@
   <link rel="stylesheet" href="fonts/localfonts.css">
   <link rel="stylesheet" href="runway.css">
   <link rel="stylesheet" href="runway_refined.css">
+  <link rel="stylesheet" href="dashboard.css">
 </head>
 <body class="notch-collapsed runway-refined runway-compact" data-notch-mode="controls">
   <main class="widget">
@@ -17,7 +18,7 @@
       <button id="sync-age" class="sync-age" data-action="refresh" aria-label="Refresh usage" title="Refresh usage">Now</button>
       <button id="monitor-toggle" class="sync-age" aria-label="Move to next monitor" title="Move to next monitor">Monitor</button>
       <div id="source-switch" class="source-switch" role="group" aria-label="Source" aria-busy="true"><button class="source-seg" data-action="source" data-source="Codex" aria-label="Codex" aria-pressed="true" aria-disabled="true" disabled>Codex<i class="source-dot" aria-hidden="true"></i></button><button class="source-seg" data-action="source" data-source="Claude" aria-label="Claude" aria-pressed="false" aria-disabled="true" disabled>Claude<i class="source-dot" aria-hidden="true"></i></button></div>
-      <button id="window-recenter"class="icon-btn" aria-label="Recenter widget" title="Recenter widget"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1v2M6 9v2M1 6h2M9 6h2"/><rect x="3" y="3" width="6" height="6" rx="1"/></svg></button>
+      <button id="dashboard-open" class="icon-btn" data-action="dashboard" aria-label="Open Insights dashboard" title="Insights"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M1.5 10.5h9M2.5 9V6.5M5.1 9V3.5M7.7 9V5M10.3 9V1.8"/></svg></button>
       <span class="tb-fill pywebview-drag-region"></span>
       <span id="notch-counts" class="notch-counts" aria-label="Live chat counts"></span>
       <button id="search-toggle" class="icon-btn" data-action="search" aria-label="Search chats" title="Search  /"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><circle cx="5.25" cy="5.25" r="3.5"/><path d="m7.9 7.9 2.6 2.6"/></svg></button>
@@ -46,6 +47,21 @@
         <div id="chat-list" class="chat-list"></div>
       </section>
     </div>
+    <section id="dashboard-view" class="dashboard-view" aria-label="Insights and Settings dashboard" hidden inert aria-hidden="true">
+      <header class="dashboard-header">
+        <div class="dashboard-heading"><span class="dashboard-eyebrow">BRANCHGLANCE / WORKSPACE</span><h1 id="dashboard-title">Insights</h1></div>
+        <nav class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
+          <button id="dashboard-tab-insights" class="dashboard-tab is-active" role="tab" aria-selected="true" aria-controls="dashboard-insights" data-dashboard-tab="insights">Insights</button>
+          <button id="dashboard-tab-settings" class="dashboard-tab" role="tab" aria-selected="false" aria-controls="dashboard-settings" data-dashboard-tab="settings">Settings</button>
+        </nav>
+        <button id="dashboard-close" class="dashboard-close" data-dashboard-action="close" aria-label="Close dashboard and return to widget" title="Close dashboard"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button>
+      </header>
+      <div id="dashboard-content" class="dashboard-content">
+        <section id="dashboard-insights" class="dashboard-panel" role="tabpanel" aria-labelledby="dashboard-tab-insights"></section>
+        <section id="dashboard-settings" class="dashboard-panel" role="tabpanel" aria-labelledby="dashboard-tab-settings" hidden></section>
+      </div>
+      <div id="dash-tooltip" class="dash-tooltip" role="tooltip" aria-hidden="true"></div>
+    </section>
     <div id="weekly-resets" class="weekly-resets" aria-label="Weekly quota"></div>
     <div id="popover" class="popover" role="dialog" hidden></div>
   </main>
@@ -59,6 +75,7 @@
     if(runwayParams.get("review")==="1")window.__TOKEN_TRACKER_TEST__=true;
     if(runwayParams.get("wire")==="1")document.body.classList.add("wireframe");
   </script>
+  <script src="dashboard.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

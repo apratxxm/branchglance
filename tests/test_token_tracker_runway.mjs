@@ -6,6 +6,8 @@ const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.u
 const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
 const refinedCss=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
+const dashboardCss=fs.readFileSync(new URL("../token_tracker/static/dashboard.css",import.meta.url),"utf8");
+const dashboardScript=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8");
 const reviewPage=fs.readFileSync(new URL("../token_tracker/static/runway_review.html",import.meta.url),"utf8");
 const reviewScript=fs.readFileSync(new URL("../token_tracker/static/runway_review.js",import.meta.url),"utf8");
 const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector)?.[2]||"";
@@ -16,7 +18,11 @@ assert.doesNotMatch(page,/<div class="ch-normal">|class="ch-title"[^>]*>Chats/);
 assert.match(page,/<div class="ch-search">[\s\S]*id="hidden-chats-toggle"[^>]*data-action="show-hidden"/);
 assert.match(page,/id="sync-age"[^>]*data-action="refresh"[^>]*aria-label="Refresh usage"/);
 assert.match(page,/id="monitor-toggle"[^>]*aria-label="Move to next monitor"/);
-assert.match(page,/id="window-recenter"[^>]*aria-label="Recenter widget"/);
+assert.match(page,/id="dashboard-open"[^>]*data-action="dashboard"[^>]*aria-label="Open Insights dashboard"/);
+assert.match(page,/id="dashboard-view"[^>]*aria-label="Insights and Settings dashboard"/);
+assert.match(page,/src="dashboard.js"><\/script>\s*<script src="app.js"/);
+assert.match(dashboardCss,/data-notch-mode="dashboard"/);assert.match(dashboardCss,/prefers-reduced-motion/);
+assert.match(dashboardScript,/Last 31 days/);assert.match(dashboardScript,/Provider permissions/);
 assert.match(page,/id="widget-lock"[^>]*data-action="widget-lock"[^>]*aria-pressed="false"[^>]*aria-label="Lock widget"[^>]*title="Lock widget"/);
 assert.match(page,/id="widget-lock"[^>]*><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2\.5" y="5" width="7" height="5\.5" rx="1"\/><path d="M4 5V3\.8a2 2 0 0 1 3\.6-1\.2"\/><\/svg>/,"the initial lock button shows the unlocked icon");
 assert.doesNotMatch(page,/<header class="titlebar pywebview-drag-region"/);
@@ -119,6 +125,7 @@ const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true
 context.window.addEventListener=()=>{};context.document.addEventListener=()=>{};
 vm.createContext(context);vm.runInContext(app,context);
 const T=context.window.__tokenTrackerTest,ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
+ assert.equal(T.openDashboard(),false,"the dashboard entry is limited to the compact widget profile");
 assert.equal(T.writeInspectLayoutWidth(500),true);
 assert.equal(context.document.documentElement.style['--runway-inspect-clock-axis'],'250px');
 T.writeInspectLayoutWidth(556);
@@ -957,7 +964,7 @@ assert.ok(!nativeCalls.some(call=>["select","recenter","fit"].includes(call[0]))
 const widgetEvents=new Map(),buttonEvents=new Map();
 node(".widget").addEventListener=(name,handler)=>widgetEvents.set(name,handler);
 node(".titlebar").getBoundingClientRect=()=>({left:0,right:400,top:0,bottom:30});
-for(const selector of ["#monitor-toggle","#window-recenter"])
+for(const selector of ["#monitor-toggle","#dashboard-open"])
   node(selector).addEventListener=(name,handler)=>buttonEvents.set(selector+":"+name,handler);
 const notchDocumentEvents=new Map();
 context.document.addEventListener=(name,handler)=>notchDocumentEvents.set(name,handler);
