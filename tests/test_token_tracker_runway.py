@@ -1724,28 +1724,13 @@ def test_recenter_while_stable_monitor_is_missing_adopts_fallback(native_notch):
     assert app._notch_position is None
 
 
-@pytest.mark.parametrize("native_notch", [True], indirect=True)
-def test_dashboard_settings_token_exists_only_while_the_dashboard_is_open(native_notch, monkeypatch):
-    app, _monitors, _rect, _calls = native_notch
-    published = []
-    monkeypatch.setattr(widget.server_module, "set_settings_token", published.append)
-    app.set_notch(False, None, False, "inspect")
-    assert app.get_dashboard_settings_token() is None, "the main page can't obtain the token outside the dashboard"
-
-    app.set_notch(False, 540, False, "dashboard")
-    token = app.get_dashboard_settings_token()
-    assert isinstance(token, str) and published[-1] == token
-    # A reload or crash never calls release: leaving dashboard mode revokes it natively.
-    app.set_notch(False, None, False, "controls")
-    assert app._reset_actions_token is None and published[-1] is None
-    assert app.release_dashboard_settings_token(token) is False
-
-    # The separate settings window keeps its own use of the token.
-    app.set_notch(False, 540, False, "dashboard")
-    token = app.get_dashboard_settings_token()
-    app.reset_actions_window = object()
-    app.set_notch(False, None, False, "inspect")
-    assert app._reset_actions_token == token and app._dashboard_settings_active is False
+def test_dashboard_page_has_no_way_to_obtain_the_settings_token():
+    """The main page renders untrusted chat strings, so the token only ever goes to the separate settings window."""
+    api = widget.WindowApi(None, None, None)
+    assert not any("settings_token" in name for name in dir(api)), "no bridge method hands the token to the page"
+    assert callable(api.open_reset_actions)
+    dashboard = (Path(widget.__file__).parent / "static" / "dashboard.js").read_text(encoding="utf-8")
+    assert "#t=" not in dashboard and "settings_token" not in dashboard
 
 
 @pytest.mark.parametrize("native_notch", [True], indirect=True)

@@ -715,8 +715,7 @@ class WindowApi:
                  on_monitors=None, on_monitor=None, on_recenter=None, on_drag_begin=None, on_drag_end=None,
                  on_lock=None, on_get_lock=None, on_reset_actions=None,
                  on_keep_open=None, on_get_keep_open=None, on_compact_profile=None,
-                 on_set_monitor_name=None, on_dashboard_settings_token=None,
-                 on_release_dashboard_settings_token=None) -> None:
+                 on_set_monitor_name=None) -> None:
         self._minimize = on_minimize
         self._toggle_maximize = on_toggle_maximize
         self._close = on_close
@@ -736,8 +735,6 @@ class WindowApi:
         self._get_keep_open = on_get_keep_open
         self._is_compact_profile = on_compact_profile
         self._set_monitor_name = on_set_monitor_name
-        self._dashboard_settings_token = on_dashboard_settings_token
-        self._release_dashboard_settings_token = on_release_dashboard_settings_token
 
     def open_reset_actions(self):
         return self._open_reset_actions() if self._open_reset_actions else False
@@ -767,12 +764,6 @@ class WindowApi:
 
     def set_monitor_name(self, monitor_id, name):
         return self._set_monitor_name(monitor_id, name) if self._set_monitor_name else []
-
-    def get_dashboard_settings_token(self):
-        return self._dashboard_settings_token() if self._dashboard_settings_token else None
-
-    def release_dashboard_settings_token(self, token):
-        return self._release_dashboard_settings_token(token) if self._release_dashboard_settings_token else False
 
     def recenter(self):
         return self._recenter() if self._recenter else None
@@ -896,7 +887,6 @@ class WidgetApp:
         self.reset_actions_window = None
         self._reset_actions_token = None
         self._reset_actions_lock = threading.Lock()
-        self._dashboard_settings_active = False
         self.start_hidden = bool(start_hidden)
         self.visible = not self.start_hidden
         self.server: ThreadingHTTPServer | None = None
@@ -2357,8 +2347,6 @@ class WidgetApp:
                 _width, height = _compact_notch_dimensions(mode, height)
         except ValueError:
             return
-        if mode != "dashboard":
-            self._revoke_dashboard_settings_token()
         if not self.window or not self.notch_mode or self.quitting:
             return
         with self._notch_lock:
@@ -2518,7 +2506,6 @@ class WidgetApp:
         with self._reset_actions_lock:
             server_module.set_settings_token(None)
             self._reset_actions_token = None
-            self._dashboard_settings_active = False
         child, self.reset_actions_window = self.reset_actions_window, None
         if child is not None:
             with suppress(Exception):
@@ -2574,8 +2561,8 @@ class WidgetApp:
             except Exception:
                 self.reset_actions_window = None
         try:
+            token = secrets.token_urlsafe(32)
             with self._reset_actions_lock:
-                token = self._reset_actions_token or secrets.token_urlsafe(32)
                 server_module.set_settings_token(token)
                 self._reset_actions_token = token
             child = webview.create_window(
@@ -2589,7 +2576,7 @@ class WidgetApp:
                 with self._reset_actions_lock:
                     if self.reset_actions_window is child:
                         self.reset_actions_window = None
-                    if self._reset_actions_token == token and not getattr(self, "_dashboard_settings_active", False):
+                    if self._reset_actions_token == token:
                         self._reset_actions_token = None
                         server_module.set_settings_token(None)
 
@@ -2597,45 +2584,12 @@ class WidgetApp:
             return True
         except Exception:
             with self._reset_actions_lock:
-                if (self._reset_actions_token == locals().get("token")
-                        and not getattr(self, "_dashboard_settings_active", False)):
+                if self._reset_actions_token == locals().get("token"):
                     self._reset_actions_token = None
                     server_module.set_settings_token(None)
             logging.getLogger(__name__).warning("Could not open reset action settings")
             self.reset_actions_window = None
             return False
-
-    def get_dashboard_settings_token(self):
-        with self._lifecycle:
-            # Only the open dashboard may hold the settings token; the main page
-            # renders untrusted chat strings the rest of the time.
-            if self.quitting or self._compact_notch_mode != "dashboard":
-                return None
-            with self._reset_actions_lock:
-                token = self._reset_actions_token or secrets.token_urlsafe(32)
-                self._reset_actions_token = token
-                self._dashboard_settings_active = True
-                server_module.set_settings_token(token)
-                return token
-
-    def _revoke_dashboard_settings_token(self) -> None:
-        with self._reset_actions_lock:
-            if not self._dashboard_settings_active:
-                return
-            self._dashboard_settings_active = False
-            if self.reset_actions_window is None:
-                self._reset_actions_token = None
-                server_module.set_settings_token(None)
-
-    def release_dashboard_settings_token(self, token):
-        with self._reset_actions_lock:
-            if not isinstance(token, str) or token != self._reset_actions_token:
-                return False
-            self._dashboard_settings_active = False
-            if self.reset_actions_window is None:
-                self._reset_actions_token = None
-                server_module.set_settings_token(None)
-            return True
 
     def _startup_step(self, action):
         """Run one startup acquisition unless a shutdown was requested; serialized with quit()."""
@@ -2751,9 +2705,7 @@ class WidgetApp:
                              on_get_lock=self.get_widget_lock, on_reset_actions=self.open_reset_actions,
                              on_keep_open=self.set_keep_open, on_get_keep_open=self.get_keep_open,
                               on_compact_profile=lambda: self.compact_profile,
-                              on_set_monitor_name=self.set_monitor_name,
-                              on_dashboard_settings_token=self.get_dashboard_settings_token,
-                              on_release_dashboard_settings_token=self.release_dashboard_settings_token),
+                              on_set_monitor_name=self.set_monitor_name),
         )
         self.window.events.before_show += self._set_native_background_fallback
         self.window.events.closing += self.on_closing

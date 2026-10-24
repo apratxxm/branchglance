@@ -1,6 +1,6 @@
 (() => {
   const $=selector=>document.querySelector(selector),DAY=86400000;
-  const state={open:false,tab:"insights",source:"Codex",snapshot:null,limitHistory:null,policy:null,identity:null,monitors:[],settingsLoaded:false,settingsBusy:false,settingsToken:null,frame:null,renderKey:"",settingsStatus:"",settingsError:false};
+  const state={open:false,tab:"insights",source:"Codex",snapshot:null,limitHistory:null,policy:null,identity:null,monitors:[],settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsStatus:"",settingsError:false};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const nfmt=new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3});
@@ -80,7 +80,8 @@
   }
   function settingsHTML(){
     const startup=typeof state.identity?.startAtLogin==="boolean"?state.identity.startAtLogin?"Enabled":"Disabled":"Status not available from this widget";
-    const reset=state.settingsToken?`<iframe class="dash-reset-frame" title="Auto-greet, continue and Claude hook settings" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}#t=${encodeURIComponent(state.settingsToken)}"></iframe>`:`<div class="dash-empty">${esc(state.settingsStatus||"Loading settings…")}</div>`;
+    // The page never holds the settings token: Claude tracking is shown read-only here and changed in its own window.
+    const reset=state.settingsLoaded?`<iframe class="dash-reset-frame" title="Auto-greet, continue and Claude hook settings" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe><div class="dash-actions"><button class="dash-mini-button" data-dashboard-action="claude-settings">Change Claude tracking…</button></div>`:`<div class="dash-empty">${esc(state.settingsStatus||"Loading settings…")}</div>`;
     return `<div class="dash-settings"><div class="dash-settings-stack">${policyHTML()}<article class="dash-card dash-section"><div class="dash-section-head"><h2 class="dash-section-title">Monitors</h2><span class="dash-section-meta">Names saved by display identity</span></div>${monitorHTML()}<p class="dash-status${state.settingsError?" is-error":""}" role="status">${esc(state.settingsStatus)}</p><div class="dash-actions"><button class="dash-mini-button" data-dashboard-action="refresh-settings" ${state.settingsBusy?"disabled":""}>Refresh</button><button class="dash-mini-button" data-dashboard-action="recenter">Recenter widget</button></div></article><article class="dash-card dash-section"><div class="dash-section-head"><h2 class="dash-section-title">Start at login</h2><span class="dash-readonly">Read only</span></div><p class="dash-settings-note">${esc(startup)}. This widget does not expose a startup-setting control.</p></article></div><div class="dash-settings-stack"><article class="dash-card dash-section"><div class="dash-section-head"><h2 class="dash-section-title">Auto-greet, continue and Claude Code</h2><span class="dash-section-meta">Existing reset settings</span></div>${reset}</article></div></div>`;
   }
   function bindTooltips(){
@@ -103,16 +104,7 @@
       if(policyResponse.ok)state.policy=await policyResponse.json();else throw new Error("Provider policy is unavailable.");
       if(identityResponse.ok)state.identity=await identityResponse.json();
       if(typeof api?.get_monitors==="function"){const result=await api.get_monitors();state.monitors=Array.isArray(result)?result:[];}else state.monitors=[];
-      if(typeof api?.get_dashboard_settings_token==="function"){
-        // The native side issues the token only once it is in dashboard mode, which can lag the click briefly.
-        for(let attempt=0;attempt<6&&state.open&&!state.settingsToken;attempt++){
-          state.settingsToken=await api.get_dashboard_settings_token();
-          if(!state.settingsToken)await new Promise(resolve=>setTimeout(resolve,150));
-        }
-        if(state.settingsToken&&!state.open){void api.release_dashboard_settings_token?.(state.settingsToken);state.settingsToken=null;return;}
-      }
-      if(!state.settingsToken)state.settingsStatus="Reset settings are unavailable in this window.";
-      else state.settingsStatus="";
+      state.settingsStatus="";
       state.settingsLoaded=true;
     }catch(error){state.settingsError=true;state.settingsStatus=error?.message||"Settings could not be loaded.";}
     finally{state.settingsBusy=false;render();}
@@ -131,7 +123,7 @@
     if(key!==state.renderKey){state.renderKey=key;const insights=$("#dashboard-insights");if(insights)insights.innerHTML=insightsHTML();}
     const settings=$("#dashboard-settings");
     if(settings&&state.tab==="settings"){
-      const settingsKey=[state.source,state.policy?.generation,state.identity?.stateRoot,state.settingsToken,state.settingsStatus,state.settingsBusy,state.settingsError,state.monitors.map(m=>`${m.id}:${m.label}`).join("|")].join("|");
+      const settingsKey=[state.source,state.policy?.generation,state.identity?.stateRoot,state.settingsStatus,state.settingsBusy,state.settingsError,state.monitors.map(m=>`${m.id}:${m.label}`).join("|")].join("|");
       if(settingsKey!==state.settingsRenderKey){state.settingsRenderKey=settingsKey;settings.innerHTML=settingsHTML();state.frame=$("#dashboard-settings iframe");}
     }
     const root=$("#dashboard-view");if(root){root.dataset.provider=current?.name||state.source;bindTooltipsOnce();}
@@ -151,7 +143,6 @@
   function close(){
     state.open=false;const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
     const frame=$("#dashboard-settings iframe");if(frame)frame.src="about:blank";
-    if(state.settingsToken){void window.pywebview?.api?.release_dashboard_settings_token?.(state.settingsToken);state.settingsToken=null;}
     state.frame=null;state.settingsLoaded=false;state.settingsRenderKey="";
   }
   function setSnapshot(snapshot){state.snapshot=snapshot;if(state.open)render();}
@@ -163,6 +154,7 @@
     else if(action.dataset.dashboardAction==="save-monitor")void saveMonitor(action);
     else if(action.dataset.dashboardAction==="refresh-settings"){state.settingsLoaded=false;void loadSettings();}
     else if(action.dataset.dashboardAction==="recenter")void window.tokenTrackerRecenter?.();
+    else if(action.dataset.dashboardAction==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
   });
   window.addEventListener("message",event=>{if(event.origin===location.origin&&event.source===state.frame?.contentWindow&&event.data?.type==="dashboard-reset-cancel")window.tokenTrackerCloseDashboard?.();});
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
