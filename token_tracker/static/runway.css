@@ -325,11 +325,11 @@ body:not(.phone).notch-expanded .chats,body:not(.phone).notch-expanded .totals{o
 .runway-count.t-attn{color:var(--orange)}
 .runway-question-trigger{width:24px;height:24px;min-width:24px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--orange);font-weight:700;line-height:1;flex:none}
 .runway-question-trigger:hover,.runway-question-trigger:focus-visible{background:#282116}
-.popover:has(.runway-question-panel){width:min(380px,calc(100vw - 16px));max-width:min(380px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:hidden}
-.runway-question-panel{position:relative;max-height:calc(100vh - 48px);overflow:auto;overscroll-behavior:contain;padding:18px 4px 4px;scrollbar-width:none}
+.popover:has(.runway-question-panel){width:max-content;max-width:min(300px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:hidden;padding:8px 10px}
+.runway-question-panel{position:relative;max-height:calc(100vh - 40px);overflow:auto;overscroll-behavior:contain;padding:1px 22px 1px 1px;scrollbar-width:none}
 .runway-question-panel .runway-question-full{font-size:13px;line-height:1.5;color:var(--ink);overflow-wrap:anywhere;white-space:pre-wrap}
-.runway-question-panel .q-opts{margin-top:12px}
-.runway-question-close{position:absolute;right:0;top:-3px;width:28px;height:28px;padding:0;border:0;background:none;color:var(--muted);font-size:20px}
+.runway-question-panel .q-opts{margin-top:8px}
+.runway-question-close{position:absolute;right:-4px;top:-4px;width:22px;height:22px;padding:0;border:0;background:none;color:var(--muted);font-size:16px;line-height:22px}
 body:not(.phone) .runway-row-enter{animation:runway-row-arrival var(--motion-info) var(--ease-standard)}
 @keyframes runway-row-arrival{from{opacity:0}to{opacity:1}}
 body:not(.phone) .popover:not([hidden]){animation:runway-panel-open var(--motion-panel) var(--ease-standard)}
