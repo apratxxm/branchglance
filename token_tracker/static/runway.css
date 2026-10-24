@@ -56,6 +56,7 @@ body[data-source="Claude"] .source-switch::before{transform:translateX(100%)}
 .source-seg[aria-pressed="true"]{background:transparent;color:var(--source-accent)}
 .source-dot{position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--source-dot);opacity:0;transform:scale(.6);transition:opacity var(--motion-info) var(--ease-standard),transform var(--motion-info) var(--ease-standard)}
 .source-seg.has-attention .source-dot{opacity:1;transform:scale(1)}
+.source-seg.has-live .source-dot{opacity:.85;transform:scale(1);background:var(--green)}
 .q-plain{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px}
 body:not(.phone) #sync-age.is-loading::before{content:"";width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;animation:sync-spin .8s linear infinite,sync-appear var(--motion-info) var(--ease-standard) 250ms both}
 .icon-btn,.sync-age,.window-controls button{border:0;background:transparent;color:var(--muted);border-radius:6px}
@@ -83,9 +84,7 @@ body.phone #widget-lock{display:none}
 .rr-left b{display:inline-block;min-width:4ch;text-align:right;font-size:16px;font-weight:600;letter-spacing:-.7px;font-variant-numeric:tabular-nums}
 .rr-left i{min-width:4ch;font-size:12px;font-style:normal;color:var(--muted)}
 .rr-value{display:inline-flex;align-items:baseline;gap:4px}
-.rr-left.last-known{flex-direction:column;align-items:center;justify-content:center;gap:0;line-height:10px;color:var(--muted);opacity:.62}
-.rr-left.last-known .rr-value{line-height:20px}
-.rr-last-known-age{display:block;color:var(--muted);font-size:9px;font-weight:400;line-height:10px;white-space:nowrap;opacity:.9}
+.rr-left.last-known{color:var(--muted);opacity:.62}
 .rr-reset-label{color:var(--muted);font-size:12px;font-weight:500;text-transform:lowercase}
 .rr-moment{display:flex;align-items:center;min-height:22px;margin:1px 0 5px}
 .rr-cd{display:inline-block;width:min(100%,11ch);min-width:0;max-width:100%;color:var(--ink);font-size:19px;font-weight:500;letter-spacing:-.3px;line-height:1.1;white-space:nowrap;font-variant-numeric:tabular-nums}

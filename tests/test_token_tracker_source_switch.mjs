@@ -213,6 +213,20 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.ok(T.state.sourceAttention.has("Codex"),"the symmetric case flags Codex while Claude is selected");
 }
 
+// 4b. Work already running in the unselected source keeps a quieter live dot (not only new work).
+{
+  const {T,segments}=boot();
+  T.render(snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1")]}));
+  T.setSource("Claude");
+  T.render(snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1")]}));
+  assert.equal(T.state.sourceAttention.has("Codex"),false,"nothing new happened in Codex");
+  assert.ok(segments[0].flags.has("has-live"),"Codex shows that it is still working");
+  assert.equal(segments[0].dot.attrs["aria-hidden"],"false");assert.equal(segments[0].attrs["aria-label"],"Codex (active)");
+  assert.equal(segments[1].flags.has("has-live"),false,"the selected source never shows the dot");
+  T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
+  assert.equal(segments[0].flags.has("has-live"),false,"the dot clears once Codex is idle");assert.equal(segments[0].dot.attrs["aria-hidden"],"true");
+}
+
 // Compact auto-open follows the triggering provider without persisting it as a user choice.
 {
   const codexOnly=boot({branchglanceSource:"Claude"},{compact:true});

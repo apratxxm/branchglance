@@ -753,7 +753,7 @@ const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
 assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);assert.equal(staleQuota.usedLabel,"92%");assert.equal(staleQuota.lastKnownAge,"11m ago");assert.equal(staleQuota.countdown,"25m 00s");assert.equal(staleQuota.tone,"");assert.equal(staleQuota.stale,"");
 assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"22h 13m");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);
-assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>used</i></span><small class="rr-last-known-age">11m ago</small>');
+assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>11m ago</i></span>');
 assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Last reported by Codex 11m ago');
 assert.equal(node('#r0-fiveHour-row').title,'Last reported by Codex 11m ago');
 assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuetext'),'Last known: 92% used');assert.equal(node('#r0-fiveHour-bar').className,'last-known');
