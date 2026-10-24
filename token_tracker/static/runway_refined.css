@@ -277,7 +277,7 @@ body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .comp
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{position:relative;z-index:1;order:1;flex:none;width:100%;height:30px;min-height:30px;display:flex;align-items:center;justify-content:flex-start;gap:1px;padding:0 4px;overflow:visible;background:#05070b;border-radius:5px 5px 0 0;box-shadow:inset 0 1px #292d3a,inset 1px 0 #292d3a,inset -1px 0 #292d3a,0 4px 0 #05070b;}
 body.runway-refined.runway-compact:not(.phone) .compact-toolbar button{transition:transform var(--motion-fast) var(--ease-standard),opacity var(--motion-fast) var(--ease-standard),background-color var(--motion-source) var(--ease-standard),color var(--motion-source) var(--ease-standard);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{display:flex;flex:0 0 48px;width:48px;min-width:48px;max-width:48px;height:30px;align-items:center;line-height:30px;margin:0;text-align:center;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{display:flex;flex:0 0 42px;width:42px;min-width:42px;max-width:42px;height:30px;align-items:center;line-height:30px;margin:0;text-align:center;}
 body.runway-refined.runway-compact:not(.phone) #sync-age.is-loading::before{display:none;}
 /* Delay the spin rather than fading the icon in: sub-250ms background refreshes then leave the icon untouched instead of blinking it out. */
 body.runway-refined.runway-compact:not(.phone) #sync-age.is-loading>.ic{animation:sync-spin .8s linear 250ms infinite;}
@@ -300,15 +300,15 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .source-switch,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .source-switch{height:22px;margin:0 1px;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .source-seg,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .source-seg{width:auto;height:20px;min-width:62px;gap:0;padding:0 9px;font-size:12px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .source-seg{width:auto;height:20px;min-width:0;gap:0;padding:0 8px;font-size:12px;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .notch-counts,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .notch-counts{width:auto;min-width:0;display:flex;align-items:center;justify-content:center;gap:2px;overflow:visible;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .runway-count,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .runway-count{width:36px;min-width:36px;max-width:36px;flex:0 0 36px;gap:2px;font-size:12px;line-height:16px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .runway-count{width:auto;min-width:0;max-width:none;flex:0 0 auto;gap:1px;padding:0 2px;font-size:12px;line-height:16px;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .runway-count.is-empty,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .runway-count.is-empty{display:none;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .runway-count .ic,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .runway-count .ic{width:14px;height:14px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .runway-count .ic{width:12px;height:12px;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .count-value,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .count-value{width:auto;min-width:0;font:400 12px/16px var(--sans);text-align:left;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .count-unit,
@@ -320,16 +320,12 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar{gap:1px;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;border-radius:5px;box-shadow:inset 0 0 0 1px var(--source-edge),inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;box-shadow:inset 0 1px var(--source-edge-strong),inset 1px 0 var(--source-edge),inset -1px 0 var(--source-edge),0 4px 0 #05070b,inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 48px;width:48px;min-width:48px;max-width:48px;margin-left:auto;pointer-events:none;color:var(--green);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 42px;width:42px;min-width:42px;max-width:42px;margin-left:auto;pointer-events:none;color:var(--green);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .window-controls,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .window-controls{order:2;}
 body.runway-refined.runway-compact:not(.phone) .compact-clock,
 body.runway-refined.runway-compact:not(.phone) #compact-clock{color:var(--green);}
-body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .notch-counts,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .notch-counts{display:none;}
 body.runway-refined.runway-compact:not(.phone) #search-toggle{display:none!important;}
-body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .notch-counts,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .notch-counts{display:none!important;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{gap:1px;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) #widget-lock[aria-pressed="true"],
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) #widget-lock[aria-pressed="true"]{background:var(--source-accent-soft);color:var(--source-accent);box-shadow:inset 0 0 0 1px var(--source-accent);}
