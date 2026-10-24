@@ -1,7 +1,7 @@
 (() => {
   const $ = (s) => document.querySelector(s);
   const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
-  if(embedded){document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
+  if(embedded){const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Change this with “Change Claude tracking…” below.";document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
   let settingsToken="";
   try {
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
