@@ -1,5 +1,7 @@
 (() => {
   const $ = (s) => document.querySelector(s);
+  const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
+  if(embedded){document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
   let settingsToken="";
   try {
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
@@ -128,8 +130,9 @@
     finally {state.busy=false;render();}
   }
   document.addEventListener("change",e=>{if(e.target.matches('input[name="mode"]')){state.dirty=true;render();}if(e.target.matches('#threads input[type="checkbox"]')){state.dirty=true;e.target.checked?state.selected.add(e.target.dataset.id):state.selected.delete(e.target.dataset.id);render();}});
+  document.addEventListener("keydown",event=>{if(embedded&&event.key==="Escape"){event.preventDefault();window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);}});
   $("#search").addEventListener("input",render); $("#refresh").addEventListener("click",load); $("#save").addEventListener("click",save);
-  $("#cancel").addEventListener("click",()=>window.close()); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();});
+  $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();});
   load();loadClaude();
   if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};
 })();
