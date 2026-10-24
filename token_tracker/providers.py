@@ -1151,6 +1151,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             and exec_stamp_epoch > exec_resume_epoch and exec_after_terminal
         )
         exec_qualifies = False
+        exec_activity_changed = False
         exec_turn_ended = False
         # Starts and compaction obey the same floor as terminals: a delayed record older
         # than the current run start or resume boundary cannot reopen or restart it.
@@ -1193,6 +1194,12 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
             exec_status, exec_compaction_at = "running", None
             exec_activity = None
             exec_qualifies = True
+        elif (item_kind == "event_msg" and payload_type in {"reasoning_started", "thinking_started"}
+              and exec_current_running):
+            # This explicit start event is the only rollout signal that proves
+            # reasoning is in progress. A completed response_item is not a start.
+            exec_activity = {"kind": "thinking", "label": "Reasoning", "files": [], "observedAt": exec_stamp}
+            exec_activity_changed = True
         elif item_kind == "response_item":
             name = str(payload.get("name") or "").lower().split(".")[-1]
             control_call = name in {"request_user_input", "request_user_input_async", "ask_user_question", "send_user_message_question_reply"}
@@ -1242,14 +1249,11 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                     floor_epoch = _timestamp_epoch(exec_since)
                     terminal_epoch = _timestamp_epoch(exec_terminal_at)
                     if (exec_status == "running" and reasoning_epoch is not None
-                            and reasoning_epoch <= time.time() and floor_epoch is not None
-                            and reasoning_epoch >= floor_epoch
-                            and (observed_epoch is None or reasoning_epoch >= observed_epoch)
-                            and (terminal_epoch is None or reasoning_epoch > terminal_epoch)):
-                        if exec_status == "running":
-                            exec_activity = {"kind": "thinking", "label": "Reasoning", "files": [], "observedAt": exec_stamp}
-                        else:
-                            exec_activity = None
+                        and reasoning_epoch <= time.time() and floor_epoch is not None
+                        and reasoning_epoch >= floor_epoch
+                        and (observed_epoch is None or reasoning_epoch >= observed_epoch)
+                        and (terminal_epoch is None or reasoning_epoch > terminal_epoch)):
+                        exec_activity = {"kind": "thinking", "label": "Reasoning", "files": [], "observedAt": exec_stamp}
                         exec_observed_at = exec_stamp
                         exec_qualifies = True
             elif ptype == "reasoning":
@@ -1262,12 +1266,18 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                         and reasoning_epoch >= floor_epoch
                         and (observed_epoch is None or reasoning_epoch >= observed_epoch)
                         and (terminal_epoch is None or reasoning_epoch > terminal_epoch)):
-                    if exec_status == "running":
-                        exec_activity = {"kind": "thinking", "label": "Reasoning", "files": [], "observedAt": exec_stamp}
-                    else:
-                        exec_activity = None
+                    exec_activity = {"kind": "thinking", "label": "Reasoning", "files": [], "observedAt": exec_stamp}
                     exec_observed_at = exec_stamp
                     exec_qualifies = True
+            elif ptype == "agent_message":
+                # A recorded inter-agent message is direct evidence of coordination.
+                # Keep the label generic; message content and participant names are private.
+                if exec_current_running:
+                    exec_activity = {
+                        "kind": "coordinating", "label": _ACTIVITY_LABELS["coordinating"],
+                        "files": [], "observedAt": exec_stamp,
+                    }
+                    exec_activity_changed = True
         if exec_qualifies:
             exec_observed_at = exec_stamp or exec_observed_at
             state.update(executionStatus=exec_status, executionObservedAt=exec_observed_at,
@@ -1275,6 +1285,10 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                          executionTerminalAt=exec_terminal_at, executionPendingCalls=exec_pending_calls,
                          executionResumeAt=exec_resume_at,
                          executionActivity=exec_activity)
+        elif exec_activity_changed:
+            # Fill the activity field without extending the execution-status
+            # freshness window; only existing lifecycle evidence does that.
+            state["executionActivity"] = exec_activity
         if session_source == "exec" and exec_turn_ended and exec_stamp_valid:
             previous_end_epoch = _timestamp_epoch(turn_ended_at)
             if previous_end_epoch is None or exec_stamp_epoch > previous_end_epoch:
@@ -1353,7 +1367,7 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                         if superseded:
                             question_resolution_at = exec_stamp
             sync_question = None
-        elif item.get("type") == "event_msg" and payload_type in {"reasoning", "reasoning_started", "thinking", "thinking_started"}:
+        elif item.get("type") == "event_msg" and payload_type in {"reasoning_started", "thinking_started"}:
             if not pending_activity_calls and activity is None and status not in {"idle", "failed", "compacting"}:
                 activity = {"kind": "thinking", "label": "Thinking", "files": [], "observedAt": timestamp}
         elif item.get("type") == "response_item":

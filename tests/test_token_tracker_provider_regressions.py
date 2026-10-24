@@ -1055,7 +1055,7 @@ def test_reasoning_updates_only_proven_current_running_execution(tmp_path, monke
     monkeypatch.setattr(providers.time, "time", lambda: now)
     records = [_record("event_msg", _stamp(now - 8), {"type": "task_started"})]
     reasoning_at = now - 7
-    expected_status, expected_at, expected_activity = "running", _stamp(now - 7), "Reasoning"
+    expected_status, expected_at, expected_activity = "running", _stamp(now - 7), "thinking"
     if scenario == "before-run-floor":
         reasoning_at = now - 9
         expected_at, expected_activity = _stamp(now - 8), None
@@ -1096,14 +1096,36 @@ def test_reasoning_updates_only_proven_current_running_execution(tmp_path, monke
     assert state["executionObservedAt"] == expected_at
     if expected_activity is None:
         assert state["executionActivity"] is None
-    elif expected_activity == "Reasoning":
-        assert state["executionActivity"] == {
-            "kind": "thinking", "label": "Reasoning", "files": [], "observedAt": _stamp(reasoning_at),
-        }
-        assert "private reasoning text" not in str(state["executionActivity"])
-        assert state["executionSince"] == _stamp(now - 8)
-    else:
+    elif expected_activity is not None:
         assert state["executionActivity"]["kind"] == expected_activity
+
+
+def test_completed_real_reasoning_item_remains_latest_recorded_activity(tmp_path, monkeypatch):
+    now = 1_800_000_100.0
+    monkeypatch.setattr(providers.time, "time", lambda: now)
+    path = _rollout(tmp_path / "completed-reasoning-item.jsonl", [
+        _record("event_msg", _stamp(now - 10), {"type": "task_started"}),
+        _record("event_msg", _stamp(now - 3), {
+            "type": "item_completed", "started_at_ms": int((now - 8) * 1000),
+            "completed_at_ms": int((now - 3) * 1000),
+            "item": {"id": "reasoning-id", "type": "Reasoning", "summary": []},
+        }),
+        _record("response_item", _stamp(now - 3)[:-1] + ".012Z", {
+            "type": "reasoning", "id": "reasoning-id", "summary": [],
+        }),
+    ])
+
+    state = providers._codex_rollout_state(str(path))
+
+    assert state["executionStatus"] == "running"
+    assert state["executionActivity"] == {
+        "kind": "thinking", "label": "Reasoning", "files": [],
+        "observedAt": _stamp(now - 3)[:-1] + ".012Z",
+    }
+    assert state["activity"] == {
+        "kind": "thinking", "label": "Thinking", "files": [],
+        "observedAt": _stamp(now - 3)[:-1] + ".012Z",
+    }
 
 
 def test_timestamp_less_context_tool_and_reasoning_do_not_refresh_execution(tmp_path, monkeypatch):

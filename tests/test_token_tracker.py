@@ -2174,7 +2174,7 @@ def test_response_item_reasoning_refreshes_only_a_proven_current_run(tmp_path):
     assert current["executionStatus"] == "running"
     assert current["executionObservedAt"] == iso(20)
     assert current["executionSince"] == iso(300), "reasoning refresh does not reset the run clock"
-    assert current["executionActivity"]["kind"] == "thinking"
+    assert current["executionActivity"]["kind"] == "thinking", "the latest recorded reasoning step remains the activity"
     assert current["questionIds"] == [["request_user_input_async", "old-question", 0]]
     visible = providers._codex_execution_projection(current, None, False, None, now.timestamp())
     assert visible["executionStatus"] == "running"
@@ -3716,6 +3716,20 @@ def test_codex_activity_supports_literal_exec_wrapper_and_explicit_thinking(tmp_
     rollout.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     state = providers._codex_recorded_state(rollout)
     assert state["activity"] == {"kind": "thinking", "label": "Thinking", "files": [], "observedAt": at(3)}
+    assert state["executionActivity"] == {
+        "kind": "thinking", "label": "Reasoning", "files": [], "observedAt": at(3),
+    }
+    assert state["executionObservedAt"] == at(2), "activity does not extend execution-status freshness"
+    rows.append({"type": "event_msg", "timestamp": at(4), "payload": {
+        "type": "item_completed", "started_at_ms": int(base.timestamp() * 1000),
+        "completed_at_ms": int((base + timedelta(seconds=4)).timestamp() * 1000),
+        "item": {"id": "reasoning-item", "type": "Reasoning"},
+    }})
+    rollout.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    state = providers._codex_recorded_state(rollout)
+    assert state["activity"]["kind"] == "thinking"
+    assert state["executionActivity"]["kind"] == "thinking"
+    assert state["executionObservedAt"] == at(2), "a completed reasoning event fills activity without extending status freshness"
 
 
 def test_codex_activity_unknown_tool_is_visible_and_reasoning_does_not_override_it(tmp_path):
@@ -3964,6 +3978,29 @@ def test_codex_activity_title_clears_with_matching_output_or_run_end(tmp_path):
     rows = [start, call, {"type": "event_msg", "timestamp": at(2), "payload": {"type": "task_complete"}}]
     ended.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     assert providers._codex_recorded_state(ended)["activity"] is None
+
+
+def test_agent_message_fills_current_exec_activity_as_coordination(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    stamp = lambda seconds: (now - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    rollout = tmp_path / "exec-agent-message-activity.jsonl"
+    rollout.write_text("\n".join(json.dumps(row) for row in [
+        {"type": "session_meta", "payload": {"id": "exec-chat", "source": "exec"}},
+        {"type": "event_msg", "timestamp": stamp(10), "payload": {"type": "task_started"}},
+        {"type": "response_item", "timestamp": stamp(5), "payload": {
+            "type": "agent_message", "author": "agent-private-id", "recipient": "parent-private-id",
+            "content": [{"type": "text", "text": "private agent message"}],
+        }},
+    ]) + "\n", encoding="utf-8")
+
+    state = providers._codex_rollout_state(str(rollout))
+
+    assert state["executionStatus"] == "running"
+    assert state["executionActivity"] == {
+        "kind": "coordinating", "label": "Coordinating agents", "files": [], "observedAt": stamp(5),
+    }
+    assert state["executionObservedAt"] == stamp(10), "coordination fills activity without changing execution freshness"
+    assert "private" not in str(state["executionActivity"])
 
 
 def test_codex_activity_exec_patch_requires_an_actual_literal_call(tmp_path):
