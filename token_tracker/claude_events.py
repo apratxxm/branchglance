@@ -184,11 +184,10 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
             else:
                 s["idle"] = _max(s["idle"], ts)
         elif kind in {"permission_prompt", "elicitation_dialog"} and (s["wait"] is None or ts >= s["wait"]):
-            s["wait"], s["wait_kind"], s["wait_tuid"] = ts, "permission", None
+            _set_wait(s, ts, "permission", None)
     elif event == "PermissionRequest":
         if s["wait"] is None or ts >= s["wait"]:
-            s["wait"] = ts
-            s["wait_kind"], s["wait_tuid"] = ("ask", tuid) if ask else ("permission", None)
+            _set_wait(s, ts, "ask" if ask else "permission", tuid if ask else None)
     elif event in {"PreToolUse", "PostToolUse", "PostToolUseFailure"} and tuid:
         tool = s["tools"].get(tuid)
         if tool is None:
@@ -201,7 +200,7 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
             if tool[2] is None:
                 tool[1] = _max(tool[1], ts)
             if ask and (s["wait"] is None or ts >= s["wait"]):
-                s["wait"], s["wait_kind"], s["wait_tuid"] = ts, "ask", tuid
+                _set_wait(s, ts, "ask", tuid)
         else:
             tool[2] = _max(tool[2], ts)
             if event == "PostToolUseFailure" and record.get("is_interrupt") is True:
@@ -225,6 +224,21 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
     # A later event that is not itself a wait signal means the wait was answered.
     if event not in _NON_CLEARING and not (event == "PreToolUse" and ask):
         s["clear"] = _max(s["clear"], ts)
+
+
+def _set_wait(s: dict[str, Any], ts: float, kind: str, tuid: str | None) -> None:
+    """Record a wait signal without losing an open question.
+
+    Claude follows an AskUserQuestion call with a PermissionRequest (no tool id)
+    and a permission_prompt Notification for the same wait. Those must not turn
+    the open question into a plain permission prompt or drop its tool id.
+    """
+    open_ask = (s["wait_kind"] == "ask" and s["wait"] is not None
+                and (s["clear"] is None or s["wait"] > s["clear"]))
+    s["wait"] = ts
+    if open_ask and (kind != "ask" or tuid is None):
+        return
+    s["wait_kind"], s["wait_tuid"] = kind, tuid
 
 
 # ------------------------------------------------------------------- loading
