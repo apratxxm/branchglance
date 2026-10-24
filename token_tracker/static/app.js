@@ -66,6 +66,7 @@ const notch={active:0,expanded:false,mode:'idle',manual:false,keyboardInspecting
 const widgetLock={known:Boolean(window.__TOKEN_TRACKER_TEST__),locked:false,expanded:false,revision:-1,pending:false,dragRegions:[]};
 const keepOpenState={known:false,value:false,revision:-1,pending:false,loading:false,error:false};
 const compactBridge={busy:false,pending:null,inFlightSignature:null,appliedSignature:null};
+const dashboardState={open:false,returnMode:null,restoreMode:null};
 let compactInputModality='pointer';
 const lockIcon=locked=>locked?'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 4 0V5"/></svg>':'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 3.6-1.2"/></svg>';
 function updateWidgetLockButton() {
@@ -115,6 +116,8 @@ function compactHasFocus(){
 }
 function compactModeForState(){
   if(!COMPACT)return notch.expanded?'inspect':'idle';
+  if(dashboardState.open)return 'dashboard';
+  if(dashboardState.restoreMode)return dashboardState.restoreMode;
   const focus=compactHasFocus(),explicit=notch.manual||notch.keyboardInspecting||state.searchOpen||Boolean(state.popover);
   // With no active chats there is nothing to show: keep-open, hover and focus stay on the toolbar.
   if(explicit||notch.active>0&&(keepOpenState.value||notch.autoExpanded||notch.inspecting||focus))return 'inspect';
@@ -199,9 +202,27 @@ async function recenterWidget(){
     return true;
   }catch{return false;}
 }
+function openDashboard(){
+  if(!COMPACT||PHONE||dashboardState.open)return false;
+  dashboardState.returnMode=notch.mode||'controls';dashboardState.restoreMode=null;dashboardState.open=true;
+  window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot)});
+  setNotch(notch.expanded);return true;
+}
+function closeDashboard(){
+  if(!dashboardState.open)return false;
+  const previous=dashboardState.returnMode;dashboardState.open=false;dashboardState.returnMode=null;
+  dashboardState.restoreMode=['idle','rest','controls','inspect'].includes(previous)?previous:'controls';
+  window.TokenTrackerDashboard?.close?.();
+  const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');}
+  setNotch(notch.expanded);return true;
+}
+window.tokenTrackerCloseDashboard=closeDashboard;
+window.tokenTrackerOpenDashboard=()=>openDashboard();
+window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
 function notchHeight() {
   if(COMPACT){
+    if(notch.mode==='dashboard')return 540;
     if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
     if(notch.mode==='idle')return 100;
     if(notch.mode==='rest')return 100;
@@ -295,16 +316,19 @@ function setNotch(expanded, treeSynced=false) {
   if(!RUNWAY||PHONE)return;
   if(COMPACT){
     const mode=compactModeForState();
+    if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
     if(mode==='inspect'){
       if(notch.mode!=='inspect'){inspectLayoutGeneration++;inspectWidthCorrectionUsed=false;clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}
       applyInspectLayoutWidth(monitorState.current);
     }else if(notch.mode==='inspect')cancelInspectLayoutReconcile();
     blurPointerToolbarFocus(mode);
     notch.mode=mode;notch.expanded=mode==='inspect';
+    const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
+    if(dashboardView){dashboardView.hidden=!dashboardVisible;dashboardView.inert=!dashboardVisible;dashboardView.setAttribute?.('aria-hidden',String(!dashboardVisible));}
     const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
     if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
     for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
-    for(const name of ['idle','rest','controls','inspect'])document.body?.classList?.toggle('compact-'+name,mode===name);
+    for(const name of ['idle','rest','controls','inspect','dashboard'])document.body?.classList?.toggle('compact-'+name,mode===name);
     if(document.body?.dataset)document.body.dataset.notchMode=mode;
     document.body?.classList?.toggle('notch-expanded',notch.expanded);
     document.body?.classList?.toggle('notch-collapsed',!notch.expanded);
@@ -314,6 +338,7 @@ function setNotch(expanded, treeSynced=false) {
     renderRunwayCounts(notch.counts);
     const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
     if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded,height,reduced,mode],signature);}
+    if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
     return;
   }
   const restoreLockedOpen=Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded&&!state.runwaySnapshotPainted);
@@ -480,7 +505,6 @@ function setupNotch() {
   window.addEventListener('pywebviewready',()=>{notch.sent=null;if(COMPACT){compactBridge.appliedSignature=null;compactBridge.pending=null;void syncKeepOpen();}void syncWidgetLock().then(()=>syncMonitors());});
   if(window.pywebview?.api?.get_widget_lock)void syncWidgetLock().then(()=>syncMonitors());
   $('#monitor-toggle')?.addEventListener('click',toggleMonitor);
-  $('#window-recenter')?.addEventListener('click',()=>{void recenterWidget();});
   updateWidgetLockButton();if(COMPACT){updateKeepOpenButton();void syncKeepOpen();}
   syncMonitors();
   setInterval(syncMonitors,10000);
@@ -509,6 +533,7 @@ function updateMonitorButton(){
   if(current)button.textContent=current.kind==='internal'?'Laptop':current.kind==='external'?'Monitor':current.label||current.name||'Monitor';
   button.disabled=!monitorState.known||monitorState.pending||!widgetLock.known||widgetLock.pending||widgetLock.locked||monitorSelectionPending||monitorState.monitors.length<2;
   button.title=monitorSelectionPending?'Changing monitor':monitorState.pending?'Checking available monitors':!monitorState.known?(monitorState.error?'Monitor information unavailable':'Checking available monitors'):!widgetLock.known||widgetLock.pending?'Checking widget lock':widgetLock.locked?'Unlock the widget to move monitors':monitorState.monitors.length<2?'One monitor available':'Move to next monitor';
+  if(current?.label&&monitorState.known&&!monitorState.pending&&!monitorSelectionPending)button.title=current.label+' · '+button.title;
 }
 function predictedInspectLayoutWidth(monitor){
   const signature=monitorSignature(monitor);if(!signature)return null;
@@ -2066,6 +2091,7 @@ function updateSourceSwitch() {
     const dot=segment.querySelector?.('.source-dot');dot?.setAttribute?.('aria-hidden',String(!flagged&&!live));
   }
   const body=document.body;if(body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
+  window.TokenTrackerDashboard?.setSource?.(current);
 }
 function setSource(name,{persist=true,manual=true}={}) {
   if(!RUNWAY||PHONE||!SOURCES.includes(name)||!policyForSources(state.snapshot)||!sourceNames(state.snapshot).includes(name))return false;
@@ -2432,6 +2458,7 @@ function render(snapshot) {
   try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);renderAnalytics(snapshot);}
   finally{state.sourceSwitching=priorSourceSwitching;}
   renderStrip(attentionItems(state.forest,limits));
+  window.TokenTrackerDashboard?.setSnapshot?.(snapshot);
 }
 function renderLoading() {
   syncCompactClock();
@@ -2448,6 +2475,7 @@ function tick() {
   const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
   renderTitle(providers);renderResets(limits);renderChats(providers);renderAnalytics(state.snapshot);
   renderStrip(attentionItems(state.forest,limits));
+  window.TokenTrackerDashboard?.setSnapshot?.(state.snapshot);
 }
 function applyQuotaSamples(samples,sequence,providers,{requireDated=false}={}) {
   if(!samples||!Array.isArray(providers))return false;
@@ -2875,6 +2903,7 @@ function handleClick(event) {
   if(RUNWAY&&!PHONE&&action==='widget-lock'){void toggleWidgetLock();return;}
   if(RUNWAY&&!PHONE&&action==='jump-waiting'){jumpToWaiting();return;}
   if(RUNWAY&&!PHONE&&action==='source'){setSource(button.dataset.source);return;}
+  if(RUNWAY&&!PHONE&&action==='dashboard'){openDashboard();return;}
   if(COMPACT&&action==='keep-open'){void toggleKeepOpen();return;}
   if(PHONE&&["answer","queue-answer","open","pin","hide-chat","show-hidden"].includes(action))return;
   if(action==="toggle-chat"){const was=state.open.has(key);if(RUNWAY)closeRunwayDetails();was?state.open.delete(key):state.open.add(key);if(RUNWAY)renderStripNow();}
@@ -2925,6 +2954,7 @@ function handleContextMenu(event) {
 function handleKey(event) {
   const typing=/INPUT|TEXTAREA/.test(event.target?.tagName||"");
   if(event.key==="Escape"){
+    if(dashboardState.open){event.preventDefault();event.stopImmediatePropagation?.();closeDashboard();return;}
     if(state.popover){closePopover({restoreFocus:true});if(COMPACT){event.preventDefault();event.stopImmediatePropagation?.();}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
     if(state.searchOpen){openSearch(false);if(COMPACT){event.preventDefault();event.stopImmediatePropagation?.();}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
     if(!COMPACT&&state.snapshot)renderChats(providersFor(state.snapshot));return;
@@ -2939,7 +2969,7 @@ window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,re
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   if(!PHONE)loadAvatars();
   document.addEventListener("click",handleClick);

@@ -10,6 +10,7 @@ import secrets
 import socket
 import threading
 import time
+import unicodedata
 from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
@@ -238,9 +239,10 @@ BOUNDS_SAVE_DELAY_SECONDS = 0.6
 NOTCH_WIDTH = 680
 NOTCH_COLLAPSED_HEIGHT = 148
 NOTCH_MIN_HEIGHT, NOTCH_DEFAULT_HEIGHT = NOTCH_COLLAPSED_HEIGHT, 560
-COMPACT_NOTCH_MODES = {"idle", "rest", "controls", "inspect"}
+COMPACT_NOTCH_MODES = {"idle", "rest", "controls", "inspect", "dashboard"}
 COMPACT_NOTCH_SIZES = {"idle": (420, 100), "rest": (420, 100),
-                       "controls": (420, 110), "inspect": (560, 114)}
+                       "controls": (420, 110), "inspect": (560, 114),
+                       "dashboard": (720, 540)}
 COMPACT_INSPECT_MAX_HEIGHT = 420
 COMPACT_DRAG_LEASE_SECONDS = 60
 COMPACT_DRAG_WATCHDOG_SECONDS = 0.10
@@ -277,19 +279,29 @@ def _load_window_bounds(path: Path) -> dict | None:
     return bounds
 
 
+# Placement, lock, hotkey and monitor-name writes all merge into one file from
+# different threads; the whole read-merge-write must not interleave.
+_WINDOW_STATE_LOCK = threading.Lock()
+
+
 def _save_window_bounds(path: Path, bounds: dict) -> None:
-    state = {}
-    try:
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(saved, dict):
-            state.update(saved)
-    except (OSError, ValueError):
-        pass
-    state.update(bounds)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-    os.replace(temporary, path)
+    with _WINDOW_STATE_LOCK:
+        state = {}
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                state.update(saved)
+        except (OSError, ValueError):
+            pass
+        state.update(bounds)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            with suppress(OSError):
+                temporary.unlink()
 
 
 def _system_scale() -> float:
@@ -562,6 +574,30 @@ def _load_notch_placement(path: Path) -> dict:
         return {}
 
 
+def _monitor_names(path: Path) -> dict[str, str]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        values = state.get("monitor_names", {}) if isinstance(state, dict) else {}
+        if not isinstance(values, dict):
+            return {}
+        return {key.casefold(): value.strip() for key, value in values.items()
+                if _is_stable_monitor_id(key) and isinstance(value, str)
+                and _valid_monitor_name(value) is not None}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _valid_monitor_name(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    # Control, format (bidi overrides, zero-width) and line/paragraph separators
+    # could reorder or hide text in the Settings list.
+    if not name or len(name) > 32 or any(unicodedata.category(char) in {"Cc", "Cf", "Zl", "Zp"} for char in name):
+        return None
+    return name
+
+
 def _load_widget_lock(path: Path) -> dict[str, bool]:
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -678,7 +714,8 @@ class WindowApi:
     def __init__(self, on_minimize, on_toggle_maximize, on_close, on_size=None, on_resize=None, on_fit=None, on_notch=None,
                  on_monitors=None, on_monitor=None, on_recenter=None, on_drag_begin=None, on_drag_end=None,
                  on_lock=None, on_get_lock=None, on_reset_actions=None,
-                 on_keep_open=None, on_get_keep_open=None, on_compact_profile=None) -> None:
+                 on_keep_open=None, on_get_keep_open=None, on_compact_profile=None,
+                 on_set_monitor_name=None) -> None:
         self._minimize = on_minimize
         self._toggle_maximize = on_toggle_maximize
         self._close = on_close
@@ -697,6 +734,7 @@ class WindowApi:
         self._set_keep_open = on_keep_open
         self._get_keep_open = on_get_keep_open
         self._is_compact_profile = on_compact_profile
+        self._set_monitor_name = on_set_monitor_name
 
     def open_reset_actions(self):
         return self._open_reset_actions() if self._open_reset_actions else False
@@ -723,6 +761,9 @@ class WindowApi:
 
     def select_monitor(self, monitor_id):
         return self._monitor(monitor_id) if self._monitor else []
+
+    def set_monitor_name(self, monitor_id, name):
+        return self._set_monitor_name(monitor_id, name) if self._set_monitor_name else []
 
     def recenter(self):
         return self._recenter() if self._recenter else None
@@ -2096,16 +2137,41 @@ class WidgetApp:
         with self._notch_lock:
             monitors = _monitor_descriptors()
             selected = self._selected_monitor(monitors)
+            saved_names = _monitor_names(self.window_state_path)
             result = []
             for monitor in monitors:
                 left, top, right, bottom = monitor["area"]
+                stable_id = monitor.get("stableId")
                 result.append({"id": monitor["id"], "stableId": monitor.get("stableId"),
                                "gdiId": monitor.get("gdiId"), "kind": monitor.get("kind"),
-                               "label": monitor["label"], "index": monitor["index"],
+                               "label": saved_names.get(_monitor_key(stable_id), monitor["label"]) if stable_id else monitor["label"],
+                               "index": monitor["index"],
                                "primary": monitor["primary"], "selected": monitor["id"] == selected["id"],
                                "scale": monitor["scale"],
                                "workArea": {"x": left, "y": top, "width": right-left, "height": bottom-top}})
             return result
+
+    def set_monitor_name(self, monitor_id, name):
+        if not isinstance(monitor_id, str) or not _is_stable_monitor_id(monitor_id):
+            return self.get_monitors()
+        if not isinstance(name, str):
+            return self.get_monitors()
+        normalized = _valid_monitor_name(name)
+        if name.strip() and normalized is None:
+            return self.get_monitors()
+        with self._notch_lock:
+            matches = [monitor for monitor in _monitor_descriptors()
+                       if _monitor_key(monitor.get("stableId")) == _monitor_key(monitor_id)]
+            if len(matches) != 1:
+                return self.get_monitors()
+            with self._bounds_lock:
+                names = _monitor_names(self.window_state_path)
+                if normalized is None:
+                    names.pop(_monitor_key(monitor_id), None)
+                else:
+                    names[_monitor_key(matches[0]["stableId"])] = normalized
+                _save_window_bounds(self.window_state_path, {"monitor_names": names})
+            return self.get_monitors()
 
     def select_monitor(self, monitor_id):
         with self._notch_lock:
@@ -2638,7 +2704,8 @@ class WidgetApp:
                              self.begin_drag, self.end_drag, on_lock=self.set_widget_lock,
                              on_get_lock=self.get_widget_lock, on_reset_actions=self.open_reset_actions,
                              on_keep_open=self.set_keep_open, on_get_keep_open=self.get_keep_open,
-                             on_compact_profile=lambda: self.compact_profile),
+                              on_compact_profile=lambda: self.compact_profile,
+                              on_set_monitor_name=self.set_monitor_name),
         )
         self.window.events.before_show += self._set_native_background_fallback
         self.window.events.closing += self.on_closing

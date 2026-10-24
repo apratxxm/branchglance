@@ -272,7 +272,6 @@ def test_compact_typed_anchor_centers_expansion_and_drag_saves_actual_width(nati
     assert app._notch_reference_width == 560
     app.save_bounds()
     assert widget._load_notch_placement(app.window_state_path)["reference_width"] == 560
-
     app._on_notch_drag_begin()
     rect[:2] = [460, 130]
     app.on_moved(*rect[:2])
@@ -286,6 +285,47 @@ def test_compact_typed_anchor_centers_expansion_and_drag_saves_actual_width(nati
     assert rect == [400, 100, 560, 180]
     assert app._notch_position == (400, 100)
 
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_dashboard_mode_uses_fixed_size_and_clamps_to_work_area(native_notch):
+    app, monitors, rect, calls = native_notch
+    app._compact_notch_mode = "dashboard"
+    assert widget._compact_notch_dimensions("dashboard") == (720, 540)
+    assert app._notch_target() == (720, 540, 600, 0)
+    app.set_notch(False, 540, False, "dashboard")
+    assert rect == [600, 0, 720, 540]
+    assert calls[-1] == (720, 540, 600, 0)
+    monitors[0]["area"] = (0, 0, 640, 480)
+    assert app._notch_target() == (640, 480, 0, 0)
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_monitor_names_persist_by_stable_identity_after_restart_and_reorder(native_notch):
+    app, monitors, _rect, _calls = native_notch
+    panel = "\\\\?\\DISPLAY#PANEL"
+    external = "\\\\?\\DISPLAY#EXTERNAL"
+    monitors[0].update(id=panel, stableId=panel, gdiId="display-one", label="Laptop")
+    monitors[1].update(id=external, stableId=external, gdiId="display-two", label="Monitor")
+    app.selected_monitor_id = panel
+
+    renamed = app.set_monitor_name(panel, "Studio")
+    assert next(row for row in renamed if row["stableId"] == panel)["label"] == "Studio"
+    stored = json.loads(app.window_state_path.read_text(encoding="utf-8"))
+    assert stored["monitor_names"] == {panel.casefold(): "Studio"}
+
+    restarted = object.__new__(widget.WidgetApp)
+    restarted._notch_lock = threading.RLock()
+    restarted.window_state_path = app.window_state_path
+    restarted.selected_monitor_id = panel.lower()
+    restarted._notch_manual_position = False
+    restarted._notch_position = None
+    restarted._notch_reference_width = None
+    monitors.reverse()
+    monitors[1]["stableId"] = panel.lower()
+    monitors[1]["id"] = panel.lower()
+    after_restart = restarted.get_monitors()
+    assert next(row for row in after_restart if row["stableId"] == panel.lower())["label"] == "Studio"
+    assert next(row for row in after_restart if row["stableId"] == external)["label"] == "Monitor"
 
 @pytest.mark.parametrize("native_notch", [True], indirect=True)
 def test_compact_drag_reference_width_uses_physical_dpi_geometry(native_notch, monkeypatch):
@@ -1682,3 +1722,49 @@ def test_recenter_while_stable_monitor_is_missing_adopts_fallback(native_notch):
     assert app.selected_monitor_id == "display-one"
     assert app._notch_manual_position is False
     assert app._notch_position is None
+
+
+def test_dashboard_page_has_no_way_to_obtain_the_settings_token():
+    """The main page renders untrusted chat strings, so the token only ever goes to the separate settings window."""
+    api = widget.WindowApi(None, None, None)
+    assert not any("settings_token" in name for name in dir(api)), "no bridge method hands the token to the page"
+    assert callable(api.open_reset_actions)
+    dashboard = (Path(widget.__file__).parent / "static" / "dashboard.js").read_text(encoding="utf-8")
+    assert "#t=" not in dashboard and "settings_token" not in dashboard
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_monitor_names_reject_unsafe_input_and_survive_placement_saves(native_notch):
+    app, monitors, _rect, _calls = native_notch
+    panel = "\\\\?\\DISPLAY#PANEL"
+    monitors[0].update(id=panel, stableId=panel, gdiId="display-one", label="Laptop")
+    label = lambda rows: next(row for row in rows if row["stableId"] == panel)["label"]
+    assert label(app.set_monitor_name(panel, "Desk")) == "Desk"
+    for bad in (None, 7, "x" * 33, "a\x7fb", "rev\u202eersed", "zero\u200bwidth", "two\u2028lines", "tab\tname"):
+        assert label(app.set_monitor_name(panel, bad)) == "Desk", repr(bad)
+    assert label(app.set_monitor_name("\\\\?\\DISPLAY#UNKNOWN", "Other")) == "Desk"
+    assert label(app.set_monitor_name("display-one", "Other")) == "Desk", "enumeration ids are not stable identities"
+
+    # Placement writes merge with the stored names instead of dropping them.
+    app.bounds = {"x": 1, "y": 2, "width": 400, "height": 300}
+    app.save_bounds()
+    stored = json.loads(app.window_state_path.read_text(encoding="utf-8"))
+    assert stored["monitor_names"] == {panel.casefold(): "Desk"}
+
+    assert label(app.set_monitor_name(panel, "   ")) == "Laptop", "a blank name removes the entry"
+    stored["monitor_names"] = ["not", "a", "dict"]
+    app.window_state_path.write_text(json.dumps(stored), encoding="utf-8")
+    assert label(app.get_monitors()) == "Laptop"
+
+
+def test_window_state_writes_from_many_threads_keep_every_key(tmp_path):
+    path = tmp_path / "window-state.json"
+    threads = [threading.Thread(target=widget._save_window_bounds, args=(path, {f"key{index}": index}))
+               for index in range(24)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored == {f"key{index}": index for index in range(24)}
+    assert not list(tmp_path.glob("*.tmp")), "temporary files are cleaned up"
