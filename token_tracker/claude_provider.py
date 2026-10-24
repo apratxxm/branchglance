@@ -146,7 +146,10 @@ def _epoch(value: Any) -> float | None:
 def _new_transcript_state() -> dict[str, Any]:
     return {"model": None, "usage": None, "usage_ts": None, "cur_id": None, "cur_total": 0, "tokens": 0,
             "turns": 0, "title": None, "ai_title": None, "workspace": None, "last_conv_ts": None, "asks": {}, "open_asks": {},
-            "explicit": None, "entrypoint": None}
+            "explicit": None, "entrypoint": None, "interrupt_ts": None}
+
+
+_INTERRUPT_MARKER_PREFIX = "[Request interrupted by user"
 
 
 def _usage_numbers(usage: Any) -> dict[str, int] | None:
@@ -198,6 +201,13 @@ def _reduce_transcript(state: dict[str, Any], item: Any) -> None:
     blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
     if kind == "user":
         state["explicit"] = None
+        interrupted = isinstance(content, str) and content.startswith(_INTERRUPT_MARKER_PREFIX)
+        if not interrupted:
+            interrupted = any(block.get("type") == "text" and isinstance(block.get("text"), str)
+                              and block["text"].startswith(_INTERRUPT_MARKER_PREFIX) for block in blocks)
+        if interrupted and stamp is not None:
+            previous = state.get("interrupt_ts")
+            state["interrupt_ts"] = stamp if previous is None else max(previous, stamp)
         for block in blocks:
             if block.get("type") == "tool_result":
                 state["open_asks"].pop(block.get("tool_use_id"), None)
@@ -339,6 +349,20 @@ def _hook_row(entry: dict[str, Any], root_entry: dict[str, Any] | None, now: flo
             row.update(pendingQuestion=ask["q"], pendingOptions=ask["opts"] or None,
                        pendingQuestionAt=claude_events.iso(ask["ts"]),
                        pendingQuestionId=ask_id)
+    interrupt_ts = transcript.get("interrupt_ts")
+    execution_since = _epoch(execution.get("executionSince"))
+    prompt_ts = state.get("prompt")
+    run_start = max((ts for ts in (execution_since, prompt_ts) if ts is not None), default=None)
+    if status in {"running", "waiting", "compacting"} and interrupt_ts is not None \
+            and run_start is not None and interrupt_ts >= run_start:
+        stopped_at = claude_events.iso(interrupt_ts)
+        execution.update(executionStatus="idle", executionSince=None, executionCompactionStartedAt=None,
+                         executionTerminalAt=stopped_at, executionActivity=None, stateDetail="stopped")
+        row.update(status="idle", executionStatus="idle", executionSince=None,
+                   executionCompactionStartedAt=None, executionTerminalAt=stopped_at,
+                   executionActivity=None, activity=None, stateDetail="stopped",
+                   compactionStartedAt=None, stateSince=stopped_at,
+                   pendingQuestion=None, pendingOptions=None, pendingQuestionAt=None, pendingQuestionId=None)
     row.update(_context_fields(transcript, row["model"], state.get("post_compact")))
     # Internal only (popped before any response): the transcript, or the hook
     # event file when the transcript cannot be found, so live polling still tracks it.
