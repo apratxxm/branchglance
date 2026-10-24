@@ -43,6 +43,11 @@ def user(ts, text=SECRET):
     return {"type": "user", "timestamp": stamp(ts), "message": {"role": "user", "content": text}}
 
 
+def interrupted_user(ts, text="[Request interrupted by user]", *, text_block=True):
+    content = [{"type": "text", "text": text}] if text_block else text
+    return {"type": "user", "timestamp": stamp(ts), "message": {"role": "user", "content": content}}
+
+
 @pytest.fixture()
 def world(tmp_path, monkeypatch):
     home = tmp_path / "claude"
@@ -156,6 +161,74 @@ def test_permission_wait_has_no_invented_question(world):
     world.hooks([ev(NOW - 90, "UserPromptSubmit"), ev(NOW - 20, "PermissionRequest", tool_name="Bash")])
     row = world.rows()[SID]
     assert row["status"] == "needs input" and row["pendingQuestion"] is None
+
+
+def test_transcript_interrupt_mid_tool_projects_stopped(world):
+    interrupted_at = NOW - 10
+    world.transcript(SID, [
+        user(NOW - 100),
+        assistant(NOW - 60, "m1", blocks=[{
+            "type": "tool_use", "id": "bash1", "name": "Bash", "input": {"command": "echo safe"}}]),
+        {"type": "user", "timestamp": stamp(NOW - 15), "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "bash1", "content": "finished"}]}},
+        interrupted_user(interrupted_at, "[Request interrupted by user for tool use]")])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit"),
+                 ev(NOW - 20, "PreToolUse", tool_name="Bash", tool_use_id="bash1")])
+
+    row = world.rows()[SID]
+
+    assert row["status"] == "idle"
+    assert row["executionStatus"] == "idle"
+    assert row["executionTerminalAt"] == claude_events.iso(interrupted_at)
+    assert row["stateDetail"] == "stopped"
+    assert row["executionActivity"] is None and row["activity"] is None
+    assert row["pendingQuestion"] is None and row["pendingOptions"] is None
+    assert "Request interrupted by user" not in json.dumps(claude_provider.public_rows([row]))
+
+
+def test_transcript_interrupt_during_generation_projects_stopped(world):
+    interrupted_at = NOW - 10
+    world.transcript(SID, [user(NOW - 100), assistant(NOW - 50, "m1"),
+                           interrupted_user(interrupted_at, text_block=False)])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit")])
+
+    row = world.rows()[SID]
+
+    assert row["status"] == "idle" and row["executionStatus"] == "idle"
+    assert row["executionTerminalAt"] == claude_events.iso(interrupted_at)
+    assert row["stateDetail"] == "stopped"
+    assert row["executionActivity"] is None and row["activity"] is None
+    assert row["pendingQuestion"] is None
+    assert "Request interrupted by user" not in json.dumps(claude_provider.public_rows([row]))
+
+
+def test_new_prompt_after_transcript_interrupt_is_running(world):
+    interrupted_at, prompt_at = NOW - 40, NOW - 20
+    world.transcript(SID, [user(NOW - 100), assistant(NOW - 60, "m1"),
+                           interrupted_user(interrupted_at), user(prompt_at, "new request")])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit"), ev(prompt_at, "UserPromptSubmit")])
+
+    row = world.rows()[SID]
+
+    assert row["status"] == "running" and row["executionStatus"] == "running"
+    assert row["executionSince"] == claude_events.iso(prompt_at)
+    assert row["executionTerminalAt"] is None and row["stateDetail"] is None
+    assert row["pendingQuestion"] is None
+
+
+def test_interrupt_older_than_current_run_is_ignored(world):
+    interrupted_at, prompt_at = NOW - 40, NOW - 20
+    world.transcript(SID, [user(NOW - 100), assistant(NOW - 60, "m1"),
+                           interrupted_user(interrupted_at)])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit"), ev(prompt_at, "UserPromptSubmit"),
+                 ev(NOW - 10, "PreToolUse", tool_name="Read", tool_use_id="read1")])
+
+    row = world.rows()[SID]
+
+    assert row["status"] == "running" and row["executionStatus"] == "running"
+    assert row["executionSince"] == claude_events.iso(prompt_at)
+    assert row["executionTerminalAt"] is None and row["stateDetail"] is None
+    assert row["executionActivity"]["kind"] == "reading"
 
 
 def test_transcript_only_session_is_never_running(world):
