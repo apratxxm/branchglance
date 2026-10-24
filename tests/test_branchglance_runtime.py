@@ -180,13 +180,13 @@ def test_policy_file_unreadable_is_distinct_from_absent(monkeypatch, tmp_path):
     assert read_policy_file(None).status == "absent"
 
 
-def test_fork_icon_contains_all_sizes_and_is_used_for_tray():
+def test_live_stack_icon_contains_all_sizes_and_is_used_for_tray():
     from PIL import Image
     icon = product.brand_icon_path()
     assert icon.is_file()
     with Image.open(icon) as image:
         assert image.format == "ICO"
-        assert set(image.info["sizes"]) == {(size, size) for size in (16, 20, 24, 32, 40, 48, 64, 256)}
+        assert set(image.info["sizes"]) == {(size, size) for size in (16, 20, 24, 32, 40, 48, 64, 128, 256)}
     tray = widget.WidgetApp.icon_image()
     assert tray.size == (64, 64) and tray.getpixel((0, 0))[3] == 0
 

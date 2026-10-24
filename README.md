@@ -1,5 +1,7 @@
 # Branchglance
 
+![Branchglance Live Stack](assets/brand/lockup.svg)
+
 Branchglance is a compact Windows widget for keeping Codex and Claude Code chats, subagents, usage limits and waiting work in view.
 
 The Codex source uses blue accents; Claude uses orange. Limit meters count upward to 100% used. In compact mode, new activity can bring the relevant provider into view; use the Codex | Claude switch to change sources yourself. A pop-up can surface new work or a waiting question. Search hidden chats with `is:hidden`; hiding a chat does not delete it.
@@ -24,7 +26,7 @@ Rendered from synthetic sample data; no real chats or accounts.
 
 Branchglance requires 64-bit Windows 10 build 19041 or newer, .NET Framework 4.8 or newer, and Microsoft Edge WebView2 Runtime. Setup checks these prerequisites and stops with an explanation when one is missing.
 
-The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup creates Start menu and Desktop shortcuts, plus an optional sign-in Startup shortcut. Setup resolves these locations through Windows known folders, including redirected Desktop locations such as OneDrive. All shortcuts use the Branchglance fork icon; uninstall removes the shortcuts it owns.
+The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup creates Start menu and Desktop shortcuts, plus an optional sign-in Startup shortcut. Setup resolves these locations through Windows known folders, including redirected Desktop locations such as OneDrive. All shortcuts use the Branchglance Live Stack icon; uninstall removes the shortcuts it owns.
 
 Setup checks whether `%LOCALAPPDATA%` is redirected into a packaged app's private storage. It refuses with a visible explanation when redirection is detected or the check is inconclusive. If the Branchglance launcher detects redirected storage, it reopens through File Explorer before starting the widget. Run Setup from File Explorer or the Start menu, not from another app's terminal.
 
