@@ -28,9 +28,9 @@ assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain
 assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 240ms/);
 assert.match(page,/placeholder="[^"]*is:hidden/);
 assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
-assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 48px/);
-assert.match(refined,/compact-toolbar \.notch-counts\{display:none/);
-assert.match(refined,/compact-toolbar \.source-seg\{width:auto;height:20px;min-width:62px/);
+assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 42px/);
+assert.doesNotMatch(refined,/compact-toolbar \.notch-counts\{display:none/,"the toolbar keeps its chat, active and waiting counts");
+assert.match(refined,/compact-toolbar \.source-seg\{width:auto;height:20px;min-width:0;gap:0;padding:0 8px/);
 assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);
 
 function boot(initialStorage={}, {compact=false}={}) {
