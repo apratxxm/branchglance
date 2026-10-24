@@ -342,8 +342,12 @@ body:not(.phone) .popover:not([hidden]){animation:runway-panel-open var(--motion
 .runway-message-indicator.message-arrived .runway-message-dots i:nth-child(2){animation-delay:60ms}
 .runway-message-indicator.message-arrived .runway-message-dots i:nth-child(3){animation-delay:120ms}
 .source-switch-snapshot{position:absolute;inset:0 auto auto 0;z-index:5;width:100%;min-height:100%;overflow:hidden;pointer-events:none;background:transparent}
-.source-switch-snapshot.is-fading{animation:source-switch-fade 240ms var(--ease-standard) forwards}
+.source-switch-snapshot.is-fading{animation:source-switch-fade 150ms var(--ease-standard) forwards}
 @keyframes source-switch-fade{to{opacity:0}}
+.chat-list.source-entering>:not(.source-switch-snapshot){opacity:0}
+.chat-list.source-enter>:not(.source-switch-snapshot){animation:source-list-enter 220ms var(--ease-standard) both}
+@keyframes source-list-enter{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.chat-list.source-enter>*{animation:none}}
 .hidden-chats-toggle{min-height:22px}
 .policy-notice{max-width:100%;margin:0 0 7px;overflow:hidden;color:var(--muted);font-size:11px;line-height:1.35;text-overflow:ellipsis;white-space:nowrap}
 

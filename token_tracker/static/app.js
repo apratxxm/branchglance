@@ -33,7 +33,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
   hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
-  source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, policyWarnings:[] };
+  source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
 const codexQuotaBootstrap={name:'Codex'};
@@ -202,6 +202,7 @@ async function recenterWidget(){
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
 function notchHeight() {
   if(COMPACT){
+    if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
     if(notch.mode==='idle')return 100;
     if(notch.mode==='rest')return 100;
     if(notch.mode==='controls')return 110;
@@ -2070,11 +2071,28 @@ function setSource(name,{persist=true,manual=true}={}) {
   closeRunwayDetails();state.lastOrder=null;
   const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
   const list=$('#chat-list'),sourceSnapshot=captureSourceSnapshot(list);
+  // Sequence the switch: the old rows fade out at the current height, then the
+  // window resizes to the new source while its rows fade in. Overlapping these
+  // made the old rows crop (fewer new rows) or the new ones show through (more).
+  state.sourceRelease?.(false);
+  if(sourceSnapshot&&COMPACT&&notch.mode==='inspect'){
+    state.sourceHeightHold=notchHeight();list.classList?.add?.('source-entering');list.classList?.remove?.('source-enter');
+  }
   state.sourceSwitching=true;
   try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);}
   finally{state.sourceSwitching=false;}
   updateSourceSwitch();
-  revealSourceSnapshot(list,sourceSnapshot);
+  let released=false,fallback=null;
+  const release=(animate=true)=>{
+    if(released)return;released=true;clearTimeout(fallback);if(state.sourceRelease===release)state.sourceRelease=null;
+    if(!state.sourceHeightHold)return;
+    state.sourceHeightHold=null;list.classList?.remove?.('source-entering');
+    if(animate){void list.offsetWidth;list.classList?.add?.('source-enter');}
+    scheduleNotchSize();
+  };
+  state.sourceRelease=release;fallback=setTimeout(release,400);
+  revealSourceSnapshot(list,sourceSnapshot,release);
+  if(!sourceSnapshot)release(false);
   return true;
 }
 function captureSourceSnapshot(list) {
@@ -2089,10 +2107,10 @@ function captureSourceSnapshot(list) {
   snapshot.removeAttribute("id");for(const element of snapshot.querySelectorAll?.("[id]")||[])element.removeAttribute("id");
   return snapshot;
 }
-function revealSourceSnapshot(list,snapshot) {
+function revealSourceSnapshot(list,snapshot,done) {
   if(!snapshot||!list?.appendChild)return;
   for(const previous of list.querySelectorAll?.(".source-switch-snapshot")||[])previous.remove();
-  const finish=()=>{snapshot.removeEventListener?.("animationend",finish);snapshot.removeEventListener?.("animationcancel",finish);snapshot.remove?.();};
+  const finish=()=>{snapshot.removeEventListener?.("animationend",finish);snapshot.removeEventListener?.("animationcancel",finish);snapshot.remove?.();done?.();};
   snapshot.addEventListener?.("animationend",finish);snapshot.addEventListener?.("animationcancel",finish);
   list.appendChild(snapshot);
   const reveal=()=>snapshot.classList.add("is-fading");

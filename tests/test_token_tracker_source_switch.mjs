@@ -25,7 +25,8 @@ assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);assert.mat
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
 assert.match(css,/\.source-seg\{[^}]*min-width:64px[^}]*padding:0 10px/);
 assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
-assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 240ms/);
+assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 150ms/);
+assert.match(css,/\.chat-list\.source-entering>:not\(\.source-switch-snapshot\)\{opacity:0\}/,"new rows stay hidden until the old ones have faded");
 assert.match(page,/placeholder="[^"]*is:hidden/);
 assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
 assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 42px/);
@@ -142,6 +143,18 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   T.revealSourceSnapshot(list,overlay);assert.equal(added[0],overlay);
   frameCallbacks[0]();assert.equal(overlay.classList["is-fading"],true);
   overlay.animationend();assert.equal(overlay.removed,true,"the old layer is removed after the crossfade completes");
+  // The caller is told when the old rows are gone, so the window can resize and the new rows fade in.
+  let done=0;const second=T.captureSourceSnapshot(list);T.revealSourceSnapshot(list,second,()=>done++);
+  second.animationend();assert.equal(done,1);
+}
+
+// While the old rows fade, the open widget keeps its height; it resizes once they are gone.
+{
+  const {T}=boot(undefined,{compact:true});
+  T.notch.mode="inspect";T.state.sourceHeightHold=233;
+  assert.equal(T.notchHeight(),233,"held at the pre-switch height");
+  T.state.sourceHeightHold=null;
+  assert.notEqual(T.notchHeight(),233);
 }
 
 // 1. Hidden with one provider, visible with two.
