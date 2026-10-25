@@ -147,16 +147,16 @@ const snapshot={generatedAt:ago(0),enabledProviders:["Codex"],providers:[provide
 {
   const rect=(left,top,width=100,height=20)=>({left,top,width,height});
   const geometry=T.runwayTreePathGeometry(rect(0,0,200,120),[
-    {key:"root",provider:"Codex",id:"root",rowRect:rect(24,0),messageRect:rect(24,0),nameRect:rect(30,5,60,20)},
-    {key:"child",provider:"Codex",id:"child",parentId:"root",rowRect:rect(42,30),messageRect:rect(42,36,120,50),nameRect:rect(47,42,60,40),glanceRect:rect(42,36,120,50)},
-    {key:"grandchild",provider:"Codex",id:"grandchild",parentId:"child",rowRect:rect(60,70),messageRect:rect(60,75,120,50),nameRect:rect(65,82,60,40),glanceRect:rect(60,75,120,50)}
+    {key:"Codex:root",provider:"Codex",id:"root",parentKey:null,rowRect:rect(24,0),messageRect:rect(24,0),nameRect:rect(30,5,60,20)},
+    {key:"Codex:child",provider:"Codex",id:"child",parentId:"root",parentKey:"Codex:root",rowRect:rect(42,30),messageRect:rect(42,36,120,50),nameRect:rect(47,42,60,40),glanceRect:rect(42,36,120,50)},
+    {key:"Codex:grandchild",provider:"Codex",id:"grandchild",parentId:"child",parentKey:"Codex:child",rowRect:rect(60,70),messageRect:rect(60,75,120,50),nameRect:rect(65,82,60,40),glanceRect:rect(60,75,120,50)}
   ]);
-  assert.deepEqual(Array.from(geometry.paths,({from,to})=>[from,to]),[["root","child"],["child","grandchild"]],"paths connect only visible parent and child identities");
+  assert.deepEqual(Array.from(geometry.paths,({from,to})=>[from,to]),[["Codex:root","Codex:child"],["Codex:child","Codex:grandchild"]],"paths connect only visible canonical parent and child keys");
   assert.equal(geometry.paths[0].d,"M26 14.5V51.5H44","the root tree gutter starts after the dedicated message lane");
   assert.equal(geometry.paths.at(-1).d,"M44 51.5V91.5H62","wrapped child names anchor the branch at their first-line center");
   assert.equal(geometry.paths.at(-1).endY,91.5);assert.equal(geometry.height,94,"the overlay leaves room past endpoint centers for the radius-1.7 dots");
   assert.equal(geometry.dots.length,3,"adjacent parent and child endpoints are deduplicated into one measured point");
-  assert.ok(geometry.messagePositions.every(position=>position.x+({root:24,child:42,grandchild:60}[position.key])===2),"message lanes share the left widget edge across tree depth");
+  assert.ok(geometry.messagePositions.every(position=>position.x+({"Codex:root":24,"Codex:child":42,"Codex:grandchild":60}[position.key])===2),"message lanes share the left widget edge across tree depth");
   const treeX=Number(geometry.paths[0].d.match(/^M([\d.]+)/)[1]);
   assert.ok(2+18<treeX&&2+18<geometry.width,"the 18px message lane stays within the widget and left of the branch line");
   const orphan=T.runwayTreePathGeometry(rect(0,0,200,120),[
@@ -385,8 +385,8 @@ assert.doesNotMatch(waitingRow,/runway-state-glyph is-waiting|data-runway-slot="
 assert.doesNotMatch(html,/until cold|likely warm|likely cold|~1h|cold time unknown/);
 assert.match(html,/D:\\work\\sample app/);
 assert.doesNotMatch(html,/Fix login test|Refactor parser|ctx-ring|ctx-pct|toggle-chat|toggle-agent-details|toggle-agents|Open chat|Copy resume|Headroom|Recorded context/);
-assert.equal((html.match(/6\.1 Sol/g)||[]).length,3);
-assert.match(html,/data-runway-slot="model" class="runway-telemetry-model" title="gpt-6\.1-sol"><span class="runway-model-name">6\.1 Sol/);
+assert.equal((html.match(/6\.1 Sol/g)||[]).length,6,"each model name appears as visible text and its matching title");
+assert.match(html,/data-runway-slot="model" class="runway-telemetry-model" title="GPT-6\.1 Sol"><span class="runway-model-name is-codex-model">GPT-6\.1 Sol/);
 assert.deepEqual(Array.from(T.trayEntries(T.state.forest.roots[0],T.parseQuery("")),entry=>entry.key),["Codex:child","Codex:grandchild"]);
 assert.match(html,/--agent-depth:1/);
 assert.doesNotMatch(html,/data-key="Codex:done"/);
@@ -540,11 +540,11 @@ assert.equal(T.runwayTitle({...root,title:'Plain first line\n## Outcome\nlong bo
 assert.ok(T.runwayTitle({...root,title:'x'.repeat(300)}).length<=72);
 assert.equal(T.runwayModelLabel({...root,model:'Codex'}),'');
 assert.doesNotMatch(T.rowHTML({...root,model:'Codex'}),/Model not recorded|data-runway-slot="model"/);
-assert.match(T.rowHTML({...root,model:'gpt-6-luna'}),/title="gpt-6-luna"><span class="runway-model-name">6 Luna/);
+assert.match(T.rowHTML({...root,model:'gpt-6-luna'}),/title="GPT-6 Luna"><span class="runway-model-name is-codex-model">GPT-6 Luna/);
 const modelChangeBase={...root,id:'model-change',key:'Codex:model-change',model:'gpt-6-luna',modelChangeAt:ago(1)};
 assert.doesNotMatch(T.rowHTML(modelChangeBase),/model-changed/,"first discovery never flashes a model change");
 const changedModelRow=T.rowHTML({...modelChangeBase,model:'gpt-6-astra',modelChangeAt:new Date(fixedNow).toISOString()});
-assert.match(changedModelRow,/title="gpt-6-astra"><span class="runway-model-name model-changed" data-model-change-at="\d+">6 Astra/);
+assert.match(changedModelRow,/title="GPT-6 Astra"><span class="runway-model-name is-codex-model model-changed" data-model-change-at="\d+">GPT-6 Astra/);
 assert.equal(Number(changedModelRow.match(/data-model-change-at="(\d+)"/)?.[1]),fixedNow,'the highlight version comes from the provider event timestamp');
 testNow=fixedNow+1500;
 assert.match(T.rowHTML({...modelChangeBase,model:'gpt-6-astra',modelChangeAt:new Date(fixedNow).toISOString()}),/model-changed/,"the highlight remains for its event-based window");
@@ -566,7 +566,7 @@ testNow=fixedNow;
 const staleMetricsRow=T.rowHTML({...root,metricsUnavailable:true});
 assert.doesNotMatch(staleMetricsRow,/Current lifecycle state is available|Last cache|Last known|data-runway-slot="context"|runway-cache|Cache \d+%/);
 assert.match(staleMetricsRow,/runway-telemetry-state t-live[^>]*aria-label="Running"[^>]*>.*?runway-status-dot[^>]*aria-label="Running"/);
-assert.match(T.rowHTML({...root,workspaceKind:'codex-chat'}),/runway-workspace[^>]*title="Codex per-chat working folder; not a project checkout · D:\\work\\sample app"/);
+assert.match(T.rowHTML({...root,workspaceKind:'codex-chat'}),/runway-workspace[^>]*title="Per-chat working folder; not a project checkout · D:\\work\\sample app"/);
 const modelSnapshot={...snapshot,providers:[{...provider,chats:[{...root,model:'Codex',statusSource:'transcript'}]}]};
 T.applyLive(modelSnapshot,{generatedAt:ago(0),chats:[{key:'Codex:root',id:'root',provider:'Codex',title:'Live-renamed root',parentId:null,agentName:'',agentRole:null,workspace:'A:\\projects\\renamed',workspaceKind:'project',source:'rollout',activityAt:ago(0),status:'running',model:'gpt-6-luna',latestRequestAt:ago(2),contextDelta:140,contextDeltaObservedAt:ago(0),modelChangeAt:ago(1),trackerUpdate:declaredPhase,trackerUpdateAt:ago(1),activity:{kind:'using_tool',label:'Using tool',files:[],observedAt:ago(0)}}]});
 assert.equal(modelSnapshot.providers[0].chats[0].model,'gpt-6-luna');
