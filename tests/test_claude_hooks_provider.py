@@ -39,13 +39,46 @@ def test_claude_pid_associations_keep_all_time_scoped_process_identities():
     claude_events.reduce_event(state, ev(20, "UserPromptSubmit", claude_pid=5000,
                                          claude_pid_created=9000))
     root = state["keys"][(SID, "")]
-    assert root["pid_associations"] == {
-        "4242:777": {"pid": 4242, "created": 777, "first": 10, "last": 10},
-        "5000:9000": {"pid": 5000, "created": 9000, "first": 20, "last": 20},
-    }
+    assert root["pid_associations"] == [
+        {"pid": 4242, "created": 777, "sid": SID, "first": 10, "last": 10},
+        {"pid": 5000, "created": 9000, "sid": SID, "first": 20, "last": 20},
+    ]
     associations = agent_links._association_map(state["keys"])
     assert associations[(4242, 777)] == [(SID, 10.0, float("inf"))]
     assert associations[(5000, 9000)] == [(SID, 20.0, float("inf"))]
+
+
+def test_same_claude_process_a_to_b_to_a_keeps_three_association_transitions():
+    state = claude_events.new_file_state()
+    pid, created = 6000, 7000
+    sid_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    sid_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    for ts, sid in ((10, sid_a), (20, sid_b), (30, sid_a)):
+        claude_events.reduce_event(state, {
+            "ts": ts, "event": "UserPromptSubmit", "session_id": sid,
+            "claude_pid": pid, "claude_pid_created": created,
+        })
+
+    associations = agent_links._association_map(state["keys"])
+    assert associations[(pid, created)] == [
+        (sid_a, 10.0, 20.0), (sid_b, 20.0, 30.0), (sid_a, 30.0, float("inf")),
+    ]
+
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+
+    def session_at(epoch):
+        result = agent_links.scan_codex_processes(
+            table={20: (pid, "codex.exe"), pid: (1, "claude.exe"), 1: (0, "explorer.exe")},
+            current_sid=b"sid", equal_sid=lambda left, right: left == right,
+            process_sid=lambda _pid: b"sid",
+            created=lambda process: {20: int((epoch + 11_644_473_600) * 10_000_000),
+                                     pid: created, 1: 1}[process],
+            command_line=lambda _pid: f"codex.exe exec resume {thread}",
+            claude_states=state["keys"])
+        return result[0]["claude_session_id"]
+
+    assert session_at(25) == sid_b
+    assert session_at(35) == sid_a
 
 
 def assistant(ts, mid, model="claude-opus-5", use=None, blocks=None, stop=None, entry="cli"):

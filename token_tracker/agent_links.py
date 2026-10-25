@@ -296,9 +296,8 @@ def parse_exec_invocation(command_line: str | None) -> tuple[str, str | None, tu
             return None
         candidate = args[3].strip('"').lower()
         return ("resume", candidate, (candidate,)) if THREAD_ID.fullmatch(candidate) else None
-    names = tuple(dict.fromkeys(value.strip('"').lower() for value in args[2:]
-                                if THREAD_ID.fullmatch(value.strip('"'))))
-    return ("exec", None, names)
+    # Fresh exec prompt text is not an identity source, even if it contains a UUID.
+    return ("exec", None, ())
 
 
 def _filetime_epoch(created: int) -> float | None:
@@ -310,12 +309,13 @@ def _filetime_epoch(created: int) -> float | None:
 
 
 def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], list[tuple[str, float, float]]]:
-    grouped: dict[tuple[int, int], dict[str, tuple[float, float]]] = {}
+    grouped: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
     for identity, entry in (claude_states or {}).items():
         if not isinstance(identity, tuple) or len(identity) != 2 or identity[1]:
             continue
-        sid = identity[0]
-        for association in (entry.get("pid_associations") or {}).values():
+        raw = entry.get("pid_associations") or {}
+        associations = raw.values() if isinstance(raw, dict) else raw
+        for association in associations:
             try:
                 key = (int(association["pid"]), int(association["created"]))
                 first, last = float(association["first"]), float(association["last"])
@@ -323,13 +323,11 @@ def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], lis
                     continue
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            current = grouped.setdefault(key, {}).get(str(sid))
-            grouped[key][str(sid)] = (
-                min(current[0], first), max(current[1], last)) if current else (first, last)
+            grouped.setdefault(key, []).append(
+                (str(association.get("sid") or identity[0]), first, last))
     found: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
-    for identity, sessions in grouped.items():
-        ordered = sorted(((sid, bounds[0], bounds[1]) for sid, bounds in sessions.items()),
-                         key=lambda item: (item[1], item[0]))
+    for identity, transitions in grouped.items():
+        ordered = sorted(transitions, key=lambda item: (item[1], item[0], item[2]))
         entries = []
         for index, (sid, first, _observed_last) in enumerate(ordered):
             # A process identity remains associated with its latest session
@@ -616,13 +614,14 @@ def write_registry(runs: Iterable[dict[str, Any]], path: Path, *, now: float | N
                 continue
             first, last = float(run["first_seen"]), float(run["last_seen"])
             verified = float(run.get("verified_at", 0))
-            if (not all(math.isfinite(value) for value in (first, last, verified))
-                    or first > last or last > now or verified > now
+            retired = float(run.get("retired_at", 0))
+            if (not all(math.isfinite(value) for value in (first, last, verified, retired))
+                    or first > last or last > now or verified > now or retired > now
                     or now - last > RETENTION_SECONDS):
                 continue
             clean.append({key: run[key] for key in (
                 "thread_id", "codex_pid", "codex_created", "claude_session_id",
-                "first_seen", "last_seen", "verified_at", "method") if key in run})
+                "first_seen", "last_seen", "verified_at", "retired_at", "method") if key in run})
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
     try:
@@ -666,8 +665,10 @@ def load_registry(path: Path, *, now: float | None = None) -> list[dict[str, Any
                         and run.get("method") in {"cmdline", "receipt"}):
                     first, last = float(run["first_seen"]), float(run["last_seen"])
                     verified = float(run.get("verified_at", 0))
-                    if (not all(math.isfinite(value) for value in (first, last, verified))
+                    retired = float(run.get("retired_at", 0))
+                    if (not all(math.isfinite(value) for value in (first, last, verified, retired))
                             or first > last or last > now or first > now or verified > now
+                            or retired > now
                             or now - last > RETENTION_SECONDS):
                         continue
                     valid.append(run)
@@ -733,8 +734,8 @@ def apply_exact_links(
     with _SCAN_LOCK:
         discovery_due = now - _LAST_FULL_SCAN_AT >= 10
     need_full_scan = bool(live_rows) and discovery_due
-    live_by_thread: dict[str, dict[str, Any]] = {}
-    live_runs_by_thread: dict[str, list[dict[str, Any]]] = {}
+    verified_by_thread: dict[str, list[dict[str, Any]]] = {}
+    unresolved_by_thread: dict[str, list[dict[str, Any]]] = {}
     watched_threads = {str(row.get("id") or "").lower() for row in live_rows
                        if row.get("id")}
     unlinked_live_threads: set[str] = set()
@@ -755,10 +756,11 @@ def apply_exact_links(
         candidates.sort(key=lambda run: float(run.get("last_seen") or 0), reverse=True)
         for known in candidates:
             try:
+                if float(known.get("retired_at") or 0) > 0:
+                    continue
                 pid, created_at = int(known["codex_pid"]), int(known["codex_created"])
                 verified_at = float(known.get("verified_at") or 0)
             except (KeyError, TypeError, ValueError, OverflowError):
-                need_full_scan = True
                 continue
             fresh = now - verified_at < 10
             verdict = True if fresh else verify(pid, created_at)
@@ -767,15 +769,14 @@ def apply_exact_links(
                     known["verified_at"] = now
                     known["last_seen"] = now
                     registry_changed = True
-                live_by_thread[thread] = known
-                live_runs_by_thread.setdefault(thread, []).append(known)
+                verified_by_thread.setdefault(thread, []).append(known)
             elif verdict is None:
-                # Unverifiable identities remain possible live executions so
-                # they continue to block an ambiguous parent.
-                live_runs_by_thread.setdefault(thread, []).append(known)
-                need_full_scan = True
+                # An unresolved identity can only block a parent; it is never
+                # positive evidence for publishing one.
+                unresolved_by_thread.setdefault(thread, []).append(known)
             else:
-                need_full_scan = True
+                known["retired_at"] = now
+                registry_changed = True
 
     discovered: list[dict[str, Any]] = []
     receipt_rows: list[dict[str, Any]] = []
@@ -866,12 +867,10 @@ def apply_exact_links(
                       float(prior.get("verified_at") or 0) if prior else 0}
             by_identity[key] = record
             if run.get("method") == "cmdline":
-                live_by_thread[key[0]] = record
-                live_runs_by_thread.setdefault(key[0], []).append(record)
+                verified_by_thread.setdefault(key[0], []).append(record)
             elif run.get("method") == "receipt":
                 record["verified_at"] = now
-                live_by_thread[key[0]] = record
-                live_runs_by_thread.setdefault(key[0], []).append(record)
+                verified_by_thread.setdefault(key[0], []).append(record)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
     runs = list(by_identity.values())
@@ -902,9 +901,9 @@ def apply_exact_links(
             continue
         status = str(row.get("executionStatus") or row.get("status") or "").lower()
         if status == "running":
-            if thread in unlinked_live_threads:
+            if thread in unlinked_live_threads or unresolved_by_thread.get(thread):
                 continue
-            live_runs = live_runs_by_thread.get(thread, [])
+            live_runs = verified_by_thread.get(thread, [])
             live_sessions = {str(run.get("claude_session_id")) for run in live_runs}
             if len(live_sessions) != 1:
                 continue
