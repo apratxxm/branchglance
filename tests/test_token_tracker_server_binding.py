@@ -110,4 +110,4 @@ def test_queue_cli_boundary_requires_explicit_codex_send(monkeypatch):
     monkeypatch.setattr(server.shutil, "which", lambda _name: pytest.fail("denied queue must not inspect CLI"))
 
     with pytest.raises(ProviderPolicyError, match="explicit Codex SEND consent"):
-        server.queue_codex_message("01a0cad8-b212-72f2-88d3-2c887f7d4445", "hello")
+        server.queue_codex_message("01a0cad8-0000-7000-8000-000000000001", "hello")

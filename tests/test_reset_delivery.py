@@ -21,7 +21,7 @@ TEST_POLICIES = load_policies({
 })
 
 
-THREAD = "01a0cad8-b212-72f2-88d3-2c887f7d4445"
+THREAD = "01a0cad8-0000-7000-8000-000000000001"
 
 
 class FakeClient:
