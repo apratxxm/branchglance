@@ -15,6 +15,7 @@ Contributor and architecture references:
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Contributing](docs/CONTRIBUTING.md)
+- [Code signing policy](docs/CODE_SIGNING_POLICY.md)
 - [macOS port inventory](docs/MAC_PORT.md)
 
 The Codex source uses blue accents; Claude uses orange. Limit meters count upward to 100% used. In compact mode, new activity can bring the relevant provider into view; use the Codex | Claude switch to change sources yourself. A pop-up can surface new work or a waiting question. Search hidden chats with `is:hidden`; hiding a chat does not delete it.
