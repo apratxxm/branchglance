@@ -19,12 +19,12 @@ assert.match(refined,/--blue:var\(--source-accent\)/,"the source accent replaces
 assert.match(refined,/--source-edge:#39364d;--source-edge-strong:#514176;--source-edge-end:#34405c/,"the frame retains the fixed Codex-purple edges");
 assert.match(refined,/\.ag\[data-provider="Claude"\]>.runway-agent-glance>.runway-refined-row/);
 assert.match(refined,/--claude-accent:#e8813f/);assert.match(refined,/--tree-claude-surface:#19130f/);
-assert.match(refined,/var\(--claude-accent\) 6%/);assert.match(refined,/var\(--source-glow-primary\) 5%/);
+assert.match(refined,/var\(--claude-accent\) 12%/);assert.match(refined,/var\(--source-glow-primary\) 11%/);
 assert.doesNotMatch(refined,/\.runway-refined-row\{[^}]*background-color:/);
-assert.doesNotMatch(refined,/\.chat>\.row::after/);
+assert.match(refined,/\.chat>\.row::after\{[^}]*radial-gradient\([^}]*transparent 70%/);
 assert.doesNotMatch(refined,/\.chat>\.row\.runway-root-stuck\{[^}]*background:/);
-assert.match(refined,/radial-gradient\(ellipse 68px 14px at 80px 50%,[^}]*var\(--claude-accent\) 6%[^}]*transparent 100%/);
-assert.match(refined,/radial-gradient\(ellipse 68px 14px at 80px 50%,[^}]*var\(--source-glow-primary\) 5%[^}]*transparent 100%/);
+assert.match(refined,/radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 12%[^}]*transparent 100%/);
+assert.match(refined,/radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--source-glow-primary\) 11%[^}]*transparent 100%/);
 assert.match(refined,/\.runway-refined-row::after\{[^}]*border-radius:0;[^}]*radial-gradient\([^}]*transparent 100%/);
 assert.doesNotMatch(refined,/linear-gradient\(to bottom,var\(--tree-(?:claude|codex)-surface\)/);
 assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
