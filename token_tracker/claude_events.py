@@ -61,7 +61,7 @@ def new_file_state() -> dict[str, Any]:
 def _new_key(sid: str, aid: str) -> dict[str, Any]:
     return {
         "sid": sid, "aid": aid, "atype": None, "first": None, "last": None, "sub_activity": None,
-        "pid": None, "pid_created": None, "pid_ts": -1.0,
+        "pid": None, "pid_created": None, "pid_ts": -1.0, "pid_associations": {},
         "workspace": None, "model": None, "model_ts": -1.0,
         "start": None, "start_source": None, "prompt": None, "prompt_id": None, "stop": None, "fail": None, "end": None,
         "end_reason": None, "interrupt": None, "idle": None,
@@ -131,6 +131,18 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
     s["last"] = _max(s["last"], ts)
     if not aid:
         root["last"] = s["last"]
+    # Keep all time-scoped process identities for exact child-process linking.
+    if isinstance(record.get("claude_pid"), int) and isinstance(record.get("claude_pid_created"), int):
+        identity = f"{record['claude_pid']}:{record['claude_pid_created']}"
+        association = root["pid_associations"].get(identity)
+        if association is None:
+            root["pid_associations"][identity] = {
+                "pid": record["claude_pid"], "created": record["claude_pid_created"],
+                "first": ts, "last": ts,
+            }
+        else:
+            association["first"] = min(association["first"], ts)
+            association["last"] = max(association["last"], ts)
     # Process/workspace facts are session-wide; model facts belong to each agent.
     if isinstance(record.get("claude_pid"), int) and isinstance(record.get("claude_pid_created"), int) \
             and ts >= root["pid_ts"]:
