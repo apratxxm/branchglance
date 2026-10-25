@@ -246,11 +246,11 @@ COMPACT_NOTCH_SIZES = {"idle": (420, 100), "rest": (420, 100),
 COMPACT_INSPECT_MAX_HEIGHT = 420
 COMPACT_DRAG_LEASE_SECONDS = 60
 COMPACT_DRAG_WATCHDOG_SECONDS = 0.10
-# Match the compact CSS reveal in one smootherstep sequence, sampled at 120 Hz.
-# Match the compact CSS reveal in one smootherstep sequence, sampled at 120 Hz.
-COMPACT_NOTCH_TRANSITION_SECONDS = 0.22
-NOTCH_TRANSITION_SECONDS = 0.11
-NOTCH_OPEN_TRANSITION_SECONDS = 0.14
+# Keep the open movement proportional to the chat-list fade delay (midpoint).
+COMPACT_NOTCH_TRANSITION_SECONDS = 0.286
+COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS = 0.22
+NOTCH_TRANSITION_SECONDS = 0.125
+NOTCH_OPEN_TRANSITION_SECONDS = 0.182
 NOTCH_FRAME_INTERVAL = 1 / 120
 NOTCH_EVENT_GUARD_SECONDS = 1.0
 
@@ -692,9 +692,10 @@ def _notch_bounds(area, expanded=False, height=None):
 
 
 def _notch_smootherstep(progress):
-    """Quintic easing with zero velocity and acceleration at both ends."""
+    """Seventh-order easing with a soft start and zero endpoint velocity."""
     progress = min(1.0, max(0.0, float(progress)))
-    return progress * progress * progress * (progress * (progress * 6 - 15) + 10)
+    squared = progress * progress
+    return squared * squared * (35 + progress * (-84 + progress * (70 - 20 * progress)))
 
 
 def _notch_transition_frame(start, target, progress):
@@ -2379,7 +2380,8 @@ class WidgetApp:
             if self.maximized:
                 self.window.restore()
                 self.maximized = False
-            duration = (COMPACT_NOTCH_TRANSITION_SECONDS if self.compact_profile else
+            duration = (COMPACT_NOTCH_TRANSITION_SECONDS if self.compact_profile and expanded else
+                        COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS if self.compact_profile else
                         NOTCH_OPEN_TRANSITION_SECONDS if expanded and not was_expanded else NOTCH_TRANSITION_SECONDS)
             self._apply_notch_bounds(animate=not reduced_motion, duration=duration)
 
