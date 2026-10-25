@@ -336,6 +336,15 @@ def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], lis
             next_first = next((entry[1] for entry in ordered[index + 1:]
                                if entry[1] > first), math.inf)
             entries.append((sid, first, next_first if math.isfinite(next_first) else math.inf))
+        # Hooks can arrive out of order. When two sessions' observed ranges on
+        # one process overlap, the owner after the overlap can't be proven:
+        # make both candidates from that point on so selection fails closed.
+        for index, (sid, first, observed_last) in enumerate(ordered):
+            for other_sid, other_first, other_last in ordered[index + 1:]:
+                if other_sid != sid and first < other_last and other_first < observed_last:
+                    start = max(first, other_first)
+                    entries.append((sid, start, math.inf))
+                    entries.append((other_sid, start, math.inf))
         found[identity] = entries
     return found
 

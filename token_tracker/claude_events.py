@@ -144,7 +144,9 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
             active["last"] = max(active.get("last") or ts, ts)
         else:
             if active is not None:
-                active["last"] = ts
+                # Never shrink an observed range: a late-arriving event from
+                # another session must stay visible as an overlap.
+                active["last"] = max(active.get("last") or ts, ts)
             transition = {"pid": identity[0], "created": identity[1],
                           "sid": sid, "first": ts, "last": ts}
             root["pid_associations"].append(transition)
