@@ -1081,6 +1081,12 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert '.runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' in refined
     assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
+    assert '--claude-accent:#e8813f' in refined
+    assert '.chat[data-provider="Claude"]>.row::after{background:none;}' in refined
+    assert 'var(--claude-accent) 20%' in refined
+    assert 'var(--source-glow-primary) 17%' in refined
+    assert refined.count('linear-gradient(180deg,var(--tree-row-neutral) 0%') == 2
+    assert refined.count('var(--tree-row-neutral) 100%') == 2
 
 
 @pytest.mark.parametrize("during", ["http", "limit_reset", "window"])

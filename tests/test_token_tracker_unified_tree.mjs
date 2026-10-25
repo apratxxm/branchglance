@@ -151,6 +151,10 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(css,/\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/,"children keep the exact parent row grid inset");
   assert.match(css,/\.runway-model-name\.is-codex-model\{color:#b3a8ff;text-shadow:/);
   assert.match(css,/\.runway-model-name\.is-claude-model\{color:#ad826f/);
+  assert.match(css,/\.chat\[data-provider="Claude"\]>.row>.runway-refined-row,\s*body[^\n]*\.ag\[data-provider="Claude"\].*var\(--claude-accent\)/,"Claude row glow uses the warm Claude accent token");
+  assert.match(css,/\.chat\[data-provider="Codex"\].*var\(--source-glow-primary\)/,"OpenAI row glow remains blue-violet");
+  assert.match(css,/linear-gradient\(180deg,var\(--tree-row-neutral\) 0%,color-mix\([^;]+var\(--tree-claude-surface\)[^;]+var\(--tree-row-neutral\) 100%\)/,"Claude tint fades into the shared neutral at both row edges");
+  assert.match(css,/linear-gradient\(180deg,var\(--tree-row-neutral\) 0%,color-mix\([^;]+var\(--tree-codex-surface\)[^;]+var\(--tree-row-neutral\) 100%\)/,"OpenAI tint fades into the shared neutral at both row edges");
   const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard"},true);
   const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard review dashboard updates and coordination"},true);
   assert.equal((shortTitle.match(/class="runway-refined-row"/g)||[]).length,(longTitle.match(/class="runway-refined-row"/g)||[]).length,"title length does not add rows or change the fixed row tracks");
