@@ -7,6 +7,7 @@ from PyInstaller.utils.hooks import collect_submodules
 SOURCE = Path(os.environ["BRANCHGLANCE_SOURCE"]).resolve()
 STATIC = SOURCE / "token_tracker" / "static"
 ICON = Path(os.environ["BRANCHGLANCE_ICON"]).resolve()
+VERSION_INFO = Path(os.environ["BRANCHGLANCE_VERSION_INFO"]).resolve()
 ENTRY = SOURCE / "branchglance_entry.py"
 hidden = ["token_tracker.widget", "webview.platforms.winforms", "webview.platforms.edgechromium",
           "pystray._win32", "clr", "clr_loader", "zstandard"]
@@ -19,9 +20,11 @@ a = Analysis([str(ENTRY)], pathex=[str(SOURCE)], binaries=[],
              noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="BranchglanceApp", debug=False,
-          bootloader_ignore_signals=False, strip=False, upx=False, console=False, icon=str(ICON))
+          bootloader_ignore_signals=False, strip=False, upx=False, console=False, icon=str(ICON),
+          version=str(VERSION_INFO))
 # Console entry for Claude Code hooks (stdin/stdout relayed by the launcher); same
 # script and shared libraries, so it adds only a small bootloader exe.
 hook_exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="BranchglanceHook", debug=False,
-               bootloader_ignore_signals=False, strip=False, upx=False, console=True, icon=str(ICON))
+               bootloader_ignore_signals=False, strip=False, upx=False, console=True, icon=str(ICON),
+               version=str(VERSION_INFO))
 COLLECT(exe, hook_exe, a.binaries, a.datas, strip=False, upx=False, name="BranchglanceApp")
