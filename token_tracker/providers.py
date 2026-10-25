@@ -4776,9 +4776,29 @@ def live_state() -> dict[str, Any]:
                            workspace=indexed.get("identityWorkspace"),
                            source=indexed.get("identitySource"))
         chats.append(row)
+    if "Claude" in visible_full and "Codex" in visible_full:
+        try:
+            from .agent_links import apply_exact_links
+            grouped = [{"name": name, "chats": [chat for chat in chats
+                                                 if str(chat.get("key") or "").startswith(name + ":")]}
+                       for name in ("Claude", "Codex")]
+            apply_exact_links(grouped)
+            linked = {str(row.get("key")): (row.get("parentId"), row.get("parentProvider"))
+                      for provider in grouped for row in provider["chats"]}
+            for chat in chats:
+                if chat.get("key") in linked:
+                    chat["parentId"], parent_provider = linked[chat["key"]]
+                    if parent_provider:
+                        chat["parentProvider"] = parent_provider
+        except Exception:
+            pass
+    for chat in chats:
+        chat["provider"] = "Codex" if str(chat.get("key") or "").startswith("Codex:") else "Claude"
+    from .agent_links import snapshot_graph
+    graph = snapshot_graph(chats, delta=True)
     return {"generatedAt": datetime.now(timezone.utc).isoformat(),
             "structureStamp": _structure_stamp(visible_full), "chats": chats,
-            "providerPolicies": policy_payload}
+            "providerPolicies": policy_payload, "graph": graph}
 
 
 def today_usage() -> dict[str, Any]:
@@ -4957,6 +4977,19 @@ def build_snapshot() -> dict[str, Any]:
                       if policy_for(provider.get("name"), policies).allows("show")]
     visible_provider_data = [provider for provider in all_providers
                              if policy_for(provider.get("name"), policies).allows("show")]
+    if "Claude" in full_collect and "Codex" in full_collect:
+        try:
+            from .agent_links import apply_exact_links
+            apply_exact_links(visible_provider_data)
+        except Exception:
+            pass
+    graph_rows = []
+    for provider in visible_provider_data:
+        for row in provider.get("chats") or []:
+            row["provider"] = provider.get("name")
+            graph_rows.append(row)
+    from .agent_links import snapshot_graph
+    graph = snapshot_graph(graph_rows)
     _index_live_paths(visible_active, policy_payload["generation"])
 
     today_date = _local_today()
@@ -5009,6 +5042,7 @@ def build_snapshot() -> dict[str, Any]:
             "note": " + ".join(provider["name"] for provider in visible_active) + " transcript traffic · API-equivalent estimates",
         },
         "providers": visible_provider_data,
+        "graph": graph,
         "activity": [{"date": date, "value": value} for date, value in sorted(activity.items())],
         "activityMeta": {
             "activeDays": len(active_dates),

@@ -183,11 +183,26 @@ def hook():
             print(f"Branchglance hook unavailable: {exc}", file=sys.stderr)
     return 0
 
+def link_codex():
+    # Receipts only associate an execution with a Claude session; they never
+    # influence execution status or provider policy.
+    try:
+        from token_tracker.agent_links import write_receipt
+        args = sys.argv[2:]
+        thread = args[0] if args else ""
+        pid = int(args[args.index("--codex-pid") + 1]) if "--codex-pid" in args else 0
+        write_receipt(thread, pid)
+    except Exception:
+        pass
+    return 0
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
         raise SystemExit(self_test(sys.argv[2] if len(sys.argv) > 2 else None))
     if len(sys.argv) > 1 and sys.argv[1] == "--claude-hook":
         raise SystemExit(hook())
+    if len(sys.argv) > 1 and sys.argv[1] == "--link-codex":
+        raise SystemExit(link_codex())
     if len(sys.argv) > 1 and sys.argv[1] == "--appdata-probe":
         from token_tracker.product import appdata_probe
         status, _reason = appdata_probe()

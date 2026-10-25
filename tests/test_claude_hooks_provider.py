@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from token_tracker import claude_events, claude_hook, claude_provider, providers
+from token_tracker import agent_links, claude_events, claude_hook, claude_provider, providers
 from token_tracker.provider_policy import load_policies
 
 NOW = time.time()
@@ -31,6 +31,21 @@ def ev(ts, event, sid=SID, **kw):
 def usage(inp, cached, creation, out):
     return {"input_tokens": inp, "cache_read_input_tokens": cached, "cache_creation_input_tokens": creation,
             "output_tokens": out}
+
+
+def test_claude_pid_associations_keep_all_time_scoped_process_identities():
+    state = claude_events.new_file_state()
+    claude_events.reduce_event(state, ev(10, "SessionStart"))
+    claude_events.reduce_event(state, ev(20, "UserPromptSubmit", claude_pid=5000,
+                                         claude_pid_created=9000))
+    root = state["keys"][(SID, "")]
+    assert root["pid_associations"] == {
+        "4242:777": {"pid": 4242, "created": 777, "first": 10, "last": 10},
+        "5000:9000": {"pid": 5000, "created": 9000, "first": 20, "last": 20},
+    }
+    associations = agent_links._association_map(state["keys"])
+    assert associations[(4242, 777)] == {SID}
+    assert associations[(5000, 9000)] == {SID}
 
 
 def assistant(ts, mid, model="claude-opus-5", use=None, blocks=None, stop=None, entry="cli"):
