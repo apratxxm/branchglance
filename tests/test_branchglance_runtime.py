@@ -1082,16 +1082,19 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
     assert '--claude-accent:#e8813f' in refined
-    assert '.chat[data-provider="Claude"]>.row::after{background:none;}' in refined
-    assert 'background-color:var(--tree-claude-surface)' in refined
-    assert 'background-color:var(--tree-codex-surface)' in refined
-    assert 'ellipse 78px 25px at 66px 50%,color-mix(in srgb,var(--claude-accent) 12%' in refined
-    assert 'ellipse 78px 25px at 66px 50%,color-mix(in srgb,var(--source-glow-primary) 13%' in refined
-    assert 'linear-gradient(to bottom,var(--tree-claude-surface) 0px,transparent 8px)' in refined
-    assert 'linear-gradient(to bottom,var(--tree-codex-surface) 0px,transparent 8px)' in refined
-    assert 'linear-gradient(180deg,var(--tree-row-neutral)' not in refined
-    assert '.ag[data-provider="Claude"]+.ag[data-provider="Codex"]' in refined
-    assert '.ag[data-provider="Codex"]+.ag[data-provider="Claude"]' in refined
+    assert "--tree-claude-surface:#19130f" in refined
+    assert "ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--claude-accent) 6%,transparent),transparent 100%" in refined
+    assert "ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--claude-accent) 4%,transparent),transparent 100%" in refined
+    assert "ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 5%,transparent),transparent 100%" in refined
+    assert ".runway-refined-row::after{content:\"\";position:absolute;z-index:0;inset:0;border-radius:0;background:radial-gradient(" in refined
+    assert ".chat>.row::after" not in refined
+    assert ".chat>.row.runway-root-stuck{background:" not in refined
+    assert "background-color:var(--tree-claude-surface)" not in refined
+    assert "background-color:var(--tree-codex-surface)" not in refined
+    assert "linear-gradient(to bottom,var(--tree-claude-surface)" not in refined
+    assert "linear-gradient(to bottom,var(--tree-codex-surface)" not in refined
+    assert "linear-gradient(180deg,var(--tree-row-neutral)" not in refined
+    assert "ellipse 220px" not in refined and "ellipse 240px" not in refined
 
 
 @pytest.mark.parametrize("during", ["http", "limit_reset", "window"])
