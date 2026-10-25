@@ -151,10 +151,12 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(css,/\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/,"children keep the exact parent row grid inset");
   assert.match(css,/\.runway-model-name\.is-codex-model\{color:#b3a8ff;text-shadow:/);
   assert.match(css,/\.runway-model-name\.is-claude-model\{color:#ad826f/);
-  assert.match(css,/\.chat\[data-provider="Claude"\]>.row>.runway-refined-row,\s*body[^\n]*\.ag\[data-provider="Claude"\].*var\(--claude-accent\)/,"Claude row glow uses the warm Claude accent token");
-  assert.match(css,/\.chat\[data-provider="Codex"\].*var\(--source-glow-primary\)/,"OpenAI row glow remains blue-violet");
-  assert.match(css,/linear-gradient\(180deg,var\(--tree-row-neutral\) 0%,color-mix\([^;]+var\(--tree-claude-surface\)[^;]+var\(--tree-row-neutral\) 100%\)/,"Claude tint fades into the shared neutral at both row edges");
-  assert.match(css,/linear-gradient\(180deg,var\(--tree-row-neutral\) 0%,color-mix\([^;]+var\(--tree-codex-surface\)[^;]+var\(--tree-row-neutral\) 100%\)/,"OpenAI tint fades into the shared neutral at both row edges");
+  assert.match(css,/\.ag\[data-provider="Claude"\]>.runway-agent-glance>.runway-refined-row\{background-color:var\(--tree-claude-surface\);background-image:radial-gradient\(ellipse 78px 25px at 66px 50%,color-mix\(in srgb,var\(--claude-accent\) 12%/,"Claude rows keep a flat fill with a tight accent-token halo");
+  assert.match(css,/\.ag\[data-provider="Codex"\]>.runway-agent-glance>.runway-refined-row\{background-color:var\(--tree-codex-surface\);background-image:radial-gradient\(ellipse 78px 25px at 66px 50%,color-mix\(in srgb,var\(--source-glow-primary\) 13%/,"OpenAI rows keep flat blue-violet fills and glow");
+  assert.ok(css.includes('.ag[data-provider="Claude"]+.ag[data-provider="Codex"]'),"feathering is scoped to cross-provider adjacent rows");
+  assert.match(css,/linear-gradient\(to bottom,var\(--tree-claude-surface\) 0px,transparent 8px\)/,"cross-provider feather is limited to eight pixels");
+  assert.match(css,/linear-gradient\(to bottom,var\(--tree-codex-surface\) 0px,transparent 8px\)/);
+  assert.doesNotMatch(css,/linear-gradient\(180deg,var\(--tree-row-neutral\)/,"rows no longer use full-height neutral gradients");
   const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard"},true);
   const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard review dashboard updates and coordination"},true);
   assert.equal((shortTitle.match(/class="runway-refined-row"/g)||[]).length,(longTitle.match(/class="runway-refined-row"/g)||[]).length,"title length does not add rows or change the fixed row tracks");
