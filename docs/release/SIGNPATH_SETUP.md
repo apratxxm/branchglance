@@ -20,7 +20,7 @@ Enable multi-factor authentication on the GitHub accounts and SignPath accounts 
 
 In SignPath, connect the GitHub.com trusted build system and install the official SignPath GitHub App for the Branchglance repository. Grant access only to that repository. Ensure the project and release signing policy accept GitHub Actions artifacts from the tagged release build.
 
-Create a SignPath project for **Branchglance** and configure its artifact configuration using `.signpath/artifact-configuration.xml`. The configuration signs the launcher, app, hook, uninstaller, or final setup executable when present, while requiring ProductName `Branchglance` and the release ProductVersion. Configure a policy that requires manual approval for each signing request.
+Create a SignPath project for **Branchglance** and create two required-target artifact configurations: use `.signpath/artifact-configuration.xml` for the launcher, app, hook, and uninstaller; use `.signpath/setup-artifact-configuration.xml` for the final setup executable. Both require ProductName `Branchglance` and the release ProductVersion. Configure a policy that requires manual approval for each signing request.
 
 ## 4. Add GitHub Actions settings
 
@@ -29,7 +29,8 @@ Under the repository's **Settings → Secrets and variables → Actions**, add t
 - `SIGNPATH_ORGANIZATION_ID`
 - `SIGNPATH_PROJECT_SLUG`
 - `SIGNPATH_SIGNING_POLICY_SLUG`
-- `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`
+- `SIGNPATH_COMPONENTS_ARTIFACT_CONFIGURATION_SLUG`
+- `SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG`
 
 Create a SignPath API token for a submitter allowed by the release policy, then store it as the repository secret `SIGNPATH_API_TOKEN`. Never put the token in a workflow file, variable, build log, or commit.
 
