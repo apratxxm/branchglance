@@ -227,6 +227,19 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.inventory_artifact_id }}
           path: ${{ runner.temp }}/branchglance-component-inventory
+          merge-multiple: true
+
+      - name: Assert original inventory download path and digest
+        shell: pwsh
+        env:
+          INVENTORY_SHA256: ${{ needs.build.outputs.inventory_sha256 }}
+        run: |
+          $inventory = Join-Path $env:RUNNER_TEMP "branchglance-component-inventory/signpath-inventory.json"
+          if (-not (Test-Path -LiteralPath $inventory -PathType Leaf)) {
+            throw "Original component inventory was not downloaded to the expected path."
+          }
+          $actual = (Get-FileHash -LiteralPath $inventory -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:INVENTORY_SHA256) { throw "Downloaded component inventory hash does not match the build output." }
 
       - name: Check whether the API token is configured
         id: token
@@ -391,6 +404,20 @@ jobs:
         with:
           name: branchglance-signed-release-assets
           path: ${{ runner.temp }}/branchglance-release-assets
+          merge-multiple: true
+
+      - name: Assert signed asset download paths
+        shell: pwsh
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          foreach ($name in @("BranchglanceSetup.exe", "BranchglanceSetup.exe.sha256", "Branchglance-components.zip.sha256")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $assets $name) -PathType Leaf)) {
+              throw "Signed release asset is missing: $name"
+            }
+          }
+          if (-not (Get-ChildItem $assets -Filter "Branchglance-*-windows-components.zip" -File)) {
+            throw "Signed component archive is missing."
+          }
 
       - name: Checkout frozen source commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
