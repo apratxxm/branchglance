@@ -62,7 +62,7 @@ const provider = { name: "Codex", connected: true, chats: [parent, child], fiveH
 T.render({ generatedAt: stamp(0), enabledProviders: ["Codex"], providers: [provider] });
 const parentHTML = T.rowHTML(T.state.forest.rows.find(chat => chat.id === parent.id));
 const childHTML = T.rowHTML(T.state.forest.rows.find(chat => chat.id === child.id));
-for (const slot of ["title", "timing", "activity-column", "path-column"]) assert.ok(parentHTML.includes(`data-runway-slot="${slot}"`), `parent has ${slot} slot`);
+for (const slot of ["title", "timing", "status", "activity-column", "path-column", "tokens"]) assert.ok(parentHTML.includes(`data-runway-slot="${slot}"`), `parent has ${slot} slot`);
 assert.match(parentHTML, /title="160000 \/ 258400"/);
 assert.match(parentHTML, /Cache 80%/);
 assert.match(parentHTML, /runway-refined-elapsed">2:00/);
@@ -109,7 +109,7 @@ assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-bar"/);
 assert.match(css, /runway-refined-row \.runway-refined-path>\*\{grid-column:1;min-width:0;max-width:100%/);
 assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:transparent;\}/);
-assert.match(css, /\.chat>\.row\.runway-root-stuck\{background:#05070b;\}/);
+assert.doesNotMatch(css, /\.chat>\.row\.runway-root-stuck\{background:#05070b;\}/, "stuck rows do not paint an opaque surface");
 assert.match(css, /\.chat:has\(>\.runway-tree-connectors\)>\.row\.runway-root-stuck/);
 assert.doesNotMatch(css, /#chat-list>\.chat:only-child/);
 
@@ -435,7 +435,7 @@ assert.doesNotMatch(syncAge.className, /\bis-loading\b/);
 assert.equal(syncAge.getAttribute("aria-busy"), "false");
 assert.match(syncAge.innerHTML, /<svg class="ic"/);
 const beforeClockTick = JSON.stringify(T.state.snapshot), beforeClockIntervals = intervalCalls.length;
-const expectedLocalTime = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(testNow));
+const expectedLocalTime = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", hourCycle: "h12" }).format(new Date(testNow));
 T.tick();
 assert.equal(node("#compact-clock").textContent, expectedLocalTime);
 assert.equal(node("#toolbar-clock").textContent, expectedLocalTime);
@@ -542,9 +542,11 @@ rowClasses.add("runway-tall-root"); rowTop = rootTop; onLayoutScroll(); runGeome
 assert.equal(rowClasses.has("runway-root-stuck"), false, "nonsticky tall roots clear the stuck surface"); rowClasses.delete("runway-tall-root");
 delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
 
-// Times and statuses share one centred column: the title track is fixed, so long activity text can't shift it per row.
-assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{[^}]*grid-template-columns:calc\(var\(--runway-inspect-clock-axis,278px\) - 80px\) 84px /);
-assert.doesNotMatch(css, /grid-template-columns:minmax\(0,calc\(var\(--runway-inspect-clock-axis/);
+// Time, status, activity, workspace, and tokens have shared columns at every depth.
+assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(120px,1\.7fr\) 46px 82px minmax\(70px,1fr\) minmax\(80px,1\.1fr\) 78px/);
+assert.match(css, /\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/);
+assert.match(css, /\.runway-refined-timing\{grid-column:2/);assert.match(css,/\.runway-refined-status\{grid-column:3/);
+assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\.runway-refined-path\{grid-column:5/);assert.match(css,/\.runway-refined-tokens\{grid-column:6/);
 
 // A Claude chat waiting on a permission prompt has no question text but still explains itself.
 {
@@ -554,8 +556,8 @@ assert.doesNotMatch(css, /grid-template-columns:minmax\(0,calc\(var\(--runway-in
   assert.match(T.runwayQuestionPopover(asked), /Where should it run\?/);
   assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
 }
-// Activity/cache and path columns are equal fixed shares, so cache and path line up across rows.
-assert.match(css, /grid-template-columns:calc\(var\(--runway-inspect-clock-axis,278px\) - 80px\) 84px minmax\(0,1fr\) minmax\(0,1fr\);/);
+// Each information column has its own centred track instead of sharing or shifting with content.
+assert.match(css, /grid-template-columns:minmax\(120px,1\.7fr\) 46px 82px minmax\(70px,1fr\) minmax\(80px,1\.1fr\) 78px/);
 
 // The yellow waiting count is the way to the waiting chat.
 T.renderRunwayCounts({ roots: 2, total: 3, waiting: 1 });

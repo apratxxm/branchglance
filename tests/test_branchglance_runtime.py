@@ -1063,6 +1063,40 @@ def test_branchglance_window_tray_and_runway_document_titles(monkeypatch):
     assert "<title>Branchglance · Runway</title>" in runway
 
 
+def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tracks():
+    from pathlib import Path
+    static = Path(widget.__file__).parent / "static"
+    page = (static / "runway.html").read_text(encoding="utf-8")
+    app = (static / "app.js").read_text(encoding="utf-8")
+    refined = (static / "runway_refined.css").read_text(encoding="utf-8")
+    assert 'id="source-switch"' not in page
+    assert 'data-action="source"' not in page
+    assert 'data-notch-mode="controls"' in page
+    assert 'data-provider="Claude"' in refined
+    assert 'data-provider="Codex"' in refined
+    assert 'parentKey' in app and 'graphValue.edges' in app
+    assert 'GPT-' in app and 'family[0].toUpperCase()' in app
+    assert 'is-codex-model' in refined and 'is-claude-model' in refined
+    assert 'grid-template-columns:minmax(120px,1.7fr) 46px 82px minmax(70px,1fr) minmax(80px,1.1fr) 78px' in refined
+    assert '.runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' in refined
+    assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
+    assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
+    assert '--claude-accent:#e8813f' in refined
+    assert "--tree-claude-surface:#19130f" in refined
+    assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 12%,transparent),transparent 100%" in refined
+    assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 9%,transparent),transparent 100%" in refined
+    assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 11%,transparent),transparent 100%" in refined
+    assert ".runway-refined-row::after{content:\"\";position:absolute;z-index:0;inset:0;border-radius:0;background:radial-gradient(" in refined
+    assert ".chat[data-provider=\"Claude\"]>.row::after{background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--claude-accent) 22%" in refined
+    assert ".chat>.row.runway-root-stuck{background:" not in refined
+    assert "background-color:var(--tree-claude-surface)" not in refined
+    assert "background-color:var(--tree-codex-surface)" not in refined
+    assert "linear-gradient(to bottom,var(--tree-claude-surface)" not in refined
+    assert "linear-gradient(to bottom,var(--tree-codex-surface)" not in refined
+    assert "linear-gradient(180deg,var(--tree-row-neutral)" not in refined
+    assert "ellipse 220px" not in refined and "ellipse 240px" not in refined
+
+
 @pytest.mark.parametrize("during", ["http", "limit_reset", "window"])
 def test_maintenance_exit_during_startup_cancels_remaining_init_and_releases_resources(monkeypatch, during):
     monkeypatch.setattr(widget, "CONTROL_PORT", 0)
