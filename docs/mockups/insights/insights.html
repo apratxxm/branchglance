@@ -1,0 +1,67 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Insights Â· Orchestrator mockup</title>
+  <link rel="stylesheet" href="mockup.css">
+</head>
+<body data-source="Codex">
+<main class="mock-window">
+  <header class="topbar">
+    <nav class="view-tabs" aria-label="Dashboard views"><a class="view-tab is-active" href="insights.html">Insights</a><a class="view-tab" href="settings.html">Settings</a></nav>
+    <div class="top-controls"><div class="segmented" aria-label="Date range"><button>24h</button><button>7d</button><button class="is-active">30d</button><button>All</button></div><div class="segmented metric-switch" aria-label="Metric"><button>Tokens</button><button class="is-active">Cost</button></div></div>
+  </header>
+  <section class="hero">
+    <div class="hero-meta"><span class="eyebrow">API-equivalent cost</span><span class="period-delta">â†— 12.8% <span class="muted">vs previous 30 days</span></span></div>
+    <div class="hero-number-row"><span class="hero-currency">$</span><strong class="hero-number">184.26</strong><span class="hero-unit">estimated</span></div>
+    <div class="provider-split" aria-label="Cost split: Claude 62%, Codex 38%"><span class="claude-fill" style="width:62%"></span><span class="codex-fill" style="width:38%"></span></div>
+    <div class="split-legend"><span class="legend-item"><i class="legend-dot claude"></i>Claude <b class="legend-share">62%</b></span><span class="legend-item"><i class="legend-dot codex"></i>Codex <b class="legend-share">38%</b></span></div>
+  </section>
+  <section class="usage-section">
+    <div class="section-heading"><span class="section-title">Usage over time</span><span class="section-note">Daily Â· API-equivalent cost</span></div>
+    <svg class="area-chart" viewBox="0 0 668 113" preserveAspectRatio="none" role="img" aria-label="Stacked area chart of daily cost for Claude and Codex over 30 days">
+      <defs>
+        <linearGradient id="codex-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#6675ff" stop-opacity=".25"/><stop offset="1" stop-color="#6675ff" stop-opacity=".015"/></linearGradient>
+        <linearGradient id="claude-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#e98953" stop-opacity=".26"/><stop offset="1" stop-color="#e98953" stop-opacity=".018"/></linearGradient>
+        <filter id="soft-glow" x="-30%" y="-100%" width="160%" height="300%"><feGaussianBlur stdDeviation="2.8"/></filter>
+      </defs>
+      <g class="chart-grid"><path d="M0 15H668M0 42H668M0 69H668M0 96H668"/></g>
+      <text x="0" y="11">$12</text><text x="0" y="38">$8</text><text x="0" y="65">$4</text><text x="0" y="92">$0</text>
+      <path class="chart-area claude" d="M0 92 L0 92 L23 81 L46 85 L69 67 L92 74 L115 63 L138 75 L161 57 L184 62 L207 51 L230 58 L253 42 L276 53 L299 39 L322 49 L346 32 L369 38 L392 44 L415 28 L438 37 L461 24 L484 39 L507 31 L530 46 L553 22 L576 34 L599 18 L622 29 L645 14 L668 20 L668 54 L645 47 L622 63 L599 51 L576 69 L553 55 L530 78 L507 62 L484 70 L461 53 L438 65 L415 57 L392 73 L369 66 L346 58 L322 76 L299 65 L276 77 L253 68 L230 81 L207 73 L184 83 L161 76 L138 90 L115 81 L92 89 L69 85 L46 93 L23 91 L0 96 Z"/>
+      <path class="chart-edge-glow claude" d="M0 92 L0 92 L23 81 L46 85 L69 67 L92 74 L115 63 L138 75 L161 57 L184 62 L207 51 L230 58 L253 42 L276 53 L299 39 L322 49 L346 32 L369 38 L392 44 L415 28 L438 37 L461 24 L484 39 L507 31 L530 46 L553 22 L576 34 L599 18 L622 29 L645 14 L668 20"/>
+      <path class="chart-area codex" d="M0 96 L0 96 L23 91 L46 93 L69 85 L92 89 L115 81 L138 90 L161 76 L184 83 L207 73 L230 81 L253 68 L276 77 L299 65 L322 76 L346 58 L369 66 L392 73 L415 57 L438 65 L461 53 L484 70 L507 62 L530 78 L553 55 L576 69 L599 51 L622 63 L645 47 L668 54 L668 96Z" fill="url(#codex-fill)" opacity=".48"/>
+      <path class="chart-edge-glow" d="M0 96 L0 96 L23 91 L46 93 L69 85 L92 89 L115 81 L138 90 L161 76 L184 83 L207 73 L230 81 L253 68 L276 77 L299 65 L322 76 L346 58 L369 66 L392 73 L415 57 L438 65 L461 53 L484 70 L507 62 L530 78 L553 55 L576 69 L599 51 L622 63 L645 47 L668 54"/>
+      <text x="0" y="110">Oct 1</text><text x="207" y="110">Oct 10</text><text x="430" y="110">Oct 20</text><text x="628" y="110">Today</text>
+    </svg>
+  </section>
+  <section class="stats-strip" aria-label="Period summary">
+    <div class="stat"><span class="stat-label">Tokens</span><strong class="stat-value">28.4<span class="unit">M</span></strong></div>
+    <div class="stat"><span class="stat-label">Sessions</span><strong class="stat-value">â€”</strong></div>
+    <div class="stat"><span class="stat-label">Subagents</span><strong class="stat-value">â€”</strong></div>
+    <div class="stat"><span class="stat-label">Cache hit rate</span><strong class="stat-value">71<span class="unit">%</span></strong></div>
+    <div class="stat"><span class="stat-label">Active hours</span><strong class="stat-value">â€”</strong></div>
+  </section>
+  <section class="lower-grid">
+    <div class="model-breakdown">
+      <div class="model-heading"><span>Model breakdown</span><span class="subtle">30 days</span></div>
+      <div class="model-head-row"><span>Model</span><span style="text-align:right">Tokens</span><span style="text-align:right">Cost</span><span>Share</span></div>
+      <div class="model-row"><span class="model-name"><i class="model-dot" style="--model-color:#e98953"></i>Opus 5.5</span><span class="model-number">10.2M</span><span class="model-cost">$79.48</span><span class="share-cell"><i class="share-track"><i style="width:72%;--model-color:#e98953"></i></i><b class="share-percent">43%</b></span></div>
+      <div class="model-row"><span class="model-name"><i class="model-dot" style="--model-color:#bd805f"></i>Sonnet 5.5</span><span class="model-number">8.6M</span><span class="model-cost">$54.21</span><span class="share-cell"><i class="share-track"><i style="width:49%;--model-color:#bd805f"></i></i><b class="share-percent">29%</b></span></div>
+      <div class="model-row"><span class="model-name"><i class="model-dot" style="--model-color:#8f7890"></i>Haiku 5.5</span><span class="model-number">4.1M</span><span class="model-cost">$12.83</span><span class="share-cell"><i class="share-track"><i style="width:25%;--model-color:#8f7890"></i></i><b class="share-percent">14%</b></span></div>
+      <div class="model-row"><span class="model-name"><i class="model-dot" style="--model-color:#6876ff"></i>GPT-6 Luna</span><span class="model-number">3.2M</span><span class="model-cost">$21.14</span><span class="share-cell"><i class="share-track"><i style="width:17%;--model-color:#6876ff"></i></i><b class="share-percent">9%</b></span></div>
+      <div class="model-row"><span class="model-name"><i class="model-dot" style="--model-color:#8973ee"></i>GPT-6.1 Sol</span><span class="model-number">2.3M</span><span class="model-cost">$16.60</span><span class="share-cell"><i class="share-track"><i style="width:9%;--model-color:#8973ee"></i></i><b class="share-percent">5%</b></span></div>
+    </div>
+    <aside class="limit-list">
+      <div class="limit-heading"><span>Limit peaks</span><span class="subtle">period max</span></div>
+      <div class="limit-period">Claude</div>
+      <div class="limit-row"><span class="limit-label">5-hour</span><i class="limit-track"><i style="width:76%;--provider-color:#e98953"></i></i><span class="limit-percent">76%</span></div>
+      <div class="limit-row"><span class="limit-label">Weekly</span><i class="limit-track"><i style="width:58%;--provider-color:#e98953"></i></i><span class="limit-percent">58%</span></div>
+      <div class="limit-period">Codex</div>
+      <div class="limit-row"><span class="limit-label">5-hour</span><i class="limit-track"><i style="width:43%;--provider-color:#6876ff"></i></i><span class="limit-percent">43%</span></div>
+      <div class="limit-row"><span class="limit-label">Weekly</span><i class="limit-track"><i style="width:67%;--provider-color:#6876ff"></i></i><span class="limit-percent">67%</span></div>
+    </aside>
+  </section>
+</main>
+</body>
+</html>
