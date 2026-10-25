@@ -44,8 +44,8 @@ def test_claude_pid_associations_keep_all_time_scoped_process_identities():
         "5000:9000": {"pid": 5000, "created": 9000, "first": 20, "last": 20},
     }
     associations = agent_links._association_map(state["keys"])
-    assert associations[(4242, 777)] == {SID}
-    assert associations[(5000, 9000)] == {SID}
+    assert associations[(4242, 777)] == [(SID, 10.0, 10.0)]
+    assert associations[(5000, 9000)] == [(SID, 20.0, 20.0)]
 
 
 def assistant(ts, mid, model="claude-opus-5", use=None, blocks=None, stop=None, entry="cli"):

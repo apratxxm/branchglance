@@ -4360,7 +4360,7 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                     "latestMessageSourceId", "latestMessageTargetId", "contextTokens", "contextWindow",
                     "contextPercent", "contextObservedAt", "contextModel", "contextDelta",
                     "contextDeltaObservedAt", "modelChangeAt", "lastRequest", "model", "updatedAt",
-                    "title", "parentId", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
+                    "title", "parentId", "parentProvider", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
                     "activity", "activityUnavailable", "executionStatus", "executionSource",
                     "executionObservedAt", "executionSince", "executionCompactionStartedAt",
                     "executionTerminalAt", "executionActivity",
@@ -4519,6 +4519,7 @@ def live_state() -> dict[str, Any]:
                 "identityTitle": record.get("threadName") or record.get("title") or record.get("name"),
                 "identityWorkspace": record.get("cwd"),
                 "identityParentId": record.get("parentThreadId"),
+                "identityParentProvider": "Codex" if record.get("parentThreadId") else None,
                 "identitySource": record.get("source"),
                 # A database name is an agent label only when lineage confirms
                 # this is a child. Root thread names remain titles.
@@ -4554,6 +4555,7 @@ def live_state() -> dict[str, Any]:
                     retained["id"] = indexed["id"]
                 if indexed.get("identityParentId"):
                     retained["parentId"] = indexed["identityParentId"]
+                    retained["parentProvider"] = indexed.get("identityParentProvider") or "Codex"
                 if indexed.get("identityTitle"):
                     retained["title"] = indexed["identityTitle"]
                 if indexed.get("identityWorkspace"):
@@ -4687,6 +4689,7 @@ def live_state() -> dict[str, Any]:
                 "id": indexed.get("id") or (key.split(":", 1)[1] if ":" in key else None),
                 "title": indexed.get("identityTitle") or insights.get("title") or indexed.get("title"),
                 "parentId": insights.get("parentId") or indexed.get("parentId") or indexed.get("identityParentId"),
+                "parentProvider": indexed.get("parentProvider") or indexed.get("identityParentProvider"),
                 "agentName": insights.get("agentName") or indexed.get("agentName") or indexed.get("identityAgentName"),
                 "agentRole": indexed.get("agentRole"),
                 "workspace": insights.get("workspace") or indexed.get("workspace") or indexed.get("identityWorkspace"),
@@ -4772,6 +4775,7 @@ def live_state() -> dict[str, Any]:
                     row["previousStatus"] = previous_status
                 row.update(title=indexed.get("identityTitle") or indexed.get("title"),
                            parentId=indexed.get("identityParentId") or indexed.get("parentId"),
+                           parentProvider=indexed.get("parentProvider") or indexed.get("identityParentProvider"),
                            agentName=indexed.get("identityAgentName"),
                            workspace=indexed.get("identityWorkspace"),
                            source=indexed.get("identitySource"))

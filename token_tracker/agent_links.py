@@ -14,6 +14,7 @@ import shlex
 import tempfile
 import threading
 import time
+import math
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -30,6 +31,8 @@ _GRAPH_REVISION = 0
 _SID_LOCK = threading.Lock()
 _CURRENT_SID: bytes | None = None
 _LINK_LOCK = threading.RLock()
+_SCAN_LOCK = threading.Lock()
+_LAST_FULL_SCAN_AT = float("-inf")
 
 
 def _serialized_link_poll(function):
@@ -210,6 +213,36 @@ def _equal_sid(left: bytes | None, right: bytes | None) -> bool:
         return False
 
 
+def _read_process_command_line(query: Callable[[Any, int], tuple[int, int]], *,
+                               pointer_size: int | None = None) -> str | None:
+    """Size-query and read one bounded PROCESS_COMMAND_LINE_INFORMATION result."""
+    try:
+        pointer_size = pointer_size or ctypes.sizeof(ctypes.c_void_p)
+        pointer_offset = 8 if pointer_size == 8 else 4
+        header = pointer_offset + pointer_size
+        status, required = query(None, 0)
+        maximum = header + 32767 * 2
+        if status == 0 or required < header or required > maximum:
+            return None
+        buffer = ctypes.create_string_buffer(required)
+        status, returned = query(buffer, required)
+        if status != 0 or returned < header or returned > required:
+            return None
+        length = int.from_bytes(buffer.raw[:2], "little")
+        maximum_length = int.from_bytes(buffer.raw[2:4], "little")
+        pointer = int.from_bytes(buffer.raw[pointer_offset:pointer_offset + pointer_size], "little")
+        base = ctypes.addressof(buffer)
+        offset = pointer - base
+        if (not length or length % 2 or length > 32767 * 2
+                or maximum_length < length or maximum_length > 32767 * 2
+                or offset < header or offset > returned
+                or offset + maximum_length > returned):
+            return None
+        return ctypes.wstring_at(pointer, length // 2)
+    except Exception:
+        return None
+
+
 def _command_line(pid: int) -> str | None:
     """Query ProcessCommandLineInformation (60); never retain the raw value."""
     if os.name != "nt":
@@ -227,20 +260,12 @@ def _command_line(pid: int) -> str | None:
         if not process:
             return None
         try:
-            size = 32768
-            buffer = ctypes.create_string_buffer(size)
-            returned = ctypes.c_ulong()
-            status = ntdll.NtQueryInformationProcess(process, 60, buffer, size, ctypes.byref(returned))
-            if status != 0 or returned.value < 8 or returned.value > size:
-                return None
-            # UNICODE_STRING starts with USHORT Length, USHORT MaximumLength,
-            # followed by a pointer aligned to the native pointer width.
-            pointer_offset = 8 if ctypes.sizeof(ctypes.c_void_p) == 8 else 4
-            length = int.from_bytes(buffer.raw[:2], "little")
-            pointer = int.from_bytes(buffer.raw[pointer_offset:pointer_offset + ctypes.sizeof(ctypes.c_void_p)], "little")
-            if not length or length % 2 or length > 32760 or not pointer:
-                return None
-            return ctypes.wstring_at(pointer, length // 2)
+            def query(buffer: Any, size: int) -> tuple[int, int]:
+                returned = ctypes.c_ulong()
+                status = ntdll.NtQueryInformationProcess(
+                    process, 60, buffer, size, ctypes.byref(returned))
+                return int(status), int(returned.value)
+            return _read_process_command_line(query)
         finally:
             kernel.CloseHandle(process)
     except Exception:
@@ -262,8 +287,16 @@ def parse_exec_resume_thread(command_line: str | None) -> str | None:
     return None
 
 
-def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], set[str]]:
-    found: dict[tuple[int, int], set[str]] = {}
+def _filetime_epoch(created: int) -> float | None:
+    try:
+        value = int(created) / 10_000_000 - 11_644_473_600
+        return value if math.isfinite(value) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], list[tuple[str, float, float]]]:
+    found: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
     for identity, entry in (claude_states or {}).items():
         if not isinstance(identity, tuple) or len(identity) != 2 or identity[1]:
             continue
@@ -271,10 +304,12 @@ def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], set
         for association in (entry.get("pid_associations") or {}).values():
             try:
                 key = (int(association["pid"]), int(association["created"]))
-                float(association["first"]), float(association["last"])
+                first, last = float(association["first"]), float(association["last"])
+                if not math.isfinite(first) or not math.isfinite(last) or first > last:
+                    continue
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            found.setdefault(key, set()).add(str(sid))
+            found.setdefault(key, []).append((str(sid), first, last))
     return found
 
 
@@ -312,10 +347,15 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
         if exe.casefold() != "codex.exe":
             continue
         try:
+            child_created = created(child)
+            if child_created is None:
+                continue
+            created_cache[child] = child_created
             if not equal_sid(owner(child), current_sid):
                 continue
             thread_id = parse_exec_resume_thread(command_line(child))
-            child_created = identity(child)
+            if created(child) != child_created:
+                continue
         except Exception:
             continue
         if not thread_id or child_created is None:
@@ -323,7 +363,7 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
         current, visited, chain = child, set(), []
         claude_identity = None
         valid = True
-        for _ in range(12):
+        for _ in range(16):
             if current in visited or current not in table:
                 valid = False
                 break
@@ -347,8 +387,21 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
             current = parent
         if not valid or claude_identity is None:
             continue
-        session_ids = associations.get(claude_identity, set())
+        created_epoch = _filetime_epoch(child_created)
+        if created_epoch is None:
+            continue
+        session_ids = {sid for sid, first, last in associations.get(claude_identity, ())
+                       if first <= created_epoch <= last}
         if len(session_ids) != 1:
+            continue
+        # Recheck the child across owner and command-line observations, then
+        # revalidate every ancestor identity immediately before publication.
+        try:
+            if identity(child) != child_created or created(child) != child_created:
+                continue
+            if any(created(pid) != created_at for pid, created_at in chain):
+                continue
+        except Exception:
             continue
         output.append({"thread_id": thread_id, "codex_pid": child,
                        "codex_created": child_created, "claude_session_id": next(iter(session_ids)),
@@ -363,15 +416,86 @@ def receipt_path(root: Path | None = None) -> Path:
     return Path(root) / INBOX_NAME
 
 
+def _cross_provider_collection_allowed(policies: Any = None) -> bool:
+    try:
+        from .provider_policy import policy_for
+        return all(policy_for(name, policies).allows("collect") for name in ("Claude", "Codex"))
+    except Exception:
+        return False
+
+
+def validate_codex_pid(pid: int, thread_id: str, *,
+                       table_reader: Callable[[], dict[int, tuple[int, str]]] = _process_table,
+                       current_sid: Callable[[], bytes | None] = _current_user_sid,
+                       process_sid: Callable[[int], bytes | None] = _process_sid,
+                       equal_sid: Callable[[bytes | None, bytes | None], bool] = _equal_sid,
+                       created: Callable[[int], int | None] = _process_created,
+                       command_line: Callable[[int], str | None] = _command_line) -> int | None:
+    """Validate same-user codex.exe identity around owner and argv reads."""
+    try:
+        table = table_reader()
+        if table.get(pid, (None, ""))[1].casefold() != "codex.exe":
+            return None
+        before = created(pid)
+        sid = current_sid()
+        if before is None or not equal_sid(process_sid(pid), sid):
+            return None
+        parsed = parse_exec_resume_thread(command_line(pid))
+        if parsed is not None and parsed != thread_id.lower():
+            return None
+        return before if created(pid) == before else None
+    except Exception:
+        return None
+
+
+def validate_receipt_process(receipt: dict[str, Any], *, table: dict[int, tuple[int, str]],
+                             current_sid: bytes | None,
+                             process_sid: Callable[[int], bytes | None] = _process_sid,
+                             equal_sid: Callable[[bytes | None, bytes | None], bool] = _equal_sid,
+                             created: Callable[[int], int | None] = _process_created,
+                             command_line: Callable[[int], str | None] = _command_line) -> bool:
+    try:
+        pid = int(receipt["codex_pid"])
+        expected = int(receipt["codex_created"])
+        thread = str(receipt["thread_id"]).lower()
+        if table.get(pid, (None, ""))[1].casefold() != "codex.exe":
+            return False
+        if created(pid) != expected or not equal_sid(process_sid(pid), current_sid):
+            return False
+        parsed = parse_exec_resume_thread(command_line(pid))
+        if parsed is not None and parsed != thread:
+            return False
+        return created(pid) == expected
+    except Exception:
+        return False
+
+
 def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | None = None,
                   created: Callable[[int], int | None] = _process_created,
-                  root: Path | None = None) -> bool:
+                  root: Path | None = None, policies: Any = None,
+                  permission_check: Callable[[Any], bool] = _cross_provider_collection_allowed,
+                  pid_check: Callable[[int, str], int | bool | None] = validate_codex_pid) -> bool:
     """Append a bounded display-only association receipt for this execution."""
+    try:
+        if not permission_check(policies):
+            return False
+    except Exception:
+        return False
     env = os.environ if environ is None else environ
-    sid, created_at = env.get("CLAUDE_CODE_SESSION_ID"), created(codex_pid)
+    sid = env.get("CLAUDE_CODE_SESSION_ID")
     if not THREAD_ID.fullmatch(str(thread_id)) or not isinstance(sid, str) or not THREAD_ID.fullmatch(sid):
         return False
-    if not isinstance(codex_pid, int) or codex_pid <= 0 or created_at is None:
+    if not isinstance(codex_pid, int) or codex_pid <= 0:
+        return False
+    try:
+        validated = pid_check(codex_pid, thread_id.lower())
+    except Exception:
+        return False
+    if not validated:
+        return False
+    created_at = (validated if isinstance(validated, int) and not isinstance(validated, bool)
+                  else created(codex_pid))
+    if created_at is None:
         return False
     try:
         path = receipt_path(root)
@@ -394,7 +518,18 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
         return False
 
 
-def read_receipts(root: Path | None = None) -> list[dict[str, Any]]:
+def read_receipts(root: Path | None = None, *, policies: Any = None,
+                  permission_check: Callable[[Any], bool] = _cross_provider_collection_allowed,
+                  owner_check: Callable[[], bool] | None = None) -> list[dict[str, Any]]:
+    try:
+        if not permission_check(policies):
+            return []
+        if owner_check is None:
+            owner_check = _instance_mutex_held
+        if not owner_check():
+            return []
+    except Exception:
+        return []
     try:
         path = receipt_path(root)
         path = path / RECEIPT_FILE
@@ -433,8 +568,11 @@ def write_registry(runs: Iterable[dict[str, Any]], path: Path, *, now: float | N
                     or int(run["codex_pid"]) <= 0 or int(run["codex_created"]) <= 0
                     or run.get("method") not in {"cmdline", "receipt"}):
                 continue
-            last = float(run["last_seen"])
-            if now - last > RETENTION_SECONDS:
+            first, last = float(run["first_seen"]), float(run["last_seen"])
+            verified = float(run.get("verified_at", 0))
+            if (not all(math.isfinite(value) for value in (first, last, verified))
+                    or first > last or last > now or verified > now
+                    or now - last > RETENTION_SECONDS):
                 continue
             clean.append({key: run[key] for key in (
                 "thread_id", "codex_pid", "codex_created", "claude_session_id",
@@ -461,7 +599,8 @@ def write_registry(runs: Iterable[dict[str, Any]], path: Path, *, now: float | N
         return False
 
 
-def load_registry(path: Path) -> list[dict[str, Any]]:
+def load_registry(path: Path, *, now: float | None = None) -> list[dict[str, Any]]:
+    now = time.time() if now is None else now
     try:
         if path.stat().st_size > 4 * 1024 * 1024:
             return []
@@ -478,8 +617,13 @@ def load_registry(path: Path) -> list[dict[str, Any]]:
                 if (THREAD_ID.fullmatch(str(run["thread_id"]))
                         and THREAD_ID.fullmatch(str(run["claude_session_id"]))
                         and int(run["codex_pid"]) > 0 and int(run["codex_created"]) > 0
-                        and run.get("method") in {"cmdline", "receipt"}
-                        and float(run["last_seen"]) >= float(run["first_seen"])):
+                        and run.get("method") in {"cmdline", "receipt"}):
+                    first, last = float(run["first_seen"]), float(run["last_seen"])
+                    verified = float(run.get("verified_at", 0))
+                    if (not all(math.isfinite(value) for value in (first, last, verified))
+                            or first > last or last > now or first > now or verified > now
+                            or now - last > RETENTION_SECONDS):
+                        continue
                     valid.append(run)
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
@@ -501,6 +645,14 @@ def apply_exact_links(
     providers: list[dict[str, Any]], *, root: Path | None = None,
     claude_states: dict[str, Any] | None = None, now: float | None = None,
     registry_path: Path | None = None,
+    policies: Any = None,
+    permission_check: Callable[[Any], bool] = _cross_provider_collection_allowed,
+    process_table_reader: Callable[[], dict[int, tuple[int, str]]] = _process_table,
+    current_sid_reader: Callable[[], bytes | None] = _current_user_sid,
+    process_sid: Callable[[int], bytes | None] = _process_sid,
+    equal_sid: Callable[[bytes | None, bytes | None], bool] = _equal_sid,
+    process_created_reader: Callable[[int], int | None] = _process_created,
+    command_line: Callable[[int], str | None] = _command_line,
     scan: Callable[..., list[dict[str, Any]]] = scan_codex_processes,
     verify: Callable[[int, int], bool | None] = verify_process,
     hooks: Callable[[], dict[str, Any]] | None = None,
@@ -513,6 +665,11 @@ def apply_exact_links(
     codex = next((item for item in providers if item.get("name") == "Codex"), None)
     if not claude or not codex:
         return
+    try:
+        if not permission_check(policies):
+            return
+    except Exception:
+        return
     now = time.time() if now is None else now
     registry_changed = False
     if registry_path is None:
@@ -523,10 +680,15 @@ def apply_exact_links(
             return
     runs = registry_reader(registry_path)
     live_rows = [row for row in codex.get("chats") or []
-                 if not row.get("parentId") and row.get("source") == "exec"
+                 if (not row.get("parentId") or row.get("parentProvider") == "Claude")
+                 and row.get("source") == "exec"
                  and row.get("executionStatus") == "running"]
-    need_full_scan = False
+    global _LAST_FULL_SCAN_AT
+    with _SCAN_LOCK:
+        discovery_due = now - _LAST_FULL_SCAN_AT >= 10
+    need_full_scan = bool(live_rows) and discovery_due
     live_by_thread: dict[str, dict[str, Any]] = {}
+    live_runs_by_thread: dict[str, list[dict[str, Any]]] = {}
     for row in live_rows:
         thread = str(row.get("id") or "").lower()
         candidates = [run for run in runs if str(run.get("thread_id") or "").lower() == thread]
@@ -538,19 +700,26 @@ def apply_exact_links(
         verified_at = float(known.get("verified_at") or 0)
         if now - verified_at < 10:
             live_by_thread[thread] = known
+            live_runs_by_thread.setdefault(thread, []).append(known)
             continue
         verdict = verify(int(known["codex_pid"]), int(known["codex_created"]))
         if verdict is True:
             known["verified_at"] = now
             known["last_seen"] = now
             live_by_thread[thread] = known
+            live_runs_by_thread.setdefault(thread, []).append(known)
             registry_changed = True
         else:
             need_full_scan = True
 
     discovered: list[dict[str, Any]] = []
     receipt_rows: list[dict[str, Any]] = []
+    scan_table: dict[int, tuple[int, str]] = {}
     if need_full_scan:
+        try:
+            scan_table = process_table_reader()
+        except Exception:
+            scan_table = {}
         if claude_states is None:
             if hooks is None:
                 from . import claude_events
@@ -560,19 +729,40 @@ def apply_exact_links(
             except Exception:
                 claude_states = {}
         try:
-            discovered = scan(claude_states=claude_states)
+            discovered = scan(claude_states=claude_states, table=scan_table)
         except Exception:
             discovered = []
-        try:
-            receipt_rows = receipts_reader(root)
-        except Exception:
-            receipt_rows = []
+        with _SCAN_LOCK:
+            _LAST_FULL_SCAN_AT = now
+        if _instance_mutex_held():
+            try:
+                current_sid = current_sid_reader()
+                receipt_rows = [item for item in receipts_reader(root)
+                                if validate_receipt_process(
+                                    item, table=scan_table, current_sid=current_sid,
+                                    process_sid=process_sid, equal_sid=equal_sid,
+                                    created=process_created_reader, command_line=command_line)]
+            except Exception:
+                receipt_rows = []
     by_identity = {(str(run["thread_id"]).lower(), int(run["codex_pid"]),
                     int(run["codex_created"]), str(run["claude_session_id"])): run
                    for run in runs if all(key in run for key in (
                        "thread_id", "codex_pid", "codex_created", "claude_session_id"))}
+    discovered_threads = {(str(run.get("thread_id") or "").lower(),
+                           int(run.get("codex_pid", -1)), int(run.get("codex_created", -1)))
+                          for run in discovered}
+    receipt_processes: dict[tuple[int, int], set[str]] = {}
+    for run in discovered:
+        receipt_processes.setdefault((int(run.get("codex_pid", -1)),
+                                      int(run.get("codex_created", -1))), set()).add(
+                                          str(run.get("thread_id") or "").lower())
     for run in [*discovered, *receipt_rows]:
         try:
+            if run.get("method") == "receipt":
+                identity = (str(run["thread_id"]).lower(), int(run["codex_pid"]), int(run["codex_created"]))
+                competing = receipt_processes.get((identity[1], identity[2]), set())
+                if identity not in discovered_threads and any(thread != identity[0] for thread in competing):
+                    continue
             sid = str(run["claude_session_id"])
             key = (str(run["thread_id"]).lower(), int(run["codex_pid"]),
                    int(run["codex_created"]), sid)
@@ -585,42 +775,55 @@ def apply_exact_links(
             by_identity[key] = record
             if run.get("method") == "cmdline":
                 live_by_thread[key[0]] = record
+                live_runs_by_thread.setdefault(key[0], []).append(record)
             elif verify(int(run["codex_pid"]), int(run["codex_created"])) is True:
                 record["verified_at"] = now
                 live_by_thread[key[0]] = record
+                live_runs_by_thread.setdefault(key[0], []).append(record)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
     runs = list(by_identity.values())
     if (need_full_scan or registry_changed) and _instance_mutex_held():
         registry_writer(runs, registry_path, now=now)
 
-    by_thread: dict[str, set[str]] = {}
-    latest_run: dict[str, dict[str, Any]] = {}
+    by_thread: dict[str, list[dict[str, Any]]] = {}
     for run in runs:
         try:
             thread = str(run["thread_id"]).lower()
-            by_thread.setdefault(thread, set()).add(str(run["claude_session_id"]))
-            if thread not in latest_run or float(run["last_seen"]) > float(latest_run[thread]["last_seen"]):
-                latest_run[thread] = run
+            by_thread.setdefault(thread, []).append(run)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
     claude_ids = {str(row.get("id")) for row in claude.get("chats") or [] if row.get("id")}
     for row in codex.get("chats") or []:
         thread = str(row.get("id") or "").lower()
-        sessions = by_thread.get(thread, set())
-        if row.get("parentId") or len(sessions) != 1:
+        native_parent = bool(row.get("parentId") and row.get("parentProvider") != "Claude")
+        if native_parent:
             continue
-        selected = latest_run.get(thread)
-        if selected is None:
+        # Existing Claude links must be revalidated from the registry/discovery
+        # before they are republished in this poll.
+        if row.get("parentProvider") == "Claude":
+            row.pop("parentId", None)
+            row.pop("parentProvider", None)
+            row.pop("parentLinkMethod", None)
+        historical = by_thread.get(thread, [])
+        if not historical:
             continue
-        sid = next(iter(sessions))
         status = str(row.get("executionStatus") or row.get("status") or "").lower()
         if status == "running":
-            live = live_by_thread.get(thread)
-            if live and (live.get("codex_pid"), live.get("codex_created")) == (
-                    selected.get("codex_pid"), selected.get("codex_created")) and sid in claude_ids:
+            live_runs = live_runs_by_thread.get(thread, [])
+            live_sessions = {str(run.get("claude_session_id")) for run in live_runs}
+            if len(live_sessions) != 1:
+                continue
+            sid = next(iter(live_sessions))
+            selected = max((run for run in live_runs if str(run.get("claude_session_id")) == sid),
+                           key=lambda run: float(run.get("last_seen") or 0))
+            if sid in claude_ids:
                 row["parentId"], row["parentProvider"] = sid, "Claude"
                 row["parentLinkMethod"] = selected.get("method")
+            continue
+        selected = max(historical, key=lambda run: float(run.get("last_seen") or 0))
+        sid = str(selected.get("claude_session_id") or "")
+        if sid not in claude_ids:
             continue
         turn_start = row.get("runStartedAt") or row.get("activeRunStartedAt")
         try:
