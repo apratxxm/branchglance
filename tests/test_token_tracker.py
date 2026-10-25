@@ -4987,7 +4987,7 @@ def test_question_answer_endpoint_fails_closed_until_structured_transport_exists
     connection = HTTPConnection(*httpd.server_address)
     try:
         connection.request("POST", "/api/answer", body=json.dumps({
-            "thread": "01a0cad8-b212-72f2-88d3-2c887f7d4445", "answer": "Yes, both worked",
+            "thread": "01a0cad8-0000-7000-8000-000000000001", "answer": "Yes, both worked",
         }), headers={"Content-Type": "application/json"})
         response = connection.getresponse()
         assert response.status == 404
@@ -5011,7 +5011,7 @@ def test_question_option_queue_is_same_origin_validated_and_labeled_queued(monke
     worker.start()
     connection = HTTPConnection(*httpd.server_address)
     origin = f"http://{httpd.server_address[0]}:{httpd.server_address[1]}"
-    body = json.dumps({"thread": "01a0cad8-b212-72f2-88d3-2c887f7d4445", "message": "Yes, both worked"})
+    body = json.dumps({"thread": "01a0cad8-0000-7000-8000-000000000001", "message": "Yes, both worked"})
     try:
         connection.request("POST", "/api/queue", body=body, headers={
             "Content-Type": "application/json", "Origin": origin,
@@ -5021,7 +5021,7 @@ def test_question_option_queue_is_same_origin_validated_and_labeled_queued(monke
         assert response.status == 200
         assert payload["status"] == "queued"
         assert "does not answer" in payload["detail"]
-        assert queued == [("01a0cad8-b212-72f2-88d3-2c887f7d4445", "Yes, both worked")]
+        assert queued == [("01a0cad8-0000-7000-8000-000000000001", "Yes, both worked")]
 
         connection.request("POST", "/api/queue", body=body, headers={
             "Content-Type": "application/json", "Origin": "https://evil.example",
@@ -5053,7 +5053,7 @@ def test_queue_codex_message_uses_noninteractive_bounded_cli(monkeypatch):
     monkeypatch.setattr(provider_policy, "POLICIES", MappingProxyType(policies))
     monkeypatch.setattr(server.shutil, "which", lambda command: r"C:\\Codex\\codex.exe")
     monkeypatch.setattr(server.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)) or type("Result", (), {"returncode": 0})())
-    thread = "01a0cad8-b212-72f2-88d3-2c887f7d4445"
+    thread = "01a0cad8-0000-7000-8000-000000000001"
     server.queue_codex_message(thread, "hello")
     args, kwargs = calls[0]
     assert args[0] == [r"C:\\Codex\\codex.exe", "queue", "--thread", thread, "--message", "hello"]
@@ -5062,8 +5062,8 @@ def test_queue_codex_message_uses_noninteractive_bounded_cli(monkeypatch):
 
 
 def test_open_endpoint_accepts_only_thread_ids():
-    assert server.THREAD_ID.fullmatch("01a0cad8-b212-72f2-88d3-2c887f7d4445")
-    for bad in ("", "codex://x", "01a0cad8-b212-72f2-88d3-2c887f7d4445&x", "../etc", "calc.exe"):
+    assert server.THREAD_ID.fullmatch("01a0cad8-0000-7000-8000-000000000001")
+    for bad in ("", "codex://x", "01a0cad8-0000-7000-8000-000000000001&x", "../etc", "calc.exe"):
         assert not server.THREAD_ID.fullmatch(bad)
 
 
@@ -5077,7 +5077,7 @@ def test_open_endpoint_checks_host_and_supplied_browser_origin_without_launching
     connection = HTTPConnection(*httpd.server_address)
     host = f"127.0.0.1:{httpd.server_address[1]}"
     origin = f"http://{host}"
-    route = "/api/open?thread=01a0cad8-b212-72f2-88d3-2c887f7d4445"
+    route = "/api/open?thread=01a0cad8-0000-7000-8000-000000000001"
     try:
         connection.request("GET", route, headers={"Host": "evil.example"})
         response = connection.getresponse()
@@ -5100,13 +5100,13 @@ def test_open_endpoint_checks_host_and_supplied_browser_origin_without_launching
         response = connection.getresponse()
         assert response.status == 200
         response.read()
-        assert launched == ["codex://threads/01a0cad8-b212-72f2-88d3-2c887f7d4445"]
+        assert launched == ["codex://threads/01a0cad8-0000-7000-8000-000000000001"]
 
         connection.request("GET", route, headers={"Referer": origin + "/index.html", "Sec-Fetch-Site": "same-site"})
         response = connection.getresponse()
         assert response.status == 200
         response.read()
-        assert launched[-1] == "codex://threads/01a0cad8-b212-72f2-88d3-2c887f7d4445"
+        assert launched[-1] == "codex://threads/01a0cad8-0000-7000-8000-000000000001"
     finally:
         connection.close()
         httpd.shutdown()
