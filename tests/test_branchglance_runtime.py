@@ -1083,11 +1083,11 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
     assert '--claude-accent:#e8813f' in refined
     assert "--tree-claude-surface:#19130f" in refined
-    assert "ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--claude-accent) 6%,transparent),transparent 100%" in refined
-    assert "ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--claude-accent) 4%,transparent),transparent 100%" in refined
-    assert "ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 5%,transparent),transparent 100%" in refined
+    assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 12%,transparent),transparent 100%" in refined
+    assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 9%,transparent),transparent 100%" in refined
+    assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 11%,transparent),transparent 100%" in refined
     assert ".runway-refined-row::after{content:\"\";position:absolute;z-index:0;inset:0;border-radius:0;background:radial-gradient(" in refined
-    assert ".chat>.row::after" not in refined
+    assert ".chat[data-provider=\"Claude\"]>.row::after{background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--claude-accent) 22%" in refined
     assert ".chat>.row.runway-root-stuck{background:" not in refined
     assert "background-color:var(--tree-claude-surface)" not in refined
     assert "background-color:var(--tree-codex-surface)" not in refined

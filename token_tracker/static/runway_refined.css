@@ -455,12 +455,16 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.ru
 /* Edgeless provider identity tints sit on the continuous panel surface. */
 body.runway-refined.runway-compact:not(.phone){--claude-accent:#e8813f;--tree-claude-surface:#19130f;--tree-codex-surface:#11121d;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Claude"]>.row>.runway-refined-row,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag[data-provider="Claude"]>.runway-agent-glance>.runway-refined-row{--tree-hover-accent:var(--claude-accent);background:transparent;background-image:radial-gradient(ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--claude-accent) 4%,transparent),transparent 100%);}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Claude"]>.row>.runway-refined-row{background-image:radial-gradient(ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--claude-accent) 6%,transparent),transparent 100%);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag[data-provider="Claude"]>.runway-agent-glance>.runway-refined-row{--tree-hover-accent:var(--claude-accent);background:transparent;background-image:radial-gradient(ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 9%,transparent),transparent 100%);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Claude"]>.row>.runway-refined-row{background-image:radial-gradient(ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 12%,transparent),transparent 100%);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Codex"]>.row>.runway-refined-row,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag[data-provider="Codex"]>.runway-agent-glance>.runway-refined-row{--tree-hover-accent:var(--source-glow-primary);background:transparent;background-image:radial-gradient(ellipse 68px 14px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 5%,transparent),transparent 100%);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag[data-provider="Codex"]>.runway-agent-glance>.runway-refined-row{--tree-hover-accent:var(--source-glow-primary);background:transparent;background-image:radial-gradient(ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 11%,transparent),transparent 100%);}
+/* Parent identifier glow under each root's title, in its provider colour. */
+body.runway-refined:not(.phone) .chat>.row::after{content:"";position:absolute;left:49px;right:16px;bottom:0;width:auto;height:23px;background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--source-glow-primary) 22%,transparent),transparent 70%);pointer-events:none;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row::after{content:"";position:absolute;left:30px;right:10px;bottom:0;width:auto;height:17px;background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--source-glow-primary) 26%,transparent),transparent 70%);pointer-events:none;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Claude"]>.row::after{background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--claude-accent) 22%,transparent),transparent 70%);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-model-name.is-codex-model{color:#b3a8ff;text-shadow:0 0 9px #7040ff66,0 0 18px #425df633;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-model-name.is-claude-model{color:#ad826f;text-shadow:none;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-model-name.is-claude-model{color:#f0a06e;text-shadow:0 0 9px #e8813f40;}
 
 /* Two fixed provider halves follow the period label in each quota band. */
 body.runway-refined.runway-compact:not(.phone) .resets::before,
