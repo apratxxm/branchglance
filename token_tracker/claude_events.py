@@ -37,6 +37,8 @@ _LABELS = {
     "waiting": "Waiting for result", "using_tool": "Using tool",
 }
 _NON_CLEARING = {"Notification", "PermissionRequest"}
+_PID_ASSOCIATIONS_PER_SESSION = 128
+_PROCESS_SESSION_LIMIT = 256
 
 
 def activity_kind(tool_name: Any) -> str:
@@ -55,13 +57,13 @@ def iso(ts: float | None) -> str | None:
 # ------------------------------------------------------------------ reducer
 
 def new_file_state() -> dict[str, Any]:
-    return {"keys": {}}
+    return {"keys": {}, "process_sessions": {}}
 
 
 def _new_key(sid: str, aid: str) -> dict[str, Any]:
     return {
         "sid": sid, "aid": aid, "atype": None, "first": None, "last": None, "sub_activity": None,
-        "pid": None, "pid_created": None, "pid_ts": -1.0,
+        "pid": None, "pid_created": None, "pid_ts": -1.0, "pid_associations": [],
         "workspace": None, "model": None, "model_ts": -1.0,
         "start": None, "start_source": None, "prompt": None, "prompt_id": None, "stop": None, "fail": None, "end": None,
         "end_reason": None, "interrupt": None, "idle": None,
@@ -131,6 +133,28 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
     s["last"] = _max(s["last"], ts)
     if not aid:
         root["last"] = s["last"]
+    # Preserve chronological ownership transitions for a stable Claude PID.
+    # Sessions may revisit a PID, so keep separate intervals instead of a
+    # min/max range that would incorrectly bridge the intervening session.
+    if isinstance(record.get("claude_pid"), int) and isinstance(record.get("claude_pid_created"), int):
+        identity = (record["claude_pid"], record["claude_pid_created"])
+        process_sessions = file_state.setdefault("process_sessions", {})
+        active = process_sessions.get(identity)
+        if active is not None and active.get("sid") == sid:
+            active["last"] = max(active.get("last") or ts, ts)
+        else:
+            if active is not None:
+                # Never shrink an observed range: a late-arriving event from
+                # another session must stay visible as an overlap.
+                active["last"] = max(active.get("last") or ts, ts)
+            transition = {"pid": identity[0], "created": identity[1],
+                          "sid": sid, "first": ts, "last": ts}
+            root["pid_associations"].append(transition)
+            while len(root["pid_associations"]) > _PID_ASSOCIATIONS_PER_SESSION:
+                root["pid_associations"].pop(0)
+            process_sessions[identity] = transition
+            while len(process_sessions) > _PROCESS_SESSION_LIMIT:
+                process_sessions.pop(next(iter(process_sessions)))
     # Process/workspace facts are session-wide; model facts belong to each agent.
     if isinstance(record.get("claude_pid"), int) and isinstance(record.get("claude_pid_created"), int) \
             and ts >= root["pid_ts"]:

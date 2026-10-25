@@ -22,6 +22,7 @@ Claude data is split across three inputs:
 
 - `ClaudeCodeProvider` in `claude_provider.py` reads `~/.claude/projects` transcripts for identity, titles, usage and context.
 - With explicit consent, `claude_collection.py` installs Branchglance-owned hooks in `~/.claude/settings.json`. The launcher or Python hook receives allowlisted Claude Code events and appends bounded records to the Branchglance `claude-events` JSONL directory. Event records omit prompts, tool inputs/outputs, full paths and chat titles.
+- A Claude-launched Codex execution may record an exact display association with `Branchglance.exe --link-codex <thread-uuid> --codex-pid <pid>`. The helper binds the receipt to `CLAUDE_CODE_SESSION_ID` and the Codex process creation time; receipts never establish execution status or collection authority.
 - `ClaudeDesktopProvider` in `providers.py` reads Claude Desktop's local quota cache. This is quota input; it is not Claude Code transcript state.
 
 `claude_events.py` reduces hook JSONL into execution and wait state. `Stop` and `StopFailure` are turn-scoped terminal markers; `SubagentStart` and `SubagentStop` delimit subagent activity. Prompt identifiers and event times prevent an older stop marker or notification from ending a newer turn. `claude_provider.py` joins hook state with transcript rows; if hook evidence is missing, execution can be unavailable rather than inferred from silence. Hook collection and display are disabled until the user enables Claude Code collection.
