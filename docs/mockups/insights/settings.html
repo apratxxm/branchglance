@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Settings · Orchestrator mockup</title><link rel="stylesheet" href="mockup.css"></head>
+<body data-source="Codex">
+<main class="mock-window">
+  <header class="topbar"><nav class="view-tabs" aria-label="Dashboard views"><a class="view-tab" href="insights.html">Insights</a><a class="view-tab is-active" href="settings.html">Settings</a></nav><div class="top-controls"><span class="settings-context">Preferences</span></div></header>
+  <section class="settings-layout">
+    <div class="settings-column">
+      <section class="settings-group"><h2 class="settings-group-heading">General</h2>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Launch at startup</span><span class="setting-description">Open Orchestrator when you sign in</span></div><div class="setting-control"><button class="mock-toggle is-on" aria-label="Launch at startup on"></button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Always on top</span><span class="setting-description">Keep the widget above other windows</span></div><div class="setting-control"><button class="mock-toggle" aria-label="Always on top off"></button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Clock format</span><span class="setting-description">Use your preferred time display</span></div><div class="setting-control"><button class="mock-select">12-hour <i class="chevron"></i></button></div></div>
+      </section>
+      <section class="settings-group"><h2 class="settings-group-heading">Providers <span class="count">Policy controlled</span></h2>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Claude</span><span class="setting-description">Usage tracking through Claude Desktop</span></div><div class="setting-control"><span class="provider-state"><i></i>Tracking</span></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Claude tracking</span><span class="setting-description">Manage the desktop hook</span></div><div class="setting-control"><button class="mock-action">Change tracking…</button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Codex</span><span class="setting-description">Usage tracking from local session data</span></div><div class="setting-control"><span class="provider-state"><i></i>Tracking</span></div></div>
+      </section>
+      <section class="settings-group"><h2 class="settings-group-heading">Notifications</h2>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Waiting questions</span><span class="setting-description">Show a notice when a session needs you</span></div><div class="setting-control"><button class="mock-toggle is-on" aria-label="Waiting questions on"></button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Limit resets</span><span class="setting-description">Greet when a usage window resets</span></div><div class="setting-control"><button class="mock-toggle is-on" aria-label="Limit resets on"></button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Quiet hours</span><span class="setting-description">Pause non-urgent notices overnight</span></div><div class="setting-control"><button class="mock-select">Off <i class="chevron"></i></button></div></div>
+      </section>
+    </div>
+    <div class="settings-column">
+      <section class="settings-group"><h2 class="settings-group-heading">Display</h2>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Monitor</span><span class="setting-description">Choose where the widget opens</span></div><div class="setting-control"><button class="mock-select">Laptop <i class="chevron"></i></button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Notch position</span><span class="setting-description">Align the compact widget</span></div><div class="setting-control"><button class="mock-select is-focused">Top center <i class="chevron"></i></button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Recenter widget</span><span class="setting-description">Return to the current monitor</span></div><div class="setting-control"><button class="mock-action">Recenter</button></div></div>
+      </section>
+      <section class="settings-group"><h2 class="settings-group-heading">About</h2>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Orchestrator</span><span class="setting-description">Desktop usage, kept in your control</span></div><div class="setting-control"><span class="about-version">1.0.0</span></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Updates</span><span class="setting-description">Check for a newer version</span></div><div class="setting-control"><button class="mock-action">Check now</button></div></div>
+        <div class="setting-row"><div class="setting-copy"><span class="setting-label">Log files</span><span class="setting-description">Open local diagnostic logs</span></div><div class="setting-control"><button class="mock-action">Open logs</button></div></div>
+      </section>
+      <p class="setting-note">Provider availability and permissions follow your local policy. Changes to tracking are confirmed before they take effect.</p>
+    </div>
+  </section>
+</main>
+</body></html>
