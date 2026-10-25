@@ -10,28 +10,23 @@ const mainCss=fs.readFileSync(new URL("../token_tracker/static/styles.css",impor
 const fixedNow=new Date("2026-10-06T12:00:00Z").getTime();
 const ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
 
-assert.match(page,/id="source-switch"[^>]*role="group"[^>]*aria-busy="true"/,"the source labels are present before the startup policy response");
-assert.doesNotMatch(page,/id="source-switch"[^>]*hidden/);
-assert.match(page,/data-action="source" data-source="Codex" aria-label="Codex" aria-pressed="true"/);
-assert.match(page,/data-action="source" data-source="Claude" aria-label="Claude" aria-pressed="false"/);
-assert.doesNotMatch(page,/source-mark|<svg class="ic source-mark"/);
-assert.ok(page.indexOf('id="source-switch"')>page.indexOf('id="monitor-toggle"')&&page.indexOf('id="source-switch"')<page.indexOf('class="tb-fill'),"the switch lives in the controls band");
+assert.doesNotMatch(page,/id="source-switch"|data-action="source"/,"the compact toolbar has no provider switch");
+assert.match(page,/id="brand-name">Branchglance/);
 assert.match(css,/\.source-dot\{[^}]*position:absolute/);
 assert.match(css,/body\[data-source="Claude"\]\{[^}]*--source-accent:#e8813f/);
 assert.match(css,/--source-glow-primary:#ffb14a/);assert.match(css,/--source-glow-secondary:#d64a2f/);
 assert.match(refined,/--blue:var\(--source-accent\)/,"the source accent replaces fixed blue in refined mode");
-assert.doesNotMatch(refined,/#425df6|#7040ff|#b99aff/,"the refined Claude palette leaves no fixed Codex blue or purple accent");
+assert.match(refined,/--source-edge:#39364d;--source-edge-strong:#514176;--source-edge-end:#34405c/,"the frame retains the fixed Codex-purple edges");
+assert.match(refined,/\.ag\[data-provider="Claude"\]>.runway-agent-glance>.runway-refined-row/);assert.match(refined,/linear-gradient\(100deg,#241710/);assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);assert.match(mainCss,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
-assert.match(css,/\.source-seg\{[^}]*min-width:64px[^}]*padding:0 10px/);
 assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
 assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 150ms/);
 assert.match(css,/\.chat-list\.source-entering>:not\(\.source-switch-snapshot\)\{opacity:0\}/,"new rows stay hidden until the old ones have faded");
 assert.match(page,/placeholder="[^"]*is:hidden/);
 assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
-assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 42px/);
+assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 58px/);
 assert.doesNotMatch(refined,/compact-toolbar \.notch-counts\{display:none/,"the toolbar keeps its chat, active and waiting counts");
-assert.match(refined,/compact-toolbar \.source-seg\{width:auto;height:20px;min-width:0;gap:0;padding:0 8px/);
 assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);
 
 function boot(initialStorage={}, {compact=false}={}) {
@@ -49,8 +44,8 @@ function boot(initialStorage={}, {compact=false}={}) {
   };
   const segments=[segment("Codex"),segment("Claude")];
   class TestDate extends Date {constructor(...args){super(...(args.length?args:[fixedNow]));}static now(){return fixedNow;}}
-  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:compact,__TOKEN_TRACKER_COMPACT__:compact},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:node,
-    querySelectorAll(selector){return selector==="#source-switch [data-source]"?segments:[];},documentElement:{style:{setProperty(){}}},hidden:false,activeElement:null},
+  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:compact,__TOKEN_TRACKER_COMPACT__:compact},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:selector=>selector==="#source-switch"?null:node(selector),
+    querySelectorAll(){return [];},documentElement:{style:{setProperty(){}}},hidden:false,activeElement:null},
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))},fetch:async()=>({ok:true,json:async()=>({ok:true})}),Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,
     setTimeout:callback=>{timers.set(++sequence,callback);return sequence;},clearTimeout:id=>timers.delete(id),setInterval(){return 0;}};
   context.window.addEventListener=()=>{};context.document.addEventListener=()=>{};
@@ -78,20 +73,13 @@ const quota={fiveHour:{percent:80,resetAt:fixedNow/1000+1500},weekly:{percent:60
 const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>({generatedAt:ago(0),enabledProviders:["Codex","Claude"],providerPolicies:policy,
   providers:[{name:"Codex",connected:true,chats:codex,...quota,fiveHour:{percent:92,resetAt:fixedNow/1000+1500}},{name:"Claude",connected:true,chats:claude,...claudeQuota}]});
 
-// Both labels paint immediately, then become selectable only when policy confirms visibility.
+// Provider selection remains available to the dashboard, but never filters the compact tree.
 {
-  const initial=boot();initial.T.updateSourceSwitch();
-  assert.equal(initial.node("#source-switch").hidden,false);
-  assert.equal(initial.segments[1].disabled,true);
-  assert.equal(initial.node("#source-switch").getAttribute("aria-busy"),"true");
-  const requests=[];initial.context.fetch=async url=>{requests.push(String(url));return {ok:true,json:async()=>policies()};};
-  assert.equal(await initial.T.loadProviderPolicy(),true);
-  assert.deepEqual(requests,["/api/provider-policy"]);
-  assert.equal(initial.node("#source-switch").hidden,false);
-  assert.equal(initial.segments[1].disabled,false);
-  assert.equal(initial.node("#source-switch").getAttribute("aria-busy"),"false");
-  assert.equal(initial.T.setSource("Claude"),true,"a policy-approved source can be selected before the full snapshot");
-  assert.equal(initial.T.state.source,"Claude");
+  const both=boot(),snapshot=snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1",running())]});
+  both.T.render(snapshot);
+  assert.equal(both.T.setSource("Claude"),true,"dashboard provider selection remains supported");
+  assert.deepEqual(Array.from(both.T.state.forest.roots,chat=>chat.key).sort(),["Claude:s1","Codex:c1"],"provider selection cannot remove rows from the compact tree");
+  assert.equal(both.context.document.body.dataset.source,undefined,"provider selection cannot recolor the fixed frame");
 }
 
 // Any Claude quota sample arriving before stats paints into the selected provider's meter.
@@ -105,7 +93,8 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour,undefined,"an unapproved sample stays unrendered while policy is pending");
   await early.T.loadProviderPolicy();early.T.setSource("Claude");
   assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour.percent,43);
-  assert.equal(early.node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>43%</b><i>used</i></span>');
+  assert.equal(early.node("#r1-fiveHour-left").innerHTML,'<span class="rr-value"><b>43%</b><i>used</i></span>');
+  assert.equal(early.node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>55%</b><i>used</i></span>');
 }
 
 // Startup's first active snapshot chooses the provider with work before painting and ignores a stale saved manual window.
@@ -113,6 +102,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   const startup=boot({branchglanceSource:"Codex",branchglanceSourceManualAt:String(fixedNow-1000)},{compact:true});
   startup.T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({activityAt:ago(0)}))]}));
   assert.equal(startup.T.state.source,"Claude");
+  assert.deepEqual(Array.from(startup.T.state.forest.roots,chat=>chat.key).sort(),["Claude:s1","Codex:c1"]);
   assert.equal(startup.saved.get("branchglanceSource"),"Codex","startup auto-selection does not replace the saved manual preference");
   assert.ok(startup.T.notch.active>0,"the selected source has active rows before reveal");
 }
@@ -168,46 +158,38 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.notEqual(T.notchHeight(),233);
 }
 
-// 1. Hidden with one provider, visible with two.
+// Policy governs the unified providers; no provider count restores the removed switch.
 {
   const {T,node}=boot({tokenTrackerRunwayHiddenChats:JSON.stringify(["Codex:c1","Claude:s1","Claude:s2:agent1","Gemini:g1","Claude:"])});
   assert.deepEqual(Array.from(T.state.hiddenChats).sort(),["Claude:s1","Claude:s2:agent1","Codex:c1"],"hidden preferences accept qualified keys for both sources only");
   T.render(snapshotOf({codex:[codexChat("c1",running())],policy:policies(true,false)}));
-  assert.equal(node("#source-switch").hidden,true,"one visible provider keeps the switch hidden");
   assert.deepEqual(Array.from(T.sourceNames(T.state.snapshot)),["Codex"]);
+  assert.deepEqual(Array.from(T.providersFor(T.state.snapshot),provider=>provider.name),["Codex"]);
   const single=boot();
   single.T.render({generatedAt:ago(0),enabledProviders:["Codex"],providers:[{name:"Codex",connected:true,chats:[]}]});
-  assert.equal(single.node("#source-switch").hidden,false,"the undecided source choices remain visible while policy is still loading");
   single.T.state.providerPolicyReady=true;single.T.updateSourceSwitch();
-  assert.equal(single.node("#source-switch").hidden,true,"a snapshot without provider policies shows Codex only");
   const both=boot();
   both.T.render(snapshotOf({codex:[codexChat("c1",running())]}));
-  assert.equal(both.node("#source-switch").hidden,false,"two visible providers show the switch");
+  assert.doesNotMatch(page,/id="source-switch"/,"two visible providers still render one tree");
   assert.deepEqual(Array.from(both.T.sourceNames(both.T.state.snapshot)),["Codex","Claude"]);
 }
 
-// 2. Switching swaps forest, counts, quota bands and accent while leaving position state alone.
+// Dashboard selection remains independent of the unified rows and provider-colored bands.
 {
-  const {T,node,saved,segments,context}=boot();
+  const {T,node,saved,context}=boot();
   T.render(snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1",running()),claudeChat("s2",running({pendingQuestion:"Which file?",pendingOptions:["a.py","b.py"],status:"needs-input",executionStatus:"idle"}))],claudeQuota:{fiveHour:{percent:35,resetAt:fixedNow/1000+900},weekly:{percent:50,resetAt:fixedNow/1000+80000},limitsUpdatedAt:ago(1)}}));
-  assert.deepEqual(Array.from(T.state.forest.roots,chat=>chat.key),["Codex:c1"]);
-  assert.match(node("#notch-counts").innerHTML,/data-count-slot="groups"[^>]*aria-label="1 /);
-  assert.equal(node("#resets").dataset.shape,"Codex");
+  assert.deepEqual(Array.from(T.state.forest.roots,chat=>chat.key).sort(),["Claude:s1","Claude:s2","Codex:c1"]);
+  assert.equal(node("#resets").dataset.shape,"Codex|Claude");
   const lock={...T.widgetLock},keep={...T.keepOpenState};
   T.handleClick({target:{closest:()=>({dataset:{action:"source",source:"Claude"}})}});
-  assert.equal(T.state.source,"Claude");assert.equal(saved.get("branchglanceSource"),"Claude","the selection is persisted as a convenience");
-  assert.deepEqual(Array.from(T.state.forest.roots,chat=>chat.key).sort(),["Claude:s1","Claude:s2"]);
-  assert.match(node("#notch-counts").innerHTML,/data-count-slot="groups"[^>]*aria-label="2 /,"counts follow the selected source");
-  assert.match(node("#notch-counts").innerHTML,/data-count-slot="waiting"(?![^>]*is-empty)/,"the Claude waiting row counts as waiting");
-  assert.equal(node("#resets").dataset.shape,"Claude","quota bands rebuild for the selected provider");
-  assert.match(node("#r0-fiveHour-left").innerHTML,/35%/,"the five-hour band shows Claude usage");
-  assert.equal(context.document.body.dataset.source,"Claude","the provider accent follows the selected source");
-  assert.equal(segments[1].attrs["aria-pressed"],"true");assert.equal(segments[0].attrs["aria-pressed"],"false");
-  assert.deepEqual({...T.widgetLock},lock,"lock state is untouched by a source switch");assert.deepEqual({...T.keepOpenState},keep,"keep-open state is untouched");
-  T.handleClick({target:{closest:()=>({dataset:{action:"source",source:"Codex"}})}});
-  assert.deepEqual(Array.from(T.state.forest.roots,chat=>chat.key),["Codex:c1"]);
-  assert.equal(saved.get("branchglanceSource"),"Codex");
-  T.setSource("Nope");assert.equal(T.state.source,"Codex","unknown sources are ignored");
+  assert.equal(T.state.source,"Claude");assert.equal(saved.get("branchglanceSource"),"Claude","the dashboard preference remains persisted");
+  assert.deepEqual(Array.from(T.state.forest.roots,chat=>chat.key).sort(),["Claude:s1","Claude:s2","Codex:c1"]);
+  assert.match(node("#notch-counts").innerHTML,/data-count-slot="waiting"(?![^>]*is-empty)/,"waiting counts include Claude rows");
+  assert.equal(node("#resets").dataset.shape,"Codex|Claude");
+  assert.match(node("#r1-fiveHour-left").innerHTML,/35%/,"Claude quota remains in its provider half");
+  assert.equal(context.document.body.dataset.source,undefined,"dashboard selection does not recolor the frame");
+  assert.deepEqual({...T.widgetLock},lock,"lock state is untouched by dashboard selection");assert.deepEqual({...T.keepOpenState},keep,"keep-open state is untouched");
+  T.setSource("Nope");assert.equal(T.state.source,"Claude","unknown sources are ignored");
 }
 
 // 3. Stored selection is honored only while that source is visible.
@@ -223,32 +205,22 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(garbage.T.state.source,"Codex");
 }
 
-// 4. A new run or question in the hidden source reveals the widget and flags its segment, never switching.
+// Waiting work from either provider stays in the shared tree and waiting counts.
 {
-  const {T,segments}=boot();
-  T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
-  assert.equal(T.state.sourceAttention.size,0);assert.equal(T.notch.autoExpanded,false);
-  T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",{status:"needs-input",pendingQuestion:"Proceed?",pendingQuestionAt:ago(0),executionStatus:"idle"})]}));
-  assert.equal(T.state.source,"Codex","attention never auto-switches the source");
-  assert.ok(T.state.sourceAttention.has("Claude"));assert.equal(segments[1].dot.attrs["aria-hidden"],"false","the Claude segment shows the attention dot");assert.equal(segments[0].dot.attrs["aria-hidden"],"true");
-  assert.equal(T.notch.autoExpanded,true,"the normal reveal starts for hidden-source work");
-  T.setSource("Claude");assert.equal(T.state.sourceAttention.has("Claude"),false,"viewing the source clears the flag");assert.equal(segments[1].dot.attrs["aria-hidden"],"true");
-  T.render(snapshotOf({codex:[codexChat("c1",running({activeRunStartedAt:ago(0)}))],claude:[claudeChat("s1")]}));
-  assert.ok(T.state.sourceAttention.has("Codex"),"the symmetric case flags Codex while Claude is selected");
+  const {T,node}=boot();
+  T.render(snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1",running()),claudeChat("s2",running({status:"needs-input",executionStatus:"idle",pendingQuestion:"Proceed?",pendingQuestionAt:ago(0)}))]}));
+  assert.deepEqual(Array.from(T.state.forest.roots,chat=>chat.key).sort(),["Claude:s1","Claude:s2","Codex:c1"]);
+  assert.match(node("#notch-counts").innerHTML,/data-count-slot="waiting"(?![^>]*is-empty)/);
+  assert.equal(T.state.sourceAttention.size,0,"the single tree has no hidden-provider attention state");
 }
 
-// 4b. Work already running in the unselected source keeps a quieter live dot (not only new work).
+// Running activity from both providers remains visible without source dots.
 {
-  const {T,segments}=boot();
-  T.render(snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1")]}));
-  T.setSource("Claude");
-  T.render(snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1")]}));
-  assert.equal(T.state.sourceAttention.has("Codex"),false,"nothing new happened in Codex");
-  assert.ok(segments[0].flags.has("has-live"),"Codex shows that it is still working");
-  assert.equal(segments[0].dot.attrs["aria-hidden"],"false");assert.equal(segments[0].attrs["aria-label"],"Codex (active)");
-  assert.equal(segments[1].flags.has("has-live"),false,"the selected source never shows the dot");
-  T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1")]}));
-  assert.equal(segments[0].flags.has("has-live"),false,"the dot clears once Codex is idle");assert.equal(segments[0].dot.attrs["aria-hidden"],"true");
+  const {T,node}=boot();
+  T.render(snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1",running())]}));
+  assert.deepEqual(Array.from(T.state.forest.roots,chat=>chat.key).sort(),["Claude:s1","Codex:c1"]);
+  assert.equal(T.state.sourceLive.size,0);
+  assert.match(node("#notch-counts").innerHTML,/data-count-slot="groups"[^>]*aria-label="2 visible chat groups"/);
 }
 
 // Compact auto-open follows the triggering provider without persisting it as a user choice.
@@ -320,28 +292,28 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
 
 // A new question on an already-running hidden session is a separate transition.
 {
-  const {T,segments,timers}=boot({branchglanceSource:"Claude"});
+  const {T,timers}=boot({branchglanceSource:"Claude"});
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running())]}));
   T.setSource("Codex");
   const timer=T.notch.autoTimer;timers.get(timer)?.();
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({status:"needs-input",pendingQuestion:"Continue?",pendingQuestionAt:ago(0),pendingQuestionId:"q-1"}))]}));
   assert.equal(T.state.source,"Codex");
-  assert.ok(T.state.sourceAttention.has("Claude"));
-  assert.equal(segments[1].dot.attrs["aria-hidden"],"false","the question transition sets the hidden provider dot");
+  assert.equal(T.state.sourceAttention.size,0,"all visible providers are on screen in the unified tree");
+  assert.ok(T.state.forest.rows.find(chat=>chat.key==="Claude:s1").pendingQuestion);
   assert.equal(T.notch.autoExpanded,true,"the question transition reveals despite the unchanged run");
 }
 
 // A question first seen on the poll that ends a telemetry gap still reveals.
 {
-  const {T,segments,timers}=boot({branchglanceSource:"Claude"});
+  const {T,timers}=boot({branchglanceSource:"Claude"});
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running())]}));
   T.setSource("Codex");
   const timer=T.notch.autoTimer;timers.get(timer)?.();
   T.state.liveRecoveryPending=true;
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({status:"needs-input",pendingQuestion:"Continue?",pendingQuestionAt:ago(0),pendingQuestionId:"q-2"}))]}));
   assert.equal(T.state.liveRecoveryPending,false);
-  assert.ok(T.state.sourceAttention.has("Claude"),"recovery does not swallow a new question");
-  assert.equal(segments[1].dot.attrs["aria-hidden"],"false");
+  assert.equal(T.state.sourceAttention.size,0,"recovery leaves no hidden-provider attention state");
+  assert.ok(T.state.forest.rows.find(chat=>chat.key==="Claude:s1").pendingQuestion);
   assert.equal(T.notch.autoExpanded,true,"the recovered question reveals");
 }
 

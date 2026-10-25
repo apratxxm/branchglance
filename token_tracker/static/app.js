@@ -4,7 +4,7 @@ const RUNWAY = Boolean(window.__TOKEN_TRACKER_RUNWAY__||PHONE);
 const REFINED = RUNWAY&&!PHONE&&window.__TOKEN_TRACKER_REFINED__===true;
 const COMPACT = REFINED&&window.__TOKEN_TRACKER_COMPACT__===true;
 const RUNWAY_REFRESH_ICON='<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4.8A4.5 4.5 0 1 0 10 7"/><path d="M7.7 2.2H10v2.3"/></svg>';
-const compactClockFormatter=COMPACT?new Intl.DateTimeFormat('en-GB',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'}):null;
+const compactClockFormatter=COMPACT?new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:'h12'}):null;
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumSignificantDigits: 3 });
 function loadPins() { try { const current=JSON.parse(localStorage.getItem("tokenTrackerPinsV2") || "null"); if(Array.isArray(current))return new Set(current.filter(k=>typeof k==="string"));const old=JSON.parse(localStorage.getItem("tokenTrackerPins") || "{}");return new Set(Object.entries(old||{}).filter(([,id])=>typeof id==="string").map(([provider,id])=>provider+":"+id)); } catch { return new Set(); } }
 function loadDismissed() { try { const list=JSON.parse(localStorage.getItem("tokenTrackerDismissed")||"[]"); return new Set(Array.isArray(list)?list.slice(-200):[]); } catch { return new Set(); } }
@@ -176,7 +176,7 @@ async function syncWidgetLock() {
   const initial=!widgetLock.known;
   try{
     const result=await window.pywebview?.api?.get_widget_lock?.();if(!applyWidgetLock(result))return null;
-    if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,provider:chat.provider,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:Boolean(chat.parentId),waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt))})));}
+    if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,provider:chat.provider,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:hasTreeParent(chat),waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt))})));}
     return result;
   }catch{return null;}
 }
@@ -252,16 +252,17 @@ function runwayTreePathGeometry(rootRect, entries, refined=false) {
     if(Number.isFinite(x)&&Number.isFinite(y))messagePositions.push({key:entry.key,x,y});
   }
   for(const child of entries){
-    if(!child.parentId)continue;
-    const parent=byIdentity.get(child.provider+':'+child.parentId);
+    const parentKey=Object.prototype.hasOwnProperty.call(child,'parentKey')?child.parentKey:child.parentId?child.provider+':'+child.parentId:null;
+    if(!parentKey)continue;
+    const parent=entries.find(entry=>entry.key===parentKey)||byIdentity.get(parentKey);
     const parentRect=parent?.glanceRect||parent?.rowRect;
     if(!parent?.nameRect||!parentRect||!child.nameRect||!child.glanceRect||parentRect.width<=0||child.glanceRect.width<=0)continue;
     const parentDot=refined?parent.dotRect:null,childDot=refined?child.dotRect:null;
     const px=Math.max(0,parentDot?.width?parentDot.left-rootRect.left+parentDot.width/2:parentRect.left-rootRect.left+2),py=parentDot?.height?parentDot.top-rootRect.top+parentDot.height/2:parent.nameRect.top-rootRect.top+Math.min(parent.nameRect.height||19,19)/2;
     const cx=Math.max(0,childDot?.width?childDot.left-rootRect.left+childDot.width/2:child.glanceRect.left-rootRect.left+2),cy=childDot?.height?childDot.top-rootRect.top+childDot.height/2:child.nameRect.top-rootRect.top+Math.min(child.nameRect.height||19,19)/2;
     if(![px,py,cx,cy].every(Number.isFinite)||cy<0)continue;
-    if(refined){const direction=Math.sign(cx-px)||1,r=Math.max(0,Math.min(8,Math.abs(cx-px),Math.abs(cy-py)/2));paths.push({d:r?`M${px} ${py}V${cy-r}Q${px} ${cy} ${px+direction*r} ${cy}H${cx}`:`M${px} ${py}V${cy}H${cx}`,from:child.parentId,to:child.id,endY:cy});}
-    else paths.push({d:`M${px} ${py}V${cy}H${cx}`,from:child.parentId,to:child.id,endY:cy});
+    if(refined){const direction=Math.sign(cx-px)||1,r=Math.max(0,Math.min(8,Math.abs(cx-px),Math.abs(cy-py)/2));paths.push({d:r?`M${px} ${py}V${cy-r}Q${px} ${cy} ${px+direction*r} ${cy}H${cx}`:`M${px} ${py}V${cy}H${cx}`,from:parentKey,to:child.key||child.id,endY:cy});}
+    else paths.push({d:`M${px} ${py}V${cy}H${cx}`,from:parentKey,to:child.key||child.id,endY:cy});
     for(const [x,y] of [[px,py],[cx,cy]])dots.set(x+':'+y,{cx:x,cy:y});
     bottom=Math.max(bottom,cy);
   }
@@ -289,8 +290,8 @@ function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
     }
     row.classList?.toggle?.('runway-root-stuck',COMPACT&&notch.mode==='inspect'&&rowRect.top-rootRect.top>1);
     const visible=[...root.querySelectorAll('.ag.runway-agent[data-sub]')].filter(el=>!el._leaving&&el.getClientRects?.().length!==0);
-    const entries=[{key:root.dataset.key,...(()=>{const item=state.forest?.rows.find(candidate=>candidate.key===root.dataset.key),name=row.querySelector?.('.r-title'),anchor=REFINED?row.querySelector?.('.runway-refined-tree-anchor'):null;return {provider:item?.provider,id:item?.id,rowRect,messageRect:rowRect,nameRect:name?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()};})()}];
-    for(const el of visible){const item=state.forest?.rows.find(candidate=>candidate.key===el.dataset.sub),glance=el.querySelector?.('.runway-agent-glance'),name=el.querySelector?.('.runway-agent-name'),anchor=REFINED?glance?.querySelector?.('.runway-refined-tree-anchor'):null;if(item)entries.push({key:item.key,provider:item.provider,id:item.id,parentId:item.parentId,rowRect:el.getBoundingClientRect?.(),messageRect:glance?.getBoundingClientRect?.(),nameRect:name?.getBoundingClientRect?.(),glanceRect:glance?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()});}
+    const entries=[{key:root.dataset.key,...(()=>{const item=state.forest?.rows.find(candidate=>candidate.key===root.dataset.key),name=row.querySelector?.('.r-title'),anchor=REFINED?row.querySelector?.('.runway-refined-tree-anchor'):null;return {provider:item?.provider,id:item?.id,parentKey:treeParentKey(item),rowRect,messageRect:rowRect,nameRect:name?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()};})()}];
+    for(const el of visible){const item=state.forest?.rows.find(candidate=>candidate.key===el.dataset.sub),glance=el.querySelector?.('.runway-agent-glance'),name=el.querySelector?.('.runway-agent-name'),anchor=REFINED?glance?.querySelector?.('.runway-refined-tree-anchor'):null;if(item)entries.push({key:item.key,provider:item.provider,id:item.id,parentKey:treeParentKey(item),rowRect:el.getBoundingClientRect?.(),messageRect:glance?.getBoundingClientRect?.(),nameRect:name?.getBoundingClientRect?.(),glanceRect:glance?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()});}
     const geometry=runwayTreePathGeometry(rootRect,entries,REFINED),paths=geometry.paths.map(path=>path.d),dots=geometry.dots;
     if(!REFINED){
       for(const target of [row,...visible.map(el=>el.querySelector?.('.runway-agent-glance'))])target?.querySelector?.('[data-runway-slot="message-lane"]')?.removeAttribute('data-message-positioned');
@@ -720,6 +721,8 @@ const money = value => { const n=safeNumber(value); return n==null ? "—" : "$"
 const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[char]);
 const stamp = value => typeof value==="number" ? (value<1e12?value*1000:value) : Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
 const keyOf = chat => chat.provider + ":" + chat.id;
+const treeParentKey = chat => Object.prototype.hasOwnProperty.call(chat||{},"treeParentKey") ? (typeof chat.treeParentKey==="string"&&chat.treeParentKey?chat.treeParentKey:null) : chat?.parentId!=null ? chat.provider+":"+chat.parentId : null;
+const hasTreeParent = chat => Boolean(treeParentKey(chat));
 const pad2 = n => String(n).padStart(2,"0");
 const localISODate = () => { const date=new Date(); return date.getFullYear()+"-"+pad2(date.getMonth()+1)+"-"+pad2(date.getDate()); };
 const clock = ms => new Date(ms).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).toLowerCase();
@@ -926,7 +929,7 @@ function rollup(chat) {
   }
   return {...ownState(chat),via:false};
 }
-const isAutoReview = chat => chat.agentRole==="auto-review"||/auto-review/i.test(chat.model||"")||Boolean(chat.parentId)&&chat.title==="Subagent"&&(!chat.model||chat.model==="Codex");
+const isAutoReview = chat => chat.agentRole==="auto-review"||/auto-review/i.test(chat.model||"")||hasTreeParent(chat)&&chat.title==="Subagent"&&(!chat.model||chat.model==="Codex");
 function shortModel(value) {
   const text=String(value||"").trim();
   if(!text)return "—";
@@ -937,13 +940,13 @@ const modelLabel = chat => isAutoReview(chat)&&(!chat.model||chat.model==="Codex
 const agentModelLabel = chat => /^gpt-/i.test(chat.model||"") ? "GPT-"+modelLabel(chat).replace(/-(astra|sol|luna|terra)$/i,(_,family)=>" "+family[0].toUpperCase()+family.slice(1)) : modelLabel(chat);
 function runwayModelLabel(chat) {
   if(isAutoReview(chat))return "Auto-review";
-  const model=String(chat.model||"").trim();if(!model||model.toLowerCase()==='codex')return "";
-  let match=model.match(/^gpt-(.+)$/i);
-  if(match){const bits=match[1].split("-").map(part=>part.toLowerCase());return bits.map((part,i)=>i===bits.length-1&&["astra","sol","luna","terra"].includes(part)?part[0].toUpperCase()+part.slice(1):part).join(" ");}
-  match=model.match(/^claude-(\d+)-(\d+)-(sonnet|opus|haiku)(?:-.+)?$/i)||model.match(/^claude-(sonnet|opus|haiku)-(\d+)-(\d+)(?:-.+)?$/i);
-  if(match){const numeric=/^\d+$/.test(match[1]),major=numeric?match[1]:match[2],minor=numeric?match[2]:match[3],family=numeric?match[3]:match[1];return "Claude "+major+"."+minor+" "+family[0].toUpperCase()+family.slice(1);}
-  match=model.match(/^claude-(sonnet|opus|haiku)-(\d+)(?:-.+)?$/i);
-  if(match)return "Claude "+match[2]+" "+match[1][0].toUpperCase()+match[1].slice(1);
+  const model=String(chat.model||"").trim().replace(/-20\d{6}$/,'');if(!model||model.toLowerCase()==='codex')return "";
+  let match=model.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
+  if(match){const family=(match[2]||"").split("-").filter(Boolean).at(-1)||"";return "GPT-"+match[1]+(family?" "+family[0].toUpperCase()+family.slice(1).toLowerCase():"");}
+  match=model.match(/^claude-(?:(opus|sonnet|haiku)-(\d+)[.-](\d+)|(\d+)[.-](\d+)-(opus|sonnet|haiku))(?:-.+)?$/i);
+  if(match){const family=match[1]||match[6],major=match[2]||match[4],minor=match[3]||match[5];return family[0].toUpperCase()+family.slice(1).toLowerCase()+" "+major+"."+minor;}
+  match=model.match(/^claude-(opus|sonnet|haiku)(?:-.+)?$/i);
+  if(match)return match[1][0].toUpperCase()+match[1].slice(1).toLowerCase();
   return model;
 }
 function runwayModelRecentlyChanged(chat) {
@@ -978,7 +981,7 @@ function avatarIndex(seed, count) {
 function markFor(chat) {
   if(isAutoReview(chat))return MARK.review;
   const avatars=state.avatars;
-  if(chat.provider!=="Claude"&&chat.parentId&&avatars?.length)
+  if(chat.provider!=="Claude"&&hasTreeParent(chat)&&avatars?.length)
     return '<img class="av'+(isWorking(chat)?" on":"")+'" alt="" draggable="false" src="'+avatars[avatarIndex(chat.id,avatars.length)]+'">';
   return chat.provider==="Claude" ? MARK.claude : MARK.openai;
 }
@@ -1078,7 +1081,7 @@ function loadProviderPolicy() {
 // Sources the switch can offer: visible chat providers under policy, in a fixed order.
 function sourceNames(snapshot) { const visible=visibleProviderNames(snapshot);return SOURCES.filter(name=>visible.has(name)); }
 function effectiveSource(snapshot) { const names=sourceNames(snapshot);return names.includes(state.source)?state.source:(names[0]||"Codex"); }
-const runwaySource = snapshot => RUNWAY&&!PHONE?[effectiveSource(snapshot)]:["Codex"];
+const runwaySource = snapshot => RUNWAY&&!PHONE?sourceNames(snapshot):["Codex"];
 function providersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=(snapshot?.providers||[]);
   const names=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
@@ -1088,26 +1091,55 @@ function providersFor(snapshot) {
 function limitProvidersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=snapshot?.providers||[];
   const enabled=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
+  if(RUNWAY&&!PHONE){
+    const names=sourceNames(snapshot);
+    return names.flatMap(name=>{
+      const provider=available.find(item=>item.name===name),bootstrap=quotaBootstrap.providers[name];
+      const hasQuota=item=>Boolean(item&&["fiveHour","weekly"].some(key=>{
+        const value=item[key];return value&&typeof value==="object"&&(safeNumber(value.percent)!=null||resetAt(value,item.limitsUpdatedAt)!=null);
+      }));
+      const selected=hasQuota(provider)?provider:hasQuota(bootstrap)?bootstrap:null;
+      return selected?[selected]:[];
+    });
+  }
   const names=[...enabled,...(RUNWAY?[]:(snapshot?.limitProviders||[]).filter(name=>!enabled.includes(name)))].filter(name=>visible.has(name));
   return [...new Set(names)].map(name=>{
     const provider=available.find(item=>item.name===name);if(provider)return provider;
     return {...(quotaBootstrap.providers[name]||{name,connected:false,chats:[]}),name,limitsOnly:!enabled.includes(name)};
   });
 }
-function buildForest(providers) {
+function snapshotParentKey(provider, raw, edges=null) {
+  const key=typeof raw.key==="string"&&raw.key===provider.name+":"+raw.id?raw.key:provider.name+":"+raw.id;
+  const nativeParent=raw.parentId!=null?provider.name+":"+raw.parentId:null;
+  const rowParent=typeof raw.parentKey==="string"&&raw.parentKey?raw.parentKey:null;
+  const localRowParent=rowParent?.startsWith(provider.name+":")?rowParent:null;
+  if(edges&&Object.prototype.hasOwnProperty.call(edges,key)){
+    const edge=edges[key];
+    if(typeof edge==="string"&&edge)return edge.startsWith(provider.name+":")?(nativeParent||localRowParent||edge):edge;
+    return nativeParent||localRowParent;
+  }
+  return rowParent||nativeParent;
+}
+function buildForest(providers, graph=undefined) {
+  if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){graph=providers.graph;providers=providers.providers;}
+  const graphValue=graph,edges=graphValue&&typeof graphValue.edges==="object"&&!Array.isArray(graphValue.edges)?graphValue.edges:null;
   const map=new Map();
   for(const provider of providers)for(const raw of provider.chats||[]) {
     const chat={...raw,provider:provider.name,status:normalizeStatus(raw.status),children:[]};
     if(RUNWAY)chat.sourceStatus=raw.status;
     if(raw.statusSource==="unavailable"){chat.status="unknown";chat.telemetryUnavailable=true;}
-    chat.key=keyOf(chat);map.set(chat.key,chat);
+    const fallbackKey=keyOf(chat),validKey=typeof raw.key==="string"&&raw.key===fallbackKey?raw.key:fallbackKey;
+    chat.key=validKey;
+    const parent=snapshotParentKey(provider,raw,edges);
+    chat.treeParentKey=typeof parent==="string"&&parent?parent:null;
+    map.set(chat.key,chat);
   }
   const roots=[];
   for(const chat of map.values()) {
-    const parent=map.get(chat.provider+":"+chat.parentId);
+    const parent=chat.treeParentKey?map.get(chat.treeParentKey):null;
     // Malformed lineage must not hide a task or create a recursive render.
     let ancestor=parent, cycle=false;const seen=new Set([chat.key]);
-    while(ancestor){if(seen.has(ancestor.key)){cycle=true;break;}seen.add(ancestor.key);ancestor=map.get(ancestor.provider+":"+ancestor.parentId);}
+    while(ancestor){if(seen.has(ancestor.key)){cycle=true;break;}seen.add(ancestor.key);ancestor=ancestor.treeParentKey?map.get(ancestor.treeParentKey):null;}
     if(parent && !cycle)parent.children.push(chat);else roots.push(chat);
   }
   const today=localISODate();
@@ -1116,7 +1148,7 @@ function buildForest(providers) {
     chat.todayTokens=chat.dailyTokens?safeNumber(chat.dailyTokens[today])??0:null;
     chat.latest=Math.max(stamp(chat.updatedAt),stamp(chat.usageUpdatedAt));
     for(const child of chat.children){aggregate(child,root,depth+1);chat.descendants.push(child,...child.descendants);chat.latest=Math.max(chat.latest,child.latest);}
-    chat.parentTitle=map.get(chat.provider+":"+chat.parentId)?.title;
+    chat.parentTitle=map.get(chat.treeParentKey)?.title;
     chat.highestContext=Math.max(-1,...[chat,...chat.descendants].map(c=>safeNumber(c.contextPercent)??-1));
     chat.priority=Math.min(...[chat,...chat.descendants].map(c=>c.pendingQuestion?0:statusRank(c.status)));
     const list=$('#chat-list'),interacting=state.pointerInList||list?.contains?.(document.activeElement)||state.popover?.dataset?.action==='runway-question';
@@ -1215,7 +1247,7 @@ function runInfo(chat) {
 
 /* ---------- attention strip (layer 0) ---------- */
 const KIND_ORDER = {auth:0,provider:1,offline:1,ask:2,cooling:3,failed:4,context:5,watcher:6};
-const pathTitle = chat => chat.parentId ? (chat.root?.title||chat.parentTitle||"Chat")+" › "+agentLabel(chat) : chat.title||"Untitled";
+const pathTitle = chat => hasTreeParent(chat) ? (chat.root?.title||chat.parentTitle||"Chat")+" › "+agentLabel(chat) : chat.title||"Untitled";
 // Stable while polling, scoped to this chat and this exact prompt. Never use
 // updatedAt: transcript activity can change while the same question is pending.
 function questionDismissToken(chat) {
@@ -1249,7 +1281,7 @@ function attentionItems(forest, providers, watcher=state.watcher, now=Date.now()
     items.push({key:"offline",kind:"offline",tone:"err",label:"Offline",title:"",fact:state.lastOkAt?"data "+ageShort(state.lastOkAt)+" old":"no data",sort:0});
   }
   for(const chat of rows) {
-    const target=(chat.root||chat).key,sub=chat.parentId?chat.key:"";
+    const target=(chat.root||chat).key,sub=hasTreeParent(chat)?chat.key:"";
     if(RUNWAY&&!state.showHidden&&state.hiddenChats.has(target))continue;
     if(RUNWAY&&runwayTerminated(chat))continue;
     if(isAsking(chat)) {
@@ -1518,27 +1550,20 @@ function runwayExit(el) {
 }
 function renderResets(providers) {
   const node=$("#resets"),weeklyNode=REFINED?$("#weekly-resets"):null;if(!node)return;
-  const multi=providers.length>1;
   const shape=providers.map(p=>p.name).join("|");
+  node.dataset.providerCount=String(providers.length);if(weeklyNode)weeklyNode.dataset.providerCount=String(providers.length);
   if(node.dataset.shape!==shape) {
     node.dataset.shape=shape;
-    const markup=(key)=>providers.map((p,i)=>{
-      const id="r"+i+"-"+key;
-      return '<div id="'+id+'-row" class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
+    const markup=key=>providers.map((p,i)=>{
+      const id="r"+i+"-"+key,providerClass=p.name==="Claude"?"provider-claude":"provider-codex";
+      return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
         (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span>':'—')+'</span></div>'+
-        '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
-        '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
+        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>\uFFFD</b><i>used</i></span>':'\uFFFD')+'</span></div>'+
+        '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">\uFFFD:\uFFFD</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
+        '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("");
     if(REFINED){node.innerHTML=markup("fiveHour");if(weeklyNode)weeklyNode.innerHTML=markup("weekly");}
-    else node.innerHTML=providers.map((p,i)=>["fiveHour","weekly"].map(key=>{
-      const id="r"+i+"-"+key;
-      return '<div id="'+id+'-row" class="rr rr-'+key+'"><div class="rr-head"><span class="rr-label">'+(multi?esc(p.name)+" ":"")+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
-        (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>—</b><i>used</i></span>':'—')+'</span></div>'+
-        '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">—:—</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
-        '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"Weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
-    }).join("")).join("");
+    else node.innerHTML=markup("fiveHour")+markup("weekly");
   }
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
     const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");if(row)row.title=view.tip;
@@ -1679,8 +1704,8 @@ function runwayContextFactsHTML(chat) {
 function runwayDetailHTML(chat, agent=false) {
   const currentEvidence=runwayCurrentEvidenceFresh(),run=currentEvidence?runInfo(chat):null,note=currentEvidence?runwayStateNote(chat):'';
   const snippet=currentEvidence?trackerSnippet(chat.latestUpdate):null;
-  const parent=chat.parentId?(chat.root?.descendants||[]).find(c=>c.id===chat.parentId):null;
-  const owner=chat.parentId?(chat.parentId===chat.root?.id?chat.root?.title:parent?agentLabel(parent):chat.parentTitle):null;
+  const parent=hasTreeParent(chat)?(chat.root?.key===treeParentKey(chat)?chat.root:(chat.root?.descendants||[]).find(c=>c.key===treeParentKey(chat))):null;
+  const owner=hasTreeParent(chat)?(parent?.title||chat.parentTitle):null;
   const metadata=[currentEvidence?runwayModelLabel(chat):'',currentEvidence&&chat.reasoningEffort?'Reasoning '+chat.reasoningEffort:null,run?'Run '+runSpan(run.seconds)+(run.live?' elapsed':' recorded'):null].filter(Boolean).join(' · ');
   const assignment=agent?runwayAssignment(chat):chat.objective;
   const workspace=chat.workspace||chat.root?.workspace;
@@ -1718,10 +1743,10 @@ const runwayMessageAge = chat => { const sent=stamp(chat.latestMessageAt),age=Da
 const runwayAgentHasNewMessage = chat => runwayMessageAge(chat)!=null;
 function runwayQuestionButton(chat) {
   const waiting=chat=>runwayWaiting(chat);
-  const source=PHONE?(waiting(chat)&&chat.pendingQuestion?chat:(!chat.parentId?(chat.descendants||[]).find(item=>waiting(item)&&item.pendingQuestion):null)):
-    (waiting(chat)?chat:(!chat.parentId?(chat.descendants||[]).find(item=>waiting(item)):null));
+  const source=PHONE?(waiting(chat)&&chat.pendingQuestion?chat:(!hasTreeParent(chat)?(chat.descendants||[]).find(item=>waiting(item)&&item.pendingQuestion):null)):
+    (waiting(chat)?chat:(!hasTreeParent(chat)?(chat.descendants||[]).find(item=>waiting(item)):null));
   if(!source)return '';
-  if(PHONE)return '<button data-runway-slot="question" class="runway-question-trigger" data-action="runway-question" data-key="'+esc(source.key)+'" aria-label="Show exact question for '+esc(runwayTitle(source,Boolean(source.parentId)))+'" title="Show exact pending question">?</button>';
+  if(PHONE)return '<button data-runway-slot="question" class="runway-question-trigger" data-action="runway-question" data-key="'+esc(source.key)+'" aria-label="Show exact question for '+esc(runwayTitle(source,hasTreeParent(source)))+'" title="Show exact pending question">?</button>';
   return '';
 }
 function runwayWorkspacePath(workspace) {
@@ -1740,7 +1765,7 @@ function runwayWorkspaceHTML(chat) {
   const own=Boolean(chat.workspace),workspace=chat.workspace||chat.root?.workspace,path=runwayWorkspacePath(workspace);
   if(!path)return '';
   const inherited=!own&&Boolean(chat.root?.workspace),full=workspace;
-  const title=(chat.workspaceKind==='codex-chat'?'Codex per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+full;
+  const title=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+full;
   const drive=path.slice(0,3),parts=path.slice(3).split('\\').filter(Boolean),leafPart=parts.pop()||'',middle=parts.join('\\'),leaf=(middle?'\\':'')+leafPart;
   return '<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(title)+'" aria-label="'+esc((inherited?'Inherited workspace: ':'Workspace: ')+path)+'">'+(inherited?'<span class="runway-workspace-inherited" aria-label="Inherited workspace">'+ICON.branch+'</span>':'')+'<span class="runway-path-drive">'+esc(drive)+'</span><span class="runway-path-middle">'+esc(middle)+'</span><span class="runway-path-leaf">'+esc(leaf)+'</span></span>';
 }
@@ -1828,10 +1853,11 @@ function runwayTelemetryHTML(chat,agent=false) {
   const modelText=runwayModelLabel(chat);
   const modelChanged=runwayModelRecentlyChanged(chat);
   const modelEvent=state.modelVersions.get(chat.key||[chat.provider,chat.id].join(':'))?.highlightEventAt;
-  const modelHTML=currentEvidence&&modelText&&chat.model&&!chat.telemetryUnavailable?'<span data-runway-slot="model" class="runway-telemetry-model" title="'+esc(chat.model)+'"><span class="runway-model-name'+(modelChanged?' model-changed':'')+'"'+(modelChanged&&modelEvent?' data-model-change-at="'+modelEvent+'"':'')+'>'+esc(modelText)+'</span></span>':'';
+   const modelColor=chat.provider==='Claude'?'is-claude-model':'is-codex-model';
+   const modelHTML=currentEvidence&&modelText&&chat.model&&!chat.telemetryUnavailable?'<span data-runway-slot="model" class="runway-telemetry-model" title="'+esc(modelText)+'"><span class="runway-model-name '+modelColor+(modelChanged?' model-changed':'')+'"'+(modelChanged&&modelEvent?' data-model-change-at="'+modelEvent+'"':'')+'>'+esc(modelText)+'</span></span>':'';
   const directionText=runwayMessageDirection(chat);
   const statusCode=runwayWaiting(chat)?'needs-input':effectiveStatus;
-  const messageCapable=Boolean(agent&&chat.parentId),hasRecentMessage=currentEvidence&&messageCapable&&runwayAgentHasNewMessage(chat);
+  const messageCapable=Boolean(agent&&hasTreeParent(chat)),hasRecentMessage=currentEvidence&&messageCapable&&runwayAgentHasNewMessage(chat);
   const messageAge=hasRecentMessage?runwayMessageAge(chat):null,messageAt=hasRecentMessage?stamp(chat.latestMessageAt):0;
   const messageContents=hasRecentMessage?'<span data-runway-slot="message" class="runway-message-indicator" data-message-at="'+messageAt+'" style="--message-age:-'+Math.max(0,messageAge||0)+'ms" title="Recent message'+(directionText?' · '+directionText:'')+' · visible for 10 seconds" aria-label="Recent message'+(directionText?' · '+directionText:'')+'">'+ICON.message+'<span class="runway-message-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>':'';
   const phoneMessageSlot=messageCapable?'<span class="runway-message-slot">'+messageContents+'</span>':'';
@@ -1846,8 +1872,9 @@ function runwayTelemetryHTML(chat,agent=false) {
   const elapsedHTML=elapsed!=='—'?'<span data-runway-slot="elapsed" class="runway-state-elapsed" title="Elapsed in current state">'+esc(elapsed)+'</span>':'';
   const run=currentEvidence?runInfo(chat):null,runTimeHTML=run?'<span data-runway-slot="run-time" class="runway-run-time runway-run-clock" title="'+(run.live?'Elapsed in current run':'Recorded run duration')+'">'+ICON.clock+esc(runSpan(run.seconds))+'</span>':'';
   const modelTiming=(modelHTML||runTimeHTML)?'<span data-runway-slot="model-timing" class="runway-model-timing">'+modelHTML+runTimeHTML+'</span>':'';
-  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!chat.parentId?(chat.descendants||[]).find(runwayWaiting):null);
-  const stateContents=status==='Waiting'&&waitingTarget&&!PHONE?'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc((isCodexChat(waitingTarget)?'Open ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,Boolean(waitingTarget.parentId)))+(isCodexChat(waitingTarget)?' in Codex':''))+'" title="'+(isCodexChat(waitingTarget)?'Open waiting chat in Codex':'Show what Claude is waiting for')+'">Waiting</button>':!PHONE?((agent||!status?'':runwayStatusDot(status,tone))+activityHTML):(status?runwayStatusGlyph(statusCode)+'<span class="runway-state-word">'+esc(status)+'</span>':'');
+  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);
+  const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
+  const stateContents=status==='Waiting'&&waitingTarget&&!PHONE?'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">Waiting</button>':!PHONE?((agent||!status?'':runwayStatusDot(status,tone))+activityHTML):(status?runwayStatusGlyph(statusCode)+'<span class="runway-state-word">'+esc(status)+'</span>':'');
   const stateHTML=status||activityHTML?'<span data-runway-slot="state" class="runway-telemetry-state t-'+tone+(agent&&!PHONE||activityHTML?' runway-agent-state':'')+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'"'+(!PHONE&&status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+(!statusUnavailable||PHONE?stateContents:'')+(!PHONE&&(status==='Waiting'||statusUnavailable)?activityHTML:'')+'</span>':'';
   const primary='<span data-runway-slot="primary" class="runway-primary">'+titleHTML+
     stateHTML+(PHONE?elapsedHTML:'')+'</span>'+ 
@@ -1862,7 +1889,7 @@ function runwayTelemetryHTML(chat,agent=false) {
   if(REFINED){
     const stateIcon=runwayStatusGlyph(status==='Waiting'?'needs-input':status==='Compacting'?'compacting':status==='Running'||status==='Agents running'?'running':statusCode);
     const visibleStatus=COMPACT&&status==='Agents running'?'Agents active':status;
-    const stateContent=status?((status==='Waiting'&&waitingTarget?stateIcon+'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc((isCodexChat(waitingTarget)?'Open ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,Boolean(waitingTarget.parentId)))+(isCodexChat(waitingTarget)?' in Codex':''))+'" title="'+(isCodexChat(waitingTarget)?'Open waiting chat in Codex':'Show what Claude is waiting for')+'">Waiting</button>':stateIcon+'<span class="runway-state-word"'+(visibleStatus!==status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+esc(visibleStatus)+'</span>')):'';
+     const stateContent=status?((status==='Waiting'&&waitingTarget?stateIcon+'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">Waiting</button>':stateIcon+'<span class="runway-state-word"'+(visibleStatus!==status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+esc(visibleStatus)+'</span>')):'';
     const treeAnchor='<span data-runway-slot="tree-anchor" class="runway-name-status runway-refined-tree-anchor t-'+tone+'" aria-hidden="true">'+(status?runwayStatusDot(status,tone):'')+'</span>';
     const elapsedTarget=ownCurrent?chat:waitingTarget;
     const elapsed=currentEvidence&&elapsedTarget&&!statusUnavailable?runwayStateElapsed(elapsedTarget):'';
@@ -1873,7 +1900,7 @@ function runwayTelemetryHTML(chat,agent=false) {
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
     // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
     const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
-    return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span></span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'<span data-runway-slot="cache" class="runway-refined-cache">'+(cachePercent==null?'':'Cache '+cachePercent+'%')+'</span></span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+contextValue+'</span></div>';
+     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'<span data-runway-slot="cache" class="runway-refined-cache">'+(cachePercent==null?'':'Cache '+cachePercent+'%')+'</span></span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+'</span></div>';
   }
   return agent?messageLane+topline+'<span class="runway-agent-secondary">'+modelTiming+'</span>'+contextSlot+objectiveSlot:messageLane+topline+modelTiming+contextSlot;
 }
@@ -1930,7 +1957,7 @@ function trayState(chat) {
   return chat.descendants.some(isVisibleAgent)?"active":"resting";
 }
 function agentRowEntry(agent, query) {
-  if(RUNWAY)return {key:agent.key,cls:'ag runway-agent'+(query.active&&matchesQuery(agent,query)?' match':''),attrs:{'data-sub':agent.key,style:'--agent-depth:'+Math.max(0,(agent.depth||1)-1)},html:'<div class="runway-agent-glance">'+runwayTelemetryHTML(agent,true)+'</div>'};
+  if(RUNWAY)return {key:agent.key,cls:'ag runway-agent'+(query.active&&matchesQuery(agent,query)?' match':''),attrs:{'data-sub':agent.key,'data-provider':agent.provider,style:'--agent-depth:'+Math.max(0,(agent.depth||1)-1)},html:'<div class="runway-agent-glance">'+runwayTelemetryHTML(agent,true)+'</div>'};
   const st=ownState(agent),stats=agentStats(agent),fin=noteLiveness(agent,stats.live);
   const tip=["context "+(safeNumber(agent.contextPercent)==null?"—":Math.round(agent.contextPercent)+"%"),ageShort(agent.latest)+(agent.latest&&ageShort(agent.latest)!=="now"?" ago":""),agent.reasoningEffort?"effort "+agent.reasoningEffort:null,"click to copy resume"].filter(Boolean).join(" · ");
   return {key:agent.key,cls:"ag"+(stats.live?" is-live":" is-done")+(isAsking(agent)?" asks":"")+(query.active&&matchesQuery(agent,query)?" match":""),
@@ -1948,7 +1975,7 @@ function trayEntries(chat, query) {
   const agents=RUNWAY?chat.descendants.filter(isVisibleAgent):sortAgents(chat.descendants.filter(isVisibleAgent));
   // Record liveness first so an agent that just stopped is still "working" for its fade minute.
   agents.forEach(a=>{if(state.agentLive.get(a.key)!==agentStats(a).live)noteLiveness(a,agentStats(a).live);});
-  if(RUNWAY){const entries=[];const visit=parent=>{for(const agent of agents.filter(a=>a.parentId===parent.id)){entries.push(agentRowEntry(agent,query));visit(agent);}};visit(chat);for(const agent of agents)if(!entries.some(e=>e.key===agent.key))entries.push(agentRowEntry(agent,query));return entries;}
+  if(RUNWAY){const entries=[];const visit=parent=>{for(const agent of agents.filter(a=>treeParentKey(a)===parent.key)){entries.push(agentRowEntry(agent,query));visit(agent);}};visit(chat);for(const agent of agents)if(!entries.some(e=>e.key===agent.key))entries.push(agentRowEntry(agent,query));return entries;}
   // Agents with no recorded usage (bare auto-review shells) never get a stats strip.
   const empty=a=>!agentLive(a)&&!recentFail(a)&&!isAsking(a)&&agentStats(a).tokens==null&&!agentStats(a).tools;
   const full=agents.filter(a=>!empty(a)&&isWorking(a));
@@ -2012,7 +2039,7 @@ function chatBlockHTML(chat, query) {
   const open=state.open.has(chat.key);
   const tray=chat.descendants.some(isVisibleAgent)?(RUNWAY?'<div class="tray '+(runwayAgentsExpanded(chat)?'runway-expanded':'runway-collapsed')+'"><div class="tray-sum">'+traySummaryHTML(chat)+'</div><div class="tray-full"><div class="tray-clip">'+(runwayAgentsExpanded(chat)?trayEntries(chat,query).map(e=>'<div class="'+e.cls+'" data-key="'+esc(e.key)+'"'+attrString(e.attrs)+'>'+e.html+'</div>').join(''):'')+'</div></div></div>':trayState(chat)==="resting"?'<div class="tray resting"><div class="tray-sum">'+traySummaryHTML(chat)+'</div></div>'
     :'<div class="tray active"><div class="tray-full">'+trayEntries(chat,query).map(e=>'<div class="'+e.cls+'" data-key="'+esc(e.key)+'"'+attrString(e.attrs)+'>'+e.html+'</div>').join("")+'</div></div>'):"";
-  if(RUNWAY)return '<div class="chat" data-key="'+esc(chat.key)+'"><div class="row">'+rowHTML(chat)+'</div>'+tray+'</div>';
+  if(RUNWAY)return '<div class="chat" data-key="'+esc(chat.key)+'" data-provider="'+esc(chat.provider)+'"><div class="row">'+rowHTML(chat)+'</div>'+tray+'</div>';
   return '<div class="chat'+(state.pins.has(chat.key)?" pinned":"")+'" data-key="'+esc(chat.key)+'"><button class="row" data-action="toggle-chat" data-key="'+esc(chat.key)+'" aria-expanded="'+open+'" title="'+esc(chat.title||"")+'">'+rowHTML(chat)+'</button>'+
     (open?'<div class="l2 open"><div class="l2-in">'+panelHTML(chat)+'</div></div>':'')+tray+'</div>';
 }
@@ -2030,6 +2057,7 @@ function updateChatEl(el, chat, query) {
   const [row,l2,tray]=el.children,inner=l2.firstElementChild;
   const pinned=!RUNWAY&&state.pins.has(chat.key);
   el.classList.toggle("pinned",pinned);
+  if(RUNWAY&&el.dataset.provider!==chat.provider)el.dataset.provider=chat.provider;
   const html=rowHTML(chat);
   if(row._html!==html) {
     const next=rollup(chat).key,prevState=el.dataset.state;
@@ -2094,7 +2122,7 @@ function trackSourceAttention(name, items, selected, fresh) {
 }
 function updateSourceSwitch() {
   if(!RUNWAY||PHONE)return;
-  const group=$('#source-switch');if(!group)return;
+  const group=$('#source-switch');if(!group){window.TokenTrackerDashboard?.setSource?.(effectiveSource(state.snapshot));return;}
   const policyReady=validPublicProviderPolicy(state.snapshot?.providerPolicies)||state.providerPolicyReady,names=policyReady?sourceNames(state.snapshot):SOURCES,visible=names.length>=2;
   const current=state.snapshot?effectiveSource(state.snapshot):policyReady&&names.includes(state.source)?state.source:'Codex';
   if(group.hidden!==!visible)group.hidden=!visible;
@@ -2112,42 +2140,14 @@ function updateSourceSwitch() {
     if(segment.getAttribute?.('aria-label')!==label)segment.setAttribute?.('aria-label',label);
     const dot=segment.querySelector?.('.source-dot');dot?.setAttribute?.('aria-hidden',String(!flagged&&!live));
   }
-  const body=document.body;if(body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
+  const body=document.body;if(!(RUNWAY&&!PHONE)&&body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
   window.TokenTrackerDashboard?.setSource?.(current);
 }
 function setSource(name,{persist=true,manual=true}={}) {
   if(!RUNWAY||PHONE||!SOURCES.includes(name)||!policyForSources(state.snapshot)||!sourceNames(state.snapshot).includes(name))return false;
   if(manual){state.sourceManualAt=Date.now();if(persist)try{localStorage.setItem(SOURCE_KEY,name);localStorage.setItem(SOURCE_MANUAL_AT_KEY,String(state.sourceManualAt));}catch{}}
-  if(!state.snapshot){state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();renderQuotaState();return true;}
-  if(effectiveSource(state.snapshot)===name){state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();return true;}
-  state.source=name;
-  state.sourceAttention.delete(name);
-  if(state.popover)closePopover({restoreFocus:false});
-  closeRunwayDetails();state.lastOrder=null;
-  const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
-  const list=$('#chat-list'),sourceSnapshot=captureSourceSnapshot(list);
-  // Sequence the switch: the old rows fade out at the current height, then the
-  // window resizes to the new source while its rows fade in. Overlapping these
-  // made the old rows crop (fewer new rows) or the new ones show through (more).
-  state.sourceRelease?.(false);
-  if(sourceSnapshot&&COMPACT&&notch.mode==='inspect'){
-    state.sourceHeightHold=notchHeight();list.classList?.add?.('source-entering');list.classList?.remove?.('source-enter');
-  }
-  state.sourceSwitching=true;
-  try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);}
-  finally{state.sourceSwitching=false;}
-  updateSourceSwitch();
-  let released=false,fallback=null;
-  const release=(animate=true)=>{
-    if(released)return;released=true;clearTimeout(fallback);if(state.sourceRelease===release)state.sourceRelease=null;
-    if(!state.sourceHeightHold)return;
-    state.sourceHeightHold=null;list.classList?.remove?.('source-entering');
-    if(animate){void list.offsetWidth;list.classList?.add?.('source-enter');}
-    scheduleNotchSize();
-  };
-  state.sourceRelease=release;fallback=setTimeout(release,400);
-  revealSourceSnapshot(list,sourceSnapshot,release);
-  if(!sourceSnapshot)release(false);
+  state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();
+  if(!state.snapshot)renderQuotaState();
   return true;
 }
 function captureSourceSnapshot(list) {
@@ -2183,7 +2183,7 @@ function selectSourceForNewWork(items) {
 }
 function renderChats(providers) {
   scheduleNotchSize();
-  const previousForest=state.forest,forest=buildForest(providers);stabilizeRunwayForest(forest,previousForest);
+  const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
   const roots=visibleRoots(forest),query=parseQuery(state.query);
   if(RUNWAY&&state.rosterQuery!==state.query){state.agentSearchClosed.clear();state.rosterQuery=state.query;}
   state.forest=forest;
@@ -2202,33 +2202,22 @@ function renderChats(providers) {
     // not for every transcript or token update on an already-running chat.
       const evidenceFresh=runwayCurrentEvidenceFresh();
       const itemsOf=roots=>roots.flatMap(chat=>[chat,...chat.descendants]).map(chat=>({
-        key:chat.key,provider:chat.provider,active:evidenceFresh&&runwayActive(chat)&&!chat.telemetryUnavailable&&chat.statusSource!=='unavailable',subagent:Boolean(chat.parentId),
+        key:chat.key,provider:chat.provider,active:evidenceFresh&&runwayActive(chat)&&!chat.telemetryUnavailable&&chat.statusSource!=='unavailable',subagent:hasTreeParent(chat),
         waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,questionId:runwayWaiting(chat)?chat.key+'|'+(chat.pendingQuestionId??chat.questionId??chat.pendingQuestion??''):null,
       runStartedAt:stamp(chat.activeRunStartedAt)||(chat.telemetryUnavailable?notch.workStates.get(chat.key)?.runStartedAt:0),latestMessageAt:stamp(chat.latestMessageAt),latestMessageDirection:chat.latestMessageDirection,
       activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt)),
     }));
       const activeIn=roots=>evidenceFresh?roots.filter(chat=>[chat,...chat.descendants].some(item=>runwayActive(item)&&!item.telemetryUnavailable&&item.statusSource!=='unavailable')).length:0;
-      const selectedItems=itemsOf(activeRoots),activeCount=activeIn(activeRoots);
-      // Sources that are visible under policy but not shown get the same attention tracking.
-      const shown=new Set(providers.map(provider=>provider.name));
-      const others=state.snapshot?sourceNames(state.snapshot).filter(name=>!shown.has(name)):[];
-      let workItems=selectedItems,otherActive=0;
-      for(const name of providers.map(provider=>provider.name))trackSourceAttention(name,selectedItems,true,evidenceFresh);
-      for(const name of others){
-        const roots=buildForest([(state.snapshot.providers||[]).find(provider=>provider.name===name)||{name,chats:[]}]).roots.filter(chat=>state.showHidden||!state.hiddenChats.has(chat.key));
-        const items=itemsOf(roots);
-        trackSourceAttention(name,items,false,evidenceFresh);
-        workItems=workItems.concat(items);otherActive+=activeIn(roots);
-      }
+      const selectedItems=itemsOf(activeRoots),activeCount=activeIn(activeRoots),workItems=selectedItems;
+      for(const provider of providers)trackSourceAttention(provider.name,selectedItems.filter(item=>item.provider===provider.name),true,evidenceFresh);
       if(state.liveRecoveryPending){
         // Recovery baselines replayed state, but a question never seen before the gap must still reveal.
         for(const item of workItems){const previous=notch.workStates.get(item.key);if(previous?.active&&item.active){previous.latestMessageAt=item.latestMessageAt;if(!item.questionId||state.seenQuestions.has(item.questionId)){previous.waiting=item.waiting;previous.questionToken=item.questionToken;}}}
         state.liveRecoveryPending=false;
       }
       if(evidenceFresh)for(const item of workItems)if(item.questionId){if(state.seenQuestions.size>500)state.seenQuestions.clear();state.seenQuestions.add(item.questionId);}
-      syncNotch(COMPACT?activeCount:activeCount+otherActive,workItems);
+      syncNotch(activeCount,workItems);
       updateSourceSwitch();
-      if(COMPACT&&state.snapshot&&providers[0]?.name!==effectiveSource(state.snapshot))return;
     const available=activeCount>0||state.hiddenChats.size>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
     const header=$('#chats-head'),searchToggle=$('#search-toggle');
     if(header)header.hidden=!available;if(searchToggle)searchToggle.hidden=!available;
@@ -2368,7 +2357,7 @@ function refreshControlTitle(){
   return parts.join(' · ');
 }
 function renderTitle(providers) {
-  const name=$("#brand-name");if(name)name.textContent=providers.map(p=>p.name).join(" · ")||"Codex";
+  const name=$("#brand-name");if(name)name.textContent=RUNWAY&&!PHONE?"Branchglance":providers.map(p=>p.name).join(" · ")||"Codex";
   syncCompactClock();
   const age=$("#sync-age");if(!age)return;
   if(state.refreshing||state.loading||state.initialBootstrapPending){if(COMPACT){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();}else age.textContent="";age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
@@ -2451,7 +2440,7 @@ function initialActiveSource(snapshot){
   const candidates=[];
   for(const provider of snapshot?.providers||[]){
     if(!sourceNames(snapshot).includes(provider.name))continue;
-    const forest=buildForest([provider]);
+       const forest=buildForest([provider],snapshot?.graph);
     for(const root of forest.roots){
       if(!state.showHidden&&state.hiddenChats.has(root.key))continue;
       for(const chat of [root,...root.descendants]){
@@ -2612,7 +2601,8 @@ function validQuotaMetadata(payload,now=Date.now()){
 }
 function renderQuotaState(){
   renderTitle(state.snapshot?providersFor(state.snapshot):[]);
-  renderResets(state.snapshot?limitProvidersFor(state.snapshot):[quotaBootstrap.providers[effectiveSource(null)]||quotaBootstrap.provider]);
+  const bootstrapSnapshot={providers:Object.values(quotaBootstrap.providers),providerPolicies:state.providerPolicy};
+  renderResets(state.snapshot?limitProvidersFor(state.snapshot):limitProvidersFor(bootstrapSnapshot));
 }
 function quotaBootstrapTargets(){
   const providers=state.snapshot?.providers||[],present=new Set(providers.map(provider=>provider.name));
@@ -2725,7 +2715,7 @@ function handleVisibilityChange() {
   if(PHONE)state.foregroundLivePending=true;
   return refresh();
 }
-const LIVE_FIELDS=["contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY&&!PHONE?["parentId","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
+const LIVE_FIELDS=["contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY&&!PHONE?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
 // A live row is qualified as "<Provider>:<id>"; ids may themselves contain ":" (Claude subagents).
 function liveIdentity(item) {
   if(!item||typeof item.id!=='string'||!item.id||typeof item.key!=='string')return null;
@@ -2736,9 +2726,14 @@ function liveIdentity(item) {
 function applyLive(snapshot, live) {
   if(!snapshot||!live||stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
   restrictSnapshotProviders(snapshot);
+  let graphChanged=false;
+  if(RUNWAY&&!PHONE&&live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
+    const incoming=Number(live.graph.revision),current=Number(snapshot.graph?.revision);
+    if(!snapshot.graph||Number.isFinite(incoming)&&(!Number.isFinite(current)||incoming>current)){snapshot.graph=live.graph;graphChanged=true;}
+  }
   const validKnown=item=>!RUNWAY||PHONE||liveIdentity(item)!==null;
   const byKey=new Map((live.chats||[]).filter(validKnown).map(item=>[item.key,item]));
-  let changed=false,oldestShown=Infinity;
+  let changed=graphChanged,oldestShown=Infinity;
   const initiallyLoaded=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
   // Unseen rows are inserted per provider; providers hidden by policy are already absent from the snapshot.
   const liveTargets=new Map();
@@ -2749,8 +2744,8 @@ function applyLive(snapshot, live) {
       if(!entry)continue;
       const {target,known}=entry;
       if(known.has(item.key))continue;
-      const record={id:item.id};
-      for(const field of ['parentId','title','agentName','agentRole','workspace','workspaceKind','source','status','statusSource','telemetryUnavailable','metricsUnavailable','previousStatus','lastValidAt','stateDetail','failureReason','activity','activityUnavailable','executionStatus','executionSource','executionObservedAt','executionSince','executionCompactionStartedAt','executionTerminalAt','executionActivity','activeRunStartedAt','stateSince','runStartedAt','runEndedAt','updatedAt','activityAt','pendingQuestion','pendingQuestionAt','pendingQuestionId','pendingQuestionIds','questionId','questionResolutionAt','pendingOptions','model','contextTokens','contextWindow','contextPercent','contextObservedAt','contextModel','contextDelta','contextDeltaObservedAt','latestRequest','latestRequestAt','latestUpdate','latestUpdateAt','trackerUpdate','trackerUpdateAt','latestMessageAt','latestMessageDirection','latestMessageSourceId','latestMessageTargetId','toolCalls','filesEdited','fileChanges','recentTokens','usageUpdatedAt','lastRequest','attentionSince','compactionStartedAt','statusObservedAt','modelChangeAt','resumable','sessionId'])if(item[field]!==undefined)record[field]=item[field];
+       const record={id:item.id,key:item.key};
+       for(const field of ['parentId','parentKey','title','agentName','agentRole','workspace','workspaceKind','source','status','statusSource','telemetryUnavailable','metricsUnavailable','previousStatus','lastValidAt','stateDetail','failureReason','activity','activityUnavailable','executionStatus','executionSource','executionObservedAt','executionSince','executionCompactionStartedAt','executionTerminalAt','executionActivity','activeRunStartedAt','stateSince','runStartedAt','runEndedAt','updatedAt','activityAt','pendingQuestion','pendingQuestionAt','pendingQuestionId','pendingQuestionIds','questionId','questionResolutionAt','pendingOptions','model','contextTokens','contextWindow','contextPercent','contextObservedAt','contextModel','contextDelta','contextDeltaObservedAt','latestRequest','latestRequestAt','latestUpdate','latestUpdateAt','trackerUpdate','trackerUpdateAt','latestMessageAt','latestMessageDirection','latestMessageSourceId','latestMessageTargetId','toolCalls','filesEdited','fileChanges','recentTokens','usageUpdatedAt','lastRequest','attentionSince','compactionStartedAt','statusObservedAt','modelChangeAt','resumable','sessionId'])if(item[field]!==undefined)record[field]=item[field];
       target.chats.push(record);known.add(item.key);changed=true;
     }
   }
@@ -2769,10 +2764,11 @@ function applyLive(snapshot, live) {
         if(next[field]!==undefined&&JSON.stringify(next[field])!==JSON.stringify(chat[field])){chat[field]=next[field];changed=true;}
       }
     }
-    if(!chat.parentId)oldestShown=Math.min(oldestShown,stamp(chat.updatedAt));
+    const parent=snapshotParentKey(provider,chat,snapshot.graph?.edges||null);
+    if(!parent)oldestShown=Math.min(oldestShown,stamp(chat.updatedAt));
   }
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
-  const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!c.parentId).length,0);
+  const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!snapshotParentKey(p,c,snapshot.graph?.edges||null)).length,0);
   const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(!RUNWAY||PHONE||(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})())&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
   return {changed,outside};
 }
@@ -2878,7 +2874,7 @@ async function copyText(text, button) {
 function togglePin(key) {
   let chat=state.forest?.rows.find(c=>c.key===key);
   const visited=new Set();
-  while(chat?.parentId&&!visited.has(chat.key)){visited.add(chat.key);const parent=state.forest.rows.find(c=>c.provider===chat.provider&&c.id===chat.parentId);if(!parent)break;chat=parent;}
+  while(hasTreeParent(chat)&&!visited.has(chat.key)){visited.add(chat.key);const parent=state.forest.rows.find(c=>c.key===treeParentKey(chat));if(!parent)break;chat=parent;}
   if(!chat)return;
   state.pins.has(chat.key)?state.pins.delete(chat.key):state.pins.add(chat.key);
   try{localStorage.setItem("tokenTrackerPinsV2",JSON.stringify([...state.pins]));}catch{}
@@ -2988,7 +2984,7 @@ function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTi
 window.tokenTrackerRefresh=refresh;
 window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
-  buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,
+  buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
