@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <!-- First request: release components. Second request: the final Setup exe alone. -->
+    <pe-file path="Branchglance.exe" product-name="Branchglance" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="BranchglanceUninstall.exe" product-name="Branchglance" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="releases/*/BranchglanceApp.exe" product-name="Branchglance" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="releases/*/BranchglanceHook.exe" product-name="Branchglance" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

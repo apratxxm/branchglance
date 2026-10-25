@@ -1,0 +1,465 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and sign (for example v1.0.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: "0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      version: ${{ steps.version.outputs.version }}
+      build_id: ${{ steps.version.outputs.build_id }}
+      source_epoch: ${{ steps.version.outputs.source_epoch }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      inventory_sha256: ${{ steps.build-release.outputs.inventory_sha256 }}
+      components_artifact_id: ${{ steps.upload-components.outputs.artifact-id }}
+      inventory_artifact_id: ${{ steps.upload-inventory.outputs.artifact-id }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref || inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Freeze source commit
+        id: source
+        shell: pwsh
+        run: |
+          $sourceSha = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($sourceSha -notmatch '^[0-9a-f]{40}$') { throw "Checkout did not resolve to a full Git SHA: $sourceSha" }
+          git checkout --detach $sourceSha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $frozenHead = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($frozenHead -ne $sourceSha) { throw "Build job checkout differs from frozen source SHA." }
+          "source_sha=$sourceSha" >> $env:GITHUB_OUTPUT
+
+      - name: Set up pinned CPython
+        id: setup-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.10.11"
+          architecture: x64
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.14.0"
+
+      - name: Pin release dependency environment
+        shell: pwsh
+        run: |
+          python -m pip install --no-deps -r packaging/requirements-release.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Python tests
+        shell: pwsh
+        run: |
+          python -m pytest tests -q -p no:cacheprovider
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run JavaScript tests
+        shell: pwsh
+        run: |
+          foreach ($test in Get-ChildItem tests -Filter '*.mjs' | Sort-Object Name) {
+            Write-Host "Running $($test.Name)"
+            & node $test.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Resolve release identity
+        id: version
+        shell: pwsh
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $tag = $env:GITHUB_REF_NAME
+            if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch" -and $env:DISPATCH_TAG -ne $tag) {
+              throw "Manual dispatch tag input must match the selected tag ref ($tag)."
+            }
+          } else {
+            $tag = $env:DISPATCH_TAG
+          }
+          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)$') {
+            throw "Release tag must be vMAJOR.MINOR.PATCH with an optional prerelease: $tag"
+          }
+          $version = $Matches.version
+          $buildId = $env:SOURCE_SHA.Substring(0, 12)
+          $sourceEpoch = (git show -s --format=%ct $env:SOURCE_SHA).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "release_tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build_id=$buildId" >> $env:GITHUB_OUTPUT
+          "source_epoch=$sourceEpoch" >> $env:GITHUB_OUTPUT
+          "source_sha=$env:SOURCE_SHA" >> $env:GITHUB_OUTPUT
+
+      - name: Build Branchglance release
+        id: build-release
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_ID: ${{ steps.version.outputs.build_id }}
+          SOURCE_SHA: ${{ steps.version.outputs.source_sha }}
+          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.source_epoch }}
+          PYTHON_EXE: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP "branchglance-build"
+          python packaging/build.py --output $output --version $env:VERSION --build-id $env:BUILD_ID --python $env:PYTHON_EXE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $components = Join-Path $env:RUNNER_TEMP "branchglance-components"
+          New-Item -ItemType Directory -Path $components | Out-Null
+          Copy-Item (Join-Path $output "Branchglance.exe") $components
+          Copy-Item (Join-Path $output "BranchglanceUninstall.exe") $components
+          Copy-Item (Join-Path $output "releases") $components -Recurse
+          $inventoryDirectory = Join-Path $env:RUNNER_TEMP "branchglance-component-inventory"
+          New-Item -ItemType Directory -Path $inventoryDirectory | Out-Null
+          $inventoryPath = Join-Path $inventoryDirectory "signpath-inventory.json"
+          $inventoryOutput = python packaging/signpath_finalize.py create-component-inventory `
+            --components $components --version $env:VERSION --build-id $env:BUILD_ID `
+            --inventory-path $inventoryPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $inventorySha = ($inventoryOutput | ConvertFrom-Json).inventorySha256
+          if ($inventorySha -notmatch '^[0-9a-f]{64}$') { throw "Component inventory hash is invalid." }
+          "inventory_sha256=$inventorySha" >> $env:GITHUB_OUTPUT
+          $unsigned = Join-Path $env:RUNNER_TEMP "branchglance-unsigned-build"
+          New-Item -ItemType Directory -Path $unsigned | Out-Null
+          Copy-Item (Join-Path $output "Branchglance.exe") $unsigned
+          Copy-Item (Join-Path $output "BranchglanceUninstall.exe") $unsigned
+          Copy-Item (Join-Path $output "BranchglanceSetup.exe") $unsigned
+          Copy-Item (Join-Path $output "BranchglanceSetup.exe.sha256") $unsigned
+          Copy-Item (Join-Path $output "releases") $unsigned -Recurse
+
+      - name: Upload unsigned build output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: branchglance-unsigned-build
+          path: ${{ runner.temp }}/branchglance-unsigned-build/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload unsigned components
+        id: upload-components
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: branchglance-unsigned-components
+          path: ${{ runner.temp }}/branchglance-components/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload original signing inventory
+        id: upload-inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: branchglance-component-inventory
+          path: ${{ runner.temp }}/branchglance-component-inventory/signpath-inventory.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  sign:
+    needs: build
+    runs-on: windows-latest
+    if: >-
+      ${{
+        github.ref_type == 'tag' &&
+        vars.SIGNPATH_ORGANIZATION_ID != '' &&
+        vars.SIGNPATH_PROJECT_SLUG != '' &&
+        vars.SIGNPATH_SIGNING_POLICY_SLUG != '' &&
+        vars.SIGNPATH_COMPONENTS_ARTIFACT_CONFIGURATION_SLUG != '' &&
+        vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG != ''
+      }}
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      enabled: ${{ steps.token.outputs.enabled }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Assert frozen source commit
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($head -ne $env:SOURCE_SHA) { throw "Signing job checkout differs from frozen source SHA." }
+
+      - name: Set up pinned CPython
+        id: setup-python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.10.11"
+          architecture: x64
+
+      - name: Install pinned release dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --no-deps -r packaging/requirements-release.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download original component inventory
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.build.outputs.inventory_artifact_id }}
+          path: ${{ runner.temp }}/branchglance-component-inventory
+          merge-multiple: true
+
+      - name: Assert original inventory download path and digest
+        shell: pwsh
+        env:
+          INVENTORY_SHA256: ${{ needs.build.outputs.inventory_sha256 }}
+        run: |
+          $inventory = Join-Path $env:RUNNER_TEMP "branchglance-component-inventory/signpath-inventory.json"
+          if (-not (Test-Path -LiteralPath $inventory -PathType Leaf)) {
+            throw "Original component inventory was not downloaded to the expected path."
+          }
+          $actual = (Get-FileHash -LiteralPath $inventory -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:INVENTORY_SHA256) { throw "Downloaded component inventory hash does not match the build output." }
+
+      - name: Check whether the API token is configured
+        id: token
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          $enabled = -not [string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN)
+          "enabled=$($enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          if (-not $enabled) { Write-Host "SignPath signing skipped: SIGNPATH_API_TOKEN is unset." }
+
+      - name: Submit signed release components
+        id: sign-components
+        if: steps.token.outputs.enabled == 'true'
+        uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_COMPONENTS_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.components_artifact_id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "7200"
+          output-artifact-directory: ${{ runner.temp }}/branchglance-signed-components
+          parameters: |
+            version: "${{ needs.build.outputs.version }}"
+
+      - name: Refresh signed release manifest and stamps
+        if: steps.token.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD_ID: ${{ needs.build.outputs.build_id }}
+          INVENTORY_SHA256: ${{ needs.build.outputs.inventory_sha256 }}
+          INVENTORY_PATH: ${{ runner.temp }}/branchglance-component-inventory/signpath-inventory.json
+          SOURCE_DATE_EPOCH: ${{ needs.build.outputs.source_epoch }}
+          PYTHON_EXE: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          $components = Join-Path $env:RUNNER_TEMP "branchglance-signed-components"
+          $versioned = "$($env:VERSION)+$($env:BUILD_ID)"
+          python packaging/signpath_finalize.py finalize-components --components $components `
+            --inventory-sha256 $env:INVENTORY_SHA256 --versioned $versioned `
+            --inventory-path $env:INVENTORY_PATH
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setupOutput = Join-Path $env:RUNNER_TEMP "branchglance-setup-build"
+          python packaging/build.py --output $setupOutput --setup-from-components $components `
+            --version $env:VERSION --build-id $env:BUILD_ID --python $env:PYTHON_EXE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setupToSign = Join-Path $env:RUNNER_TEMP "branchglance-setup-to-sign"
+          New-Item -ItemType Directory -Path $setupToSign | Out-Null
+          Copy-Item (Join-Path $setupOutput "BranchglanceSetup.exe") $setupToSign
+
+      - name: Inventory final setup before signing
+        id: setup-inventory
+        if: steps.token.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD_ID: ${{ needs.build.outputs.build_id }}
+          INVENTORY_DIRECTORY: ${{ runner.temp }}/branchglance-setup-inventory
+        run: |
+          $setupToSign = Join-Path $env:RUNNER_TEMP "branchglance-setup-to-sign"
+          $inventoryDirectory = $env:INVENTORY_DIRECTORY
+          New-Item -ItemType Directory -Path $inventoryDirectory | Out-Null
+          $inventoryPath = Join-Path $inventoryDirectory "signpath-inventory.json"
+          $inventoryOutput = python packaging/signpath_finalize.py create-setup-inventory `
+            --setup-directory $setupToSign --version $env:VERSION --build-id $env:BUILD_ID `
+            --inventory-path $inventoryPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $inventorySha = ($inventoryOutput | ConvertFrom-Json).inventorySha256
+          if ($inventorySha -notmatch '^[0-9a-f]{64}$') { throw "Setup inventory hash is invalid." }
+          "inventory_sha256=$inventorySha" >> $env:GITHUB_OUTPUT
+
+      - name: Upload unsigned final setup
+        id: upload-setup
+        if: steps.token.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: branchglance-unsigned-setup
+          path: ${{ runner.temp }}/branchglance-setup-to-sign/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Submit final setup for signing
+        id: sign-setup
+        if: steps.token.outputs.enabled == 'true'
+        uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_SETUP_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "7200"
+          output-artifact-directory: ${{ runner.temp }}/branchglance-signed-setup
+          parameters: |
+            version: "${{ needs.build.outputs.version }}"
+
+      - name: Validate final signed setup
+        if: steps.token.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          SETUP_INVENTORY_SHA256: ${{ steps.setup-inventory.outputs.inventory_sha256 }}
+          SETUP_INVENTORY_PATH: ${{ runner.temp }}/branchglance-setup-inventory/signpath-inventory.json
+          VERSIONED: ${{ needs.build.outputs.version }}+${{ needs.build.outputs.build_id }}
+        run: |
+          $setupDirectory = Join-Path $env:RUNNER_TEMP "branchglance-signed-setup"
+          python packaging/signpath_finalize.py finalize-setup --setup-directory $setupDirectory `
+            --inventory-sha256 $env:SETUP_INVENTORY_SHA256 --versioned $env:VERSIONED `
+            --inventory-path $env:SETUP_INVENTORY_PATH
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Assemble signed release assets
+        if: steps.token.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD_ID: ${{ needs.build.outputs.build_id }}
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          New-Item -ItemType Directory -Path $assets | Out-Null
+          Copy-Item (Join-Path $env:RUNNER_TEMP "branchglance-signed-setup/BranchglanceSetup.exe") `
+            (Join-Path $assets "BranchglanceSetup.exe")
+          $componentZip = Join-Path $assets "Branchglance-$env:VERSION-windows-components.zip"
+          Compress-Archive -Path (Join-Path $env:RUNNER_TEMP "branchglance-signed-components/*") `
+            -DestinationPath $componentZip
+          (Get-FileHash (Join-Path $assets "BranchglanceSetup.exe") -Algorithm SHA256).Hash.ToLower() + `
+            "  BranchglanceSetup.exe" | Set-Content -Encoding ascii (Join-Path $assets "BranchglanceSetup.exe.sha256")
+          (Get-FileHash $componentZip -Algorithm SHA256).Hash.ToLower() + `
+            "  $([IO.Path]::GetFileName($componentZip))" | Set-Content -Encoding ascii (Join-Path $assets "Branchglance-components.zip.sha256")
+
+      - name: Upload signed release assets
+        id: upload-signed-assets
+        if: steps.token.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: branchglance-signed-release-assets
+          path: ${{ runner.temp }}/branchglance-release-assets/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  draft-release:
+    needs: [build, sign]
+    runs-on: windows-latest
+    if: >-
+      ${{ always() && needs.build.result == 'success' && needs.sign.result == 'success' &&
+          needs.sign.outputs.enabled == 'true' }}
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download signed release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: branchglance-signed-release-assets
+          path: ${{ runner.temp }}/branchglance-release-assets
+          merge-multiple: true
+
+      - name: Assert signed asset download paths
+        shell: pwsh
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          foreach ($name in @("BranchglanceSetup.exe", "BranchglanceSetup.exe.sha256", "Branchglance-components.zip.sha256")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $assets $name) -PathType Leaf)) {
+              throw "Signed release asset is missing: $name"
+            }
+          }
+          if (-not (Get-ChildItem $assets -Filter "Branchglance-*-windows-components.zip" -File)) {
+            throw "Signed component archive is missing."
+          }
+
+      - name: Checkout frozen source commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Create draft GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($head -ne $env:SOURCE_SHA) { throw "Draft-release checkout differs from frozen source SHA." }
+          $directRef = "refs/tags/" + $env:RELEASE_TAG
+          $peeledRef = $directRef + "^{}"
+          $tagRefs = @(git ls-remote origin $directRef $peeledRef)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tagLine = $tagRefs | Where-Object { $_.Substring($_.IndexOf("`t") + 1) -eq $peeledRef } | Select-Object -First 1
+          if (-not $tagLine) {
+            $tagLine = $tagRefs | Where-Object { $_.Substring($_.IndexOf("`t") + 1) -eq $directRef } | Select-Object -First 1
+          }
+          if (-not $tagLine) { throw "Release tag is missing from origin." }
+          $tagSha = $tagLine.Substring(0, $tagLine.IndexOf("`t"))
+          if ($tagSha -ne $env:SOURCE_SHA) { throw "Release tag moved after the build; draft release refused." }
+          $notesPath = Join-Path $env:RUNNER_TEMP "branchglance-release-notes.md"
+          $notes = gh api "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
+            -f "tag_name=$env:RELEASE_TAG" --jq ".body"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $policyUrl = "https://github.com/$env:GITHUB_REPOSITORY/blob/main/docs/CODE_SIGNING_POLICY.md"
+          $notes += "`r`n`r`n## Code signing policy`r`nSee [Branchglance code signing policy]($policyUrl).`r`n"
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          gh release create $env:RELEASE_TAG `
+            (Join-Path $assets "BranchglanceSetup.exe") `
+            (Join-Path $assets "BranchglanceSetup.exe.sha256") `
+            (Get-ChildItem $assets -Filter "Branchglance-*-windows-components.zip" | Select-Object -First 1).FullName `
+            (Join-Path $assets "Branchglance-components.zip.sha256") `
+            --draft --verify-tag --title "Branchglance $env:VERSION" `
+            --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
