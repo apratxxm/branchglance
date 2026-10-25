@@ -2,6 +2,8 @@
 
 ![Branchglance Live Stack](assets/brand/lockup.svg)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Branchglance is a compact Windows widget for keeping Codex and Claude Code chats, subagents, usage limits and waiting work in view.
 
 ## What it does
@@ -78,4 +80,6 @@ Runtime settings, hook events and history remain in the per-user application dat
 - **A hidden chat is missing:** search for `is:hidden`. Hiding is a local display choice, not deletion.
 - **No greeting appeared at countdown zero:** the app waits for a verified reset sample; zero on the timer is not enough. Confirm the correct provider's greeting setting is enabled and that its CLI is signed in.
 
-Branchglance is licensed under MIT. See [LICENSE](LICENSE). Bundled fonts (Inter, Instrument Sans, Geist, Red Hat Mono) keep their SIL Open Font License 1.1 notices in `token_tracker/static/fonts/*/OFL.txt`.
+## License
+
+Branchglance's original source is licensed under the [MIT License](LICENSE). Third-party assets and dependencies retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
