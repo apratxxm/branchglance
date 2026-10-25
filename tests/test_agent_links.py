@@ -47,14 +47,17 @@ def test_process_scan_requires_exact_valid_ancestry_and_unique_session():
     ) == []
 
 
-def test_scan_tracks_watched_fresh_exec_from_plain_terminal_as_unlinked():
+def test_fresh_exec_prompt_uuid_is_not_identity_but_resume_uuid_is():
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     table = {20: (1, "codex.exe"), 1: (0, "WindowsTerminal.exe")}
     kwargs = dict(table=table, current_sid=b"sid", equal_sid=lambda a, b: a == b,
                   process_sid=lambda _pid: b"sid", created=lambda pid: {20: _filetime(5), 1: 1}[pid],
                   watched_threads={thread}, claude_states={})
-    line = f"codex.exe exec --thread-id {thread}"
+    line = f"codex.exe exec {thread}"
     found = agent_links.scan_codex_processes(**kwargs, command_line=lambda _pid: line)
+    assert found == []
+    found = agent_links.scan_codex_processes(
+        **kwargs, command_line=lambda _pid: f"codex.exe exec resume {thread}")
     assert found == [{"thread_id": thread, "codex_pid": 20, "codex_created": _filetime(5),
                       "claude_session_id": None, "method": "unlinked"}]
     assert agent_links.scan_codex_processes(
@@ -388,7 +391,7 @@ def test_full_discovery_runs_at_ten_seconds_even_if_known_pid_verifies(monkeypat
     assert calls == ["scan"]
 
 
-def test_gone_or_unverifiable_known_process_triggers_early_discovery(monkeypatch):
+def test_unverifiable_known_process_blocks_without_bypassing_scan_cadence(monkeypatch):
     _sid, _thread, providers, run = _link_fixture()
     run["verified_at"] = 100
     monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 109)
@@ -401,7 +404,8 @@ def test_gone_or_unverifiable_known_process_triggers_early_discovery(monkeypatch
         process_table_reader=lambda: {}, hooks=lambda: {},
         receipts_reader=lambda _root: [],
     )
-    assert calls == ["scan"]
+    assert calls == []
+    assert "parentId" not in providers[1]["chats"][0]
 
 
 def test_new_exec_triggers_scan_and_links_only_exact_session():
@@ -558,6 +562,31 @@ def test_negative_discovery_result_respects_ten_second_scan_cadence(monkeypatch)
     poll(110)
     poll(111)
     assert calls == [110]
+
+
+def test_dead_historical_run_is_retired_without_repeated_full_scans(monkeypatch):
+    _sid, _thread, providers, dead = _link_fixture()
+    dead["verified_at"] = 90
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 100)
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: True)
+    saved = []
+    current_registry = [dict(dead)]
+    common = dict(
+        registry_path=Path("unused"), permission_check=_allow_collection,
+        registry_reader=lambda _path: [dict(run) for run in current_registry], process_table_reader=lambda: (
+            (_ for _ in ()).throw(AssertionError("negative scan cadence"))),
+        hooks=lambda: (_ for _ in ()).throw(AssertionError("no hook reads")),
+        receipts_reader=lambda _path: (_ for _ in ()).throw(AssertionError("no receipts")),
+        scan=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("negative scan cadence")),
+        registry_writer=lambda runs, _path, now=None: (
+            saved.extend(dict(run) for run in runs),
+            current_registry.__setitem__(slice(None), [dict(run) for run in runs]),
+            True)[-1],
+    )
+    agent_links.apply_exact_links(providers, now=105, verify=lambda *_args: False, **common)
+    assert saved[0]["retired_at"] == 105
+    agent_links.apply_exact_links(providers, now=106, verify=lambda *_args: (
+        _ for _ in ()).throw(AssertionError("retired identity is no longer verified")), **common)
 
 
 def test_full_discovery_finds_new_execution_despite_verified_old_pid(monkeypatch):
