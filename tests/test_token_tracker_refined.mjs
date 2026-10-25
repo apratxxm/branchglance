@@ -109,7 +109,7 @@ assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-bar"/);
 assert.match(css, /runway-refined-row \.runway-refined-path>\*\{grid-column:1;min-width:0;max-width:100%/);
 assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:transparent;\}/);
-assert.match(css, /\.chat>\.row\.runway-root-stuck\{background:#05070b;\}/);
+assert.doesNotMatch(css, /\.chat>\.row\.runway-root-stuck\{background:#05070b;\}/, "stuck rows do not paint an opaque surface");
 assert.match(css, /\.chat:has\(>\.runway-tree-connectors\)>\.row\.runway-root-stuck/);
 assert.doesNotMatch(css, /#chat-list>\.chat:only-child/);
 
