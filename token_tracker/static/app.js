@@ -33,7 +33,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
   hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
-  source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, policyWarnings:[] };
+  source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, notchOpeningTimer:null, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
 const codexQuotaBootstrap={name:'Codex'};
@@ -322,7 +322,9 @@ function setNotch(expanded, treeSynced=false) {
       applyInspectLayoutWidth(monitorState.current);
     }else if(notch.mode==='inspect')cancelInspectLayoutReconcile();
     blurPointerToolbarFocus(mode);
+    const wasExpanded=notch.expanded;
     notch.mode=mode;notch.expanded=mode==='inspect';
+    if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
     const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
     if(dashboardView){dashboardView.hidden=!dashboardVisible;dashboardView.inert=!dashboardVisible;dashboardView.setAttribute?.('aria-hidden',String(!dashboardVisible));}
     const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
@@ -341,6 +343,7 @@ function setNotch(expanded, treeSynced=false) {
     if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
     return;
   }
+  const wasExpanded=notch.expanded;
   const restoreLockedOpen=Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded&&!state.runwaySnapshotPainted);
   if(widgetLock.known&&widgetLock.locked)expanded=widgetLock.expanded;
   const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)));
@@ -349,6 +352,7 @@ function setNotch(expanded, treeSynced=false) {
   const closingQuestion=!expanded&&state.popover?.dataset?.action==='runway-question';
   if(closingQuestion)closePopover({restoreFocus:false,updateNotch:false});
   notch.expanded=Boolean(expanded&&canOpen&&(widgetLock.known&&widgetLock.locked?widgetLock.expanded:(notch.active||notch.manual||notch.inspecting||notch.autoExpanded||state.popover)));
+  if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
   const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
   if(hidden&&(closingQuestion||sections.some(section=>section.contains?.(document.activeElement))))$('#sync-age')?.focus?.({preventScroll:true});
   for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
@@ -1316,6 +1320,24 @@ function renderStrip(items) {
   node.classList?.toggle("open",state.stripOpen&&over>0);
 }
 const reducedMotion = () => Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+function clearNotchOpening() {
+  clearTimeout(state.notchOpeningTimer);state.notchOpeningTimer=null;
+  document.body?.classList?.remove?.('notch-opening');
+}
+function beginNotchOpening() {
+  clearNotchOpening();
+  if(reducedMotion())return;
+  const body=document.body;if(typeof body?.classList?.add!=='function')return;
+  for(const row of document.querySelectorAll?.('.runway-row-enter')||[])clearRunwayArrival(row);
+  body.classList.add('notch-opening');
+  let milliseconds=COMPACT?383:331;
+  try{
+    const raw=window.getComputedStyle?.(body)?.getPropertyValue?.('--notch-open-suppression')?.trim();
+    const match=raw?.match(/^(\d+(?:\.\d+)?)(ms|s)$/);
+    if(match)milliseconds=Number(match[1])*(match[2]==='s'?1000:1);
+  }catch{}
+  state.notchOpeningTimer=setTimeout(()=>{state.notchOpeningTimer=null;body.classList.remove?.('notch-opening');},milliseconds);
+}
 function stripEnter(el) {
   if(reducedMotion())return;
   el.classList.add("pre");void el.offsetHeight;el.classList.remove("pre");el.classList.add("arrive");
@@ -1464,7 +1486,7 @@ function clearRunwayArrival(el) {
   el._runwayArrivalEnd=null;el.classList?.remove('runway-row-enter');
 }
 function runwayArrivalEnter(el) {
-  if(!el||reducedMotion()||state.sourceSwitching||COMPACT&&Date.now()<state.startupCalmUntil)return;
+  if(!el||reducedMotion()||state.sourceSwitching||document.body?.classList?.contains?.('notch-opening')||COMPACT&&Date.now()<state.startupCalmUntil)return;
   clearRunwayArrival(el);el.classList.add('runway-row-enter');
   const finish=event=>{if(event&& (event.target!==el||event.animationName!=='runway-row-arrival'))return;clearRunwayArrival(el);};
   el._runwayArrivalEnd=finish;el.addEventListener?.('animationend',finish);
