@@ -17,6 +17,9 @@ def test_resume_thread_parser_accepts_only_uuid_after_exec_resume():
     assert agent_links.parse_exec_resume_thread(f'"codex.exe" exec resume {thread} --cwd C:/private') == thread
     assert agent_links.parse_exec_resume_thread(f"codex.exe exec resume {thread}x") is None
     assert agent_links.parse_exec_resume_thread(f"codex.exe resume {thread}") is None
+    assert agent_links.parse_exec_invocation("codex.exe exec --json prompt") == ("exec", None, ())
+    assert agent_links.parse_exec_invocation("codex.exe app-server --exec") is None
+    assert agent_links.parse_exec_invocation("codex.exe exec resume") is None
 
 
 def test_process_scan_requires_exact_valid_ancestry_and_unique_session():
@@ -41,6 +44,21 @@ def test_process_scan_requires_exact_valid_ancestry_and_unique_session():
     # PID 10 was reused: current creation time cannot match the recorded parent.
     assert agent_links.scan_codex_processes(
         **{**kwargs, "created": lambda pid: {20: _filetime(5), 10: 101, 1: 1}.get(pid)}
+    ) == []
+
+
+def test_scan_tracks_watched_fresh_exec_from_plain_terminal_as_unlinked():
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    table = {20: (1, "codex.exe"), 1: (0, "WindowsTerminal.exe")}
+    kwargs = dict(table=table, current_sid=b"sid", equal_sid=lambda a, b: a == b,
+                  process_sid=lambda _pid: b"sid", created=lambda pid: {20: _filetime(5), 1: 1}[pid],
+                  watched_threads={thread}, claude_states={})
+    line = f"codex.exe exec --thread-id {thread}"
+    found = agent_links.scan_codex_processes(**kwargs, command_line=lambda _pid: line)
+    assert found == [{"thread_id": thread, "codex_pid": 20, "codex_created": _filetime(5),
+                      "claude_session_id": None, "method": "unlinked"}]
+    assert agent_links.scan_codex_processes(
+        **kwargs, command_line=lambda _pid: "codex.exe app-server"
     ) == []
 
 
@@ -106,6 +124,20 @@ def test_association_intervals_select_only_the_session_containing_exec_start():
         created=lambda pid: {20: start, 10: 100, 1: 1}[pid],
         command_line=lambda _pid: f"codex.exe exec resume {thread}", claude_states=states)
     assert [row["claude_session_id"] for row in result] == ["current-session"]
+
+
+def test_latest_hook_association_remains_open_after_last_hook_event():
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    states = {("claude-session", ""): {"pid_associations": {
+        "10:100": {"pid": 10, "created": 100, "first": 10, "last": 20},
+    }}}
+    result = agent_links.scan_codex_processes(
+        table={20: (10, "codex.exe"), 10: (1, "claude.exe"), 1: (0, "explorer.exe")},
+        current_sid=b"sid", equal_sid=lambda a, b: a == b,
+        process_sid=lambda _pid: b"sid",
+        created=lambda pid: {20: _filetime(300), 10: 100, 1: 1}[pid],
+        command_line=lambda _pid: f"codex.exe exec resume {thread}", claude_states=states)
+    assert [row["claude_session_id"] for row in result] == ["claude-session"]
 
 
 def test_process_scan_accepts_twelve_hop_ancestry():
@@ -195,6 +227,10 @@ def test_receipt_pid_must_be_current_user_codex_and_thread_consistent():
         42, thread, **{**kwargs, "table_reader": lambda: {42: (1, "python.exe")}})
     assert not agent_links.validate_codex_pid(
         42, thread, **{**kwargs, "process_sid": lambda _pid: b"other"})
+    fresh = {**kwargs, "command_line": lambda _pid: "codex.exe exec --json prompt"}
+    assert agent_links.validate_codex_pid(42, thread, **fresh)
+    assert agent_links.validate_codex_pid(
+        42, thread, **{**kwargs, "command_line": lambda _pid: "codex.exe app-server"}) is None
 
 
 def test_receipt_merge_rejects_thread_different_from_codex_execution(monkeypatch):
@@ -406,6 +442,14 @@ def test_previous_claude_parent_survives_live_index_and_is_revalidated(monkeypat
     assert codex_row["parentId"] == sid and codex_row["parentProvider"] == "Claude"
 
 
+def test_native_parent_replaces_cached_claude_parent_as_one_pair():
+    from token_tracker import providers
+
+    indexed = {"parentId": "claude-session", "parentProvider": "Claude"}
+    assert providers._codex_parent_pair("native-thread", indexed) == ("native-thread", "Codex")
+    assert providers._codex_parent_pair(None, indexed) == ("claude-session", "Claude")
+
+
 def test_native_codex_parent_is_not_rechecked_as_cross_provider_link():
     sid, _thread, grouped, _run = _link_fixture()
     row = grouped[1]["chats"][0]
@@ -448,6 +492,72 @@ def test_conflicting_concurrent_runs_remain_unlinked():
     )
     assert "parentId" not in providers[1]["chats"][0]
     assert sid != providers[1]["chats"][0].get("parentId")
+
+
+def test_all_live_registry_candidates_are_reverified_and_ambiguity_persists(monkeypatch):
+    _sid, _thread, providers, first = _link_fixture()
+    first["verified_at"] = 90
+    second = {**first, "claude_session_id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+              "codex_pid": 23, "codex_created": 124}
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 104)
+    calls = []
+    agent_links.apply_exact_links(
+        providers, now=105, registry_path=Path("unused"), permission_check=_allow_collection,
+        registry_reader=lambda _path: [first, second],
+        verify=lambda pid, _created: calls.append(pid) or (True if pid == 22 else None),
+        scan=lambda **_kwargs: [], process_table_reader=lambda: {}, hooks=lambda: {},
+        receipts_reader=lambda _path: [],
+    )
+    assert calls == [22, 23]
+    assert "parentId" not in providers[1]["chats"][0]
+
+
+def test_unlinked_terminal_exec_blocks_cached_parent_between_scans(monkeypatch):
+    _sid, thread, providers, run = _link_fixture()
+    unlinked = {"thread_id": thread, "codex_pid": 44, "codex_created": 444,
+                "claude_session_id": None, "method": "unlinked"}
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    agent_links.apply_exact_links(
+        providers, now=1000, registry_path=Path("unused"), permission_check=_allow_collection,
+        registry_reader=lambda _path: [], hooks=lambda: {},
+        process_table_reader=lambda: {},
+        scan=lambda **_kwargs: [unlinked], receipts_reader=lambda _path: [],
+    )
+    assert "parentId" not in providers[1]["chats"][0]
+    providers[1]["chats"][0].update(parentId="cached-claude", parentProvider="Claude")
+    agent_links.apply_exact_links(
+        providers, now=1001, registry_path=Path("unused"), permission_check=_allow_collection,
+        registry_reader=lambda _path: [run],
+        verify=lambda _pid, _created: True,
+        scan=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("negative result remains cached")),
+    )
+    assert "parentId" not in providers[1]["chats"][0]
+    agent_links.apply_exact_links(
+        providers, now=1002, registry_path=Path("unused"), permission_check=_allow_collection,
+        registry_reader=lambda _path: [run],
+        verify=lambda pid, _created: False if pid == 44 else True,
+        scan=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("retirement is revalidated")),
+    )
+    assert providers[1]["chats"][0]["parentId"] == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def test_negative_discovery_result_respects_ten_second_scan_cadence(monkeypatch):
+    _sid, _thread, providers, _run = _link_fixture()
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 100)
+    calls = []
+    def poll(now):
+        agent_links.apply_exact_links(
+            _link_fixture()[2], now=now, registry_path=Path("unused"),
+            permission_check=_allow_collection, registry_reader=lambda _path: [],
+            process_table_reader=lambda: {}, hooks=lambda: {},
+            scan=lambda **_kwargs: calls.append(now) or [], receipts_reader=lambda _path: [],
+        )
+    poll(109)
+    poll(110)
+    poll(111)
+    assert calls == [110]
 
 
 def test_full_discovery_finds_new_execution_despite_verified_old_pid(monkeypatch):
