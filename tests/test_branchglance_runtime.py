@@ -1083,10 +1083,15 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
     assert '--claude-accent:#e8813f' in refined
     assert '.chat[data-provider="Claude"]>.row::after{background:none;}' in refined
-    assert 'var(--claude-accent) 20%' in refined
-    assert 'var(--source-glow-primary) 17%' in refined
-    assert refined.count('linear-gradient(180deg,var(--tree-row-neutral) 0%') == 2
-    assert refined.count('var(--tree-row-neutral) 100%') == 2
+    assert 'background-color:var(--tree-claude-surface)' in refined
+    assert 'background-color:var(--tree-codex-surface)' in refined
+    assert 'ellipse 78px 25px at 66px 50%,color-mix(in srgb,var(--claude-accent) 12%' in refined
+    assert 'ellipse 78px 25px at 66px 50%,color-mix(in srgb,var(--source-glow-primary) 13%' in refined
+    assert 'linear-gradient(to bottom,var(--tree-claude-surface) 0px,transparent 8px)' in refined
+    assert 'linear-gradient(to bottom,var(--tree-codex-surface) 0px,transparent 8px)' in refined
+    assert 'linear-gradient(180deg,var(--tree-row-neutral)' not in refined
+    assert '.ag[data-provider="Claude"]+.ag[data-provider="Codex"]' in refined
+    assert '.ag[data-provider="Codex"]+.ag[data-provider="Claude"]' in refined
 
 
 @pytest.mark.parametrize("during", ["http", "limit_reset", "window"])

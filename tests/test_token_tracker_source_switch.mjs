@@ -18,8 +18,11 @@ assert.match(css,/--source-glow-primary:#ffb14a/);assert.match(css,/--source-glo
 assert.match(refined,/--blue:var\(--source-accent\)/,"the source accent replaces fixed blue in refined mode");
 assert.match(refined,/--source-edge:#39364d;--source-edge-strong:#514176;--source-edge-end:#34405c/,"the frame retains the fixed Codex-purple edges");
 assert.match(refined,/\.ag\[data-provider="Claude"\]>.runway-agent-glance>.runway-refined-row/);
-assert.match(refined,/linear-gradient\(180deg,var\(--tree-row-neutral\) 0%[^}]*var\(--tree-claude-surface\)[^}]*var\(--tree-row-neutral\) 100%/);
-assert.match(refined,/linear-gradient\(180deg,var\(--tree-row-neutral\) 0%[^}]*var\(--tree-codex-surface\)[^}]*var\(--tree-row-neutral\) 100%/);
+assert.match(refined,/--claude-accent:#e8813f/);assert.match(refined,/var\(--claude-accent\) 12%/);
+assert.match(refined,/background-color:var\(--tree-claude-surface\)/);assert.match(refined,/background-color:var\(--tree-codex-surface\)/);
+assert.match(refined,/linear-gradient\(to bottom,var\(--tree-claude-surface\) 0px,transparent 8px/);
+assert.match(refined,/linear-gradient\(to bottom,var\(--tree-codex-surface\) 0px,transparent 8px/);
+assert.doesNotMatch(refined,/linear-gradient\(180deg,var\(--tree-row-neutral\)/,"provider rows retain flat centers instead of full-height neutral fades");
 assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);assert.match(mainCss,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
