@@ -153,7 +153,8 @@ def test_compact_profile_sizes_modes_and_validates_before_mutating(native_notch,
     assert widget.WidgetApp.__init__.__kwdefaults__["compact_profile"] is True
     assert app.compact_profile is True
     assert app._compact_notch_mode == "controls", "new compact profiles start with persistent toolbar controls"
-    assert widget.COMPACT_NOTCH_TRANSITION_SECONDS == 0.22
+    assert widget.COMPACT_NOTCH_TRANSITION_SECONDS == 0.286
+    assert widget.COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS == 0.22
     assert app.initial_bounds() == (420, 110, 750, 0)
     assert rect == [750, 0, 420, 110]
     assert rect[0] + rect[2] / 2 == 960
@@ -181,6 +182,8 @@ def test_compact_profile_sizes_modes_and_validates_before_mutating(native_notch,
     monkeypatch.setattr(widget, "_notch_animation_enabled", lambda: True)
     app._notch_thread = SimpleNamespace(join=lambda timeout=None: None)
     app.set_notch(False, None, False, "controls")
+    assert app._notch_transition[3] == widget.COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS
+    app.set_notch(True, 180, False, "inspect")
     assert app._notch_transition[3] == widget.COMPACT_NOTCH_TRANSITION_SECONDS
 
 
@@ -690,20 +693,20 @@ def test_animation_reversal_starts_at_current_native_rectangle(native_notch, mon
     app.set_notch(True, 900)
     assert app._notch_transition[0] == (680, 148, 620, 0)
     assert app._notch_transition[1] == (680, 900, 620, 0)
-    assert app._notch_transition[3] == 0.14
+    assert app._notch_transition[3] == 0.182
 
     rect[:] = [760, 0, 400, 540]
     app.set_notch(False)
     assert app._notch_transition[0] == (400, 540, 760, 0)
     assert app._notch_transition[1] == (680, 148, 620, 0)
-    assert app._notch_transition[3] == 0.11
+    assert app._notch_transition[3] == 0.125
 
     app.set_notch(True, 900)
-    assert app._notch_transition[3] == 0.14
+    assert app._notch_transition[3] == 0.182
     app.set_notch(True, 850)
     assert app._notch_transition[0] == (400, 540, 760, 0)
     assert app._notch_transition[1] == (680, 850, 620, 0)
-    assert app._notch_transition[3] == 0.11
+    assert app._notch_transition[3] == 0.125
 
 
 def test_notch_smootherstep_stays_monotonic_bounded_and_horizontally_fixed():
@@ -717,6 +720,13 @@ def test_notch_smootherstep_stays_monotonic_bounded_and_horizontally_fixed():
     assert all(frame[0] == 400 and frame[2:] == (760, 0) for frame in frames)
     assert [frame[1] for frame in frames] == sorted(frame[1] for frame in frames)
     assert all(96 <= frame[1] <= 900 for frame in frames)
+    previous = lambda progress: progress ** 3 * (progress * (progress * 6 - 15) + 10)
+    assert widget._notch_smootherstep(0.1) == pytest.approx(0.002728)
+    assert widget._notch_smootherstep(0.2) == pytest.approx(0.033344)
+    assert widget._notch_smootherstep(0.1) < previous(0.1)
+    assert widget._notch_smootherstep(0.2) < previous(0.2)
+    assert widget._notch_smootherstep(0) == 0
+    assert widget._notch_smootherstep(1) == 1
 
     reverse = [widget._notch_transition_frame(target, start, step / 100)
                for step in range(101)]
@@ -742,6 +752,7 @@ def test_expanded_notch_honors_measured_heights_down_to_collapsed_height(native_
 
 def test_notch_deadline_pacer_accounts_for_placement_time_and_skips_late_slots():
     interval = widget.NOTCH_FRAME_INTERVAL
+    assert interval <= 1 / 60
     due = 10.0 + interval
 
     # Placement finishes before the next absolute slot, so only the remaining
