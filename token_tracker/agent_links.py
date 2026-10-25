@@ -33,6 +33,8 @@ _CURRENT_SID: bytes | None = None
 _LINK_LOCK = threading.RLock()
 _SCAN_LOCK = threading.Lock()
 _LAST_FULL_SCAN_AT = float("-inf")
+_UNLINKED_LOCK = threading.Lock()
+_UNLINKED_EXECUTIONS: dict[tuple[str, int, int], dict[str, Any]] = {}
 
 
 def _serialized_link_poll(function):
@@ -273,18 +275,30 @@ def _command_line(pid: int) -> str | None:
 
 
 def parse_exec_resume_thread(command_line: str | None) -> str | None:
-    """Extract only the UUID directly following ``exec resume``."""
+    """Extract the UUID directly following exec resume."""
+    invocation = parse_exec_invocation(command_line)
+    return invocation[1] if invocation and invocation[0] == "resume" else None
+
+
+def parse_exec_invocation(command_line: str | None) -> tuple[str, str | None, tuple[str, ...]] | None:
+    """Parse supported codex exec and codex exec resume UUID argv."""
     if not isinstance(command_line, str) or len(command_line) > 32760:
         return None
     try:
         args = shlex.split(command_line, posix=False)
     except ValueError:
         return None
-    for index in range(len(args) - 2):
-        if args[index].strip('"').lower() == "exec" and args[index + 1].strip('"').lower() == "resume":
-            candidate = args[index + 2].strip('"')
-            return candidate.lower() if THREAD_ID.fullmatch(candidate) else None
-    return None
+    if len(args) < 2 or args[1].strip('"').lower() != "exec":
+        return None
+    next_token = args[2].strip('"').lower() if len(args) > 2 else ""
+    if next_token == "resume":
+        if len(args) < 4:
+            return None
+        candidate = args[3].strip('"').lower()
+        return ("resume", candidate, (candidate,)) if THREAD_ID.fullmatch(candidate) else None
+    names = tuple(dict.fromkeys(value.strip('"').lower() for value in args[2:]
+                                if THREAD_ID.fullmatch(value.strip('"'))))
+    return ("exec", None, names)
 
 
 def _filetime_epoch(created: int) -> float | None:
@@ -296,7 +310,7 @@ def _filetime_epoch(created: int) -> float | None:
 
 
 def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], list[tuple[str, float, float]]]:
-    found: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
+    grouped: dict[tuple[int, int], dict[str, tuple[float, float]]] = {}
     for identity, entry in (claude_states or {}).items():
         if not isinstance(identity, tuple) or len(identity) != 2 or identity[1]:
             continue
@@ -309,7 +323,22 @@ def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], lis
                     continue
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            found.setdefault(key, []).append((str(sid), first, last))
+            current = grouped.setdefault(key, {}).get(str(sid))
+            grouped[key][str(sid)] = (
+                min(current[0], first), max(current[1], last)) if current else (first, last)
+    found: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
+    for identity, sessions in grouped.items():
+        ordered = sorted(((sid, bounds[0], bounds[1]) for sid, bounds in sessions.items()),
+                         key=lambda item: (item[1], item[0]))
+        entries = []
+        for index, (sid, first, _observed_last) in enumerate(ordered):
+            # A process identity remains associated with its latest session
+            # while alive; a later session on the same process closes the
+            # earlier interval at that new session's first hook event.
+            next_first = next((entry[1] for entry in ordered[index + 1:]
+                               if entry[1] > first), math.inf)
+            entries.append((sid, first, next_first if math.isfinite(next_first) else math.inf))
+        found[identity] = entries
     return found
 
 
@@ -319,6 +348,7 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
                          process_sid: Callable[[int], bytes | None] = _process_sid,
                          created: Callable[[int], int | None] = _process_created,
                          command_line: Callable[[int], str | None] = _command_line,
+                         watched_threads: set[str] | None = None,
                          claude_states: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Discover executions by same-user process ancestry; any uncertain edge drops the row."""
     try:
@@ -353,12 +383,23 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
             created_cache[child] = child_created
             if not equal_sid(owner(child), current_sid):
                 continue
-            thread_id = parse_exec_resume_thread(command_line(child))
+            invocation = parse_exec_invocation(command_line(child))
+            if invocation is None:
+                continue
+            kind, resume_id, argv_thread_ids = invocation
+            if kind == "resume":
+                thread_id = resume_id
+            else:
+                matches = set(argv_thread_ids) & {item.lower() for item in watched_threads or ()}
+                thread_id = next(iter(matches)) if len(matches) == 1 else None
             if created(child) != child_created:
                 continue
         except Exception:
             continue
         if not thread_id or child_created is None:
+            continue
+        watched = {item.lower() for item in watched_threads or ()}
+        if watched and thread_id not in watched:
             continue
         current, visited, chain = child, set(), []
         claude_identity = None
@@ -385,15 +426,12 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
                 valid = False
                 break
             current = parent
-        if not valid or claude_identity is None:
-            continue
-        created_epoch = _filetime_epoch(child_created)
-        if created_epoch is None:
-            continue
-        session_ids = {sid for sid, first, last in associations.get(claude_identity, ())
-                       if first <= created_epoch <= last}
-        if len(session_ids) != 1:
-            continue
+        session_ids: set[str] = set()
+        if valid and claude_identity is not None:
+            created_epoch = _filetime_epoch(child_created)
+            if created_epoch is not None:
+                session_ids = {sid for sid, first, last in associations.get(claude_identity, ())
+                               if first <= created_epoch < last}
         # Recheck the child across owner and command-line observations, then
         # revalidate every ancestor identity immediately before publication.
         try:
@@ -403,9 +441,13 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
                 continue
         except Exception:
             continue
+        linked = len(session_ids) == 1
+        if not linked and thread_id not in watched:
+            continue
         output.append({"thread_id": thread_id, "codex_pid": child,
-                       "codex_created": child_created, "claude_session_id": next(iter(session_ids)),
-                       "method": "cmdline"})
+                       "codex_created": child_created,
+                       "claude_session_id": next(iter(session_ids)) if linked else None,
+                       "method": "cmdline" if linked else "unlinked"})
     return output
 
 
@@ -440,8 +482,10 @@ def validate_codex_pid(pid: int, thread_id: str, *,
         sid = current_sid()
         if before is None or not equal_sid(process_sid(pid), sid):
             return None
-        parsed = parse_exec_resume_thread(command_line(pid))
-        if parsed is not None and parsed != thread_id.lower():
+        invocation = parse_exec_invocation(command_line(pid))
+        if invocation is None:
+            return None
+        if invocation[0] == "resume" and invocation[1] != thread_id.lower():
             return None
         return before if created(pid) == before else None
     except Exception:
@@ -462,8 +506,10 @@ def validate_receipt_process(receipt: dict[str, Any], *, table: dict[int, tuple[
             return False
         if created(pid) != expected or not equal_sid(process_sid(pid), current_sid):
             return False
-        parsed = parse_exec_resume_thread(command_line(pid))
-        if parsed is not None and parsed != thread:
+        invocation = parse_exec_invocation(command_line(pid))
+        if invocation is None:
+            return False
+        if invocation[0] == "resume" and invocation[1] != thread:
             return False
         return created(pid) == expected
     except Exception:
@@ -689,28 +735,47 @@ def apply_exact_links(
     need_full_scan = bool(live_rows) and discovery_due
     live_by_thread: dict[str, dict[str, Any]] = {}
     live_runs_by_thread: dict[str, list[dict[str, Any]]] = {}
+    watched_threads = {str(row.get("id") or "").lower() for row in live_rows
+                       if row.get("id")}
+    unlinked_live_threads: set[str] = set()
+    with _UNLINKED_LOCK:
+        remembered_unlinked = [
+            (identity, dict(run)) for identity, run in _UNLINKED_EXECUTIONS.items()
+            if identity[0] in watched_threads]
+    for identity, run in remembered_unlinked:
+        verdict = verify(identity[1], identity[2])
+        if verdict is False:
+            with _UNLINKED_LOCK:
+                _UNLINKED_EXECUTIONS.pop(identity, None)
+        else:
+            unlinked_live_threads.add(identity[0])
     for row in live_rows:
         thread = str(row.get("id") or "").lower()
         candidates = [run for run in runs if str(run.get("thread_id") or "").lower() == thread]
         candidates.sort(key=lambda run: float(run.get("last_seen") or 0), reverse=True)
-        known = candidates[0] if candidates else None
-        if known is None:
-            need_full_scan = True
-            continue
-        verified_at = float(known.get("verified_at") or 0)
-        if now - verified_at < 10:
-            live_by_thread[thread] = known
-            live_runs_by_thread.setdefault(thread, []).append(known)
-            continue
-        verdict = verify(int(known["codex_pid"]), int(known["codex_created"]))
-        if verdict is True:
-            known["verified_at"] = now
-            known["last_seen"] = now
-            live_by_thread[thread] = known
-            live_runs_by_thread.setdefault(thread, []).append(known)
-            registry_changed = True
-        else:
-            need_full_scan = True
+        for known in candidates:
+            try:
+                pid, created_at = int(known["codex_pid"]), int(known["codex_created"])
+                verified_at = float(known.get("verified_at") or 0)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                need_full_scan = True
+                continue
+            fresh = now - verified_at < 10
+            verdict = True if fresh else verify(pid, created_at)
+            if verdict is True:
+                if not fresh:
+                    known["verified_at"] = now
+                    known["last_seen"] = now
+                    registry_changed = True
+                live_by_thread[thread] = known
+                live_runs_by_thread.setdefault(thread, []).append(known)
+            elif verdict is None:
+                # Unverifiable identities remain possible live executions so
+                # they continue to block an ambiguous parent.
+                live_runs_by_thread.setdefault(thread, []).append(known)
+                need_full_scan = True
+            else:
+                need_full_scan = True
 
     discovered: list[dict[str, Any]] = []
     receipt_rows: list[dict[str, Any]] = []
@@ -729,7 +794,8 @@ def apply_exact_links(
             except Exception:
                 claude_states = {}
         try:
-            discovered = scan(claude_states=claude_states, table=scan_table)
+            discovered = scan(claude_states=claude_states, table=scan_table,
+                              watched_threads=watched_threads)
         except Exception:
             discovered = []
         with _SCAN_LOCK:
@@ -750,7 +816,26 @@ def apply_exact_links(
                        "thread_id", "codex_pid", "codex_created", "claude_session_id"))}
     discovered_threads = {(str(run.get("thread_id") or "").lower(),
                            int(run.get("codex_pid", -1)), int(run.get("codex_created", -1)))
-                          for run in discovered}
+                          for run in discovered if run.get("claude_session_id")}
+    for run in discovered:
+        if run.get("method") != "unlinked" or run.get("claude_session_id") is not None:
+            continue
+        try:
+            identity = (str(run["thread_id"]).lower(), int(run["codex_pid"]), int(run["codex_created"]))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        with _UNLINKED_LOCK:
+            _UNLINKED_EXECUTIONS[identity] = {**run, "verified_at": now}
+        unlinked_live_threads.add(identity[0])
+    for run in discovered:
+        if run.get("claude_session_id") is not None:
+            try:
+                identity = (str(run["thread_id"]).lower(), int(run["codex_pid"]),
+                            int(run["codex_created"]))
+                with _UNLINKED_LOCK:
+                    _UNLINKED_EXECUTIONS.pop(identity, None)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
     receipt_processes: dict[tuple[int, int], set[str]] = {}
     for run in discovered:
         receipt_processes.setdefault((int(run.get("codex_pid", -1)),
@@ -763,6 +848,13 @@ def apply_exact_links(
                 competing = receipt_processes.get((identity[1], identity[2]), set())
                 if identity not in discovered_threads and any(thread != identity[0] for thread in competing):
                     continue
+                if verify(identity[1], identity[2]) is not True:
+                    continue
+                with _UNLINKED_LOCK:
+                    _UNLINKED_EXECUTIONS.pop(identity, None)
+                    still_unlinked = any(key[0] == identity[0] for key in _UNLINKED_EXECUTIONS)
+                if not still_unlinked:
+                    unlinked_live_threads.discard(identity[0])
             sid = str(run["claude_session_id"])
             key = (str(run["thread_id"]).lower(), int(run["codex_pid"]),
                    int(run["codex_created"]), sid)
@@ -776,7 +868,7 @@ def apply_exact_links(
             if run.get("method") == "cmdline":
                 live_by_thread[key[0]] = record
                 live_runs_by_thread.setdefault(key[0], []).append(record)
-            elif verify(int(run["codex_pid"]), int(run["codex_created"])) is True:
+            elif run.get("method") == "receipt":
                 record["verified_at"] = now
                 live_by_thread[key[0]] = record
                 live_runs_by_thread.setdefault(key[0], []).append(record)
@@ -810,6 +902,8 @@ def apply_exact_links(
             continue
         status = str(row.get("executionStatus") or row.get("status") or "").lower()
         if status == "running":
+            if thread in unlinked_live_threads:
+                continue
             live_runs = live_runs_by_thread.get(thread, [])
             live_sessions = {str(run.get("claude_session_id")) for run in live_runs}
             if len(live_sessions) != 1:

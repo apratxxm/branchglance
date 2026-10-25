@@ -4375,12 +4375,19 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                         if field in {"executionStatus", "executionSource", "executionObservedAt", "executionSince",
                                      "executionCompactionStartedAt", "executionTerminalAt", "executionActivity"}:
                             continue
+                        if field in {"parentId", "parentProvider"}:
+                            continue
                         current = entry.get(field)
                         empty_request = field == "lastRequest" and isinstance(current, dict) and not any(
                             value is not None for value in current.values()
                         )
                         if field not in entry or current is None or empty_request:
                             entry[field] = value
+                    if entry.get("parentId") is None and entry.get("parentProvider") is None:
+                        old_parent = prior.get("parentId")
+                        if old_parent:
+                            entry["parentId"] = old_parent
+                            entry["parentProvider"] = prior.get("parentProvider")
                 if provider_stale:
                     entry["lastValidAt"] = (prior.get("lastValidAt") or chat.get("lastValidAt")
                                              or chat.get("statusObservedAt") or prior.get("indexedAt"))
@@ -4685,11 +4692,12 @@ def live_state() -> dict[str, Any]:
             if previous_status:
                 row["previousStatus"] = previous_status
         if provider == "Codex":
+            parent_id, parent_provider = _codex_parent_pair(insights.get("parentId"), indexed)
             row.update({
                 "id": indexed.get("id") or (key.split(":", 1)[1] if ":" in key else None),
                 "title": indexed.get("identityTitle") or insights.get("title") or indexed.get("title"),
-                "parentId": insights.get("parentId") or indexed.get("parentId") or indexed.get("identityParentId"),
-                "parentProvider": indexed.get("parentProvider") or indexed.get("identityParentProvider"),
+                "parentId": parent_id,
+                "parentProvider": parent_provider,
                 "agentName": insights.get("agentName") or indexed.get("agentName") or indexed.get("identityAgentName"),
                 "agentRole": indexed.get("agentRole"),
                 "workspace": insights.get("workspace") or indexed.get("workspace") or indexed.get("identityWorkspace"),
@@ -4921,6 +4929,17 @@ def _claude_code_provider() -> Any:
 def _claude_live_row(row: dict[str, Any], indexed: dict[str, Any]) -> dict[str, Any]:
     from .claude_provider import live_row
     return live_row(row, indexed)
+
+
+def _codex_parent_pair(native_parent_id: Any, indexed: dict[str, Any]) -> tuple[Any, str | None]:
+    """Choose native Codex lineage before one inherited cross-provider pair."""
+    native = native_parent_id or indexed.get("identityParentId")
+    if native:
+        return native, "Codex"
+    cached_parent = indexed.get("parentId")
+    if cached_parent:
+        return cached_parent, indexed.get("parentProvider")
+    return None, None
 # --- end Claude Code hook rows -----------------------------------------------
 
 
