@@ -698,3 +698,34 @@ def test_snapshot_carries_aggregates_with_limits_base(world, monkeypatch):
     # A failure in aggregation never breaks the snapshot.
     monkeypatch.setattr(claude_provider, "usage_aggregates", lambda: (_ for _ in ()).throw(RuntimeError("x")))
     assert claude_provider.ClaudeCodeProvider().snapshot()["fiveHour"]["percent"] == 3
+
+
+@pytest.mark.parametrize("arrival", [
+    ((10, "a"), (20, "b"), (30, "a")),
+    ((10, "a"), (30, "a"), (20, "b")),
+    ((20, "b"), (10, "a"), (30, "a")),
+    ((30, "a"), (20, "b"), (10, "a")),
+])
+def test_out_of_order_hook_arrival_never_links_the_wrong_session(arrival):
+    state = claude_events.new_file_state()
+    pid, created = 6100, 7100
+    sids = {"a": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "b": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}
+    for ts, who in arrival:
+        claude_events.reduce_event(state, {
+            "ts": ts, "event": "UserPromptSubmit", "session_id": sids[who],
+            "claude_pid": pid, "claude_pid_created": created,
+        })
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    result = agent_links.scan_codex_processes(
+        table={20: (pid, "codex.exe"), pid: (1, "claude.exe"), 1: (0, "explorer.exe")},
+        current_sid=b"sid", equal_sid=lambda left, right: left == right,
+        process_sid=lambda _pid: b"sid",
+        created=lambda process: {20: int((35 + 11_644_473_600) * 10_000_000), pid: created, 1: 1}[process],
+        command_line=lambda _pid: f"codex.exe exec resume {thread}",
+        claude_states=state["keys"])
+    # In order, the job at 35 belongs to A; any other arrival order is
+    # ambiguous and must publish no parent rather than B.
+    linked = [row["claude_session_id"] for row in result]
+    assert sids["b"] not in linked
+    if arrival == ((10, "a"), (20, "b"), (30, "a")):
+        assert linked == [sids["a"]]
