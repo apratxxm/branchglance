@@ -18,6 +18,7 @@
   --source-muted:#8490ad; --source-glow-primary:#7040ff; --source-glow-secondary:#425df6;
   --focus:var(--source-focus); --gutter:12px; --ease-standard:cubic-bezier(.16,1,.3,1);
   --motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms; --motion-source:240ms;
+  --motion-open-list:240ms; --notch-open-delay:91ms; --notch-open-suppression:331ms;
   --sans:"Instrument Sans","Segoe UI Variable","Segoe UI",system-ui,sans-serif;
   --mono:"Cascadia Mono",Consolas,monospace;
 }
@@ -120,6 +121,8 @@ body.phone #widget-lock{display:none}
 .hidden-chats-toggle:hover{color:#fff}
 .chat>.row:focus-visible,.runway-agent-glance:focus-visible,.runway-question-trigger:focus-visible{outline:1px solid var(--focus);outline-offset:-2px;border-radius:6px}
 .chat-list{position:relative;flex:none;min-height:auto;overflow:visible;overscroll-behavior:contain;scrollbar-width:none}
+body:not(.phone).notch-collapsed .chat-list{opacity:0;transform:translateY(3px);transition:opacity var(--motion-info) var(--ease-standard),transform var(--motion-info) var(--ease-standard)}
+body:not(.phone).notch-expanded .chat-list{opacity:1;transform:none;transition:opacity var(--motion-open-list) var(--ease-standard) var(--notch-open-delay),transform var(--motion-open-list) var(--ease-standard) var(--notch-open-delay)}
 .chat{margin:0 8px;border-bottom:1px solid #202020}
 .chat:last-child{border-bottom:0}
 .row{width:100%;display:grid;grid-template-columns:minmax(0,1fr) 146px;grid-template-rows:auto auto;gap:2px 6px;align-items:center;min-height:0;padding:7px 6px;border:0;border-radius:9px;background:none;text-align:left;cursor:default}
@@ -254,8 +257,11 @@ body.phone #widget-lock{display:none}
 .t-err{color:var(--red)}
 .t-mute,.muted{color:var(--muted)}
 
-body:not(.phone).notch-collapsed .chats,body:not(.phone).notch-collapsed .totals{opacity:0;visibility:hidden;pointer-events:none;transition:opacity var(--motion-info) var(--ease-standard),visibility 0s linear var(--motion-info)}
-body:not(.phone).notch-expanded .chats,body:not(.phone).notch-expanded .totals{opacity:1;visibility:visible;pointer-events:auto;transition:opacity var(--motion-info) var(--ease-standard),visibility 0s linear 0s}
+body:not(.phone).notch-collapsed .chats{visibility:hidden;pointer-events:none;transition:visibility 0s linear var(--motion-info)}
+body:not(.phone).notch-collapsed .totals{opacity:0;visibility:hidden;pointer-events:none;transition:opacity var(--motion-info) var(--ease-standard),visibility 0s linear var(--motion-info)}
+body:not(.phone).notch-expanded .chats{visibility:visible;pointer-events:auto;transition:visibility 0s linear 0s}
+body:not(.phone).notch-expanded .totals{opacity:1;visibility:visible;pointer-events:auto;transition:opacity var(--motion-info) var(--ease-standard),visibility 0s linear 0s}
+body:not(.phone).notch-opening .runway-row-enter{animation:none!important}
 .wireframe *{box-shadow:none!important;border-radius:0!important}
 .wireframe .row,.wireframe .runway-agent-glance{outline:1px dotted var(--muted)}
 @keyframes sync-spin{to{transform:rotate(360deg)}}

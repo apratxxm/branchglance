@@ -200,7 +200,7 @@ body.runway-refined:not(.phone) :focus-visible{outline:2px solid var(--focus);ou
 @media(prefers-reduced-motion:reduce){body.runway-refined:not(.phone) *,body.runway-refined:not(.phone) *::before,body.runway-refined:not(.phone) *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important;}}
 
 /* Compact notch modes. Body modes are set by the existing notch state logic. */
-body.runway-refined.runway-compact:not(.phone){--paper:#020305;--card:#05070b;--compact-toolbar-height:30px;--motion-info:110ms;--motion-panel:140ms;--motion-reveal:220ms;--motion-source:240ms;}
+body.runway-refined.runway-compact:not(.phone){--paper:#020305;--card:#05070b;--compact-toolbar-height:30px;--motion-info:110ms;--motion-panel:140ms;--motion-reveal:220ms;--motion-source:240ms;--notch-open-delay:143ms;--notch-open-suppression:383ms;}
 body:not(.runway-compact) #compact-counts,body:not(.runway-compact) #compact-summary,
 body:not(.runway-compact) .compact-clock,body:not(.runway-compact) .compact-keep-open,
 body.phone #compact-counts,body.phone #compact-summary,body.phone .compact-clock,body.phone .compact-keep-open{display:none;}
