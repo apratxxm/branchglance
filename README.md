@@ -4,6 +4,19 @@
 
 Branchglance is a compact Windows widget for keeping Codex and Claude Code chats, subagents, usage limits and waiting work in view.
 
+## What it does
+
+- Shows Codex and Claude Code chats as a parent/agent tree, with observed running, waiting, idle and terminal states. A waiting question links back to its source chat; Branchglance does not submit structured answers.
+- Tracks five-hour and weekly usage limits, reset observations, and the available token, cache and cost insights.
+- Lets you switch provider views, search and hide chats, and configure one-shot reset actions. Greetings and Claude Code collection are opt-in; Claude collection installs Branchglance-owned hooks only after consent.
+- Includes a separate, explicitly started phone companion with pairing and optional Web Push alerts. The desktop widget does not start the phone service.
+
+Contributor and architecture references:
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Contributing](docs/CONTRIBUTING.md)
+- [macOS port inventory](docs/MAC_PORT.md)
+
 The Codex source uses blue accents; Claude uses orange. Limit meters count upward to 100% used. In compact mode, new activity can bring the relevant provider into view; use the Codex | Claude switch to change sources yourself. A pop-up can surface new work or a waiting question. Search hidden chats with `is:hidden`; hiding a chat does not delete it.
 
 Claude Code collection is off until you enable it in Reset Action Settings. It uses local hooks and Claude session data. Subagent rows reflect the hook events received; completeness across real sessions has not been established.
