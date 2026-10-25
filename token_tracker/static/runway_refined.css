@@ -450,7 +450,7 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-tokens>.runway-refined-context{grid-column:1;grid-row:1/3;width:100%;max-width:100%;min-width:0;display:flex;justify-content:center;overflow:hidden;text-align:center;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-tokens .runway-context-fraction{display:inline-flex;justify-content:center;white-space:nowrap;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-row{padding-left:30px;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title{padding-left:calc(min(var(--agent-depth,0),3)*12px);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title{padding-left:calc((min(var(--agent-depth,0),3) + 1)*12px);}
 
 /* Edgeless provider identity tints sit on the continuous panel surface. */
 body.runway-refined.runway-compact:not(.phone){--claude-accent:#e8813f;--tree-claude-surface:#19130f;--tree-codex-surface:#11121d;}
