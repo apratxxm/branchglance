@@ -1,0 +1,306 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and sign (for example v1.0.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHONHASHSEED: "0"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      version: ${{ steps.version.outputs.version }}
+      build_id: ${{ steps.version.outputs.build_id }}
+      source_epoch: ${{ steps.version.outputs.source_epoch }}
+      components_artifact_id: ${{ steps.upload-components.outputs.artifact-id }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref || inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up pinned CPython
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10.11"
+          architecture: x64
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+
+      - name: Pin release dependency environment
+        shell: pwsh
+        run: python -m pip install --no-deps -r packaging/requirements-release.txt
+
+      - name: Run Python and JavaScript tests
+        shell: pwsh
+        run: |
+          python -m pytest tests -q -p no:cacheprovider
+          foreach ($test in Get-ChildItem tests -Filter '*.mjs' | Sort-Object Name) {
+            Write-Host "Running $($test.Name)"
+            & node $test.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Resolve release identity
+        id: version
+        shell: pwsh
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $tag = $env:GITHUB_REF_NAME
+            if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch" -and $env:DISPATCH_TAG -ne $tag) {
+              throw "Manual dispatch tag input must match the selected tag ref ($tag)."
+            }
+          } else {
+            $tag = $env:DISPATCH_TAG
+          }
+          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)$') {
+            throw "Release tag must be vMAJOR.MINOR.PATCH with an optional prerelease: $tag"
+          }
+          $version = $Matches.version
+          $buildId = (git rev-parse --short=12 HEAD).Trim()
+          $sourceEpoch = (git show -s --format=%ct HEAD).Trim()
+          "release_tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build_id=$buildId" >> $env:GITHUB_OUTPUT
+          "source_epoch=$sourceEpoch" >> $env:GITHUB_OUTPUT
+
+      - name: Build Branchglance release
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_ID: ${{ steps.version.outputs.build_id }}
+          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.source_epoch }}
+          PYTHON_EXE: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP "branchglance-build"
+          python packaging/build.py --output $output --version $env:VERSION --build-id $env:BUILD_ID --python $env:PYTHON_EXE
+          $components = Join-Path $env:RUNNER_TEMP "branchglance-components"
+          New-Item -ItemType Directory -Path $components | Out-Null
+          Copy-Item (Join-Path $output "Branchglance.exe") $components
+          Copy-Item (Join-Path $output "BranchglanceUninstall.exe") $components
+          Copy-Item (Join-Path $output "releases") $components -Recurse
+          $unsigned = Join-Path $env:RUNNER_TEMP "branchglance-unsigned-build"
+          New-Item -ItemType Directory -Path $unsigned | Out-Null
+          Copy-Item (Join-Path $output "Branchglance.exe") $unsigned
+          Copy-Item (Join-Path $output "BranchglanceUninstall.exe") $unsigned
+          Copy-Item (Join-Path $output "BranchglanceSetup.exe") $unsigned
+          Copy-Item (Join-Path $output "BranchglanceSetup.exe.sha256") $unsigned
+          Copy-Item (Join-Path $output "releases") $unsigned -Recurse
+
+      - name: Upload unsigned build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: branchglance-unsigned-build
+          path: ${{ runner.temp }}/branchglance-unsigned-build/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload unsigned components
+        id: upload-components
+        uses: actions/upload-artifact@v4
+        with:
+          name: branchglance-unsigned-components
+          path: ${{ runner.temp }}/branchglance-components/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  sign:
+    needs: build
+    runs-on: windows-latest
+    if: >-
+      ${{
+        github.ref_type == 'tag' &&
+        vars.SIGNPATH_ORGANIZATION_ID != '' &&
+        vars.SIGNPATH_PROJECT_SLUG != '' &&
+        vars.SIGNPATH_SIGNING_POLICY_SLUG != '' &&
+        vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG != ''
+      }}
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      enabled: ${{ steps.token.outputs.enabled }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Set up pinned CPython
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10.11"
+          architecture: x64
+
+      - name: Install pinned release dependencies
+        shell: pwsh
+        run: python -m pip install --no-deps -r packaging/requirements-release.txt
+
+      - name: Check whether the API token is configured
+        id: token
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          $enabled = -not [string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN)
+          "enabled=$($enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          if (-not $enabled) { Write-Host "SignPath signing skipped: SIGNPATH_API_TOKEN is unset." }
+
+      - name: Submit signed release components
+        id: sign-components
+        if: steps.token.outputs.enabled == 'true'
+        uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ needs.build.outputs.components_artifact_id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "7200"
+          output-artifact-directory: ${{ runner.temp }}/branchglance-signed-components
+          parameters: |
+            version: "${{ needs.build.outputs.version }}"
+
+      - name: Refresh signed release manifest and stamps
+        if: steps.token.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD_ID: ${{ needs.build.outputs.build_id }}
+          SOURCE_DATE_EPOCH: ${{ needs.build.outputs.source_epoch }}
+          PYTHON_EXE: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          $components = Join-Path $env:RUNNER_TEMP "branchglance-signed-components"
+          python packaging/signpath_finalize.py --components $components
+          $setupOutput = Join-Path $env:RUNNER_TEMP "branchglance-setup-build"
+          python packaging/build.py --output $setupOutput --setup-from-components $components `
+            --version $env:VERSION --build-id $env:BUILD_ID --python $env:PYTHON_EXE
+          $setupToSign = Join-Path $env:RUNNER_TEMP "branchglance-setup-to-sign"
+          New-Item -ItemType Directory -Path $setupToSign | Out-Null
+          Copy-Item (Join-Path $setupOutput "BranchglanceSetup.exe") $setupToSign
+
+      - name: Upload unsigned final setup
+        id: upload-setup
+        if: steps.token.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: branchglance-unsigned-setup
+          path: ${{ runner.temp }}/branchglance-setup-to-sign/BranchglanceSetup.exe
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Submit final setup for signing
+        id: sign-setup
+        if: steps.token.outputs.enabled == 'true'
+        uses: SignPath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-setup.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "7200"
+          output-artifact-directory: ${{ runner.temp }}/branchglance-signed-setup
+          parameters: |
+            version: "${{ needs.build.outputs.version }}"
+
+      - name: Assemble signed release assets
+        if: steps.token.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD_ID: ${{ needs.build.outputs.build_id }}
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          New-Item -ItemType Directory -Path $assets | Out-Null
+          Copy-Item (Join-Path $env:RUNNER_TEMP "branchglance-signed-setup/BranchglanceSetup.exe") `
+            (Join-Path $assets "BranchglanceSetup.exe")
+          $componentZip = Join-Path $assets "Branchglance-$env:VERSION-windows-components.zip"
+          Compress-Archive -Path (Join-Path $env:RUNNER_TEMP "branchglance-signed-components/*") `
+            -DestinationPath $componentZip
+          (Get-FileHash (Join-Path $assets "BranchglanceSetup.exe") -Algorithm SHA256).Hash.ToLower() + `
+            "  BranchglanceSetup.exe" | Set-Content -Encoding ascii (Join-Path $assets "BranchglanceSetup.exe.sha256")
+          (Get-FileHash $componentZip -Algorithm SHA256).Hash.ToLower() + `
+            "  $([IO.Path]::GetFileName($componentZip))" | Set-Content -Encoding ascii (Join-Path $assets "Branchglance-components.zip.sha256")
+
+      - name: Upload signed release assets
+        id: upload-signed-assets
+        if: steps.token.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: branchglance-signed-release-assets
+          path: ${{ runner.temp }}/branchglance-release-assets/**
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  draft-release:
+    needs: [build, sign]
+    runs-on: windows-latest
+    if: >-
+      ${{ always() && needs.build.result == 'success' && needs.sign.result == 'success' &&
+          needs.sign.outputs.enabled == 'true' }}
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download signed release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: branchglance-signed-release-assets
+          path: ${{ runner.temp }}/branchglance-release-assets
+
+      - name: Create draft GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          $notesPath = Join-Path $env:RUNNER_TEMP "branchglance-release-notes.md"
+          $notes = gh api "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
+            -f "tag_name=$env:RELEASE_TAG" --jq ".body"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $policyUrl = "https://github.com/$env:GITHUB_REPOSITORY/blob/main/docs/CODE_SIGNING_POLICY.md"
+          $notes += "`r`n`r`n## Code signing policy`r`nSee [Branchglance code signing policy]($policyUrl).`r`n"
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          gh release create $env:RELEASE_TAG `
+            (Join-Path $assets "BranchglanceSetup.exe") `
+            (Join-Path $assets "BranchglanceSetup.exe.sha256") `
+            (Get-ChildItem $assets -Filter "Branchglance-*-windows-components.zip" | Select-Object -First 1).FullName `
+            (Join-Path $assets "Branchglance-components.zip.sha256") `
+            --draft --title "Branchglance $env:VERSION" `
+            --notes-file $notesPath

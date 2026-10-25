@@ -27,6 +27,59 @@ def test_release_build_has_one_final_version_default():
     assert 'parser.add_argument("--version", default=RELEASE_VERSION)' in (ROOT / "packaging" / "build.py").read_text()
 
 
+def test_all_executable_builds_get_branchglance_version_resources():
+    module = _build_module()
+    python_resource = module._pyinstaller_version_info("1.2.3")
+    launcher_resource = module._launcher_assembly_info("1.2.3")
+    for resource in (python_resource, launcher_resource):
+        assert "Branchglance" in resource
+        assert "1.2.3" in resource
+    assert "StringStruct('ProductName', 'Branchglance')" in python_resource
+    assert "StringStruct('ProductVersion', \"1.2.3\")" in python_resource
+    assert "StringStruct('FileVersion', \"1.2.3.0\")" in python_resource
+    assert '[assembly: AssemblyProduct("Branchglance")]' in launcher_resource
+    assert '[assembly: AssemblyFileVersion("1.2.3.0")]' in launcher_resource
+    assert '[assembly: AssemblyInformationalVersion("1.2.3")]' in launcher_resource
+    assert "FixedFileInfo(filevers=(1, 2, 3, 0)" in python_resource
+
+
+def test_signpath_finalizer_rehashes_signed_release_binaries(tmp_path):
+    from scripts.branchglance_installer.core import verify_manifest, write_manifest, write_stamps
+    spec = importlib.util.spec_from_file_location("branchglance_signpath_finalize_test",
+                                                   ROOT / "packaging" / "signpath_finalize.py")
+    finalizer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(finalizer)
+    components = tmp_path / "components"
+    release = components / "releases" / "1.2.3+abc123"
+    release.mkdir(parents=True)
+    app_exe = release / "BranchglanceApp.exe"
+    app_exe.write_bytes(b"unsigned")
+    (release / "BranchglanceHook.exe").write_bytes(b"hook unsigned")
+    write_manifest(release, "1.2.3", "abc123")
+    write_stamps(release)
+    app_exe.write_bytes(b"signed by SignPath")
+
+    assert finalizer.finalize_signed_components(components) == [str(release)]
+    manifest = verify_manifest(release, expected_version="1.2.3+abc123")
+    assert manifest["files"]["BranchglanceApp.exe"] != __import__("hashlib").sha256(b"unsigned").hexdigest()
+    assert "BranchglanceApp.exe" in manifest["stamps"]
+
+
+def test_signpath_configuration_only_signs_named_branchglance_executables():
+    import xml.etree.ElementTree as ET
+    config = ET.parse(ROOT / ".signpath" / "artifact-configuration.xml").getroot()
+    namespace = "{http://signpath.io/artifact-configuration/v1}"
+    executable_rules = config.findall(f".//{namespace}pe-file")
+    paths = {rule.attrib["path"] for rule in executable_rules}
+    assert paths == {
+        "Branchglance.exe", "BranchglanceUninstall.exe", "BranchglanceSetup.exe",
+        "releases/*/BranchglanceApp.exe", "releases/*/BranchglanceHook.exe",
+    }
+    assert all(rule.attrib["product-name"] == "Branchglance" for rule in executable_rules)
+    assert all(rule.attrib["product-version"] == "${version}" for rule in executable_rules)
+    assert all(rule.find(f"{namespace}authenticode-sign") is not None for rule in executable_rules)
+
+
 def test_build_entry_dispatches_claude_hook_by_module_name_to_stub(tmp_path):
     module = _build_module()
     source = tmp_path / "source"
