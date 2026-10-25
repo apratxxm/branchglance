@@ -160,6 +160,100 @@ def test_setup_same_version_identical_release_is_noop_before_stopping_running_ap
     assert not any(event[0] == "maintenance-exit" for event in events)
 
 
+def test_successful_setup_notifies_shell_once_for_exe_and_only_owned_shortcuts(tmp_path, monkeypatch):
+    from branchglance_installer import app as app_module
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    payload = _setup_payload(tmp_path, version="1.0.0", build_id="a", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp", desktop=tmp_path / "Desktop")
+    paths.desktop.mkdir(parents=True)
+    paths.start_menu.mkdir(parents=True)
+    paths.startup.mkdir(parents=True)
+    events = []
+    native = _fake_installer_native(paths, running=False, events=events)
+    original_after = native.after_mutation
+
+    def inject_foreign_shortcut(name):
+        original_after(name)
+        if name == "integration-applied":
+            native.integration_adapter.links[str(paths.desktop / "Branchglance.lnk")] = {
+                "target": str(tmp_path / "Foreign.exe"), "arguments": "", "workdir": str(tmp_path),
+                "app_id": "Foreign.App", "description": "Foreign shortcut"}
+
+    native.after_mutation = inject_foreign_shortcut
+    calls = []
+
+    def shell_notify(executable, shortcuts):
+        calls.append((executable, shortcuts))
+        assert executable.is_file()
+        assert read_json(root / "current.json")["current"]["version"] == "1.0.0+a"
+
+    monkeypatch.setattr(app_module, "_shell_notify_icons", shell_notify)
+    result = install(paths, payload, native, startup=True)
+    assert result["installed"] == "1.0.0+a"
+    assert len(calls) == 1
+    assert calls[0][0] == root / "Branchglance.exe"
+    assert calls[0][1] == (paths.start_menu / "Branchglance.lnk", paths.startup / "Branchglance.lnk")
+
+
+def test_icon_refresh_exception_is_logged_and_does_not_fail_setup(tmp_path, monkeypatch, caplog):
+    from branchglance_installer import app as app_module
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    payload = _setup_payload(tmp_path, version="1.0.0", build_id="a", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    paths.start_menu.mkdir(parents=True)
+    events = []
+    native = _fake_installer_native(paths, running=False, events=events)
+    monkeypatch.setattr(app_module, "_shell_notify_icons", lambda *_args: (_ for _ in ()).throw(OSError("shell")))
+    result = install(paths, payload, native, startup=False)
+    assert result["installed"] == "1.0.0+a"
+    assert "icon refresh failed" in caplog.text
+
+
+def test_shell_icon_refresh_uses_assoc_changed_and_path_update_notifications(tmp_path, monkeypatch):
+    from branchglance_installer import app as app_module
+    calls = []
+
+    class Notify:
+        def __call__(self, *args):
+            calls.append(args)
+
+    class Shell32:
+        SHChangeNotify = Notify()
+
+    monkeypatch.setattr(app_module.ctypes, "WinDLL", lambda *_args, **_kwargs: Shell32())
+    executable = tmp_path / "Branchglance.exe"
+    shortcut = tmp_path / "Branchglance.lnk"
+    app_module._shell_notify_icons(executable, (shortcut,))
+    assert len(calls) == 3
+    assert calls[0] == (app_module.SHCNE_ASSOCCHANGED, app_module.SHCNF_IDLIST, None, None)
+    assert calls[1][:2] == (app_module.SHCNE_UPDATEITEM, app_module.SHCNF_PATHW)
+    assert calls[1][2].value == str(executable)
+    assert calls[2][:2] == (app_module.SHCNE_UPDATEITEM, app_module.SHCNF_PATHW)
+    assert calls[2][2].value == str(shortcut)
+
+
+def test_failed_setup_does_not_notify_shell(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from branchglance_installer import app as app_module
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    payload = _setup_payload(tmp_path, version="1.0.0", build_id="a", body="new")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    native = _fake_installer_native(paths, running=False, events=events)
+    native.runner = lambda *_args, **_kwargs: SimpleNamespace(returncode=1)
+    calls = []
+    monkeypatch.setattr(app_module, "_shell_notify_icons", lambda *_args: calls.append(_args))
+    with pytest.raises(SafetyError, match="Staged self-test failed"):
+        install(paths, payload, native, startup=False)
+    assert calls == []
+
+
 def test_setup_same_version_different_release_refuses_before_stopping_running_app(tmp_path):
     from branchglance_installer.app import Paths, install
     root = _root(tmp_path)

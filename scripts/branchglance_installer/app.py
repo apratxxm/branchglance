@@ -18,6 +18,7 @@ import os
 import secrets
 import queue
 import threading
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -34,6 +35,46 @@ from .preflight import HostInfo, check_host, staged_self_test
 FOLDERID_DESKTOP = "B4BFCC3A-DB2C-424C-B029-7FE99A87C641"
 FOLDERID_PROGRAMS = "A77F5D77-2E2B-44C3-A6A2-ABA601054A51"
 FOLDERID_STARTUP = "B97D20BB-F46A-4C97-BA10-5E3608430854"
+log = logging.getLogger(__name__)
+
+SHCNE_UPDATEITEM = 0x00002000
+SHCNE_ASSOCCHANGED = 0x08000000
+SHCNF_IDLIST = 0x0000
+SHCNF_PATHW = 0x0005
+
+
+def _shell_notify_icons(executable: Path, shortcuts: tuple[Path, ...]) -> None:
+    """Ask Explorer to refresh the installed executable and owned shortcuts."""
+    try:
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        notify = shell32.SHChangeNotify
+        notify.argtypes = [ctypes.c_long, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+        notify.restype = None
+        notify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+        for item in (executable, *shortcuts):
+            notify(SHCNE_UPDATEITEM, SHCNF_PATHW, ctypes.c_wchar_p(str(item)), None)
+    except Exception as exc:
+        log.warning("Could not notify the Windows shell about Branchglance icon updates (%s)",
+                    exc.__class__.__name__)
+
+
+def _notify_installed_icons(paths: "Paths", native: "Native") -> None:
+    executable = paths.root / LAUNCHER
+    owned_shortcuts = []
+    integrations = _integrations(paths, native, "")
+    for shortcut in integrations.shortcut_paths:
+        try:
+            found = native.integration_adapter.read_shortcut(shortcut)
+            if (found is not None and found.get("description") == "Branchglance managed shortcut"
+                    and Path(found.get("target", "")).resolve() == executable.resolve()):
+                owned_shortcuts.append(shortcut)
+        except Exception as exc:
+            log.warning("Could not verify shortcut before icon refresh (%s)", exc.__class__.__name__)
+    try:
+        _shell_notify_icons(executable, tuple(owned_shortcuts))
+    except Exception as exc:
+        # The shell refresh is cosmetic and must never turn a committed install into failure.
+        log.warning("Branchglance icon refresh failed (%s)", exc.__class__.__name__)
 
 
 class _GUID(ctypes.Structure):
@@ -531,6 +572,7 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
         lifecycle.release_locks()
     if failure is not None:
         raise failure
+    _notify_installed_icons(paths, native)
     return {"installed": version_full, "pointer": result, "recovered": recovered,
             "abandonedLock": bool(holder.get("abandoned")), "pruned": pruned}
 
