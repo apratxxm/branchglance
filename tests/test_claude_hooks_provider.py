@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from token_tracker import claude_events, claude_hook, claude_provider, providers
+from token_tracker import agent_links, claude_events, claude_hook, claude_provider, providers
 from token_tracker.provider_policy import load_policies
 
 NOW = time.time()
@@ -31,6 +31,54 @@ def ev(ts, event, sid=SID, **kw):
 def usage(inp, cached, creation, out):
     return {"input_tokens": inp, "cache_read_input_tokens": cached, "cache_creation_input_tokens": creation,
             "output_tokens": out}
+
+
+def test_claude_pid_associations_keep_all_time_scoped_process_identities():
+    state = claude_events.new_file_state()
+    claude_events.reduce_event(state, ev(10, "SessionStart"))
+    claude_events.reduce_event(state, ev(20, "UserPromptSubmit", claude_pid=5000,
+                                         claude_pid_created=9000))
+    root = state["keys"][(SID, "")]
+    assert root["pid_associations"] == [
+        {"pid": 4242, "created": 777, "sid": SID, "first": 10, "last": 10},
+        {"pid": 5000, "created": 9000, "sid": SID, "first": 20, "last": 20},
+    ]
+    associations = agent_links._association_map(state["keys"])
+    assert associations[(4242, 777)] == [(SID, 10.0, float("inf"))]
+    assert associations[(5000, 9000)] == [(SID, 20.0, float("inf"))]
+
+
+def test_same_claude_process_a_to_b_to_a_keeps_three_association_transitions():
+    state = claude_events.new_file_state()
+    pid, created = 6000, 7000
+    sid_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    sid_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    for ts, sid in ((10, sid_a), (20, sid_b), (30, sid_a)):
+        claude_events.reduce_event(state, {
+            "ts": ts, "event": "UserPromptSubmit", "session_id": sid,
+            "claude_pid": pid, "claude_pid_created": created,
+        })
+
+    associations = agent_links._association_map(state["keys"])
+    assert associations[(pid, created)] == [
+        (sid_a, 10.0, 20.0), (sid_b, 20.0, 30.0), (sid_a, 30.0, float("inf")),
+    ]
+
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+
+    def session_at(epoch):
+        result = agent_links.scan_codex_processes(
+            table={20: (pid, "codex.exe"), pid: (1, "claude.exe"), 1: (0, "explorer.exe")},
+            current_sid=b"sid", equal_sid=lambda left, right: left == right,
+            process_sid=lambda _pid: b"sid",
+            created=lambda process: {20: int((epoch + 11_644_473_600) * 10_000_000),
+                                     pid: created, 1: 1}[process],
+            command_line=lambda _pid: f"codex.exe exec resume {thread}",
+            claude_states=state["keys"])
+        return result[0]["claude_session_id"]
+
+    assert session_at(25) == sid_b
+    assert session_at(35) == sid_a
 
 
 def assistant(ts, mid, model="claude-opus-5", use=None, blocks=None, stop=None, entry="cli"):
@@ -650,3 +698,34 @@ def test_snapshot_carries_aggregates_with_limits_base(world, monkeypatch):
     # A failure in aggregation never breaks the snapshot.
     monkeypatch.setattr(claude_provider, "usage_aggregates", lambda: (_ for _ in ()).throw(RuntimeError("x")))
     assert claude_provider.ClaudeCodeProvider().snapshot()["fiveHour"]["percent"] == 3
+
+
+@pytest.mark.parametrize("arrival", [
+    ((10, "a"), (20, "b"), (30, "a")),
+    ((10, "a"), (30, "a"), (20, "b")),
+    ((20, "b"), (10, "a"), (30, "a")),
+    ((30, "a"), (20, "b"), (10, "a")),
+])
+def test_out_of_order_hook_arrival_never_links_the_wrong_session(arrival):
+    state = claude_events.new_file_state()
+    pid, created = 6100, 7100
+    sids = {"a": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "b": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}
+    for ts, who in arrival:
+        claude_events.reduce_event(state, {
+            "ts": ts, "event": "UserPromptSubmit", "session_id": sids[who],
+            "claude_pid": pid, "claude_pid_created": created,
+        })
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    result = agent_links.scan_codex_processes(
+        table={20: (pid, "codex.exe"), pid: (1, "claude.exe"), 1: (0, "explorer.exe")},
+        current_sid=b"sid", equal_sid=lambda left, right: left == right,
+        process_sid=lambda _pid: b"sid",
+        created=lambda process: {20: int((35 + 11_644_473_600) * 10_000_000), pid: created, 1: 1}[process],
+        command_line=lambda _pid: f"codex.exe exec resume {thread}",
+        claude_states=state["keys"])
+    # In order, the job at 35 belongs to A; any other arrival order is
+    # ambiguous and must publish no parent rather than B.
+    linked = [row["claude_session_id"] for row in result]
+    assert sids["b"] not in linked
+    if arrival == ((10, "a"), (20, "b"), (30, "a")):
+        assert linked == [sids["a"]]

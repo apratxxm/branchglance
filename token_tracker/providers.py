@@ -4360,7 +4360,7 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                     "latestMessageSourceId", "latestMessageTargetId", "contextTokens", "contextWindow",
                     "contextPercent", "contextObservedAt", "contextModel", "contextDelta",
                     "contextDeltaObservedAt", "modelChangeAt", "lastRequest", "model", "updatedAt",
-                    "title", "parentId", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
+                    "title", "parentId", "parentProvider", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
                     "activity", "activityUnavailable", "executionStatus", "executionSource",
                     "executionObservedAt", "executionSince", "executionCompactionStartedAt",
                     "executionTerminalAt", "executionActivity",
@@ -4375,12 +4375,19 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                         if field in {"executionStatus", "executionSource", "executionObservedAt", "executionSince",
                                      "executionCompactionStartedAt", "executionTerminalAt", "executionActivity"}:
                             continue
+                        if field in {"parentId", "parentProvider"}:
+                            continue
                         current = entry.get(field)
                         empty_request = field == "lastRequest" and isinstance(current, dict) and not any(
                             value is not None for value in current.values()
                         )
                         if field not in entry or current is None or empty_request:
                             entry[field] = value
+                    if entry.get("parentId") is None and entry.get("parentProvider") is None:
+                        old_parent = prior.get("parentId")
+                        if old_parent:
+                            entry["parentId"] = old_parent
+                            entry["parentProvider"] = prior.get("parentProvider")
                 if provider_stale:
                     entry["lastValidAt"] = (prior.get("lastValidAt") or chat.get("lastValidAt")
                                              or chat.get("statusObservedAt") or prior.get("indexedAt"))
@@ -4519,6 +4526,7 @@ def live_state() -> dict[str, Any]:
                 "identityTitle": record.get("threadName") or record.get("title") or record.get("name"),
                 "identityWorkspace": record.get("cwd"),
                 "identityParentId": record.get("parentThreadId"),
+                "identityParentProvider": "Codex" if record.get("parentThreadId") else None,
                 "identitySource": record.get("source"),
                 # A database name is an agent label only when lineage confirms
                 # this is a child. Root thread names remain titles.
@@ -4554,6 +4562,7 @@ def live_state() -> dict[str, Any]:
                     retained["id"] = indexed["id"]
                 if indexed.get("identityParentId"):
                     retained["parentId"] = indexed["identityParentId"]
+                    retained["parentProvider"] = indexed.get("identityParentProvider") or "Codex"
                 if indexed.get("identityTitle"):
                     retained["title"] = indexed["identityTitle"]
                 if indexed.get("identityWorkspace"):
@@ -4683,10 +4692,12 @@ def live_state() -> dict[str, Any]:
             if previous_status:
                 row["previousStatus"] = previous_status
         if provider == "Codex":
+            parent_id, parent_provider = _codex_parent_pair(insights.get("parentId"), indexed)
             row.update({
                 "id": indexed.get("id") or (key.split(":", 1)[1] if ":" in key else None),
                 "title": indexed.get("identityTitle") or insights.get("title") or indexed.get("title"),
-                "parentId": insights.get("parentId") or indexed.get("parentId") or indexed.get("identityParentId"),
+                "parentId": parent_id,
+                "parentProvider": parent_provider,
                 "agentName": insights.get("agentName") or indexed.get("agentName") or indexed.get("identityAgentName"),
                 "agentRole": indexed.get("agentRole"),
                 "workspace": insights.get("workspace") or indexed.get("workspace") or indexed.get("identityWorkspace"),
@@ -4772,13 +4783,34 @@ def live_state() -> dict[str, Any]:
                     row["previousStatus"] = previous_status
                 row.update(title=indexed.get("identityTitle") or indexed.get("title"),
                            parentId=indexed.get("identityParentId") or indexed.get("parentId"),
+                           parentProvider=indexed.get("parentProvider") or indexed.get("identityParentProvider"),
                            agentName=indexed.get("identityAgentName"),
                            workspace=indexed.get("identityWorkspace"),
                            source=indexed.get("identitySource"))
         chats.append(row)
+    if "Claude" in visible_full and "Codex" in visible_full:
+        try:
+            from .agent_links import apply_exact_links
+            grouped = [{"name": name, "chats": [chat for chat in chats
+                                                 if str(chat.get("key") or "").startswith(name + ":")]}
+                       for name in ("Claude", "Codex")]
+            apply_exact_links(grouped)
+            linked = {str(row.get("key")): (row.get("parentId"), row.get("parentProvider"))
+                      for provider in grouped for row in provider["chats"]}
+            for chat in chats:
+                if chat.get("key") in linked:
+                    chat["parentId"], parent_provider = linked[chat["key"]]
+                    if parent_provider:
+                        chat["parentProvider"] = parent_provider
+        except Exception:
+            pass
+    for chat in chats:
+        chat["provider"] = "Codex" if str(chat.get("key") or "").startswith("Codex:") else "Claude"
+    from .agent_links import snapshot_graph
+    graph = snapshot_graph(chats, delta=True)
     return {"generatedAt": datetime.now(timezone.utc).isoformat(),
             "structureStamp": _structure_stamp(visible_full), "chats": chats,
-            "providerPolicies": policy_payload}
+            "providerPolicies": policy_payload, "graph": graph}
 
 
 def today_usage() -> dict[str, Any]:
@@ -4897,6 +4929,17 @@ def _claude_code_provider() -> Any:
 def _claude_live_row(row: dict[str, Any], indexed: dict[str, Any]) -> dict[str, Any]:
     from .claude_provider import live_row
     return live_row(row, indexed)
+
+
+def _codex_parent_pair(native_parent_id: Any, indexed: dict[str, Any]) -> tuple[Any, str | None]:
+    """Choose native Codex lineage before one inherited cross-provider pair."""
+    native = native_parent_id or indexed.get("identityParentId")
+    if native:
+        return native, "Codex"
+    cached_parent = indexed.get("parentId")
+    if cached_parent:
+        return cached_parent, indexed.get("parentProvider")
+    return None, None
 # --- end Claude Code hook rows -----------------------------------------------
 
 
@@ -4957,6 +5000,19 @@ def build_snapshot() -> dict[str, Any]:
                       if policy_for(provider.get("name"), policies).allows("show")]
     visible_provider_data = [provider for provider in all_providers
                              if policy_for(provider.get("name"), policies).allows("show")]
+    if "Claude" in full_collect and "Codex" in full_collect:
+        try:
+            from .agent_links import apply_exact_links
+            apply_exact_links(visible_provider_data)
+        except Exception:
+            pass
+    graph_rows = []
+    for provider in visible_provider_data:
+        for row in provider.get("chats") or []:
+            row["provider"] = provider.get("name")
+            graph_rows.append(row)
+    from .agent_links import snapshot_graph
+    graph = snapshot_graph(graph_rows)
     _index_live_paths(visible_active, policy_payload["generation"])
 
     today_date = _local_today()
@@ -5009,6 +5065,7 @@ def build_snapshot() -> dict[str, Any]:
             "note": " + ".join(provider["name"] for provider in visible_active) + " transcript traffic · API-equivalent estimates",
         },
         "providers": visible_provider_data,
+        "graph": graph,
         "activity": [{"date": date, "value": value} for date, value in sorted(activity.items())],
         "activityMeta": {
             "activeDays": len(active_dates),

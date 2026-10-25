@@ -68,6 +68,30 @@ def test_build_entry_hook_failure_or_missing_module_still_exits_zero(tmp_path):
     assert failing.returncode == 0 and "boom" in failing.stderr
 
 
+def test_build_entry_dispatches_codex_receipt_to_helper(tmp_path):
+    module = _build_module()
+    source = tmp_path / "source"
+    package = source / "token_tracker"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "widget.py").write_text("raise AssertionError('widget path selected')\n")
+    (package / "agent_links.py").write_text(
+        "import json, os\n"
+        "def write_receipt(thread, pid):\n"
+        " open(os.environ['LINK_RESULT'], 'w').write(json.dumps([thread, pid]))\n")
+    entry = source / "branchglance_entry.py"
+    entry.write_text(module._entry_source(), encoding="utf-8")
+    marker = tmp_path / "link-result.json"
+    env = os.environ.copy()
+    env["LINK_RESULT"] = str(marker)
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    result = subprocess.run([sys.executable, str(entry), "--link-codex", thread,
+                             "--codex-pid", "4321"], cwd=source, env=env,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert json.loads(marker.read_text()) == [thread, 4321]
+
+
 def test_build_entry_self_test_writes_report_without_importing_widget(tmp_path):
     module = _build_module()
     source = tmp_path / "source"
