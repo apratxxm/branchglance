@@ -1063,6 +1063,26 @@ def test_branchglance_window_tray_and_runway_document_titles(monkeypatch):
     assert "<title>Branchglance · Runway</title>" in runway
 
 
+def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tracks():
+    from pathlib import Path
+    static = Path(widget.__file__).parent / "static"
+    page = (static / "runway.html").read_text(encoding="utf-8")
+    app = (static / "app.js").read_text(encoding="utf-8")
+    refined = (static / "runway_refined.css").read_text(encoding="utf-8")
+    assert 'id="source-switch"' not in page
+    assert 'data-action="source"' not in page
+    assert 'data-notch-mode="controls"' in page
+    assert 'data-provider="Claude"' in refined
+    assert 'data-provider="Codex"' in refined
+    assert 'parentKey' in app and 'graphValue.edges' in app
+    assert 'GPT-' in app and 'family[0].toUpperCase()' in app
+    assert 'is-codex-model' in refined and 'is-claude-model' in refined
+    assert 'grid-template-columns:minmax(120px,1.7fr) 46px 82px minmax(70px,1fr) minmax(80px,1.1fr) 78px' in refined
+    assert '.runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' in refined
+    assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
+    assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
+
+
 @pytest.mark.parametrize("during", ["http", "limit_reset", "window"])
 def test_maintenance_exit_during_startup_cancels_remaining_init_and_releases_resources(monkeypatch, during):
     monkeypatch.setattr(widget, "CONTROL_PORT", 0)
