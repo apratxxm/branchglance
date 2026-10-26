@@ -122,7 +122,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(cssRule(inspect+'.runway-refined-activity>.runway-activity'),/white-space:normal;overflow-wrap:anywhere/);
   for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-path'])
     assert.match(cssRule(inspect+'.'+name),/grid-row:1\/3/);
-  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-template-rows:23px 21px/);
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-template-rows:18px 14px;row-gap:0/);
   assert.match(css,/\.runway-refined-path \.runway-path-leaf\{overflow:visible;white-space:normal;overflow-wrap:break-word;text-overflow:clip;\}/,'workspace wraps instead of clipping');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-row:1\/3/,'tokens span the same two-row axis as the single-line columns');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/align-items:center/,'tokens centre their two lines on the shared row axis');
