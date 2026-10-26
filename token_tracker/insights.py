@@ -26,6 +26,13 @@ def _path_lock(path: Path) -> threading.RLock:
         return _STORE_LOCKS.setdefault(key, threading.RLock())
 
 
+def _owner_check(check: Callable[[], bool]) -> bool:
+    try:
+        return bool(check())
+    except Exception:
+        return False
+
+
 def _instance_mutex_held() -> bool:
     try:
         from . import widget
@@ -171,6 +178,15 @@ def _daily_activity(provider: dict[str, Any]) -> dict[str, int]:
     return result
 
 
+def _valid_peak_day(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
 class LimitPeakStore:
     """Bounded append journal of daily high-water limit observations."""
 
@@ -185,9 +201,13 @@ class LimitPeakStore:
         self.max_days = max_days
 
     def _read_locked(self) -> dict[tuple[str, str], dict[str, Any]]:
+        if not _owner_check(self.owner_check):
+            return self._read_without_compaction_locked()
         try:
             if self.path.stat().st_size > self.max_bytes:
                 self._compact_locked()
+                if not _owner_check(self.owner_check):
+                    return self._read_without_compaction_locked()
             lines = self.path.read_bytes().splitlines()
         except OSError:
             return {}
@@ -198,13 +218,13 @@ class LimitPeakStore:
             try:
                 item = json.loads(line)
                 provider, day = item["provider"], item["date"]
-                if provider not in {"Claude", "Codex"} or not isinstance(day, str):
+                if provider not in {"Claude", "Codex"} or not _valid_peak_day(day):
                     continue
                 target = peaks.setdefault((provider, day), {"fiveHour": None, "weekly": None})
                 for key in ("fiveHour", "weekly"):
                     value = item.get(key)
                     if (isinstance(value, (int, float)) and not isinstance(value, bool)
-                            and math.isfinite(value) and 0 <= value <= 100
+                            and 0 <= value <= 100 and math.isfinite(value)
                             and (target[key] is None or value > target[key])):
                         target[key] = float(value)
             except (ValueError, TypeError, KeyError):
@@ -212,8 +232,12 @@ class LimitPeakStore:
         return peaks
 
     def _compact_locked(self) -> None:
+        if not _owner_check(self.owner_check):
+            return
         peaks = self._read_without_compaction_locked()
         if not peaks:
+            if not _owner_check(self.owner_check):
+                return
             try:
                 self.path.unlink(missing_ok=True)
             except OSError:
@@ -223,12 +247,16 @@ class LimitPeakStore:
         keep = [{"provider": provider, "date": day, **peaks[(provider, day)]}
                 for day in days for provider in ("Claude", "Codex") if (provider, day) in peaks]
         payload = b"".join((json.dumps(row, separators=(",", ":")) + "\n").encode() for row in keep)
+        if not _owner_check(self.owner_check):
+            return
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if not _owner_check(self.owner_check):
+                return
             os.replace(temporary, self.path)
         finally:
             try:
@@ -249,15 +277,18 @@ class LimitPeakStore:
             return {}
         peaks: dict[tuple[str, str], dict[str, Any]] = {}
         for line in lines:
+            if len(line) > 2048:
+                continue
             try:
                 item = json.loads(line)
                 provider, day = item["provider"], item["date"]
-                if provider not in {"Claude", "Codex"}:
+                if provider not in {"Claude", "Codex"} or not _valid_peak_day(day):
                     continue
                 target = peaks.setdefault((provider, day), {"fiveHour": None, "weekly": None})
                 for key in ("fiveHour", "weekly"):
                     value = item.get(key)
-                    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                            and 0 <= value <= 100 and math.isfinite(value)):
                         target[key] = value if target[key] is None else max(target[key], value)
             except (ValueError, TypeError, KeyError):
                 continue
@@ -273,6 +304,8 @@ class LimitPeakStore:
         day = local_now.date().isoformat()
         samples = []
         for provider in providers:
+            if not isinstance(provider, dict):
+                continue
             name = provider.get("name")
             if name not in {"Claude", "Codex"}:
                 continue
@@ -280,8 +313,8 @@ class LimitPeakStore:
             for source, target in (("fiveHour", "fiveHour"), ("weekly", "weekly")):
                 percent = (provider.get(source) or {}).get("percent")
                 values[target] = (float(percent) if isinstance(percent, (int, float))
-                                  and not isinstance(percent, bool) and math.isfinite(percent)
-                                  and 0 <= percent <= 100 else None)
+                                  and not isinstance(percent, bool) and 0 <= percent <= 100
+                                  and math.isfinite(percent) else None)
             if any(value is not None for value in values.values()):
                 samples.append({"provider": name, "date": day, **values})
         if not samples:
@@ -289,6 +322,8 @@ class LimitPeakStore:
         lock = _path_lock(self.path)
         with lock:
             try:
+                if not _owner_check(self.owner_check):
+                    return
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 existing = self._read_locked()
                 additions = []
@@ -304,6 +339,8 @@ class LimitPeakStore:
                         additions.append(row)
                         existing[(sample["provider"], day)] = row
                 if additions:
+                    if not _owner_check(self.owner_check):
+                        return
                     with self.path.open("ab") as handle:
                         for row in additions:
                             handle.write((json.dumps(row, separators=(",", ":")) + "\n").encode())
@@ -335,15 +372,37 @@ def _default_store() -> LimitPeakStore:
     return LimitPeakStore()
 
 
+def _fresh_limit_observations(providers: list[dict[str, Any]], *, now: datetime) -> list[tuple[dict[str, Any], datetime]]:
+    now_utc = now.astimezone(timezone.utc)
+    result = []
+    for provider in providers:
+        if (not isinstance(provider, dict) or provider.get("connected") is not True
+                or provider.get("stale") is True):
+            continue
+        try:
+            observed = datetime.fromisoformat(str(provider.get("limitsUpdatedAt", "")).replace("Z", "+00:00"))
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            observed = observed.astimezone(timezone.utc)
+            if observed > now_utc or now_utc - observed > timedelta(minutes=10):
+                continue
+            result.append((provider, _local_now(observed)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return result
+
+
 def record_limit_peaks(snapshot: dict[str, Any], *, allowed_names: set[str],
                        now: datetime | None = None) -> None:
     """Sample limit percents from a freshly built snapshot. Owner-gated; never raises."""
     try:
-        visible = [provider for provider in snapshot.get("providers") or []
-                   if isinstance(provider, dict) and provider.get("name") in {"Claude", "Codex"}
-                   and provider.get("name") in allowed_names]
-        if visible:
-            _default_store().observe(visible, now=now)
+        now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        candidates = [provider for provider in snapshot.get("providers") or []
+                      if isinstance(provider, dict) and provider.get("name") in {"Claude", "Codex"}
+                      and provider.get("name") in allowed_names]
+        store = _default_store()
+        for provider, observed in _fresh_limit_observations(candidates, now=now_utc):
+            store.observe([provider], now=observed)
     except Exception:
         return
 
@@ -364,18 +423,24 @@ def build_insights(snapshot: dict[str, Any], range_name: str, *,
                if provider.get("name") in {"Claude", "Codex"}
                and (allowed_names is None or provider.get("name") in allowed_names)]
     store = peak_store or LimitPeakStore()
-    store.observe(visible, now=local_now)
+    for provider, observed in _fresh_limit_observations(visible, now=local_now):
+        store.observe([provider], now=observed)
     peak_dates = window["dates"]
     peaks = store.peaks([str(item["name"]) for item in visible], peak_dates)
     response_providers = []
     for provider in visible:
         name = provider["name"]
         data = provider.get("_insightsData") or {}
+        hourly_source = data.get("hourlyModels")
+        hourly_available = isinstance(hourly_source, dict)
         model_usage = _models_in_window(data, window["grain"], window["keys"])
         totals = _model_totals(model_usage)
         daily_activity = _daily_activity(provider)
         if totals.get("total_tokens") is None:
-            totals["total_tokens"] = sum(daily_activity.get(day, 0) for day in window["dates"])
+            if window["grain"] == "hour":
+                totals["total_tokens"] = 0 if hourly_available else None
+            else:
+                totals["total_tokens"] = sum(daily_activity.get(day, 0) for day in window["dates"])
         series = []
         fallback_tokens = {}
         for day in window["dates"]:
@@ -385,9 +450,12 @@ def build_insights(snapshot: dict[str, Any], range_name: str, *,
             bucket_totals = _model_totals(bucket_models)
             tokens = bucket_totals.get("total_tokens")
             if tokens is None:
-                tokens = fallback_tokens.get(bucket, 0) if window["grain"] == "day" else 0
-            bucket_cost, bucket_unpriced = _cost_for(name, bucket_models, fallback_tokens=int(tokens))
-            row = {"date": bucket, "tokens": int(tokens), "apiEquivalentCost": bucket_cost}
+                tokens = (fallback_tokens.get(bucket, 0) if window["grain"] == "day"
+                          else 0 if hourly_available else None)
+            bucket_cost, bucket_unpriced = (_cost_for(name, bucket_models, fallback_tokens=int(tokens or 0))
+                                            if tokens is not None else (None, []))
+            row = {"date": bucket, "tokens": int(tokens) if tokens is not None else None,
+                   "apiEquivalentCost": bucket_cost}
             if bucket_unpriced:
                 row["costPartial"] = True
             series.append(row)
@@ -406,15 +474,20 @@ def build_insights(snapshot: dict[str, Any], range_name: str, *,
             previous_tokens = previous_totals.get("total_tokens")
             if previous_tokens is None and window["grain"] == "day":
                 previous_tokens = sum(daily_activity.get(day, 0) for day in window["previousKeys"])
-            previous_cost, previous_unpriced = _cost_for(name, previous_models,
-                                                         fallback_tokens=int(previous_tokens or 0))
-            previous = {"tokens": int(previous_tokens or 0), "apiEquivalentCost": previous_cost}
+            elif previous_tokens is None:
+                previous_tokens = 0 if hourly_available else None
+            previous_cost, previous_unpriced = (_cost_for(name, previous_models,
+                                                          fallback_tokens=int(previous_tokens or 0))
+                                                if previous_tokens is not None else (None, []))
+            previous = {"tokens": int(previous_tokens) if previous_tokens is not None else None,
+                        "apiEquivalentCost": previous_cost}
             if previous_unpriced:
                 previous["costPartial"] = True
-        total_cost, total_unpriced = _cost_for(name, model_usage,
-                                               fallback_tokens=int(totals.get("total_tokens") or 0))
+        total_cost, total_unpriced = (_cost_for(name, model_usage,
+                                                fallback_tokens=int(totals.get("total_tokens") or 0))
+                                     if totals.get("total_tokens") is not None else (None, []))
         totals_out = {
-            "tokens": int(totals.get("total_tokens") or 0),
+            "tokens": int(totals["total_tokens"]) if totals.get("total_tokens") is not None else None,
             "apiEquivalentCost": total_cost,
             "sessions": sessions, "subagentsActive": subagents,
             "activeHours": selected_hours,
