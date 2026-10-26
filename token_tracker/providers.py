@@ -554,7 +554,8 @@ def _jsonl_state_uncacheable(state: Any) -> bool:
 
 def _incremental_jsonl_reduce(kind: str, path: Path, initial_state: Any,
                               reduce_record: Any, project: Any = None,
-                              fingerprint_extra: Any = None, unavailable: Any = None) -> Any:
+                              fingerprint_extra: Any = None, unavailable: Any = None,
+                              needles: tuple[bytes, ...] | None = None) -> Any:
     """Reduce complete JSONL records incrementally.
 
     ``initial_state`` is a value or zero-argument factory. ``reduce_record``
@@ -593,7 +594,7 @@ def _incremental_jsonl_reduce(kind: str, path: Path, initial_state: Any,
                 return project(state) if project else state
             result = _incremental_jsonl_reduce_locked(
                 key, path, initial_state, reduce_record, project, fingerprint_extra,
-                unavailable, before, cached, retry_on_stale=not fresh)
+                unavailable, before, cached, retry_on_stale=not fresh, needles=needles)
             if result is not _STALE_PRE_READ_STAT:
                 return result
             fresh = True
@@ -605,7 +606,8 @@ _STALE_PRE_READ_STAT = object()
 def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_state: Any,
                                      reduce_record: Any, project: Any, fingerprint_extra: Any,
                                      unavailable: Any, before: tuple[int, int, int, int, int],
-                                     cached: dict[str, Any] | None, retry_on_stale: bool) -> Any:
+                                     cached: dict[str, Any] | None, retry_on_stale: bool,
+                                     needles: tuple[bytes, ...] | None = None) -> Any:
     try:
         handle_context = path.open("rb")
     except OSError:
@@ -674,6 +676,16 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
                 valid_unterminated_record = True
                 break
             committed_offset = handle.tell()
+            # A reducer that only reads records carrying a key can skip lines
+            # without that key's bytes. A \u escape or invalid UTF-8 (dropped on
+            # decode) could hide the key, so those lines are always parsed.
+            if needles and b"\\u" not in line and not any(needle in line for needle in needles):
+                try:
+                    line.decode("utf-8")
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    continue
             try:
                 item = json.loads(line.decode("utf-8", errors="ignore"))
             except (ValueError, UnicodeError):

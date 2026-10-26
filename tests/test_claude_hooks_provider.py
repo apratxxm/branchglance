@@ -34,6 +34,39 @@ def usage(inp, cached, creation, out):
             "output_tokens": out}
 
 
+@pytest.mark.parametrize("initial,reduce_record,needles", [
+    (claude_provider._new_usage_state, claude_provider._reduce_usage,
+     claude_provider._USAGE_NEEDLES),
+])
+def test_claude_filtered_reduction_matches_unfiltered_on_append(tmp_path, initial, reduce_record, needles):
+    path = tmp_path / "transcript.jsonl"
+    # Escaped keys and ignored invalid UTF-8 can hide a semantic key from a raw search.
+    records = [
+        b'{"noise": 1}',
+        b'{"c\\u0077d": "/work/project"}',
+        b'{"entrypoint" : "cli"}',
+        b'{"\\u0074ype": "user", "timestamp": "2026-10-01T00:00:00Z"}',
+        b'{"type": "assistant", "timestamp": "2026-10-01T00:00:01Z", "message": {"id": "m1", "\\u0075sage": {"input_tokens": 3}}}',
+        b'{"type": "assistant", "timestamp": "2026-10-01T00:00:01Z", "message": {"id": "m1", "us\xffage": {"input_tokens": 5}}}',
+    ]
+    path.write_bytes(b'\n'.join(records) + b'\n' + b'{"type": "result"')
+
+    def read(kind, selected):
+        return providers._incremental_jsonl_reduce(
+            kind, path, initial, reduce_record, needles=selected)
+
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+    with path.open("ab") as stream:
+        stream.write(b', "timestamp": "2026-10-01T00:00:02Z"}\n{"irrelevant": true}\n')
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b'{"type":"assistant","message":{"usage":{"input_tokens":7}}}\n')
+    os.replace(replacement, path)
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+    path.write_bytes(b'{"cwd":"/new"}\n')
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+
+
 def test_claude_pid_associations_keep_all_time_scoped_process_identities():
     state = claude_events.new_file_state()
     claude_events.reduce_event(state, ev(10, "SessionStart"))
