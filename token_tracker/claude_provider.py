@@ -466,7 +466,8 @@ def build_rows(now: float | None = None,
 # shared reader) into packed arrays so checkpoints stay small: one entry per
 # response id with its local day, model and five token counts. No text kept.
 TRACKING_DAYS = 31
-_USAGE_KIND = "claude-code-usage"
+# v2 adds per-response epochs; older checkpoints lack them and are rebuilt.
+_USAGE_KIND = "claude-code-usage-v2"
 _RECENT_IDS = 16
 
 
@@ -624,7 +625,8 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
             record = {"input_tokens": fields[0], "output_tokens": fields[1], "cached_tokens": fields[2],
                       "cache_5m_tokens": fields[3], "cache_1h_tokens": fields[4], "total_tokens": amount}
             _insight_add(insight_daily.setdefault(date.fromordinal(day).isoformat(), {}), model, record)
-            epoch = state["epochs"][index]
+            epochs = state.get("epochs")
+            epoch = epochs[index] if epochs is not None and index < len(epochs) else 0
             if epoch:
                 hour = _local_hour_key(epoch, tz, hour_keys)
                 _insight_add(insight_hourly.setdefault(hour, {}), model, record)
