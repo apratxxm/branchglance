@@ -166,12 +166,12 @@ struct HUDView: View {
     @ObservedObject var media: NowPlaying
 
     var body: some View {
+        // Each wing's content is centred in the wing, hugging the camera housing.
         HStack(spacing: 0) {
-            leading.frame(maxWidth: .infinity, alignment: .leading)
+            leading.frame(maxWidth: .infinity)
             Color.clear.frame(width: notchWidth)
-            trailing.frame(maxWidth: .infinity, alignment: .trailing)
+            trailing.frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 10)
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
@@ -179,7 +179,7 @@ struct HUDView: View {
 
     @ViewBuilder private var leading: some View {
         if case .media = kind {
-            Artwork(image: media.artwork, size: 20)
+            Artwork(image: media.artwork, size: 22)
         } else {
             Image(systemName: kind.symbol).font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(tint)
