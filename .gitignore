@@ -38,3 +38,4 @@ dist/
 .branchglance-build/
 state/
 macos/build/
+macos/Resources/*.iconset/
