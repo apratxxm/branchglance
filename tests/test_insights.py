@@ -22,6 +22,7 @@ def _fixture(now=None):
         "providers": [
             {
                 "name": "Claude",
+                "connected": True, "stale": False, "limitsUpdatedAt": now.astimezone(timezone.utc).isoformat(),
                 "chats": [{"id": "PRIVATE_ROOT_ID", "title": "secret title",
                            "path": "secret path", "parentId": None}],
                 "activity": [{"date": today, "value": 180}, {"date": previous_day, "value": 50}],
@@ -55,6 +56,7 @@ def _fixture(now=None):
             },
             {
                 "name": "Codex",
+                "connected": True, "stale": False, "limitsUpdatedAt": now.astimezone(timezone.utc).isoformat(),
                 "chats": [{"id": "PRIVATE_CODEX_ROOT", "title": "another secret title",
                            "path": "another secret path", "parentId": None}],
                 "activity": [{"date": today, "value": 130}],
@@ -180,6 +182,9 @@ def test_unpriced_model_names_never_escape_private_identifiers(tmp_path):
 
 def test_snapshot_refresh_records_limit_peak_without_insights_request(monkeypatch, tmp_path):
     snapshot, now = _fixture()
+    observed_now = datetime.now(timezone.utc).isoformat()
+    for provider in snapshot["providers"]:
+        provider["limitsUpdatedAt"] = observed_now
     store = insights.LimitPeakStore(tmp_path / "peaks.jsonl", owner_check=lambda: True)
     monkeypatch.setattr(insights, "_default_store", lambda: store)
     monkeypatch.setattr(server, "_insights_allowed_names", lambda: {"Claude", "Codex"})
