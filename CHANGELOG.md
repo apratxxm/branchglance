@@ -13,6 +13,25 @@
 - Per-user installer, Start menu and Desktop shortcuts, optional sign-in Startup shortcut, uninstaller and previous-release rollback.
 - AppData redirection checks, visible Setup refusal for redirected or inconclusive locations, and Explorer relaunch for the widget when its launcher detects redirection.
 - Instant stale display of the last snapshot on widget reopen while a fresh snapshot loads in the background.
+- Insights view from the widget's Insights button: 24h, 7d, 30d and all ranges, a tokens or cost metric, daily limit peaks, and cost totals that name the unpriced models they leave out.
+- Settings tab in the Insights view, with a 12-hour or 24-hour clock for the compact widget.
+- Codex jobs started from a Claude Code chat nest under that chat in the unified tree.
+
+### Changed
+
+- Tree rows use shared column tracks. Titles, actions, workspace and status text wrap instead of truncating.
+- `/api/live` is gzip-compressed (about 387 KB to about 82 KB).
+- Cold builds are faster: snapshot about 35 s to 25 s, live about 19.7 s to 14 s (measured on copied data).
+- Widget idle CPU is lower (about 29% to about 2% of a core): identical DOM writes are skipped and the edge sheen animates only on hover.
+- Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 are priced from exact model ids. Models without a known price are never given a guessed price.
+- Live tree polls send the full link map on every poll instead of a delta.
+
+### Fixed
+
+- A finished earlier run of a resumed Codex thread no longer blocks the thread's current link.
+- A first paint without a chat graph is held for a bounded time before the tree is drawn without it.
+- Limit peak journal writes are limited to the running widget instance. Journal dates are validated strictly.
+- The 24h Insights range no longer falls back to day totals. Quota peaks use fresh observations only.
 
 ### Privacy and scope
 

@@ -6,7 +6,7 @@ Branchglance is a Windows desktop widget with a Python data and HTTP backend, a 
 
 1. Provider adapters read local provider data and produce normalized rows, quota meters, usage summaries and provenance fields.
 2. `providers.build_snapshot()` combines the enabled providers into a snapshot. `SnapshotCache` in `server.py` serves a compatible persisted snapshot while a fresh build runs and keeps live state in a separate cache.
-3. The widget embeds the local `runway.html` view. `app.js` fetches `/api/stats`, `/api/live`, `/api/today` and supporting routes; it renders provider trees, meters, activity, settings and analytics. The server binds to loopback and also exposes a separate authenticated control channel used by the Windows installer and launcher.
+3. The widget embeds the local `runway.html` view. `app.js` fetches `/api/stats`, `/api/live`, `/api/today` and supporting routes; `dashboard.js` fetches `/api/insights` for the Insights and Settings view. The frontend renders provider trees, meters, activity, settings and analytics. The server binds to loopback and also exposes a separate authenticated control channel used by the Windows installer and launcher.
 
 ## Codex provider
 
@@ -26,6 +26,22 @@ Claude data is split across three inputs:
 - `ClaudeDesktopProvider` in `providers.py` reads Claude Desktop's local quota cache. This is quota input; it is not Claude Code transcript state.
 
 `claude_events.py` reduces hook JSONL into execution and wait state. `Stop` and `StopFailure` are turn-scoped terminal markers; `SubagentStart` and `SubagentStop` delimit subagent activity. Prompt identifiers and event times prevent an older stop marker or notification from ending a newer turn. `claude_provider.py` joins hook state with transcript rows; if hook evidence is missing, execution can be unavailable rather than inferred from silence. Hook collection and display are disabled until the user enables Claude Code collection.
+
+## Chat graph and link verification
+
+`snapshot_graph()` in `agent_links.py` attaches canonical row keys and returns `{"revision", "edges"}`, the full map of parent-to-child links among chat rows. The revision is process-wide, so `/api/live` returns the full edges map on every poll rather than a delta; a client replaces its graph with what it receives. When a first snapshot arrives without a graph, the frontend holds the first paint for a bounded time and then draws without one.
+
+A Codex job started from a Claude Code session (`codex exec resume <thread-id>`) nests under that chat only on exact ancestry or an exact receipt bound to the Claude session. Link verification uses `verify_process()`, which relies on `probe_process()` in `claude_hook.py`. The probe reports the process as alive (with its creation time), gone, or unknown. `verify_process()` returns true only for a live process with the expected creation time, false when the process is gone or its creation time does not match, and `None` when the state cannot be determined, such as on non-Windows platforms. A gone process means that run has finished, so it no longer blocks the thread's current link; an unknown process leaves the link unverified.
+
+## Insights and settings
+
+`/api/insights?range=` accepts `24h`, `7d`, `30d` (the default) or `all`; other values return 400. `build_insights()` in `insights.py` aggregates per-provider usage from the cached snapshot. The snapshot carries each provider's `_insightsData` aggregate, which `/api/stats` and `/api/live` strip with a shallow copy so the aggregates stay server-side. The route returns 503 while the snapshot is still building. `INSIGHTS_CACHE` keeps results for a short time per range and provider-policy generation, and only providers whose policy allows the `show` action are included.
+
+Cost is priced from `CLAUDE_PRICING` in `providers.py`, keyed by model family. `PRICE_MODEL_ALIASES` maps exact model ids such as `claude-opus-5-5` to those keys. `_price_for()` lowercases the id, strips the long-context suffix and then looks up the exact key; there is no prefix or fuzzy matching. `_cost_for()` sums cost over priced models only and returns the unpriced model names. When no model in a range is priced, the cost total is absent.
+
+`LimitPeakStore` keeps a daily high-water mark of five-hour and weekly limit observations per provider in `insights-limit-peaks.jsonl` under the product state root. `record_limit_peaks()` feeds it from each snapshot refresh, using fresh observations only. `observe()` writes only while the running widget instance holds its instance mutex (`owner_check`); other processes read the journal without compacting it. The reader rejects day keys that fail strict validation, and the journal is bounded in size and days. The 24h range shows no day-total fallback.
+
+`/api/live` is cached as plain JSON and as gzip (level 1, fixed mtime) in `LiveCache`. `_live_encodings()` parses `Accept-Encoding` with q-values. The response is gzip when the client accepts it and identity otherwise, always with `Vary: Accept-Encoding`; it returns 406 when neither encoding is acceptable.
 
 ## Limits and reset actions
 
