@@ -53,10 +53,13 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dashboard-close{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:4px;color:#777c87;background:transparent;cursor:pointer;}
 .dashboard-close:hover{color:#e8e9ed;background:#1c1e24;}
 .dashboard-close .ic{width:12px;height:12px;}
-.dashboard-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:none;transition:opacity 90ms ease,transform 90ms ease;}
+.dashboard-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#2b2f38 transparent;transition:opacity 90ms ease,transform 90ms ease;}
 .dashboard-content.is-switching{opacity:.12;transform:translateY(2px);}
-.dashboard-content::-webkit-scrollbar,.dashboard-view *::-webkit-scrollbar{display:none;width:0;height:0;}
-.dashboard-view *{scrollbar-width:none;}
+.dashboard-view :not(.dashboard-content)::-webkit-scrollbar{display:none;width:0;height:0;}
+.dashboard-content::-webkit-scrollbar{width:5px;height:5px;}
+.dashboard-content::-webkit-scrollbar-track{background:transparent;}
+.dashboard-content::-webkit-scrollbar-thumb{background:#2b2f38;border-radius:3px;}
+.dashboard-view :not(.dashboard-content){scrollbar-width:none;}
 .dashboard-panel[hidden]{display:none!important;}
 .dash-eyebrow{color:#777c87;font-size:8px;font-weight:650;letter-spacing:.13em;text-transform:uppercase;}
 .dash-hero{position:relative;min-height:98px;padding:11px 24px 10px;border-bottom:1px solid #252830;}
@@ -109,7 +112,8 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-stat:first-child{padding-left:0;border-left:0;}
 .dash-stat-label{display:block;color:#777c86;font-size:8px;line-height:1.25;}
 .dash-stat-value{display:block;margin-top:3px;color:#d9dbe1;font-size:13px;line-height:1;font-weight:550;letter-spacing:-.035em;font-variant-numeric:tabular-nums;}
-.dash-lower{display:grid;grid-template-columns:minmax(0,1fr) 177px;gap:20px;padding:10px 24px 12px;}
+.dash-lower{display:grid;grid-template-columns:minmax(0,1fr) 177px;gap:20px;padding:10px 24px 14px;}
+.dash-model-more{height:17px;padding-top:4px;border-top:1px solid #202229;color:#686d78;font-size:8px;}
 .dash-lower.is-single{grid-template-columns:minmax(0,1fr);}
 .dash-model-block,.dash-limits{min-width:0;}
 .dash-model-head,.dash-model-row{display:grid;grid-template-columns:minmax(150px,1.4fr) 78px 66px 86px;align-items:center;gap:7px;}
