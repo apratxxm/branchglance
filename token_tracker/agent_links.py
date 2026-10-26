@@ -193,13 +193,22 @@ def _process_created(pid: int) -> int | None:
     return process_created(pid)
 
 
+def _probe_process(pid: int) -> tuple[str, int | None]:
+    from .claude_hook import probe_process
+    return probe_process(pid)
+
+
 def verify_process(pid: int, expected_created: int) -> bool | None:
     """Cheap bounded recheck for a remembered pid; None means unverifiable."""
     try:
-        observed = _process_created(pid)
-        return observed == expected_created if observed is not None else None
+        state, observed = _probe_process(pid)
     except Exception:
         return None
+    # A finished earlier run of a resumed thread is "gone", not unverifiable;
+    # treating it as unknown would block the thread's current link forever.
+    if state == "gone":
+        return False
+    return observed == expected_created if state == "alive" and observed is not None else None
 
 
 def _equal_sid(left: bytes | None, right: bytes | None) -> bool:
