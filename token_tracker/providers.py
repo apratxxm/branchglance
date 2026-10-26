@@ -1750,6 +1750,8 @@ def _decode_js_string(raw: str, quote: str) -> str | None:
 
 def _scan_literal_exec_commands(source: str) -> list[str]:
     """Find literal exec_command cmd strings while skipping JS strings/comments."""
+    if "exec_command" not in source:
+        return []
     commands: list[str] = []
     i = 0
     length = len(source)
@@ -2342,9 +2344,10 @@ def _read_codex_run_stats(path: Path) -> dict[str, Any]:
                                      _project_run_stats, unavailable={})
 
 
-def _codex_agent_stats(path_value: str | Path | None, status: str, is_subagent: bool) -> dict[str, Any]:
+def _codex_agent_stats(path_value: str | Path | None, status: str, is_subagent: bool,
+                       *, run_stats: dict[str, Any] | None = None) -> dict[str, Any]:
     """toolCalls, filesEdited, runStartedAt, runEndedAt and failureReason for one chat row."""
-    stats = _codex_run_stats(path_value)
+    stats = _codex_run_stats(path_value) if run_stats is None else run_stats
     start = stats.get("sessionStart") if is_subagent else stats.get("runStart") or stats.get("sessionStart")
     ended = None if status in _ACTIVE_STATES else stats.get("runEnd") or stats.get("lastEventAt")
     return {
@@ -4764,7 +4767,8 @@ def live_state() -> dict[str, Any]:
                 window = None
                 context_tokens = None
                 context_model = None
-            row.update(_codex_agent_stats(path_value, state["status"], bool(insights.get("parentId"))))
+            row.update(_codex_agent_stats(path_value, state["status"], bool(insights.get("parentId")),
+                                          run_stats=run_stats))
             unavailable = bool(state.get("telemetryUnavailable"))
             def retained_value(field: str, observed: Any) -> Any:
                 return indexed.get(field) if unavailable and observed is None else observed
