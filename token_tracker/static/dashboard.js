@@ -1,163 +1,236 @@
 (() => {
   const $=selector=>document.querySelector(selector),DAY=86400000;
-  const state={open:false,tab:"insights",source:"Codex",snapshot:null,limitHistory:null,policy:null,identity:null,monitors:[],settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsStatus:"",settingsError:false};
+  const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:Infinity};
+  const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"all time"};
+  const RANGE_PREVIOUS={"24h":"previous 24 hours","7d":"previous 7 days","30d":"previous 30 days",all:"previous period"};
+  const state={open:false,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
+  const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
+  const readPref=(key,fallback)=>{try{return localStorage.getItem(key)??fallback;}catch{return fallback;}};
+  const writePref=(key,value)=>{try{localStorage.setItem(key,value);}catch{}};
+  const reducedMotion=()=>window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches===true;
   const nfmt=new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3});
-  const number=value=>finite(value)==null?"—":nfmt.format(value);
-  const money=value=>finite(value)==null?"—":new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(value);
+  const usd=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2});
+  const number=value=>finite(value)==null?"":nfmt.format(value);
+  const money=value=>finite(value)==null?"":usd.format(value);
   const localDate=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
   const dayLabel=value=>{const date=new Date(`${value}T12:00:00`);return Number.isNaN(date.getTime())?String(value||""):new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric"}).format(date);};
-  const availableProviders=()=>Array.isArray(state.snapshot?.providers)?state.snapshot.providers:[];
-  const provider=()=>availableProviders().find(item=>item?.name===state.source)||null;
-  function dailySeries(value){
-    const source=Array.isArray(value?.activity)?value.activity:[],byDate=new Map();
-    for(const row of source){if(!row||typeof row.date!=="string"||!/^(\d{4}-\d\d-\d\d)$/.test(row.date))continue;byDate.set(row.date,{value:Math.max(0,finite(row.value)||0),models:row.models||row.modelUsage||null});}
-    const today=new Date();today.setHours(12,0,0,0);
-    return Array.from({length:31},(_,index)=>{const date=new Date(today.getTime()-(30-index)*DAY),key=localDate(date);return {date:key,value:byDate.get(key)?.value||0,models:byDate.get(key)?.models||null};});
+  const modelName=raw=>String(window.TokenTrackerFormatModel?.({model:raw})||raw||"");
+  const providerKey=name=>/claude/i.test(String(name||""))?"claude":"codex";
+  const modelKey=raw=>/^gpt-/i.test(String(raw||""))?"codex":"claude";
+  const metricKey=()=>isCost()?"apiEquivalentCost":"tokens";
+  const metricFormat=value=>isCost()?money(value):number(value);
+  const availableProviders=()=>Array.isArray(state.insights?.providers)?state.insights.providers:[];
+  const costAvailable=()=>availableProviders().some(p=>finite(p.totals?.apiEquivalentCost)!=null||(p.series||[]).some(row=>finite(row.apiEquivalentCost)!=null));
+  const isCost=()=>state.metric==="cost"&&costAvailable();
+  const setInsights=value=>{state.insights=value;state.version++;if(state.insights&&state.metric==="cost"&&!costAvailable())state.metric="tokens";syncSegments();};
+  function smoothPath(points){if(points.length<2)return "";let d="M"+points[0][0].toFixed(1)+" "+points[0][1].toFixed(1);for(let i=0;i<points.length-1;i++){const a=points[Math.max(0,i-1)],b=points[i],c=points[i+1],next=points[Math.min(points.length-1,i+2)];d+=" C"+(b[0]+(c[0]-a[0])/6).toFixed(1)+" "+(b[1]+(c[1]-a[1])/6).toFixed(1)+" "+(c[0]-(next[0]-b[0])/6).toFixed(1)+" "+(c[1]-(next[1]-b[1])/6).toFixed(1)+" "+c[0].toFixed(1)+" "+c[1].toFixed(1);}return d;}
+  function seriesChart(data){
+    const rows=data.series,providers=data.providers.filter(p=>rows.some(row=>(finite(row[p.name])||0)>0));
+    if(!rows.length||!providers.length)return "";
+    const W=668,H=113,L=42,R=4,T=9,B=20,PW=W-L-R,PH=H-T-B,step=PW/Math.max(rows.length-1,1);
+    const totals=rows.map(row=>providers.reduce((sum,p)=>sum+(finite(row[p.name])||0),0));
+    const max=Math.max(...totals)*1.1||1;
+    const xAt=index=>L+index*step,yAt=value=>T+PH-value/max*PH;
+    let cumulative=rows.map(()=>0),paths="";
+    for(const p of providers){
+      const cls=providerKey(p.name),lower=cumulative,upper=rows.map((row,index)=>lower[index]+(finite(row[p.name])||0));
+      cumulative=upper;
+      const top=upper.map((value,index)=>[xAt(index),yAt(value)]),bottom=lower.map((value,index)=>[xAt(index),yAt(value)]);
+      const edge=smoothPath(top),back=smoothPath([...bottom].reverse()).replace(/^M[^C]*/,"");
+      paths+=`<path class="area-fill ${cls}" d="${edge} L${bottom.at(-1)[0].toFixed(1)} ${bottom.at(-1)[1].toFixed(1)}${back} Z"/><path class="area-glow ${cls}" d="${edge}"/><path class="area-edge ${cls}" d="${edge}"/>`;
+    }
+    const ticks=[1,.5,0].map(fraction=>{const y=yAt(max*fraction),label=fraction===0?(isCost()?"$0":"0"):metricFormat(max*fraction);return `<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/><text class="dash-axis-value" x="${L-8}" y="${(y+3).toFixed(1)}" text-anchor="end">${esc(label)}</text>`;}).join("");
+    const labelIndexes=[...new Set([0,Math.floor((rows.length-1)/3),Math.floor(2*(rows.length-1)/3),rows.length-1])];
+    const dates=labelIndexes.map(index=>{const anchor=index===0?"start":index===rows.length-1?"end":"middle";return `<text class="dash-date" x="${xAt(index).toFixed(1)}" y="${H-3}" text-anchor="${anchor}">${esc(dayLabel(rows[index].date))}</text>`;}).join("");
+    const hover=rows.map((row,index)=>{const x=xAt(index),total=totals[index],tip=`<span class="tip-date">${esc(dayLabel(row.date))}</span><b class="tip-total">${esc(metricFormat(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(metricFormat(finite(row[p.name])||0))}</strong></span>`).join("")}`;
+      return `<g class="dash-point" tabindex="0" data-tip-html="${esc(tip)}"><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/><circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/></g>`;}).join("");
+    const defs='<defs><linearGradient id="dash-codex-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#6675ff" stop-opacity=".25"/><stop offset="1" stop-color="#6675ff" stop-opacity="0"/></linearGradient><linearGradient id="dash-claude-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#e98953" stop-opacity=".26"/><stop offset="1" stop-color="#e98953" stop-opacity="0"/></linearGradient><filter id="dash-soft-glow" x="-30%" y="-100%" width="160%" height="300%"><feGaussianBlur stdDeviation="2.8"/></filter></defs>';
+    return `<svg class="dash-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Daily ${isCost()?"API-equivalent cost":"tokens"} by provider">${defs}${ticks}${paths}${hover}${dates}</svg>`;
   }
-  function streaks(activity){
-    const active=new Set(activity.filter(row=>row.value>0).map(row=>row.date));let run=0,cursor=new Date();
-    for(;;){const key=localDate(cursor);if(!active.has(key))break;run++;cursor=new Date(cursor.getTime()-DAY);}
-    const dates=[...active].sort();let longest=0,best=0,previous=null;
-    for(const value of dates){const current=new Date(`${value}T12:00:00`);best=previous&&current-previous===DAY?best+1:1;longest=Math.max(longest,best);previous=current;}
-    return {current:run,longest};
+  function insightsData(){
+    const fallback=state.insights?.fallback===true,key=metricKey(),range=state.range,allProviders=availableProviders();
+    let dates=[...new Set(allProviders.flatMap(p=>(p.series||[]).map(row=>row.date).filter(Boolean)))].sort(),end=dates.at(-1);
+    const days=RANGE_DAYS[range];
+    if(Number.isFinite(days)&&end)dates=dates.filter(date=>(new Date(`${end}T12:00:00`)-new Date(`${date}T12:00:00`))/DAY<days);
+    const inRange=new Set(dates);
+    const sumOf=values=>{const present=values.filter(value=>finite(value)!=null);return present.length?present.reduce((sum,value)=>sum+value,0):null;};
+    const scoped=p=>fallback&&range!=="30d"&&range!=="all"?{tokens:sumOf((p.series||[]).filter(row=>inRange.has(row.date)).map(row=>finite(row.tokens))),apiEquivalentCost:sumOf((p.series||[]).filter(row=>inRange.has(row.date)).map(row=>finite(row.apiEquivalentCost)))}:{tokens:finite(p.totals?.tokens),apiEquivalentCost:finite(p.totals?.apiEquivalentCost)};
+    const providers=allProviders.map(p=>({name:p.name,scoped:scoped(p),raw:p}));
+    const totals={};
+    for(const k of ["tokens","apiEquivalentCost"])totals[k]=sumOf(providers.map(p=>p.scoped[k]));
+    for(const k of ["sessions","subagentsActive","activeHours"])totals[k]=fallback?null:sumOf(allProviders.map(p=>finite(p.totals?.[k])));
+    const cacheRows=allProviders.filter(p=>finite(p.totals?.cacheHitRate)!=null&&(!fallback||range==="30d"||range==="all"));
+    const cacheWeight=cacheRows.reduce((sum,p)=>sum+(finite(p.totals?.tokens)||1),0);
+    totals.cacheHitRate=cacheRows.length?cacheRows.reduce((sum,p)=>sum+p.totals.cacheHitRate*(finite(p.totals?.tokens)||1),0)/cacheWeight:null;
+    const previous={};
+    for(const k of ["tokens","apiEquivalentCost"]){const rows=!fallback&&(range==="24h"||range==="7d")?allProviders.filter(p=>finite(p.previous?.[k])!=null):[];previous[k]=rows.length&&rows.length===allProviders.length?rows.reduce((sum,p)=>sum+p.previous[k],0):null;}
+    const series=dates.map(date=>{const point={date};for(const p of allProviders){const row=(p.series||[]).find(item=>item.date===date);point[p.name]=finite(row?.[key]);}return point;});
+    const modelMap=new Map();
+    if(!fallback||range==="30d"||range==="all")for(const p of allProviders)for(const row of p.models||[]){const raw=String(row?.name||"");if(!raw)continue;const name=modelName(raw)||raw,item=modelMap.get(name)||{name,raw,tokens:null,apiEquivalentCost:null};for(const k of ["tokens","apiEquivalentCost"]){const value=finite(row[k]);if(value!=null)item[k]=(item[k]??0)+value;}modelMap.set(name,item);}
+    const models=[...modelMap.values()].filter(row=>row.tokens!=null||row.apiEquivalentCost!=null).sort((a,b)=>(b[key]||0)-(a[key]||0));
+    const peaks=allProviders.map(p=>({name:p.name,fiveHour:finite(p.limitPeaks?.fiveHour),weekly:finite(p.limitPeaks?.weekly)})).filter(p=>p.fiveHour!=null||p.weekly!=null);
+    return {fallback,providers,totals,previous,series,models,peaks};
   }
-  function sparkline(rows){
-    const width=320,height=54,pad=4,max=Math.max(1,...rows.map(row=>row.value)),step=(width-pad*2)/Math.max(1,rows.length-1);
-    const points=rows.map((row,index)=>`${(pad+index*step).toFixed(1)},${(height-pad-row.value/max*(height-pad*2)).toFixed(1)}`);
-    const first=points[0]||`${pad},${height-pad}`,last=points.at(-1)||`${width-pad},${height-pad}`;
-    return `<svg class="dash-sparkline" viewBox="0 0 ${width} ${height}" role="img" aria-label="31-day usage sparkline"><defs><linearGradient id="dash-spark-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--source-accent)" stop-opacity=".34"/><stop offset="1" stop-color="var(--source-accent)" stop-opacity="0"/></linearGradient></defs><path class="dash-spark-area" d="M${first} L${points.slice(1).join(" L")} L${width-pad} ${height-pad} L${pad} ${height-pad} Z"/><polyline class="dash-spark-line" points="${points.join(" ")}"/><circle class="dash-spark-end" cx="${last.split(",")[0]}" cy="${last.split(",")[1]}" r="3"/></svg>`;
+  const tokenHero=value=>{const [figure,unit]=value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
+  function splitHTML(data){
+    const rows=data.providers.map(p=>({name:p.name,value:finite(p.scoped[metricKey()])})).filter(row=>row.value>0),sum=rows.reduce((total,row)=>total+row.value,0);
+    if(!sum)return "";
+    return `<div class="dash-split" aria-hidden="true">${rows.map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div><div class="dash-split-legend">${rows.map(row=>`<span class="dash-legend-item"><i class="dash-dot ${providerKey(row.name)}"></i>${esc(row.name)} <b>${Math.round(100*row.value/sum)}%</b></span>`).join("")}</div>`;
   }
-  function modelEntries(models){
-    if(!models||typeof models!=="object")return [];
-    const entries=Array.isArray(models)?models.map(item=>[item?.model,item?.tokens]):Object.entries(models);
-    return entries.filter(([name,value])=>typeof name==="string"&&finite(value)!=null&&value>0).sort((a,b)=>b[1]-a[1]);
-  }
-  function dailyChart(rows){
-    const width=640,height=174,left=44,right=8,top=12,bottom=34,plotW=width-left-right,plotH=height-top-bottom,max=Math.max(1,...rows.map(row=>row.value)),step=plotW/rows.length,barW=Math.max(5,step*.58),ticks=[0,.5,1];
-    const grid=ticks.map(fraction=>{const y=top+plotH*(1-fraction),label=fraction===0?"0":number(max*fraction);return `<line class="grid-line" x1="${left}" x2="${width-right}" y1="${y}" y2="${y}"/><text class="dash-y-label" x="${left-8}" y="${y+3}" text-anchor="end">${esc(label)}</text>`;}).join("");
-    const bars=rows.map((row,index)=>{const center=left+index*step+step/2,x=center-barW/2,total=row.value,barH=total?Math.max(1,total/max*plotH):0,y=top+plotH-barH,entries=modelEntries(row.models),split=entries.map(([name,amount])=>`${name}: ${number(amount)}`).join("\n"),tip=`${dayLabel(row.date)} | ${number(total)} tokens${split?`\n${split}`:""}`;
-      let stack="";
-      if(total>0&&entries.length){let offset=0,modelTotal=entries.reduce((sum,entry)=>sum+entry[1],0)||1;stack=entries.map(([name,amount],part)=>{const partHeight=barH*amount/modelTotal,rectY=top+plotH-offset-partHeight;offset+=partHeight;return `<rect class="usage-bar usage-stack mix-${part%5}" tabindex="0" x="${x.toFixed(2)}" y="${rectY.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(1,partHeight).toFixed(2)}" rx="4"><title>${esc(tip)}</title></rect>`;}).join("");}
-      const bar=total>0&&!entries.length?`<rect class="usage-bar" tabindex="0" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${barH.toFixed(2)}" rx="4"><title>${esc(tip)}</title></rect>`:total===0?`<rect class="usage-bar is-zero" tabindex="0" x="${x.toFixed(2)}" y="${top+plotH-2}" width="${barW.toFixed(2)}" height="2" rx="2"><title>${esc(tip)}</title></rect>`:"";
-      return `<g class="dash-bar-group" data-tip="${esc(tip)}"><line class="dash-crosshair" x1="${center.toFixed(2)}" x2="${center.toFixed(2)}" y1="${top}" y2="${top+plotH}"/>${stack||bar}</g>`;
-    }).join("");
-    const labels=rows.map((row,index)=>index%7===0?`<text class="axis-label" x="${left+index*step+step/2}" y="${height-8}" text-anchor="middle">${esc(dayLabel(row.date))}</text>`:"").join("");
-    return `<svg class="dash-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily tokens over the last 31 days"><title>Daily token usage over the last 31 days</title><defs><linearGradient id="dash-bars-gradient" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--source-accent)"/><stop offset="1" stop-color="var(--source-glow-primary)"/></linearGradient></defs>${grid}${bars}${labels}</svg>`;
-  }
-  function heatmap(rows){
-    const max=Math.max(1,...rows.map(row=>row.value)),today=localDate(new Date());
-    return `<div class="dash-heat-legend"><span>Less</span><i data-level="0"></i><i data-level="1"></i><i data-level="2"></i><i data-level="3"></i><i data-level="4"></i><span>More</span></div><div class="dash-heatmap" role="grid" aria-label="31-day activity heatmap">${rows.slice(-35).map(row=>{const fraction=row.value/max,level=row.value===0?0:fraction<.2?1:fraction<.4?2:fraction<.7?3:4,title=`${dayLabel(row.date)} | ${number(row.value)} tokens`;return `<span class="dash-heat-cell${row.date===today?" is-today":""}" role="gridcell" data-level="${level}" title="${esc(title)}" aria-label="${esc(title)}"></span>`;}).join("")}</div><div class="dash-heat-days" aria-hidden="true"><span>Last 31 days</span><span>Today outlined</span></div>`;
-  }
-  function modelMix(value){
-    const models=Array.isArray(value?.modelUsage)?value.modelUsage.filter(row=>row&&typeof row.model==="string"&&finite(row.tokens)!=null&&row.tokens>0).slice(0,6):[];
-    if(!models.length)return `<p class="dash-inline-empty">Model-level usage is not available for this source.</p>`;
-    const total=models.reduce((sum,row)=>sum+row.tokens,0)||1;
-    return `<div class="dash-model-stack" role="img" aria-label="Model mix over the last 31 days">${models.map((row,index)=>`<i class="mix-${index%5}" style="width:${(row.tokens*100/total).toFixed(2)}%" title="${esc(row.model)}: ${Math.round(row.tokens*100/total)}%"></i>`).join("")}</div><div class="dash-model-legend">${models.map((row,index)=>`<div class="dash-model-key"><i class="mix-${index%5}"></i><span class="dash-model-name" title="${esc(row.model)}">${esc(row.model)}</span><b>${Math.round(row.tokens*100/total)}%</b></div>`).join("")}</div>`;
-  }
-  function limitHistoryHTML(){
-    const events=Array.isArray(state.limitHistory?.events)?state.limitHistory.events.filter(row=>!row.provider||row.provider===state.source).slice(-4).reverse():[];
-    if(!events.length)return `<div class="dash-empty">No reset events recorded for ${esc(state.source)}.</div>`;
-    return `<div class="dash-limits">${events.map(row=>{const type=String(row.event||row.type||"Reset event").replaceAll("_"," "),date=row.at||row.observedAt||row.timestamp||row.createdAt;return `<div class="dash-limit"><span class="dash-limit-label">${esc(type)}</span><span class="dash-limit-value">${esc(date?new Date(date).toLocaleString():"Recorded")}</span><span class="dash-limit-note">${esc(row.detail||row.reason||row.window||"")}</span></div>`;}).join("")}</div>`;
-  }
+  function emptyHTML(){return `<section class="dash-empty-state"><span class="dash-eyebrow">${state.metric==="cost"?"API-equivalent cost":`Tokens over ${RANGE_NAME[state.range]}`}</span><p>No recorded usage in this range</p></section>`;}
   function insightsHTML(){
-    const current=provider(),rows=dailySeries(current),streak=streaks(rows),cache=current?.cache||{},tokens=finite(current?.tracked31Days),lifetime=finite(current?.lifetimeTokens),cost=finite(cache.apiEquivalentCost),savings=finite(cache.cacheSavings),cacheRate=finite(cache.percent);
-    const supporting=`<div class="dash-hero-support"><article class="dash-card dash-support-card"><span>Lifetime tokens</span><strong>${lifetime==null?"?":number(lifetime)}</strong></article><article class="dash-card dash-support-card"><span>Current streak</span><strong>${number(current?.currentStreakDays??streak.current)}<small> days</small></strong></article><article class="dash-card dash-support-card"><span>Longest streak</span><strong>${number(current?.longestStreakDays??streak.longest)}<small> days</small></strong></article></div>`;
-    const sourceNote=current?.activityNote||"Daily usage from recorded provider activity.";
-    return `<div class="dash-hero"><article class="dash-card dash-hero-main"><div class="dash-hero-heading"><span class="dash-kpi-label">TOKENS OVER 31 DAYS</span><span class="dash-hero-source">${esc(state.source)} <i></i></span></div><div class="dash-hero-number">${tokens==null?"?":number(tokens)}<small> tokens</small></div>${sparkline(rows)}</article>${supporting}</div><div class="dash-secondary-stats"><article class="dash-card dash-secondary-stat"><span>API-equivalent cost</span><strong>${money(cost)}</strong><small>Estimated model pricing</small></article><article class="dash-card dash-secondary-stat"><span>Cache savings</span><strong>${money(savings)}</strong><small>Estimated cache-read savings</small></article><article class="dash-card dash-secondary-stat"><span>Cache hit rate</span><strong>${cacheRate==null?"?":`${Math.round(cacheRate)}%`}</strong><small>Input served from cache</small></article></div><div class="dash-layout"><article class="dash-card dash-section dash-daily"><div class="dash-section-head"><h2 class="dash-section-title">Daily usage</h2><span class="dash-section-meta">31 days</span></div>${dailyChart(rows)}<p class="dash-section-meta dash-source-note">${esc(sourceNote)}</p></article><article class="dash-card dash-section dash-activity"><div class="dash-section-head"><h2 class="dash-section-title">Activity</h2><span class="dash-section-meta">${esc(state.source)}</span></div>${heatmap(rows)}<div class="dash-section-head dash-model-head"><h2 class="dash-section-title">Model mix</h2><span class="dash-section-meta">31-day share</span></div>${modelMix(current)}<div class="dash-section-head dash-limit-head"><h2 class="dash-section-title">Limit history</h2><span class="dash-section-meta">Recent events</span></div>${limitHistoryHTML()}</article></div>`;
+    const data=insightsData(),key=metricKey(),cost=isCost(),value=finite(data.totals[key]),prev=finite(data.previous[key]),delta=value!=null&&prev!=null&&prev!==0?(value-prev)/prev*100:null;
+    if(!(finite(data.totals.tokens)>0)&&!(finite(data.totals.apiEquivalentCost)>0))return emptyHTML();
+    const figure=value==null?`<span class="dash-empty-line">${cost?"Cost is not available for this source.":"Token totals are not available for this source."}</span>`:cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">estimated</span>`:tokenHero(value);
+    const hero=`<section class="dash-hero"><div class="dash-hero-meta"><span class="dash-eyebrow">${cost?"API-equivalent cost":`Tokens over ${RANGE_NAME[state.range]}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[state.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${splitHTML(data)}</section>`;
+    const chart=seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">${data.fallback?"Last 31 days · ":""}Daily · ${cost?"API-equivalent cost":"tokens"}</span></div>${chart}</section>`:"";
+    const stats=[["Tokens",data.totals.tokens,number],["Sessions",data.totals.sessions,number],["Subagents active",data.totals.subagentsActive,number],["Cache hit rate",data.totals.cacheHitRate,v=>`${Math.round(v)}%`],["Active hours",data.totals.activeHours,v=>`${number(v)}h`]].filter(([,v])=>finite(v)!=null);
+    const statsHTML=stats.length?`<section class="dash-stats" style="grid-template-columns:repeat(${stats.length},minmax(0,1fr))">${stats.map(([label,v,format])=>`<div class="dash-stat"><span class="dash-stat-label">${label}</span><strong class="dash-stat-value">${esc(format(v))}</strong></div>`).join("")}</section>`:"";
+    const models=data.models,tokenSum=models.reduce((sum,row)=>sum+(finite(row.tokens)||0),0);
+    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label"><span>Model breakdown</span><small>${RANGE_NAME[state.range]}</small></div><div class="dash-model-head"><span>Model</span><span>Tokens</span><span>Cost</span><span>Share</span></div>${models.map(row=>{const family=modelKey(row.raw),pct=tokenSum&&finite(row.tokens)!=null?100*row.tokens/tokenSum:null;return `<div class="dash-model-row"><span class="dash-model-name ${family}"><i></i>${esc(row.name)}</span><b>${esc(number(row.tokens))}</b><b>${esc(money(row.apiEquivalentCost))}</b><span class="dash-share">${pct==null?"":`<i><em class="${family}" style="width:${pct.toFixed(2)}%"></em></i><small>${Math.round(pct)}%</small>`}</span></div>`;}).join("")}</div>`:"";
+    const limits=data.peaks.length?`<div class="dash-limits"><div class="dash-section-label"><span>Limit peaks</span><small>period max</small></div>${data.peaks.map(p=>`<div class="dash-limit-group ${providerKey(p.name)}-color"><div class="dash-limit-period">${esc(p.name)}</div>${[["5-hour",p.fiveHour],["Weekly",p.weekly]].filter(([,v])=>v!=null).map(([label,v])=>`<div class="dash-limit-row"><span>${label}</span><i class="dash-limit-track"><em style="width:${Math.max(0,Math.min(100,v)).toFixed(1)}%"></em></i><b>${Math.round(v)}%</b></div>`).join("")}</div>`).join("")}</div>`:"";
+    const lower=modelHTML||limits?`<section class="dash-lower${modelHTML&&limits?"":" is-single"}">${modelHTML}${limits}</section>`:"";
+    return hero+chartHTML+statsHTML+lower;
   }
-  function policyHTML(){
-    const policy=state.policy,rows=Array.isArray(policy?.providers)?policy.providers:[];
-    const list=rows.length?rows.map(row=>`<div class="dash-provider"><span class="dash-provider-name">${esc(row.name)}</span>${["show","collect","send"].map(key=>`<span class="dash-flag${row[key]===true?" is-on":""}"><i></i><b>${key}</b><small>${row[key]===true?"On":row[key]===false?"Off":"—"}</small></span>`).join("")}</div>`).join(""):`<div class="dash-empty">Provider policy is unavailable.</div>`;
-    const path=typeof policy?.policyFile==="string"&&policy.policyFile!=="absent"?`<span class="dash-policy-path">${esc(policy.policyFile)}</span>`:"";
-    const warning=Array.isArray(policy?.warnings)?policy.warnings.filter(value=>typeof value==="string"&&value.trim()).map(value=>esc(value)).join(" · "):"";
-    return `<article class="dash-card dash-section"><div class="dash-section-head"><h2 class="dash-section-title">Provider permissions</h2><span class="dash-readonly">Read only</span></div><div class="dash-provider-list">${list}</div><p class="dash-policy-note">Show, collect and send flags are set in the provider policy file.${path}${warning?`<span class="dash-policy-path">${warning}</span>`:""}</p></article>`;
-  }
-  function monitorHTML(){
-    if(!state.monitors.length)return `<div class="dash-empty">Monitor information is unavailable.</div>`;
-    return `<div class="dash-monitor-list">${state.monitors.map(monitor=>`<div class="dash-monitor"><div class="dash-monitor-main"><span class="dash-monitor-label">${esc(monitor.label||"Monitor")}${monitor.selected?" · current":""}</span><span class="dash-monitor-detail">${esc(monitor.kind||monitor.index?`${monitor.kind||`Display ${monitor.index}`} · ${monitor.workArea?.width||"?"} × ${monitor.workArea?.height||"?"}`:"Detected display")}</span></div><div class="dash-monitor-edit"><input class="dash-monitor-input" maxlength="32" aria-label="Name ${esc(monitor.label||"monitor")}" value="${esc(monitor.label||"")}" ${monitor.stableId?"":"disabled"}><button class="dash-mini-button" data-dashboard-action="save-monitor" data-monitor-id="${esc(monitor.id)}" ${monitor.stableId?"":"disabled"}>Save</button></div></div>`).join("")}</div>`;
-  }
+  const toggleRow=(label,description,action,value)=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control"><button class="dash-toggle${value?" is-on":""}" role="switch" aria-checked="${Boolean(value)}" aria-label="${label}" data-dashboard-action="${action}"></button></div></div>`;
+  const rowHTML=(label,description,control="")=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control">${control}</div></div>`;
   function settingsHTML(){
-    const startup=typeof state.identity?.startAtLogin==="boolean"?state.identity.startAtLogin?"Enabled":"Disabled":"Status not available from this widget";
-    // The page never holds the settings token: Claude tracking is shown read-only here and changed in its own window.
-    const reset=state.settingsLoaded?`<iframe class="dash-reset-frame" title="Auto-greet, continue and Claude hook settings" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe><div class="dash-actions"><button class="dash-mini-button" data-dashboard-action="claude-settings">Change Claude tracking…</button></div>`:`<div class="dash-empty">${esc(state.settingsStatus||"Loading settings…")}</div>`;
-    return `<div class="dash-settings"><div class="dash-settings-stack">${policyHTML()}<article class="dash-card dash-section"><div class="dash-section-head"><h2 class="dash-section-title">Monitors</h2><span class="dash-section-meta">Names saved by display identity</span></div>${monitorHTML()}<p class="dash-status${state.settingsError?" is-error":""}" role="status">${esc(state.settingsStatus)}</p><div class="dash-actions"><button class="dash-mini-button" data-dashboard-action="refresh-settings" ${state.settingsBusy?"disabled":""}>Refresh</button><button class="dash-mini-button" data-dashboard-action="recenter">Recenter widget</button></div></article><article class="dash-card dash-section"><div class="dash-section-head"><h2 class="dash-section-title">Start at login</h2><span class="dash-readonly">Read only</span></div><p class="dash-settings-note">${esc(startup)}. This widget does not expose a startup-setting control.</p></article></div><div class="dash-settings-stack"><article class="dash-card dash-section"><div class="dash-section-head"><h2 class="dash-section-title">Auto-greet, continue and Claude Code</h2><span class="dash-section-meta">Existing reset settings</span></div>${reset}</article></div></div>`;
+    const clock=readPref("branchglanceClockFormat","12")==="24"?"24":"12",policies=Array.isArray(state.policy?.providers)?state.policy.providers:[];
+    const providers=policies.length?`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers <span class="count">Policy controlled</span></h2>${policies.map(row=>rowHTML(esc(row.name),"Current provider policy",`<span class="dash-policy-flags">${["show","collect","send"].map(key=>`<span><small>${key}</small><b>${row[key]===true?"On":row[key]===false?"Off":"—"}</b></span>`).join("")}</span>`)).join("")}<p class="dash-setting-note">Show, collect and send flags are set in the policy file.${state.policy?.policyFile&&state.policy.policyFile!=="absent"?` <code>${esc(state.policy.policyFile)}</code>`:""}</p></section>`:"";
+    // Reset actions stays isolated in its existing frame; the dashboard never receives a settings token.
+    const reset=state.settingsLoaded?`<iframe class="reset-embed" title="Auto-greet, continue and Claude tracking settings" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status">${esc(state.settingsStatus||"Loading reset settings…")}</p>`;
+    const notifications=`<section class="dash-settings-group"><h2>Notifications</h2>${rowHTML("Reset actions","Auto-greet and continue preferences")}${reset}${rowHTML("Claude tracking","Manage Claude Desktop collection",`<button class="dash-action" data-dashboard-action="claude-settings">Change Claude tracking…</button>`)}</section>`;
+    const general=`<section class="dash-settings-group"><h2>General</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","Use a 12 or 24-hour clock",`<button class="dash-picker" data-dashboard-action="clock">${clock}-hour <i class="chevron" aria-hidden="true"></i></button>`)}</section>`;
+    const monitorOptions=state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("");
+    const display=`<section class="dash-settings-group"><h2>Display</h2>${state.monitors.length?rowHTML("Monitor","Choose where the widget opens",`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor">${monitorOptions}</select>`):""}${rowHTML("Recenter widget","Return to the selected display",`<button class="dash-action" data-dashboard-action="recenter">Recenter</button>`)}</section>`;
+    const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
+    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${providers}${notifications}</div><div class="dash-settings-column">${display}${status}</div></div>`;
   }
   function bindTooltips(){
     const root=$("#dashboard-view"),tip=$("#dash-tooltip");if(!root||!tip)return;
-    for(const eventName of ["pointerover","focusin"]){root.addEventListener(eventName,event=>{const target=event.target?.closest?.("[data-tip]");if(!target)return;tip.textContent=target.getAttribute("data-tip");tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");});}
-    for(const eventName of ["pointerout","focusout"]){root.addEventListener(eventName,event=>{if(event.target?.closest?.("[data-tip]")){tip.classList.remove("is-visible");tip.setAttribute("aria-hidden","true");}});}
-    root.addEventListener("pointermove",event=>{if(tip.classList.contains("is-visible")){tip.style.left=Math.min(event.clientX+12,window.innerWidth-230)+"px";tip.style.top=Math.min(event.clientY+12,window.innerHeight-58)+"px";}});
-  }
-  function selectTab(name){
-    if(name!=="insights"&&name!=="settings")return;
-    state.tab=name;const title=$("#dashboard-title");if(title)title.textContent=name==="insights"?"Insights":"Settings";
-    for(const key of ["insights","settings"]){const button=$("#dashboard-tab-"+key),panel=$("#dashboard-"+key);if(button){button.classList.toggle("is-active",key===name);button.setAttribute("aria-selected",String(key===name));}if(panel)panel.hidden=key!==name;}
-    render();if(name==="settings"&&!state.settingsLoaded)void loadSettings();
-  }
-  async function loadSettings(){
-    if(state.settingsBusy)return;state.settingsBusy=true;state.settingsError=false;state.settingsStatus="Loading settings…";render();
-    const api=window.pywebview?.api;
-    try{
-      const [policyResponse,identityResponse]=await Promise.all([fetch("/api/provider-policy",{cache:"no-store"}),fetch("/api/identity",{cache:"no-store"})]);
-      if(policyResponse.ok)state.policy=await policyResponse.json();else throw new Error("Provider policy is unavailable.");
-      if(identityResponse.ok)state.identity=await identityResponse.json();
-      if(typeof api?.get_monitors==="function"){const result=await api.get_monitors();state.monitors=Array.isArray(result)?result:[];}else state.monitors=[];
-      state.settingsStatus="";
-      state.settingsLoaded=true;
-    }catch(error){state.settingsError=true;state.settingsStatus=error?.message||"Settings could not be loaded.";}
-    finally{state.settingsBusy=false;render();}
-  }
-  async function saveMonitor(button){
-    const id=button.dataset.monitorId,row=button.closest(".dash-monitor"),input=row?.querySelector(".dash-monitor-input"),api=window.pywebview?.api;
-    if(!id||!input||typeof api?.set_monitor_name!=="function")return;
-    button.disabled=true;state.settingsStatus="Saving monitor name…";state.settingsError=false;render();
-    try{const result=await api.set_monitor_name(id,input.value);state.monitors=Array.isArray(result)?result:[];state.settingsStatus="Monitor name saved.";}
-    catch(error){state.settingsError=true;state.settingsStatus=error?.message||"Monitor name could not be saved.";}
-    finally{render();}
-  }
-  function render(){
-    if(!state.open)return;
-    const current=provider(),key=[state.source,state.tab,state.snapshot?.generatedAt,state.snapshot?.structureStamp,state.limitHistory?.events?.length].join("|");
-    if(key!==state.renderKey){state.renderKey=key;const insights=$("#dashboard-insights");if(insights)insights.innerHTML=insightsHTML();}
-    const settings=$("#dashboard-settings");
-    if(settings&&state.tab==="settings"){
-      const settingsKey=[state.source,state.policy?.generation,state.identity?.stateRoot,state.settingsStatus,state.settingsBusy,state.settingsError,state.monitors.map(m=>`${m.id}:${m.label}`).join("|")].join("|");
-      if(settingsKey!==state.settingsRenderKey){state.settingsRenderKey=settingsKey;settings.innerHTML=settingsHTML();state.frame=$("#dashboard-settings iframe");}
-    }
-    const root=$("#dashboard-view");if(root){root.dataset.provider=current?.name||state.source;bindTooltipsOnce();}
+    const show=target=>{tip.innerHTML=target.getAttribute("data-tip-html")||"";tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");};
+    root.addEventListener("pointerover",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target)show(target);});
+    root.addEventListener("focusin",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target)show(target);});
+    for(const eventName of ["pointerout","focusout"])root.addEventListener(eventName,event=>{if(event.target?.closest?.("[data-tip-html]")){tip.classList.remove("is-visible");tip.setAttribute("aria-hidden","true");}});
+    root.addEventListener("pointermove",event=>{if(tip.classList.contains("is-visible")){tip.style.left=Math.min(event.clientX+12,window.innerWidth-170)+"px";tip.style.top=Math.min(event.clientY+12,window.innerHeight-100)+"px";}});
   }
   let tooltipBound=false;
   function bindTooltipsOnce(){if(tooltipBound)return;tooltipBound=true;bindTooltips();}
-  async function loadLimitHistory(){
-    try{const response=await fetch("/api/limit-reset",{cache:"no-store"});if(response.ok){state.limitHistory=await response.json();state.renderKey="";render();}}
-    catch{state.limitHistory=null;}
+  function crossFade(change){
+    const content=$("#dashboard-content");
+    if(!content||reducedMotion()){change();return;}
+    content.classList.add("is-switching");
+    setTimeout(()=>{change();requestAnimationFrame(()=>content.classList.remove("is-switching"));},90);
   }
-  async function open({source}={}){
-    state.open=true;if(typeof source==="string")state.source=source;
+  function syncTabs(){
+    const root=$("#dashboard-view");if(root)root.dataset.tab=state.tab;
+    for(const key of ["insights","settings"]){const button=$("#dashboard-tab-"+key),panel=$("#dashboard-"+key);if(button){button.classList.toggle("is-active",key===state.tab);button.setAttribute("aria-selected",String(key===state.tab));}if(panel)panel.hidden=key!==state.tab;}
+  }
+  function syncSegments(){
+    document.querySelectorAll("[data-dashboard-range]").forEach(button=>{const active=button.dataset.dashboardRange===state.range;button.classList.toggle("is-active",active);button.setAttribute("aria-pressed",String(active));});
+    const unpriced=state.insights!=null&&!costAvailable();
+    document.querySelectorAll("[data-dashboard-metric]").forEach(button=>{const metric=button.dataset.dashboardMetric,active=metric===state.metric,blocked=metric==="cost"&&unpriced;button.classList.toggle("is-active",active);button.classList.toggle("is-unavailable",blocked);button.setAttribute("aria-pressed",String(active));button.setAttribute("aria-disabled",String(blocked));button.title=blocked?"No published pricing for these models":"";});
+  }
+  function selectTab(name){
+    if(name!=="insights"&&name!=="settings")return;
+    if(name===state.tab)return;
+    crossFade(()=>{state.tab=name;syncTabs();state.renderKey="";render();if(name==="settings"&&!state.settingsLoaded)void loadSettings();});
+  }
+  function setRange(range){
+    if(!isRange(range)||range===state.range)return;
+    crossFade(()=>{state.range=range;writePref("branchglanceInsightsRange",range);syncSegments();state.renderKey="";void loadInsights();render();});
+  }
+  function setMetric(metric){
+    if(!["tokens","cost"].includes(metric)||metric===state.metric)return;
+    if(metric==="cost"&&state.insights&&!costAvailable())return;
+    state.metric=metric;writePref("branchglanceInsightsMetric",metric);syncSegments();state.renderKey="";render();
+  }
+  async function loadSettings(){
+    if(state.settingsBusy)return;state.settingsBusy=true;state.settingsError=false;state.settingsStatus="Loading settings…";render();const api=window.pywebview?.api;
+    try{const [policyResponse,identityResponse]=await Promise.all([fetch("/api/provider-policy",{cache:"no-store"}),fetch("/api/identity",{cache:"no-store"})]);if(policyResponse.ok)state.policy=await policyResponse.json();if(identityResponse.ok)state.identity=await identityResponse.json();const [monitors,lock,keep]=await Promise.all([api?.get_monitors?.()||[],api?.get_widget_lock?.()||null,api?.get_keep_open?.()||null]);state.monitors=Array.isArray(monitors)?monitors:[];state.lock=lock;state.keepOpen=keep;state.settingsStatus="";state.settingsLoaded=true;}
+    catch(error){state.settingsError=true;state.settingsStatus=error?.message||"Settings could not be loaded.";}
+    finally{state.settingsBusy=false;state.settingsRenderKey="";render();}
+  }
+  async function chooseMonitor(id){
+    const api=window.pywebview?.api;if(typeof api?.select_monitor!=="function")return;
+    try{const result=await api.select_monitor(id);state.monitors=Array.isArray(result)?result:state.monitors;state.settingsError=false;state.settingsStatus="";}
+    catch(error){state.settingsError=true;state.settingsStatus=error?.message||"Monitor could not be selected.";}
+    finally{state.settingsRenderKey="";render();}
+  }
+  async function toggleSetting(action){
+    const api=window.pywebview?.api;
+    try{if(action==="lock"&&typeof api?.set_widget_lock==="function")state.lock=await api.set_widget_lock(state.lock?.locked!==true,state.lock?.expanded===true,null,state.lock?.revision);if(action==="keep-open"&&typeof api?.set_keep_open==="function")state.keepOpen=await api.set_keep_open(state.keepOpen?.keepOpen!==true,state.keepOpen?.keepOpenRevision);state.settingsError=false;state.settingsStatus="";}
+    catch{state.settingsError=true;state.settingsStatus="Setting could not be changed.";}
+    finally{state.settingsRenderKey="";render();}
+  }
+  function setClockFormat(value){
+    value=String(value);if(!["12","24"].includes(value))return false;
+    writePref("branchglanceClockFormat",value);window.TokenTrackerSetClockFormat?.(value);state.settingsRenderKey="";render();return true;
+  }
+  function toggleClock(){setClockFormat(readPref("branchglanceClockFormat","12")==="12"?"24":"12");}
+  function render(){
+    if(!state.open)return;
+    const insightsKey=[state.version,state.source,state.range,state.metric,state.tab].join("|");
+    if(insightsKey!==state.renderKey){state.renderKey=insightsKey;const insights=$("#dashboard-insights");if(insights)insights.innerHTML=insightsHTML();}
+    const settings=$("#dashboard-settings");
+    if(settings&&state.tab==="settings"){
+      const settingsKey=[state.source,state.policy?.generation,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.lock?.revision,state.keepOpen?.keepOpenRevision,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
+      if(settingsKey!==state.settingsRenderKey){state.settingsRenderKey=settingsKey;settings.innerHTML=settingsHTML();state.frame=$("#dashboard-settings iframe");}
+    }
+    bindTooltipsOnce();
+  }
+  function open({source}={}){
+    state.open=true;state.tab="insights";if(typeof source==="string")state.source=source;
+    state.range=readPref("branchglanceInsightsRange","30d");if(!isRange(state.range))state.range="30d";
+    state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
-    render();void loadLimitHistory();
-    if(state.tab==="settings"&&!state.settingsLoaded)void loadSettings();
+    syncTabs();syncSegments();render();void loadInsights();
   }
   function close(){
     state.open=false;const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
     const frame=$("#dashboard-settings iframe");if(frame)frame.src="about:blank";
     state.frame=null;state.settingsLoaded=false;state.settingsRenderKey="";
   }
-  function setSnapshot(snapshot){state.snapshot=snapshot;if(state.open)render();}
+  function normalizeStats(snapshot){
+    const providers=Array.isArray(snapshot?.providers)?snapshot.providers:[];
+    return {fallback:true,generatedAt:snapshot?.generatedAt||null,providers:providers.map(row=>{const cache=row?.cache||{};return {name:row?.name,totals:{tokens:finite(row?.tracked31Days),apiEquivalentCost:finite(row?.apiEquivalentCost??cache.apiEquivalentCost),sessions:finite(row?.sessions),subagentsActive:finite(row?.subagentsActive),activeHours:finite(row?.activeHours),cacheHitRate:finite(row?.cacheHitRate??cache.percent)},previous:null,series:(Array.isArray(row?.activity)?row.activity:[]).map(item=>({date:item.date,tokens:finite(item.value??item.tokens),apiEquivalentCost:finite(item.apiEquivalentCost)})).filter(item=>/^\d{4}-\d\d-\d\d$/.test(item.date||"")),models:(Array.isArray(row?.modelUsage)?row.modelUsage:[]).map(item=>({name:item?.model,tokens:finite(item?.tokens),apiEquivalentCost:finite(item?.apiEquivalentCost)})),limitPeaks:row?.limitPeaks||null};})};
+  }
+  async function loadInsights(){
+    const token=++state.loadToken;
+    try{
+      const response=await fetch("/api/insights?range="+encodeURIComponent(state.range),{cache:"no-store"});
+      if(response.ok){const value=await response.json();if(Array.isArray(value?.providers)){if(token!==state.loadToken)return state.insights;state.statsSnapshot=null;setInsights(value);render();return value;}}
+      const fallback=await fetch("/api/stats?background=1",{cache:"no-store"});if(!fallback.ok)throw new Error("Stats unavailable");
+      const stats=await fallback.json();if(token!==state.loadToken)return state.insights;
+      state.statsSnapshot=stats;setInsights(normalizeStats(stats));
+    }catch{
+      if(token!==state.loadToken)return state.insights;
+      setInsights(state.snapshot?.providers?normalizeStats(state.snapshot):{fallback:true,providers:[]});
+    }
+    render();return state.insights;
+  }
+  function setSnapshot(snapshot){
+    state.snapshot=snapshot;
+    if(state.open&&(!state.insights||state.insights.fallback)){state.statsSnapshot=snapshot;setInsights(normalizeStats(snapshot));render();}
+  }
   function setSource(source){if(typeof source==="string"&&source!==state.source){state.source=source;state.renderKey="";render();}}
   document.addEventListener("click",event=>{
     const tab=event.target?.closest?.("[data-dashboard-tab]");if(tab){selectTab(tab.dataset.dashboardTab);return;}
+    const range=event.target?.closest?.("[data-dashboard-range]");if(range){setRange(range.dataset.dashboardRange);return;}
+    const metric=event.target?.closest?.("[data-dashboard-metric]");if(metric){setMetric(metric.dataset.dashboardMetric);return;}
     const action=event.target?.closest?.("[data-dashboard-action]");if(!action)return;
-    if(action.dataset.dashboardAction==="close")window.tokenTrackerCloseDashboard?.();
-    else if(action.dataset.dashboardAction==="save-monitor")void saveMonitor(action);
-    else if(action.dataset.dashboardAction==="refresh-settings"){state.settingsLoaded=false;void loadSettings();}
-    else if(action.dataset.dashboardAction==="recenter")void window.tokenTrackerRecenter?.();
-    else if(action.dataset.dashboardAction==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
+    const name=action.dataset.dashboardAction;
+    if(name==="close")window.tokenTrackerCloseDashboard?.();
+    else if(name==="lock"||name==="keep-open")void toggleSetting(name);
+    else if(name==="clock")toggleClock();
+    else if(name==="recenter")void window.tokenTrackerRecenter?.();
+    else if(name==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
   });
+  document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);});
   window.addEventListener("message",event=>{if(event.origin===location.origin&&event.source===state.frame?.contentWindow&&event.data?.type==="dashboard-reset-cancel")window.tokenTrackerCloseDashboard?.();});
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
   window.TokenTrackerDashboard={open,close,setSource,setSnapshot,selectTab,render,loadSettings,state};
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={dailySeries,streaks,dailyChart,heatmap,modelMix,insightsHTML,policyHTML,state,setSnapshot,setSource,selectTab};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,insightsHTML,settingsHTML,normalizeStats,emptyHTML,setSnapshot,setSource,setRange,setMetric,setClockFormat,loadInsights,state};
 })();
