@@ -22,8 +22,25 @@
   const availableProviders=()=>Array.isArray(state.insights?.providers)?state.insights.providers:[];
   // Cost is available only when the 31-day or range totals carry a published price; it never comes from a per-day series alone.
   const costAvailable=()=>insightsData(false).totals.apiEquivalentCost!=null;
-  const setInsights=value=>{state.insights=value;state.version++;if(state.metric==="cost"&&!costAvailable())state.metric="tokens";syncSegments();};
-  function smoothPath(points){if(points.length<2)return "";let d="M"+points[0][0].toFixed(1)+" "+points[0][1].toFixed(1);for(let i=0;i<points.length-1;i++){const a=points[Math.max(0,i-1)],b=points[i],c=points[i+1],next=points[Math.min(points.length-1,i+2)];d+=" C"+(b[0]+(c[0]-a[0])/6).toFixed(1)+" "+(b[1]+(c[1]-a[1])/6).toFixed(1)+" "+(c[0]-(next[0]-b[0])/6).toFixed(1)+" "+(c[1]-(next[1]-b[1])/6).toFixed(1)+" "+c[0].toFixed(1)+" "+c[1].toFixed(1);}return d;}
+  const setInsights=value=>{state.insights=value;state.version++;if(state.metric==="cost"&&(!costAvailable()||(!state.metricExplicit&&insightsData(false).mostlyUnpriced)))state.metric="tokens";syncSegments();};
+  const pt=p=>p[0].toFixed(1)+" "+p[1].toFixed(1);
+  // Monotone cubic (Fritsch-Carlson): each segment stays between its two end values, so the line never overshoots peaks or dips below the floor.
+  function curvePath(points,reverse=false){
+    const n=points.length;if(n<2)return "";
+    const dx=[],slope=[],m=new Array(n);
+    for(let i=0;i<n-1;i++){dx[i]=points[i+1][0]-points[i][0];slope[i]=dx[i]?(points[i+1][1]-points[i][1])/dx[i]:0;}
+    m[0]=slope[0];m[n-1]=slope[n-2];
+    for(let i=1;i<n-1;i++)m[i]=slope[i-1]*slope[i]<=0?0:(slope[i-1]+slope[i])/2;
+    for(let i=0;i<n-1;i++){
+      if(slope[i]===0){m[i]=0;m[i+1]=0;continue;}
+      const a=m[i]/slope[i],b=m[i+1]/slope[i];
+      if(a<0||b<0){m[i]=0;m[i+1]=0;continue;}
+      const sq=a*a+b*b;if(sq>9){const t=3/Math.sqrt(sq);m[i]=t*a*slope[i];m[i+1]=t*b*slope[i];}
+    }
+    const control=i=>{const h=dx[i]/3;return [[points[i][0]+h,points[i][1]+m[i]*h],[points[i+1][0]-h,points[i+1][1]-m[i+1]*h]];};
+    if(!reverse){let d="M"+pt(points[0]);for(let i=0;i<n-1;i++){const [c1,c2]=control(i);d+=" C"+pt(c1)+" "+pt(c2)+" "+pt(points[i+1]);}return d;}
+    let d="M"+pt(points[n-1]);for(let i=n-2;i>=0;i--){const [c1,c2]=control(i);d+=" C"+pt(c2)+" "+pt(c1)+" "+pt(points[i]);}return d;
+  }
   function insightsData(requestCost=state.metric==="cost"){
     const fallback=state.insights?.fallback===true,range=state.range,allProviders=availableProviders();
     let dates=[...new Set(allProviders.flatMap(p=>(p.series||[]).map(row=>row.date).filter(Boolean)))].sort(),end=dates.at(-1);
@@ -55,7 +72,10 @@
     const costPartial=allProviders.some(p=>p.totals?.costPartial===true);
     const unpricedModels=[...new Set(allProviders.flatMap(p=>Array.isArray(p.totals?.unpricedModels)?p.totals.unpricedModels:[]).map(name=>modelName(String(name))||String(name)).filter(Boolean))];
     const peaks=allProviders.map(p=>({name:p.name,fiveHour:finite(p.limitPeaks?.fiveHour),weekly:finite(p.limitPeaks?.weekly)})).filter(p=>p.fiveHour!=null||p.weekly!=null);
-    return {fallback,providers,totals,previous,seriesByKey,series:seriesByKey[chartKey],chartKey,heroKey,costHero,costPartial,unpricedModels,models,peaks,dates};
+    const unpricedTokens=models.filter(row=>row.apiEquivalentCost==null&&row.tokens!=null).reduce((sum,row)=>sum+row.tokens,0);
+    const tokenDenominator=finite(totals.tokens)??models.reduce((sum,row)=>sum+(finite(row.tokens)||0),0);
+    const mostlyUnpriced=tokenDenominator>0&&unpricedTokens>tokenDenominator/2;
+    return {fallback,providers,totals,previous,seriesByKey,series:seriesByKey[chartKey],chartKey,heroKey,costHero,costPartial,unpricedModels,mostlyUnpriced,models,peaks,dates};
   }
   const joinNames=names=>names.length<=2?names.join(" and "):`${names.slice(0,-1).join(", ")} and ${names.at(-1)}`;
   const tokenHero=value=>{const [figure,unit]=value>=1e9?[(value/1e9).toFixed(2),"B tokens"]:value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
@@ -72,8 +92,8 @@
       const cls=providerKey(p.name),lower=cumulative,upper=rows.map((row,index)=>lower[index]+(finite(row[p.name])||0));
       cumulative=upper;
       const top=upper.map((value,index)=>[xAt(index),yAt(value)]),bottom=lower.map((value,index)=>[xAt(index),yAt(value)]);
-      const edge=smoothPath(top),back=smoothPath([...bottom].reverse()).replace(/^M[^C]*/,"");
-      paths+=`<path class="area-fill ${cls}" d="${edge} L${bottom.at(-1)[0].toFixed(1)} ${bottom.at(-1)[1].toFixed(1)}${back} Z"/><path class="area-glow ${cls}" d="${edge}"/><path class="area-edge ${cls}" d="${edge}"/>`;
+      const edge=curvePath(top),back=curvePath(bottom,true).replace(/^M[^C]*/,"");
+      paths+=`<path class="area-fill ${cls}" d="${edge} L${pt(bottom.at(-1))} ${back} Z"/><path class="area-glow ${cls}" d="${edge}"/><path class="area-edge ${cls}" d="${edge}"/>`;
     }
     const ticks=[1,.5,0].map(fraction=>{const y=yAt(max*fraction),label=fraction===0?(cost?"$0":"0"):format(max*fraction);return `<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/><text class="dash-axis-value" x="${L-8}" y="${(y+3).toFixed(1)}" text-anchor="end">${esc(label)}</text>`;}).join("");
     const labelIndexes=[...new Set([0,Math.floor((rows.length-1)/3),Math.floor(2*(rows.length-1)/3),rows.length-1])];
@@ -103,7 +123,7 @@
     const stats=[["Tokens",data.totals.tokens,number],["Sessions",data.totals.sessions,number],["Subagents active",data.totals.subagentsActive,number],["Cache hit rate",data.totals.cacheHitRate,v=>`${Math.round(v)}%`],["Active hours",data.totals.activeHours,v=>`${number(v)}h`]].filter(([,v])=>!missing(v));
     const statsHTML=stats.length?`<section class="dash-stats" style="grid-template-columns:repeat(${stats.length},minmax(0,1fr))">${stats.map(([label,v,format])=>`<div class="dash-stat"><span class="dash-stat-label">${label}</span><strong class="dash-stat-value">${esc(format(v))}</strong></div>`).join("")}</section>`:"";
     const models=data.models,tokenSum=models.reduce((sum,row)=>sum+(finite(row.tokens)||0),0);
-    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label"><span>Model breakdown</span><small>${RANGE_NAME[state.range]}</small></div><div class="dash-model-head"><span>Model</span><span>Tokens</span><span>Cost</span><span>Share</span></div>${models.map(row=>{const family=modelKey(row.raw),pct=tokenSum&&finite(row.tokens)!=null?100*row.tokens/tokenSum:null;return `<div class="dash-model-row"><span class="dash-model-name ${family}"><i></i>${esc(row.name)}</span><b>${esc(number(row.tokens))}</b><b>${esc(money(row.apiEquivalentCost))}</b><span class="dash-share">${pct==null?"":`<i><em class="${family}" style="width:${pct.toFixed(2)}%"></em></i><small>${Math.round(pct)}%</small>`}</span></div>`;}).join("")}</div>`:"";
+    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label"><span>Model breakdown</span><small>${RANGE_NAME[state.range]}</small></div><div class="dash-model-head"><span>Model</span><span>Tokens</span><span>Cost</span><span>Share</span></div>${models.slice(0,5).map(row=>{const family=modelKey(row.raw),pct=tokenSum&&finite(row.tokens)!=null?100*row.tokens/tokenSum:null;return `<div class="dash-model-row"><span class="dash-model-name ${family}"><i></i>${esc(row.name)}</span><b>${esc(number(row.tokens))}</b><b>${esc(money(row.apiEquivalentCost))}</b><span class="dash-share">${pct==null?"":`<i><em class="${family}" style="width:${pct.toFixed(2)}%"></em></i><small>${Math.round(pct)}%</small>`}</span></div>`;}).join("")}${models.length>5?`<div class="dash-model-more">+${models.length-5} more</div>`:""}</div>`:"";
     const limits=data.peaks.length?`<div class="dash-limits"><div class="dash-section-label"><span>Limit peaks</span><small>period max</small></div>${data.peaks.map(p=>`<div class="dash-limit-group ${providerKey(p.name)}-color"><div class="dash-limit-period">${esc(p.name)}</div>${[["5-hour",p.fiveHour],["Weekly",p.weekly]].filter(([,v])=>v!=null).map(([label,v])=>`<div class="dash-limit-row"><span>${label}</span><i class="dash-limit-track"><em style="width:${Math.max(0,Math.min(100,v)).toFixed(1)}%"></em></i><b>${Math.round(v)}%</b></div>`).join("")}</div>`).join("")}</div>`:"";
     const lower=modelHTML||limits?`<section class="dash-lower${modelHTML&&limits?"":" is-single"}">${modelHTML}${limits}</section>`:"";
     return hero+chartHTML+statsHTML+lower;
@@ -159,7 +179,7 @@
   function setMetric(metric){
     if(!["tokens","cost"].includes(metric)||metric===state.metric)return;
     if(metric==="cost"&&state.insights&&!costAvailable())return;
-    state.metric=metric;writePref("branchglanceInsightsMetric",metric);syncSegments();state.renderKey="";render();
+    state.metricExplicit=true;state.metric=metric;writePref("branchglanceInsightsMetric",metric);syncSegments();state.renderKey="";render();
   }
   async function loadSettings(){
     if(state.settingsBusy)return;state.settingsBusy=true;state.settingsError=false;state.settingsStatus="Loading settings…";render();const api=window.pywebview?.api;
@@ -198,7 +218,7 @@
   function open({source}={}){
     state.open=true;state.tab="insights";if(typeof source==="string")state.source=source;
     state.range=readPref("branchglanceInsightsRange","30d");if(!isRange(state.range))state.range="30d";
-    state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
+    state.metricExplicit=readPref("branchglanceInsightsMetric",null)!==null;state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
     syncTabs();syncSegments();render();void loadInsights();
   }
@@ -246,5 +266,5 @@
   window.addEventListener("message",event=>{if(event.origin===location.origin&&event.source===state.frame?.contentWindow&&event.data?.type==="dashboard-reset-cancel")window.tokenTrackerCloseDashboard?.();});
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
   window.TokenTrackerDashboard={open,close,setSource,setSnapshot,selectTab,render,loadSettings,state};
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,insightsHTML,settingsHTML,normalizeStats,emptyHTML,setSnapshot,setSource,setRange,setMetric,setClockFormat,loadInsights,state};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,setSnapshot,setSource,setRange,setMetric,setClockFormat,loadInsights,state};
 })();
