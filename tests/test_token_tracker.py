@@ -835,6 +835,115 @@ def test_live_cache_error_preserves_prior_timestamp_and_cools_down_for_one_secon
     assert cache.retry_after == 102.0
 
 
+@pytest.mark.parametrize("header,expected", [
+    ("", (False, True)), ("br", (False, True)), ("GZip;q=0.5", (True, True)),
+    ("gzip;q=0", (False, True)), ("gzip;q=wat", (False, True)),
+    ("*;q=1, gzip;q=0", (False, True)), ("gzip, identity;q=0", (True, False)),
+    ("*;q=0", (False, False)), ("gzip;q=0, gzip;q=1", (False, True)),
+])
+def test_live_encoding_negotiation(header, expected):
+    assert server._live_encodings(header) == expected
+
+
+def test_live_http_compression_and_generation_isolation(monkeypatch):
+    import gzip
+    cache = server.LiveCache()
+    value = {"chats": [{"title": "\u0968" * 1000}], "graph": {"edges": {"x": None}}}
+    monkeypatch.setattr(server, "live_state", lambda: value)
+    monkeypatch.setattr(server, "LIVE_CACHE", cache)
+    cache._refresh()
+    first = cache.get(encoded=True)
+    assert json.loads(first[1]) == value == json.loads(gzip.decompress(first[2]))
+    monkeypatch.setattr(server, "live_state", lambda: {"chats": [], "graph": {"edges": {}}})
+    cache._refresh()
+    assert json.loads(first[1]) == value == json.loads(gzip.decompress(first[2]))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True); thread.start()
+    conn = HTTPConnection("127.0.0.1", httpd.server_port, timeout=2)
+    try:
+        conn.request("GET", "/api/live", headers={"Accept-Encoding": "gzip"})
+        response = conn.getresponse(); body = response.read()
+        assert response.status == 200 and response.getheader("Content-Encoding") == "gzip"
+        assert int(response.getheader("Content-Length")) == len(body)
+        assert response.getheader("Vary") == "Accept-Encoding"
+        assert response.getheader("Cache-Control") == "no-store"
+        assert json.loads(gzip.decompress(body)) == cache.value
+        conn.request("GET", "/api/live", headers={"Accept-Encoding": "gzip;q=0"})
+        response = conn.getresponse(); plain = response.read()
+        assert response.getheader("Content-Encoding") is None
+        assert json.loads(plain) == cache.value
+        conn.request("GET", "/api/live", headers={"Accept-Encoding": "gzip;q=0, identity;q=0"})
+        response = conn.getresponse(); response.read()
+        assert response.status == 406
+    finally:
+        conn.close(); httpd.shutdown(); httpd.server_close(); thread.join(1)
+
+
+def test_live_cache_compression_failure_publishes_fresh_plain(monkeypatch):
+    cache = server.LiveCache()
+    monkeypatch.setattr(server, "live_state", lambda: {"generation": 1})
+    cache._refresh()
+    monkeypatch.setattr(server.gzip, "compress", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("failed")))
+    monkeypatch.setattr(server, "live_state", lambda: {"generation": 2})
+    cache._refresh()
+    value, plain, compressed = cache.get(encoded=True)
+    assert value == json.loads(plain) == {"generation": 2}
+    assert compressed is None and not cache.building
+
+
+def test_live_cache_serialization_failure_keeps_old_generation(monkeypatch):
+    cache = server.LiveCache()
+    monkeypatch.setattr(server, "live_state", lambda: {"generation": 1})
+    cache._refresh()
+    old = cache.get(encoded=True)
+    completed = cache.completed_at
+    monkeypatch.setattr(server, "live_state", lambda: {"bad": object()})
+    cache.building = True
+    cache._refresh()
+    assert cache.get(encoded=True) == old
+    assert cache.completed_at == completed and not cache.building
+    assert cache.retry_after > time.monotonic()
+
+
+def test_live_cache_encodes_once_per_publication(monkeypatch):
+    cache = server.LiveCache()
+    monkeypatch.setattr(server, "live_state", lambda: {"chats": ["text"]})
+    original = server.gzip.compress
+    calls = []
+    def compress(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(server.gzip, "compress", compress)
+    cache._refresh()
+    for _ in range(3):
+        assert cache.get(encoded=True)[2]
+    assert calls == [1]
+
+
+def test_live_cache_readers_get_consistent_generation_during_refresh(monkeypatch):
+    import gzip
+    cache = server.LiveCache()
+    monkeypatch.setattr(server, "live_state", lambda: {"generation": 1})
+    cache._refresh()
+    entered, release = threading.Event(), threading.Event()
+    def next_live():
+        entered.set()
+        assert release.wait(2)
+        return {"generation": 2}
+    monkeypatch.setattr(server, "live_state", next_live)
+    worker = threading.Thread(target=cache._refresh)
+    worker.start()
+    try:
+        assert entered.wait(1)
+        old = cache.get(encoded=True)
+        assert old[0] == json.loads(old[1]) == json.loads(gzip.decompress(old[2])) == {"generation": 1}
+    finally:
+        release.set()
+        worker.join(2)
+    new = cache.get(encoded=True)
+    assert new[0] == json.loads(new[1]) == json.loads(gzip.decompress(new[2])) == {"generation": 2}
+
+
 def test_http_health_stats_and_force_refresh(monkeypatch):
     calls = []
     monkeypatch.setattr(server, "CACHE", server.SnapshotCache(ttl=60))
@@ -2462,12 +2571,16 @@ def test_live_state_includes_recorded_codex_request_and_update(tmp_path, monkeyp
         "trackerUpdateAt": "2026-10-04T10:00:02+00:00",
         "contextWindow": 200000,
     })
-    monkeypatch.setattr(providers, "_codex_agent_stats", lambda path, status, is_subagent: {})
+    run_calls = []
+    run_stats = {"toolCalls": 7}
+    monkeypatch.setattr(providers, "_codex_run_stats", lambda path: (run_calls.append(path), run_stats)[1])
     monkeypatch.setattr(CodexProvider, "_recent_tokens", classmethod(
         lambda cls, path: (_ for _ in ()).throw(AssertionError("live telemetry must not parse recent token totals"))))
 
     live = providers.live_state()
     chat = next(row for row in live["chats"] if row["key"] == "Codex:thread")
+    assert run_calls == [str(transcript)]
+    assert chat["toolCalls"] == 7
     assert chat["latestRequest"] == "Inspect the chat summary"
     assert chat["latestRequestAt"] == "2026-10-04T09:00:00+00:00"
     assert chat["latestUpdate"] == "Summary updated from the last recorded turn"
