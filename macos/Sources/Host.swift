@@ -1,4 +1,5 @@
 import Cocoa
+import ServiceManagement
 import SwiftUI
 import WebKit
 
@@ -346,6 +347,10 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
                                      accessibilityDescription: "Branchglance")
         let menu = NSMenu()
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin(_:)), keyEquivalent: "")
+        login.target = self
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
         let auto = NSMenuItem(title: "Open on New Activity", action: #selector(toggleAutoOpen(_:)), keyEquivalent: "")
         auto.target = self
         auto.state = autoOpen ? .on : .off
@@ -383,6 +388,14 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func toggleLogin(_ item: NSMenuItem) {
+        do {
+            if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
+            else { try SMAppService.mainApp.register() }
+        } catch { NSLog("Branchglance: login item change failed: \(error)") }
+        item.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
     @objc func toggleAutoOpen(_ item: NSMenuItem) {
