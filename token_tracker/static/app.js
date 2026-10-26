@@ -314,6 +314,10 @@ function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
   }
   return tallRootChanged;
 }
+// Idle ticks re-render the same values; skip identical writes so they don't churn the DOM.
+function put(el,key,value){if(el&&el[key]!==value)el[key]=value;}
+function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttribute?.(name,value);}
+function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
   if(!RUNWAY||PHONE)return;
   if(COMPACT){
@@ -328,16 +332,16 @@ function setNotch(expanded, treeSynced=false) {
     notch.mode=mode;notch.expanded=mode==='inspect';
     if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
     const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
-    if(dashboardView){dashboardView.hidden=!dashboardVisible;dashboardView.inert=!dashboardVisible;dashboardView.setAttribute?.('aria-hidden',String(!dashboardVisible));}
+    if(dashboardView){put(dashboardView,'hidden',!dashboardVisible);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
     const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
     if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
     for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
-    for(const name of ['idle','rest','controls','inspect','dashboard'])document.body?.classList?.toggle('compact-'+name,mode===name);
-    if(document.body?.dataset)document.body.dataset.notchMode=mode;
-    document.body?.classList?.toggle('notch-expanded',notch.expanded);
-    document.body?.classList?.toggle('notch-collapsed',!notch.expanded);
-    document.body?.classList?.toggle('notch-auto-open',Boolean(notch.autoExpanded&&notch.expanded));
-    document.body?.classList?.toggle('notch-inspecting',mode==='inspect');
+    for(const name of ['idle','rest','controls','inspect','dashboard'])cls(document.body,'compact-'+name,mode===name);
+    if(document.body?.dataset&&document.body.dataset.notchMode!==mode)document.body.dataset.notchMode=mode;
+    cls(document.body,'notch-expanded',notch.expanded);
+    cls(document.body,'notch-collapsed',!notch.expanded);
+    cls(document.body,'notch-auto-open',notch.autoExpanded&&notch.expanded);
+    cls(document.body,'notch-inspecting',mode==='inspect');
     if(notch.expanded&&!PHONE&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
     renderRunwayCounts(notch.counts);
     const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
@@ -1568,15 +1572,15 @@ function renderResets(providers) {
     else node.innerHTML=markup("fiveHour")+markup("weekly");
   }
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
-    const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");if(row)row.title=view.tip;
+    const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");put(row,"title",view.tip);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
-    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
+    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;put(left,"title",view.tip);}}
     else set("-left",view.usedText);
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
-    const left=$(id+"-left");if(left){left.className="rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:"");left.title=view.tip;}
-    const cd=$(id+"-cd");if(cd){cd.className="rr-cd"+(view.due?" t-attn":"");if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;cd.title=countdownText?'Resets '+view.day+' '+view.time:'';cd.setAttribute?.('aria-hidden',String(!countdownText));}}
-    const meter=$(id+"-meter");if(meter){meter.className="meter"+(view.lastKnown?" last-known":"");if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{meter.setAttribute("aria-valuenow",String(Math.round(view.usedPercent)));meter.setAttribute?.('aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
-    const bar=$(id+"-bar");if(bar){bar.style.width=(view.usedPercent??0)+"%";bar.className=view.lastKnown?"last-known":view.tone?"t-"+view.tone:"";}
+    const left=$(id+"-left");put(left,"className","rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.tip);
+    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}}
+    const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
+    const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"&&!PHONE){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
   }));
   if(RUNWAY&&!PHONE)renderGreeterStatus(providers);

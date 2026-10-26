@@ -209,6 +209,9 @@ body.runway-refined.runway-compact:not(.phone) .rr::after,
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar::after,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar::after{content:"";position:absolute;z-index:1;top:1px;left:12px;width:54px;height:1px;pointer-events:none;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--source-glow-primary) 44%,transparent) 40%,color-mix(in srgb,var(--source-glow-secondary) 34%,transparent) 62%,transparent);opacity:.22;transform:translateX(0);animation:compact-edge-drift 8s var(--ease-standard) infinite alternate;}
 @keyframes compact-edge-drift{to{opacity:.42;transform:translateX(90px);}}
+/* An endless sheen keeps WebView2 compositing every frame; drift only while the pointer is on the widget. */
+body.runway-refined.runway-compact:not(.phone):not(:hover) .rr::after,
+body.runway-refined.runway-compact:not(.phone):not(:hover) .compact-toolbar::after{animation-play-state:paused;}
 body.runway-refined.runway-compact:not(.phone) .resets{order:0;flex:none;height:34px;min-height:34px;padding:0;overflow:visible;}
 body.runway-refined.runway-compact:not(.phone) .quota-grid{height:34px;min-height:34px;display:block;}
 body.runway-refined.runway-compact:not(.phone) .weekly-resets{order:3;flex:none;height:34px;min-height:34px;padding:0;}
