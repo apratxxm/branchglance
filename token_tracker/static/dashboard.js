@@ -19,15 +19,49 @@
   const modelName=raw=>String(window.TokenTrackerFormatModel?.({model:raw})||raw||"");
   const providerKey=name=>/claude/i.test(String(name||""))?"claude":"codex";
   const modelKey=raw=>/^gpt-/i.test(String(raw||""))?"codex":"claude";
-  const metricKey=()=>isCost()?"apiEquivalentCost":"tokens";
-  const metricFormat=value=>isCost()?money(value):number(value);
   const availableProviders=()=>Array.isArray(state.insights?.providers)?state.insights.providers:[];
-  const costAvailable=()=>availableProviders().some(p=>finite(p.totals?.apiEquivalentCost)!=null||(p.series||[]).some(row=>finite(row.apiEquivalentCost)!=null));
-  const isCost=()=>state.metric==="cost"&&costAvailable();
-  const setInsights=value=>{state.insights=value;state.version++;if(state.insights&&state.metric==="cost"&&!costAvailable())state.metric="tokens";syncSegments();};
+  // Cost is available only when the 31-day or range totals carry a published price; it never comes from a per-day series alone.
+  const costAvailable=()=>insightsData(false).totals.apiEquivalentCost!=null;
+  const setInsights=value=>{state.insights=value;state.version++;if(state.metric==="cost"&&!costAvailable())state.metric="tokens";syncSegments();};
   function smoothPath(points){if(points.length<2)return "";let d="M"+points[0][0].toFixed(1)+" "+points[0][1].toFixed(1);for(let i=0;i<points.length-1;i++){const a=points[Math.max(0,i-1)],b=points[i],c=points[i+1],next=points[Math.min(points.length-1,i+2)];d+=" C"+(b[0]+(c[0]-a[0])/6).toFixed(1)+" "+(b[1]+(c[1]-a[1])/6).toFixed(1)+" "+(c[0]-(next[0]-b[0])/6).toFixed(1)+" "+(c[1]-(next[1]-b[1])/6).toFixed(1)+" "+c[0].toFixed(1)+" "+c[1].toFixed(1);}return d;}
+  function insightsData(requestCost=state.metric==="cost"){
+    const fallback=state.insights?.fallback===true,range=state.range,allProviders=availableProviders();
+    let dates=[...new Set(allProviders.flatMap(p=>(p.series||[]).map(row=>row.date).filter(Boolean)))].sort(),end=dates.at(-1);
+    const days=RANGE_DAYS[range];
+    if(Number.isFinite(days)&&end)dates=dates.filter(date=>(new Date(`${end}T12:00:00`)-new Date(`${date}T12:00:00`))/DAY<days);
+    const inRange=new Set(dates);
+    const sumOf=values=>{const present=values.filter(value=>finite(value)!=null);return present.length?present.reduce((sum,value)=>sum+value,0):null;};
+    const rowsIn=p=>(p.series||[]).filter(row=>inRange.has(row.date));
+    const windowed=fallback&&range!=="30d"&&range!=="all";
+    const providers=allProviders.map(p=>({name:p.name,scoped:windowed?{tokens:sumOf(rowsIn(p).map(row=>finite(row.tokens))),apiEquivalentCost:sumOf(rowsIn(p).map(row=>finite(row.apiEquivalentCost)))}:{tokens:finite(p.totals?.tokens),apiEquivalentCost:finite(p.totals?.apiEquivalentCost)}}));
+    const totals={};
+    for(const k of ["tokens","apiEquivalentCost"])totals[k]=sumOf(providers.map(p=>p.scoped[k]));
+    for(const k of ["sessions","subagentsActive","activeHours"])totals[k]=fallback?null:sumOf(allProviders.map(p=>finite(p.totals?.[k])));
+    const cacheRows=allProviders.filter(p=>finite(p.totals?.cacheHitRate)!=null&&(!fallback||range==="30d"||range==="all"));
+    const cacheWeight=cacheRows.reduce((sum,p)=>sum+(finite(p.totals?.tokens)||1),0);
+    totals.cacheHitRate=cacheRows.length?cacheRows.reduce((sum,p)=>sum+p.totals.cacheHitRate*(finite(p.totals?.tokens)||1),0)/cacheWeight:null;
+    const previous={};
+    for(const k of ["tokens","apiEquivalentCost"]){const rows=!fallback&&(range==="24h"||range==="7d")?allProviders.filter(p=>finite(p.previous?.[k])!=null):[];previous[k]=rows.length&&rows.length===allProviders.length?rows.reduce((sum,p)=>sum+p.previous[k],0):null;}
+    const seriesFor=key=>dates.map(date=>{const point={date};for(const p of allProviders){const row=(p.series||[]).find(item=>item.date===date);point[p.name]=finite(row?.[key]);}return point;});
+    const seriesByKey={tokens:seriesFor("tokens"),apiEquivalentCost:seriesFor("apiEquivalentCost")};
+    const positive=rows=>rows.some(row=>allProviders.some(p=>(finite(row[p.name])||0)>0));
+    const costHero=requestCost&&totals.apiEquivalentCost!=null;
+    const chartKey=costHero&&positive(seriesByKey.apiEquivalentCost)?"apiEquivalentCost":"tokens";
+    const heroKey=costHero?"apiEquivalentCost":totals.tokens!=null?"tokens":totals.apiEquivalentCost!=null?"apiEquivalentCost":null;
+    const modelMap=new Map();
+    if(!windowed)for(const p of allProviders)for(const row of p.models||[]){const raw=String(row?.name||"");if(!raw)continue;const name=modelName(raw)||raw,item=modelMap.get(name)||{name,raw,tokens:null,apiEquivalentCost:null};for(const k of ["tokens","apiEquivalentCost"]){const value=finite(row[k]);if(value!=null)item[k]=(item[k]??0)+value;}modelMap.set(name,item);}
+    const sortKey=heroKey||"tokens";
+    const models=[...modelMap.values()].filter(row=>row.tokens!=null||row.apiEquivalentCost!=null).sort((a,b)=>(b[sortKey]||0)-(a[sortKey]||0));
+    const costPartial=allProviders.some(p=>p.totals?.costPartial===true);
+    const unpricedModels=[...new Set(allProviders.flatMap(p=>Array.isArray(p.totals?.unpricedModels)?p.totals.unpricedModels:[]).map(name=>modelName(String(name))||String(name)).filter(Boolean))];
+    const peaks=allProviders.map(p=>({name:p.name,fiveHour:finite(p.limitPeaks?.fiveHour),weekly:finite(p.limitPeaks?.weekly)})).filter(p=>p.fiveHour!=null||p.weekly!=null);
+    return {fallback,providers,totals,previous,seriesByKey,series:seriesByKey[chartKey],chartKey,heroKey,costHero,costPartial,unpricedModels,models,peaks,dates};
+  }
+  const joinNames=names=>names.length<=2?names.join(" and "):`${names.slice(0,-1).join(", ")} and ${names.at(-1)}`;
+  const tokenHero=value=>{const [figure,unit]=value>=1e9?[(value/1e9).toFixed(2),"B tokens"]:value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
   function seriesChart(data){
-    const rows=data.series,providers=data.providers.filter(p=>rows.some(row=>(finite(row[p.name])||0)>0));
+    const key=data.chartKey,rows=data.seriesByKey[key],cost=key==="apiEquivalentCost",format=value=>cost?money(value):number(value);
+    const providers=data.providers.filter(p=>rows.some(row=>(finite(row[p.name])||0)>0));
     if(!rows.length||!providers.length)return "";
     const W=668,H=113,L=42,R=4,T=9,B=20,PW=W-L-R,PH=H-T-B,step=PW/Math.max(rows.length-1,1);
     const totals=rows.map(row=>providers.reduce((sum,p)=>sum+(finite(row[p.name])||0),0));
@@ -41,52 +75,32 @@
       const edge=smoothPath(top),back=smoothPath([...bottom].reverse()).replace(/^M[^C]*/,"");
       paths+=`<path class="area-fill ${cls}" d="${edge} L${bottom.at(-1)[0].toFixed(1)} ${bottom.at(-1)[1].toFixed(1)}${back} Z"/><path class="area-glow ${cls}" d="${edge}"/><path class="area-edge ${cls}" d="${edge}"/>`;
     }
-    const ticks=[1,.5,0].map(fraction=>{const y=yAt(max*fraction),label=fraction===0?(isCost()?"$0":"0"):metricFormat(max*fraction);return `<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/><text class="dash-axis-value" x="${L-8}" y="${(y+3).toFixed(1)}" text-anchor="end">${esc(label)}</text>`;}).join("");
+    const ticks=[1,.5,0].map(fraction=>{const y=yAt(max*fraction),label=fraction===0?(cost?"$0":"0"):format(max*fraction);return `<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/><text class="dash-axis-value" x="${L-8}" y="${(y+3).toFixed(1)}" text-anchor="end">${esc(label)}</text>`;}).join("");
     const labelIndexes=[...new Set([0,Math.floor((rows.length-1)/3),Math.floor(2*(rows.length-1)/3),rows.length-1])];
     const dates=labelIndexes.map(index=>{const anchor=index===0?"start":index===rows.length-1?"end":"middle";return `<text class="dash-date" x="${xAt(index).toFixed(1)}" y="${H-3}" text-anchor="${anchor}">${esc(dayLabel(rows[index].date))}</text>`;}).join("");
-    const hover=rows.map((row,index)=>{const x=xAt(index),total=totals[index],tip=`<span class="tip-date">${esc(dayLabel(row.date))}</span><b class="tip-total">${esc(metricFormat(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(metricFormat(finite(row[p.name])||0))}</strong></span>`).join("")}`;
+    const hover=rows.map((row,index)=>{const x=xAt(index),total=totals[index],tip=`<span class="tip-date">${esc(dayLabel(row.date))}</span><b class="tip-total">${esc(format(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(format(finite(row[p.name])||0))}</strong></span>`).join("")}`;
       return `<g class="dash-point" tabindex="0" data-tip-html="${esc(tip)}"><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/><circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/></g>`;}).join("");
     const defs='<defs><linearGradient id="dash-codex-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#6675ff" stop-opacity=".25"/><stop offset="1" stop-color="#6675ff" stop-opacity="0"/></linearGradient><linearGradient id="dash-claude-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#e98953" stop-opacity=".26"/><stop offset="1" stop-color="#e98953" stop-opacity="0"/></linearGradient><filter id="dash-soft-glow" x="-30%" y="-100%" width="160%" height="300%"><feGaussianBlur stdDeviation="2.8"/></filter></defs>';
-    return `<svg class="dash-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Daily ${isCost()?"API-equivalent cost":"tokens"} by provider">${defs}${ticks}${paths}${hover}${dates}</svg>`;
+    return `<svg class="dash-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${defs}${ticks}${paths}${hover}${dates}</svg>`;
   }
-  function insightsData(){
-    const fallback=state.insights?.fallback===true,key=metricKey(),range=state.range,allProviders=availableProviders();
-    let dates=[...new Set(allProviders.flatMap(p=>(p.series||[]).map(row=>row.date).filter(Boolean)))].sort(),end=dates.at(-1);
-    const days=RANGE_DAYS[range];
-    if(Number.isFinite(days)&&end)dates=dates.filter(date=>(new Date(`${end}T12:00:00`)-new Date(`${date}T12:00:00`))/DAY<days);
-    const inRange=new Set(dates);
-    const sumOf=values=>{const present=values.filter(value=>finite(value)!=null);return present.length?present.reduce((sum,value)=>sum+value,0):null;};
-    const scoped=p=>fallback&&range!=="30d"&&range!=="all"?{tokens:sumOf((p.series||[]).filter(row=>inRange.has(row.date)).map(row=>finite(row.tokens))),apiEquivalentCost:sumOf((p.series||[]).filter(row=>inRange.has(row.date)).map(row=>finite(row.apiEquivalentCost)))}:{tokens:finite(p.totals?.tokens),apiEquivalentCost:finite(p.totals?.apiEquivalentCost)};
-    const providers=allProviders.map(p=>({name:p.name,scoped:scoped(p),raw:p}));
-    const totals={};
-    for(const k of ["tokens","apiEquivalentCost"])totals[k]=sumOf(providers.map(p=>p.scoped[k]));
-    for(const k of ["sessions","subagentsActive","activeHours"])totals[k]=fallback?null:sumOf(allProviders.map(p=>finite(p.totals?.[k])));
-    const cacheRows=allProviders.filter(p=>finite(p.totals?.cacheHitRate)!=null&&(!fallback||range==="30d"||range==="all"));
-    const cacheWeight=cacheRows.reduce((sum,p)=>sum+(finite(p.totals?.tokens)||1),0);
-    totals.cacheHitRate=cacheRows.length?cacheRows.reduce((sum,p)=>sum+p.totals.cacheHitRate*(finite(p.totals?.tokens)||1),0)/cacheWeight:null;
-    const previous={};
-    for(const k of ["tokens","apiEquivalentCost"]){const rows=!fallback&&(range==="24h"||range==="7d")?allProviders.filter(p=>finite(p.previous?.[k])!=null):[];previous[k]=rows.length&&rows.length===allProviders.length?rows.reduce((sum,p)=>sum+p.previous[k],0):null;}
-    const series=dates.map(date=>{const point={date};for(const p of allProviders){const row=(p.series||[]).find(item=>item.date===date);point[p.name]=finite(row?.[key]);}return point;});
-    const modelMap=new Map();
-    if(!fallback||range==="30d"||range==="all")for(const p of allProviders)for(const row of p.models||[]){const raw=String(row?.name||"");if(!raw)continue;const name=modelName(raw)||raw,item=modelMap.get(name)||{name,raw,tokens:null,apiEquivalentCost:null};for(const k of ["tokens","apiEquivalentCost"]){const value=finite(row[k]);if(value!=null)item[k]=(item[k]??0)+value;}modelMap.set(name,item);}
-    const models=[...modelMap.values()].filter(row=>row.tokens!=null||row.apiEquivalentCost!=null).sort((a,b)=>(b[key]||0)-(a[key]||0));
-    const peaks=allProviders.map(p=>({name:p.name,fiveHour:finite(p.limitPeaks?.fiveHour),weekly:finite(p.limitPeaks?.weekly)})).filter(p=>p.fiveHour!=null||p.weekly!=null);
-    return {fallback,providers,totals,previous,series,models,peaks};
-  }
-  const tokenHero=value=>{const [figure,unit]=value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
   function splitHTML(data){
-    const rows=data.providers.map(p=>({name:p.name,value:finite(p.scoped[metricKey()])})).filter(row=>row.value>0),sum=rows.reduce((total,row)=>total+row.value,0);
+    const key=data.heroKey;if(!key)return "";
+    const rows=data.providers.map(p=>({name:p.name,value:finite(p.scoped[key])})).filter(row=>row.value>0),sum=rows.reduce((total,row)=>total+row.value,0);
     if(!sum)return "";
     return `<div class="dash-split" aria-hidden="true">${rows.map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div><div class="dash-split-legend">${rows.map(row=>`<span class="dash-legend-item"><i class="dash-dot ${providerKey(row.name)}"></i>${esc(row.name)} <b>${Math.round(100*row.value/sum)}%</b></span>`).join("")}</div>`;
   }
-  function emptyHTML(){return `<section class="dash-empty-state"><span class="dash-eyebrow">${state.metric==="cost"?"API-equivalent cost":`Tokens over ${RANGE_NAME[state.range]}`}</span><p>No recorded usage in this range</p></section>`;}
+  function emptyHTML(){return `<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded usage in this range</p></section>`;}
   function insightsHTML(){
-    const data=insightsData(),key=metricKey(),cost=isCost(),value=finite(data.totals[key]),prev=finite(data.previous[key]),delta=value!=null&&prev!=null&&prev!==0?(value-prev)/prev*100:null;
-    if(!(finite(data.totals.tokens)>0)&&!(finite(data.totals.apiEquivalentCost)>0))return emptyHTML();
-    const figure=value==null?`<span class="dash-empty-line">${cost?"Cost is not available for this source.":"Token totals are not available for this source."}</span>`:cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">estimated</span>`:tokenHero(value);
-    const hero=`<section class="dash-hero"><div class="dash-hero-meta"><span class="dash-eyebrow">${cost?"API-equivalent cost":`Tokens over ${RANGE_NAME[state.range]}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[state.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${splitHTML(data)}</section>`;
-    const chart=seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">${data.fallback?"Last 31 days · ":""}Daily · ${cost?"API-equivalent cost":"tokens"}</span></div>${chart}</section>`:"";
-    const stats=[["Tokens",data.totals.tokens,number],["Sessions",data.totals.sessions,number],["Subagents active",data.totals.subagentsActive,number],["Cache hit rate",data.totals.cacheHitRate,v=>`${Math.round(v)}%`],["Active hours",data.totals.activeHours,v=>`${number(v)}h`]].filter(([,v])=>finite(v)!=null);
+    const data=insightsData(),key=data.heroKey;
+    if(key==null||!(finite(data.totals.tokens)>0||finite(data.totals.apiEquivalentCost)>0))return emptyHTML();
+    const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
+    const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">estimated</span>`:tokenHero(value);
+    const hero=`<section class="dash-hero"><div class="dash-hero-meta"><span class="dash-eyebrow">${cost?"API-equivalent cost":`Tokens over ${RANGE_NAME[state.range]}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[state.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${cost&&data.costPartial&&data.unpricedModels.length?`<p class="dash-cost-note">Excludes ${esc(joinNames(data.unpricedModels))} (no published price)</p>`:""}${splitHTML(data)}</section>`;
+    const chart=seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">${data.fallback?"Last 31 days · ":""}Daily · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost":"tokens"}</span></div>${chart}</section>`:"";
+    // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
+    const tokensPresent=finite(data.totals.tokens)>0;
+    const missing=v=>finite(v)==null||(v===0&&tokensPresent);
+    const stats=[["Tokens",data.totals.tokens,number],["Sessions",data.totals.sessions,number],["Subagents active",data.totals.subagentsActive,number],["Cache hit rate",data.totals.cacheHitRate,v=>`${Math.round(v)}%`],["Active hours",data.totals.activeHours,v=>`${number(v)}h`]].filter(([,v])=>!missing(v));
     const statsHTML=stats.length?`<section class="dash-stats" style="grid-template-columns:repeat(${stats.length},minmax(0,1fr))">${stats.map(([label,v,format])=>`<div class="dash-stat"><span class="dash-stat-label">${label}</span><strong class="dash-stat-value">${esc(format(v))}</strong></div>`).join("")}</section>`:"";
     const models=data.models,tokenSum=models.reduce((sum,row)=>sum+(finite(row.tokens)||0),0);
     const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label"><span>Model breakdown</span><small>${RANGE_NAME[state.range]}</small></div><div class="dash-model-head"><span>Model</span><span>Tokens</span><span>Cost</span><span>Share</span></div>${models.map(row=>{const family=modelKey(row.raw),pct=tokenSum&&finite(row.tokens)!=null?100*row.tokens/tokenSum:null;return `<div class="dash-model-row"><span class="dash-model-name ${family}"><i></i>${esc(row.name)}</span><b>${esc(number(row.tokens))}</b><b>${esc(money(row.apiEquivalentCost))}</b><span class="dash-share">${pct==null?"":`<i><em class="${family}" style="width:${pct.toFixed(2)}%"></em></i><small>${Math.round(pct)}%</small>`}</span></div>`;}).join("")}</div>`:"";
