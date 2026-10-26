@@ -1895,12 +1895,16 @@ function runwayTelemetryHTML(chat,agent=false) {
     const elapsed=currentEvidence&&elapsedTarget&&!statusUnavailable?runwayStateElapsed(elapsedTarget):'';
     const request=chat.lastRequest||chat.latestRequest||{},input=safeNumber(request.input),cached=safeNumber(request.cached);
     const cachePercent=currentEvidence&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&input>0&&cached!=null?Math.round(cached*100/input):null;
-    const path=runwayWorkspaceHTML(chat);
-    const cleanPath=path?path.replace('data-runway-slot="workspace"','data-runway-slot="workspace"'):'';
+    const workspace=chat.workspace||chat.root?.workspace,workspacePath=runwayWorkspacePath(workspace),workspaceLeaf=runwayWorkspaceLeaf(workspace);
+    const inherited=!chat.workspace&&Boolean(chat.root?.workspace);
+    const workspaceTitle=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+workspacePath;
+    const workspaceLabel=(inherited?'Inherited workspace: ':'Workspace: ')+workspacePath;
+    const cleanPath=workspacePath&&workspaceLeaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(workspaceLeaf)+'</span></span>':'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
+    const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
     // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
     const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
-     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'<span data-runway-slot="cache" class="runway-refined-cache">'+(cachePercent==null?'':'Cache '+cachePercent+'%')+'</span></span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+'</span></div>';
+     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+'</span></div>';
   }
   return agent?messageLane+topline+'<span class="runway-agent-secondary">'+modelTiming+'</span>'+contextSlot+objectiveSlot:messageLane+topline+modelTiming+contextSlot;
 }
@@ -2454,6 +2458,8 @@ function initialActiveSource(snapshot){
 }
 function render(snapshot) {
   const firstRunwayPaint=COMPACT&&!state.runwaySnapshotPainted;
+  const graph=snapshot?.graph?.edges;
+  if(firstRunwayPaint&&state.initialBootstrapPending&&(!graph||typeof graph!=='object'||Array.isArray(graph)))return false;
   syncProviderPolicyGeneration(snapshot);
   restrictSnapshotProviders(snapshot);
   acceptSnapshotCache(snapshot);
@@ -2470,6 +2476,7 @@ function render(snapshot) {
   finally{state.sourceSwitching=priorSourceSwitching;}
   renderStrip(attentionItems(state.forest,limits));
   window.TokenTrackerDashboard?.setSnapshot?.(snapshot);
+  return true;
 }
 function renderLoading() {
   syncCompactClock();
@@ -2685,7 +2692,7 @@ async function refresh(force=false) {
     const snapshot=await response.json();if(!snapshot||typeof snapshot!=="object"||!Array.isArray(snapshot.providers))throw new Error("Invalid stats snapshot");applyLive(snapshot,state.live);markOk();
     const present=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
     for(const [key,at] of state.pendingOutside)if(present.has(key)){state.outsideSeen.set(key,at);state.pendingOutside.delete(key);}
-    if(selection===statsUrl(false)){render(snapshot);clearBootstrapRetry(true);}
+    if(selection===statsUrl(false)){if(render(snapshot)===false)scheduleBootstrapRetry();else clearBootstrapRetry(true);}
     else state.refreshPending=true;
   } catch { markFail(); tick(); }
   finally{clearTimeout(timeout);state.loading=false;}
