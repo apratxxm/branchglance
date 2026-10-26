@@ -211,7 +211,11 @@ def _environ(environ: Mapping[str, str] | None) -> Mapping[str, str]:
 
 def local_app_data(environ: Mapping[str, str] | None = None) -> Path:
     env = _environ(environ)
-    return Path(env.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    if env.get("LOCALAPPDATA"):
+        return Path(env["LOCALAPPDATA"])
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    return Path.home() / "AppData" / "Local"
 
 
 def _is_plain_directory(path: Path) -> bool:
