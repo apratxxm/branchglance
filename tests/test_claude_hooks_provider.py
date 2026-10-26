@@ -781,3 +781,14 @@ def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, 
     assert claude["totals"]["cacheHitRate"] is not None
     assert {model["name"] for model in claude["models"]} == {"claude-opus-5", "claude-haiku-4-5"}
     assert claude["totals"]["apiEquivalentCost"] is not None
+
+
+def test_usage_aggregates_tolerate_checkpoints_without_epochs(tmp_path, monkeypatch):
+    # A checkpoint written before per-response epochs existed must not break aggregation.
+    old = claude_provider._new_usage_state()
+    old.pop("epochs")
+    assert claude_provider._USAGE_KIND.endswith("-v2")
+    monkeypatch.setattr(providers, "_incremental_jsonl_reduce", lambda *a, **k: old)
+    monkeypatch.setattr(claude_provider, "_usage_files", lambda base, since: [(0, "x", tmp_path / "s.jsonl")])
+    result = claude_provider.usage_aggregates(root=tmp_path)
+    assert "_insightsData" in result
