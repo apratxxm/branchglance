@@ -104,16 +104,25 @@ def _model_totals(models: dict[str, dict[str, int]]) -> dict[str, int]:
     return dict(totals)
 
 
-def _cost_for(name: str, models: dict[str, dict[str, int]], *, fallback_tokens: int = 0) -> float | None:
+def _cost_for(name: str, models: dict[str, dict[str, int]], *,
+              fallback_tokens: int = 0) -> tuple[float | None, list[str]]:
+    """Priced-model API-equivalent cost plus the names of models without a price row.
+
+    The cost sums only priced models; it is None only when no model in ``models`` is priced
+    (or when there are no per-model rows but tokens exist, so nothing can be priced).
+    """
     from . import providers
     total = _model_totals(models)
     if not models:
-        return 0.0 if fallback_tokens <= 0 else None
+        return (0.0 if fallback_tokens <= 0 else None), []
     if not total.get("total_tokens"):
-        return 0.0
+        return 0.0, []
     table = providers.CLAUDE_PRICING if name == "Claude" else providers.CODEX_PRICING
+    unpriced = sorted(model for model in models if not providers._price_for(model, table))
+    if len(unpriced) == len(models):
+        return None, unpriced
     cost = providers._costs(total, models, table, claude=name == "Claude")
-    return None if cost.get("estimated") else cost.get("apiEquivalentCost")
+    return cost.get("apiEquivalentCost"), unpriced
 
 
 def _cache_hit_rate(name: str, totals: dict[str, int]) -> float | None:
@@ -377,15 +386,17 @@ def build_insights(snapshot: dict[str, Any], range_name: str, *,
             tokens = bucket_totals.get("total_tokens")
             if tokens is None:
                 tokens = fallback_tokens.get(bucket, 0) if window["grain"] == "day" else 0
-            series.append({"date": bucket, "tokens": int(tokens),
-                           "apiEquivalentCost": _cost_for(name, bucket_models,
-                                                          fallback_tokens=int(tokens))})
+            bucket_cost, bucket_unpriced = _cost_for(name, bucket_models, fallback_tokens=int(tokens))
+            row = {"date": bucket, "tokens": int(tokens), "apiEquivalentCost": bucket_cost}
+            if bucket_unpriced:
+                row["costPartial"] = True
+            series.append(row)
         sessions, subagents = _sessions_in_window(data, window, window["grain"])
         selected_hours = _active_hours(data, window)
         daily_models = _models_in_window(data, window["grain"], window["keys"])
         models_out = []
         for model, usage in sorted(daily_models.items(), key=lambda item: -item[1].get("total_tokens", 0)):
-            cost = _cost_for(name, {model: usage})
+            cost, _unpriced = _cost_for(name, {model: usage})
             models_out.append({"name": model, "tokens": int(usage.get("total_tokens") or 0),
                                "apiEquivalentCost": cost})
         previous = None
@@ -395,19 +406,26 @@ def build_insights(snapshot: dict[str, Any], range_name: str, *,
             previous_tokens = previous_totals.get("total_tokens")
             if previous_tokens is None and window["grain"] == "day":
                 previous_tokens = sum(daily_activity.get(day, 0) for day in window["previousKeys"])
-            previous = {"tokens": int(previous_tokens or 0),
-                        "apiEquivalentCost": _cost_for(name, previous_models,
-                                                        fallback_tokens=int(previous_tokens or 0))}
+            previous_cost, previous_unpriced = _cost_for(name, previous_models,
+                                                         fallback_tokens=int(previous_tokens or 0))
+            previous = {"tokens": int(previous_tokens or 0), "apiEquivalentCost": previous_cost}
+            if previous_unpriced:
+                previous["costPartial"] = True
+        total_cost, total_unpriced = _cost_for(name, model_usage,
+                                               fallback_tokens=int(totals.get("total_tokens") or 0))
+        totals_out = {
+            "tokens": int(totals.get("total_tokens") or 0),
+            "apiEquivalentCost": total_cost,
+            "sessions": sessions, "subagentsActive": subagents,
+            "activeHours": selected_hours,
+            "cacheHitRate": _cache_hit_rate(name, totals),
+        }
+        if total_unpriced:
+            totals_out["costPartial"] = True
+            totals_out["unpricedModels"] = total_unpriced
         response_providers.append({
             "name": name,
-            "totals": {
-                "tokens": int(totals.get("total_tokens") or 0),
-                "apiEquivalentCost": _cost_for(name, model_usage,
-                                                fallback_tokens=int(totals.get("total_tokens") or 0)),
-                "sessions": sessions, "subagentsActive": subagents,
-                "activeHours": selected_hours,
-                "cacheHitRate": _cache_hit_rate(name, totals),
-            },
+            "totals": totals_out,
             "previous": previous,
             "series": series,
             "models": models_out,

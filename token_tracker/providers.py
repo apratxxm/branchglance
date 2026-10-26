@@ -2794,10 +2794,6 @@ class ClaudeDesktopProvider:
         window_dates = _last_calendar_dates(days)
         totals: dict[str, int] = defaultdict(int); daily: dict[str, int] = defaultdict(int)
         models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int)); sessions: dict[str, dict[str, Any]] = defaultdict(lambda: {"tokens": 0, "turns": 0, "model": None, "contextTokens": 0, "last": ("", -1), "dailyTokens": defaultdict(int)})
-        daily_models: dict[str, dict[str, Any]] = defaultdict(dict)
-        hourly_models: dict[str, dict[str, Any]] = defaultdict(dict)
-        active_hours: set[str] = set()
-        session_activity: dict[str, dict[str, Any]] = {}
         seen = set(); live_keys = set()
         try: paths = list(self.transcript_root.glob("**/*.jsonl"))
         except OSError: paths = []
@@ -2834,33 +2830,15 @@ class ClaudeDesktopProvider:
                 values = {"input_tokens": input_tokens, "output_tokens": output, "cached_tokens": read, "cache_5m_tokens": write_5m, "cache_1h_tokens": write_1h, "total_tokens": amount}
                 for key, value in values.items(): totals[key] += value; models[model][key] += value
                 daily[local_date] += amount
-                _insights_add_model(daily_models[local_date], model, values)
-                hour = _insights_hour_from_timestamp(timestamp, stat.st_mtime)
-                if hour:
-                    _insights_add_model(hourly_models[hour], model, values)
-                    active_hours.add(hour)
                 session = sessions[row["session"]]; session["tokens"] += amount; session["turns"] += 1
                 session["dailyTokens"][local_date] += amount
-                activity_session = session_activity.setdefault(row["session"], {
-                    "id": row["session"], "subagent": bool(session.get("parentId")),
-                    "lastActivityAt": timestamp,
-                })
-                if str(timestamp or "") > str(activity_session.get("lastActivityAt") or ""):
-                    activity_session["lastActivityAt"] = timestamp
-                session["activityLastAt"] = max(
-                    filter(None, (session.get("activityLastAt"), timestamp)), default=timestamp)
                 marker = (str(timestamp), int(row.get("order") or 0))
                 if marker >= session["last"] and not _is_placeholder_model(model):
                     session["last"] = marker; session["model"] = model; session["contextTokens"] = input_tokens + read + write_5m + write_1h
         with self._cache_lock:
             for key in list(self._file_cache):
                 if key not in live_keys: self._file_cache.pop(key, None)
-        return {"totals": totals, "daily": daily, "models": models, "sessions": sessions,
-                "insightsData": {"trackingWindowDays": days,
-                                 "dailyModels": {day: dict(value) for day, value in daily_models.items()},
-                                 "hourlyModels": {hour: dict(value) for hour, value in hourly_models.items()},
-                                 "activeHours": sorted(active_hours),
-                                 "sessions": list(session_activity.values())}}
+        return {"totals": totals, "daily": daily, "models": models, "sessions": sessions}
 
     @staticmethod
     def _merge_segments(transcripts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3004,7 +2982,6 @@ class ClaudeDesktopProvider:
             "cache": cache,
             "chats": self._chats(transcript["sessions"]),
             "activity": [{"date": date, "value": value} for date, value in sorted(transcript["daily"].items())],
-            "_insightsData": transcript.get("insightsData", {}),
             "activityNote": "Usage is grouped from recorded Claude transcript events in this 31-day window.",
             # This is transcript telemetry retained for the current 31-day scan,
             # not an account lifetime. Keep lifetimeTokens for existing clients.
