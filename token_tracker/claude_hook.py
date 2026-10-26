@@ -64,7 +64,12 @@ _TOOL_CATEGORIES = {
 
 def _hook_data_root() -> str:
     """The shared hook root from product.py (the same path in dev and frozen processes)."""
-    from . import product
+    if __package__:
+        from . import product
+    else:
+        # Development hooks run this file as a script (macOS/Linux); import the package by path.
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from token_tracker import product
     return str(product.hook_data_root())
 
 
