@@ -1,6 +1,6 @@
 # Branchglance
 
-![Branchglance Live Stack](assets/brand/lockup.svg)
+![Branchglance Live Stack](assets/brand/lockup-dark.svg)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -80,6 +80,10 @@ Runtime settings, hook events and history remain in the per-user application dat
 - **Claude is unavailable:** open Reset Action Settings, enable Claude Code collection, and restart Branchglance if it asks. Check that Claude Code hooks are allowed by Claude Code settings. Only events Claude Code reports can appear; missing events do not prove a session is idle.
 - **A hidden chat is missing:** search for `is:hidden`. Hiding is a local display choice, not deletion.
 - **No greeting appeared at countdown zero:** the app waits for a verified reset sample; zero on the timer is not enough. Confirm the correct provider's greeting setting is enabled and that its CLI is signed in.
+
+## Brand assets
+
+The [SVG master](assets/brand/mark-master.svg) comes from the Photoshop vector path, with straight edge segments and the original rounded corners. The app icon, web icons and colour/monochrome marks are generated from that same master. See the [source and reproduction notes](assets/brand/LOGO_MASTER.md). The concept was AI-generated and subsequently refined in Photoshop; no trademark clearance or exclusivity is claimed.
 
 ## License
 
