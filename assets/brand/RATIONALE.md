@@ -1,15 +1,13 @@
 # Live Stack brand
 
-The selected mark is a four-band stack: a short cap, a lavender step, a slanted bar and a tapered lower wedge. The lavender L-shaped notch creates the stepped join; the descending white bands suggest parallel work continuing through the stack. Use the full-colour mark on dark charcoal, the off-white mono mark on dark surfaces, and the near-black mono mark knocked out of an off-white rounded tile on light surfaces.
+The approved mark is the Photoshop `Logo - matched corners Shape Path`, exported through **File → Export → Paths to Illustrator**. The original LiveStack04 concept was AI-generated in this Codex conversation, then refined as the Photoshop vector layer. Its exact native path is preserved in `source/photoshop-native-path.ai` and `mark-native.svg`; the approved `mark-master.svg` converts 17 designated straight spans to lines and retains 18 original rounded-corner cubic segments. It has four closed contours in native order: top, middle, diagonal, wedge.
 
-`mark-full.svg`, `mark-mono-dark.svg` and `mark-mono-light.svg` are the three mark variants. `wordmark.svg` contains outlined Branchglance lettering traced from the bundled Geist SemiBold variable font with -2% tracking. Geist was selected over Inter for its closer geometric forms and single-storey `g`. `lockup.svg` combines the full-colour mark and outlined wordmark on charcoal. The small header in the visual reference is presentation text and is not part of the logo.
+Full colour assigns off-white to the top, diagonal, and wedge, with lavender on the stepped middle. Use it on charcoal. `mark-mono-dark.svg` is off-white for dark surfaces. `mark-mono-light.svg` is near-black on a light rounded tile; `mark-mono-light-transparent.svg` is the same mono mark on transparent canvas. Geometry remains the same at every size; no compact hand-drawn substitute is used.
 
-`generate_icon.py` uses Pillow, already available in the build environment, to reproduce the vectors as the multi-size `.ico`, tray/app icon, favicon, Apple touch icon and PWA icons. The generator also creates the social preview and icon review sheet. The app has no added runtime font or image dependency.
+`wordmark.svg` retains the existing outlined Branchglance lettering and its evenodd counter rule. `lockup-dark.svg` and `lockup-light.svg` combine those unchanged outlines with the canonical mark. Legacy `lockup.svg` is an exact alias of the dark lockup; `social-preview.png` is the 1280×640 dark lockup raster.
 
-## Small-size use
+`generate_icon.py` verifies the canonical master SHA-256 before producing all brand SVGs and raster icons. It renders SVGs with the existing build-only `sharp`/libvips runtime, then packages the SVG-rendered frames into ICO files. `render_svgs.js` is the shared renderer. Supply the existing runtime using `--node` and `--node-modules`, or `BRAND_NODE` and `BRAND_NODE_MODULES`. No application dependency is added.
 
-The generator hand-tunes the small raster silhouette: the 16 px mark uses a horizontal third bar and integer-pixel edges; 20, 24 and 32 px restore the descending slant with half-pixel edge snapping. It uses the canonical geometry for 40, 48, 64, 128 and 256 px. The `.ico` contains every size in that set. The tray/app tile uses a charcoal rounded square with off-white and lavender bands so it remains distinct on light and dark taskbars.
+The generator updates `branchglance.ico` and these static assets: `favicon.svg`, `favicon.ico`, `phone-icon.svg`, `phone-icon-192.png`, `phone-icon-512.png`, and `apple-touch-icon.png`. Static icons use a charcoal tile for light/dark surface contrast. No phone-feature logic or release state is changed by asset generation.
 
-The 1280 × 640 social preview is a dark presentation card; it is not a replacement icon. `docs/brand/compare.png` compares the reference mark and wordmark with the vector redraw at matched dimensions. `docs/brand/icon-sheet.png` shows the raster sizes against both dark and light surfaces. Review those at native scale before replacing any installed assets.
-
-The Codex blue and Claude orange interface accents remain provider colours. The brand mark does not change the widget palette or imitate a live status.
+The source and its refinement history do not establish trademark clearance, exclusivity, or legal originality.
