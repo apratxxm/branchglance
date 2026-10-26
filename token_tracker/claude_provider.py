@@ -242,6 +242,10 @@ def _reduce_transcript(state: dict[str, Any], item: Any) -> None:
         state["explicit"] = ("completed", stamp)
 
 
+# Only records whose message carries usage counts reach _reduce_usage's state.
+_USAGE_NEEDLES = (b'"usage"',)
+
+
 def transcript_summary(path: Path | None) -> dict[str, Any]:
     if path is None:
         return _new_transcript_state()
@@ -592,7 +596,9 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
     active_hours: set[str] = set()
     session_activity: dict[str, dict[str, Any]] = {}
     for _created, _name, path in _usage_files(base, now - (days + 1) * 86400):
-        state = providers._incremental_jsonl_reduce(_USAGE_KIND, path, _new_usage_state, _reduce_usage, unavailable=None)
+        state = providers._incremental_jsonl_reduce(
+            _USAGE_KIND, path, _new_usage_state, _reduce_usage,
+            unavailable=None, needles=_USAGE_NEEDLES)
         if not isinstance(state, dict):
             continue
         subagent = "subagents" in path.parts
