@@ -4852,7 +4852,9 @@ def live_state() -> dict[str, Any]:
     for chat in chats:
         chat["provider"] = "Codex" if str(chat.get("key") or "").startswith("Codex:") else "Claude"
     from .agent_links import snapshot_graph
-    graph = snapshot_graph(chats, delta=True)
+    # Full edges, not a delta: the revision is process-wide, so a delta is
+    # "changes since anyone's last request" and other pollers would eat it.
+    graph = snapshot_graph(chats)
     return {"generatedAt": datetime.now(timezone.utc).isoformat(),
             "structureStamp": _structure_stamp(visible_full), "chats": chats,
             "providerPolicies": policy_payload, "graph": graph}
