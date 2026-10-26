@@ -193,9 +193,7 @@ struct HUDView: View {
         case let .battery(percent, _):
             Text("\(percent)%").font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(tint)
         case .media:
-            Image(systemName: media.isPlaying ? "waveform" : "pause.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .symbolEffect(.variableColor.iterative, isActive: media.isPlaying)
+            MusicBars(media: media)
         }
     }
 

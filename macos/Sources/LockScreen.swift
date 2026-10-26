@@ -73,7 +73,7 @@ final class LockScreenController {
 
     private func showWidget() {
         guard let screen = NSScreen.main else { return }
-        let size = CGSize(width: 380, height: 120)
+        let size = CGSize(width: 400, height: 140)
         let panel = widget ?? {
             let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.isOpaque = false
@@ -104,10 +104,12 @@ struct LockScreenMediaView: View {
     @ObservedObject var media: NowPlaying
     var body: some View {
         HStack(spacing: 14) {
-            Artwork(image: media.artwork, size: 72)
+            GlowingArtwork(media: media, size: 84)
             VStack(alignment: .leading, spacing: 6) {
                 Text(media.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                Text(media.artist).font(.system(size: 12)).opacity(0.7).lineLimit(1)
+                Text(media.artist).font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(nsColor: media.accent)).lineLimit(1)
+                ProgressBar(media: media)
                 HStack(spacing: 24) {
                     ControlButton(symbol: "backward.fill", action: media.previous)
                     ControlButton(symbol: media.isPlaying ? "pause.fill" : "play.fill", size: 18, action: media.playPause)
