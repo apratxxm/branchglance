@@ -28,6 +28,10 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     var hudKind: HUDKind?
     var hudWork: DispatchWorkItem?
     var placedFrame = NSRect.zero
+    /// Open the notch by itself when the tracker reports new work. Off: only hover opens it.
+    var autoOpen = UserDefaults.standard.object(forKey: "autoOpen") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoOpen, forKey: "autoOpen") }
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -144,7 +148,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     // MARK: Open / collapsed
 
     func updateOpenState() {
-        (hovering || keepOpen || webWantsOpen) ? open() : collapse(animate: true)
+        (hovering || keepOpen || (webWantsOpen && autoOpen)) ? open() : collapse(animate: true)
     }
 
     var headerHeight: CGFloat { notchScreen().map { hardwareNotchSize($0).height } ?? 32 }
@@ -185,7 +189,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         }
         if hudKind == nil { container.indicator = nil }
         let notch = hardwareNotchSize(screen)
-        place(size: hudKind == nil ? notch : wingSize(notch), animate: animate)
+        place(size: hudKind.map { wingSize(notch, $0) } ?? notch, animate: animate)
     }
 
     // MARK: Tabs, activities
@@ -196,13 +200,23 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         if isOpen { open() }
     }
 
-    func wingSize(_ notch: CGSize) -> CGSize { CGSize(width: notch.width + 160, height: notch.height) }
+    /// Closed notch plus a wing either side, just wide enough for the activity (as in Atoll:
+    /// an artwork-sized square for music and battery, room for a level bar for volume and brightness).
+    func wingSize(_ notch: CGSize, _ kind: HUDKind) -> CGSize {
+        let wing: CGFloat
+        switch kind {
+        case .volume, .brightness: wing = 84
+        case .media, .battery: wing = notch.height + 10
+        }
+        // +16 for the container's 8pt side insets.
+        return CGSize(width: notch.width + 2 * wing + 16, height: notch.height)
+    }
 
     func showIndicator(_ kind: HUDKind, animate: Bool) {
         guard let screen = notchScreen() else { return }
         let notch = hardwareNotchSize(screen)
         container.indicator = NSHostingView(rootView: HUDView(kind: kind, notchWidth: notch.width, media: media))
-        place(size: wingSize(notch), animate: animate)
+        place(size: wingSize(notch, kind), animate: animate)
     }
 
     /// Volume, brightness and battery: show for a moment beside the closed notch.
@@ -332,6 +346,10 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
                                      accessibilityDescription: "Branchglance")
         let menu = NSMenu()
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        let auto = NSMenuItem(title: "Open on New Activity", action: #selector(toggleAutoOpen(_:)), keyEquivalent: "")
+        auto.target = self
+        auto.state = autoOpen ? .on : .off
+        menu.addItem(auto)
         let sounds = NSMenuItem(title: "Lock & Unlock Sounds", action: #selector(toggleLockSounds(_:)), keyEquivalent: "")
         sounds.target = self
         sounds.state = lockScreen.soundsEnabled ? .on : .off
@@ -365,6 +383,12 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func toggleAutoOpen(_ item: NSMenuItem) {
+        autoOpen.toggle()
+        item.state = autoOpen ? .on : .off
+        if !autoOpen { updateOpenState() }
     }
 
     @objc func toggleLockSounds(_ item: NSMenuItem) {
