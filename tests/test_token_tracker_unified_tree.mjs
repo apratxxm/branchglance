@@ -6,6 +6,7 @@ const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.u
 const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 const css=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const fixedNow=Date.parse("2026-10-25T13:05:00Z"),ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
+const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector).at(-1)?.[2]||"";
 
 function boot(){
   const nodes=new Map(),timers=new Map();let sequence=0;
@@ -35,6 +36,67 @@ const codexSol={id:"sol",key:"Codex:sol",parentKey:"Codex:luna",title:"review pa
 const claudeHaiku={id:"haiku",key:"Claude:haiku",parentKey:"Claude:op",title:"test pass",agentName:"haiku",model:"claude-haiku-5-5",status:"running",updatedAt:ago(3),workspace:"D:\\work\\sample-app",...quota};
 const providers=[{name:"Codex",connected:true,chats:[codexLuna,codexSol],...quota},{name:"Claude",connected:true,chats:[claudeParent,claudeHaiku],...quota}];
 const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:sol":"Codex:luna","Claude:haiku":"Claude:op"}};
+
+// First compact paint waits for the graph, and the same live-data rows keep
+// cache and workspace content inside the fixed inspect columns at every depth.
+{
+  const {T}=boot(),rich=(id,title,workspace,parentKey=null)=>({id,key:(id==='op'?'Claude:':'Codex:')+id,parentKey,title,agentName:id==='op'?'':'agent-'+id,
+    model:id==='op'?'claude-opus-5-5':'gpt-6.1-sol',status:'running',statusSource:'transcript',statusObservedAt:ago(0),executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),
+    activeRunStartedAt:ago(1),executionSince:ago(1),executionActivity:{kind:'reading',files:['A:\\pisha\\orchestrator\\src\\keyboard.py'],observedAt:ago(0)},
+    workspace,workspaceKind:'project',contextTokens:98000,contextWindow:200000,contextPercent:49,contextObservedAt:ago(0),contextModel:id==='op'?'claude-opus-5-5':'gpt-6.1-sol',lastRequest:{input:1000,cached:980},updatedAt:ago(id==='op'?0:id==='luna'?1:2),...quota});
+  const rows=[rich('op','Orchestrator','A:\\pisha\\orchestrator\\services\\orchestrator'),
+    rich('luna','Luna','A:\\pisha\\orchestrator\\agents\\review\\keyboard','Claude:op'),
+    rich('sol','Sol','A:\\pisha\\orchestrator\\agents\\review\\keyboard\\tests','Codex:luna')];
+  const richProviders=[{name:'Claude',connected:true,chats:[rows[0]],...quota},{name:'Codex',connected:true,chats:rows.slice(1),...quota}];
+  const richGraph={revision:1,edges:{'Claude:op':null,'Codex:luna':'Claude:op','Codex:sol':'Codex:luna'}};
+  const firstPayload={generatedAt:ago(0),providerPolicies:policy,enabledProviders:['Claude','Codex'],providers:richProviders};
+  T.state.initialBootstrapPending=true;
+  assert.equal(T.render(firstPayload),false,'a graphless initial payload is held until the graph arrives');
+  assert.equal(T.state.runwaySnapshotPainted,false);
+  assert.equal(T.state.snapshot,null);
+  assert.equal(T.render({...firstPayload,graph:richGraph}),true);
+  assert.equal(T.state.forest.roots.length,1);
+  assert.deepEqual(Array.from(T.state.forest.roots[0].descendants,chat=>chat.depth),[1,2]);
+
+  const rendered=[T.state.forest.roots[0],...T.state.forest.roots[0].descendants].map((chat,index)=>index===0?T.rowHTML(chat):T.runwayTelemetryHTML(chat,true));
+  const slotOrder=markup=>[...markup.matchAll(/data-runway-slot="(timing|status|activity-column|path-column|tokens)"/g)].map(([,slot])=>slot);
+  assert.deepEqual(slotOrder(rendered[0]),['timing','status','activity-column','path-column','tokens']);
+  assert.ok(rendered.slice(1).every(markup=>JSON.stringify(slotOrder(markup))===JSON.stringify(slotOrder(rendered[0]))),
+    'parent and nested child rows share the same information columns');
+  for(const [index,markup] of rendered.entries()){
+    const activity=markup.match(/data-runway-slot="activity-column"[^>]*>([\s\S]*?)<\/span><span data-runway-slot="path-column"/)?.[1]||'';
+    const tokens=markup.match(/data-runway-slot="tokens"[^>]*>([\s\S]*?)<\/span><\/div>/)?.[1]||'';
+    const leaves=['orchestrator','keyboard','tests'];
+    assert.doesNotMatch(activity,/Cache \d+%/,`row ${index} keeps cache out of activity`);
+    assert.equal((activity.match(/class="[^"]*\brunway-activity\b[^"]*"/g)||[]).length,1,`row ${index} activity markup: ${activity}`);
+    assert.match(tokens,/ctx-tokens/);
+    assert.match(tokens,/Cache 98%/);
+    assert.ok(tokens.indexOf('ctx-tokens')<tokens.indexOf('Cache 98%'),'tokens stay above the muted cache line');
+    assert.match(markup,new RegExp('runway-path-leaf">'+leaves[index]+'<\\/span>'));
+    assert.match(markup,/title="Workspace \u00b7 A:\\pisha\\orchestrator/,'the full workspace path remains in the tooltip');
+    assert.equal((markup.match(/data-runway-slot="cache"/g)||[]).length,1);
+  }
+
+  const inspect='body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) ';
+  const rowRule=cssRule(inspect+'.runway-refined-row');
+  assert.match(rowRule,/grid-template-rows:23px 21px;column-gap:8px;row-gap:2px;align-items:center/);
+  const tracks=[120,46,82,70,80,78],weights=[1.7,0,0,1,1.1,0],innerWidth=556-20-5*8;
+  const flexibleExtra=innerWidth-tracks.reduce((sum,width)=>sum+width,0),weightTotal=weights.reduce((sum,value)=>sum+value,0);
+  const trackWidths=tracks.map((width,index)=>width+(weightTotal?flexibleExtra*weights[index]/weightTotal:0));
+  assert.ok(Math.abs(trackWidths.reduce((sum,width)=>sum+width,0)-innerWidth)<1e-8);
+  const cellRules=['runway-refined-timing','runway-refined-status','runway-refined-activity','runway-refined-path','runway-refined-tokens'];
+  for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
+  for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-activity','runway-refined-path'])
+    assert.match(cssRule(inspect+'.'+name),/grid-row:1\/3/,'single-line columns span and center on the shared row axis');
+  for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-activity','runway-refined-path'])
+    assert.match(cssRule(inspect+'.'+name),/align-items:center/);
+  for(const selector of ['.runway-refined-elapsed','.runway-refined-status .runway-state-word','.runway-refined-activity>.runway-activity','.runway-refined-path .runway-path-leaf'])
+    assert.match(cssRule(inspect+selector),/white-space:nowrap/);
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-template-rows:1fr 1fr/,'tokens and cache share a centered two-line track');
+  assert.match(cssRule(inspect+'.runway-refined-path .runway-path-leaf'),/text-overflow:ellipsis/);
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-row:1\/3/,'tokens span the same two-row axis as the single-line columns');
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/align-items:center/,'tokens centre their two lines on the shared row axis');
+}
 
 // Mixed provider lineage uses canonical keys and the graph across provider boundaries.
 {
