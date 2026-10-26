@@ -2,6 +2,8 @@
 
 These are static design studies. Values are illustrative and do not represent a live account.
 
+The displayed sample values include 46 sessions, 18 subagents, and 62 active hours; these are placeholders for visual review. They remain listed as **needs data** below. The cost and token series are synthetic.
+
 ## Backend coverage
 
 | Panel or metric | Current source support | Review note |
