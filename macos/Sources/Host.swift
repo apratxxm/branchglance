@@ -27,6 +27,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     var mediaHost: NSHostingView<MediaView>!
     var hudKind: HUDKind?
     var hudWork: DispatchWorkItem?
+    var placedFrame = NSRect.zero
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -124,6 +125,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     /// Open the inspection view after a short dwell, close it shortly after the pointer leaves,
     /// so passing the cursor across the menu bar doesn't flicker the notch.
     func hoverChanged(_ inside: Bool) {
+        // Tracking areas are rebuilt as the panel resizes, which re-sends "entered".
+        guard inside != hovering else { return }
         hoverWork?.cancel()
         hovering = inside
         if inside { open() }
@@ -151,7 +154,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     var openSize: CGSize {
         switch tabs.selected {
         case .tracker: return CGSize(width: requestedSize.width, height: requestedSize.height + headerHeight)
-        case .media: return CGSize(width: max(480, notchWidthForHeader + 200), height: 130 + headerHeight)
+        case .media: return CGSize(width: max(500, notchWidthForHeader + 240), height: 150 + headerHeight)
         }
     }
 
@@ -231,6 +234,9 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         let frame = screen.frame
         let width = min(size.width, frame.width), height = min(size.height, frame.height)
         let rect = NSRect(x: frame.midX - width / 2, y: frame.maxY - height, width: width, height: height)
+        // Re-animating to the same frame keeps WebKit resizing and it never paints.
+        guard rect != placedFrame else { return }
+        placedFrame = rect
         if animate && !reducedMotion {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.22
@@ -371,6 +377,10 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         item.state = lockScreen.widgetEnabled ? .on : .off
     }
 
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webView.reload()
+    }
+
     @objc func reload() { webView.load(URLRequest(url: pageURL)) }
     @objc func openInBrowser() { NSWorkspace.shared.open(pageURL) }
 }
@@ -416,3 +426,4 @@ struct TabHeader: View {
         .foregroundStyle(.white)
     }
 }
+
