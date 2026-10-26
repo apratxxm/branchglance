@@ -79,21 +79,15 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
 
   const inspect='body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) ';
   const rowRule=cssRule(inspect+'.runway-refined-row');
-  assert.match(rowRule,/grid-template-rows:23px 21px;column-gap:8px;row-gap:2px;align-items:center/);
-  const tracks=[120,46,82,70,80,78],weights=[1.7,0,0,1,1.1,0],innerWidth=556-20-5*8;
-  const flexibleExtra=innerWidth-tracks.reduce((sum,width)=>sum+width,0),weightTotal=weights.reduce((sum,value)=>sum+value,0);
-  const trackWidths=tracks.map((width,index)=>width+(weightTotal?flexibleExtra*weights[index]/weightTotal:0));
-  assert.ok(Math.abs(trackWidths.reduce((sum,width)=>sum+width,0)-innerWidth)<1e-8);
-  const cellRules=['runway-refined-timing','runway-refined-status','runway-refined-activity','runway-refined-path','runway-refined-tokens'];
+  assert.match(rowRule,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
+  const cellRules=['runway-refined-timing','runway-refined-status','runway-refined-path','runway-refined-tokens'];
   for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
-  for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-activity','runway-refined-path'])
-    assert.match(cssRule(inspect+'.'+name),/grid-row:1\/3/,'single-line columns span and center on the shared row axis');
-  for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-activity','runway-refined-path'])
-    assert.match(cssRule(inspect+'.'+name),/align-items:center/);
-  for(const selector of ['.runway-refined-elapsed','.runway-refined-status .runway-state-word','.runway-refined-activity>.runway-activity','.runway-refined-path .runway-path-leaf'])
-    assert.match(cssRule(inspect+selector),/white-space:nowrap/);
-  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-template-rows:1fr 1fr/,'tokens and cache share a centered two-line track');
-  assert.match(cssRule(inspect+'.runway-refined-path .runway-path-leaf'),/text-overflow:ellipsis/);
+  assert.match(cssRule(inspect+'.runway-refined-activity'),/overflow:visible/);
+  assert.match(cssRule(inspect+'.runway-refined-activity>.runway-activity'),/white-space:normal;overflow-wrap:anywhere/);
+  for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-path'])
+    assert.match(cssRule(inspect+'.'+name),/grid-row:1\/3/);
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-template-rows:23px 21px/);
+  assert.match(css,/\.runway-refined-path \.runway-path-leaf\{overflow:visible;white-space:normal;overflow-wrap:break-word;text-overflow:clip;\}/,'workspace wraps instead of clipping');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-row:1\/3/,'tokens span the same two-row axis as the single-line columns');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/align-items:center/,'tokens centre their two lines on the shared row axis');
 }
@@ -227,11 +221,8 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard"},true);
   const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard review dashboard updates and coordination"},true);
   assert.equal((shortTitle.match(/class="runway-refined-row"/g)||[]).length,(longTitle.match(/class="runway-refined-row"/g)||[]).length,"title length does not add rows or change the fixed row tracks");
-  assert.match(css,/runway-refined-title>\.runway-agent-name\{[^}]*white-space:nowrap[^}]*overflow:hidden[^}]*text-overflow:ellipsis/);
-  assert.match(css,/runway-refined-title \.runway-agent-label\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);
-  assert.match(css,/grid-template-rows:23px 21px;column-gap:8px;row-gap:2px;align-items:center;\s*width:100%;min-width:0;min-height:50px/);
-  assert.match(css,/runway-compact\[data-notch-mode="inspect"\][^\n]+\.runway-refined-title \.runway-agent-label\{[^}]*white-space:nowrap/);
-  assert.match(css,/grid-template-rows:23px 21px;column-gap:8px;row-gap:2px;align-items:center/);
+  assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center;\s*width:100%;min-width:0;min-height:50px/);
+  assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
 }
 
 console.log("unified agent tree contract checks passed");
