@@ -472,6 +472,7 @@ _RECENT_IDS = 16
 
 def _new_usage_state() -> dict[str, Any]:
     return {"ids": array("Q"), "days": array("I"), "models": array("H"), "values": array("Q"),
+            "epochs": array("q"),
             "model_names": [], "recent": {}}
 
 
@@ -521,6 +522,8 @@ def _reduce_usage(state: dict[str, Any], item: Any) -> None:
     state["ids"].append(key)
     state["days"].append(date.fromisoformat(day).toordinal())
     state["models"].append(model_index)
+    stamp = providers._timestamp_epoch(item.get("timestamp")) if item.get("timestamp") else None
+    state["epochs"].append(int(stamp) if stamp else 0)
     state["values"].extend(values)
     recent[key] = len(state["ids"]) - 1
     while len(recent) > _RECENT_IDS:
@@ -546,6 +549,22 @@ def _usage_files(base: Path, cutoff: float) -> list[tuple[float, str, Path]]:
     return found
 
 
+def _insight_add(bucket: dict[str, dict[str, int]], model: str, record: dict[str, int]) -> None:
+    target = bucket.setdefault(model, {})
+    for name, value in record.items():
+        target[name] = target.get(name, 0) + value
+
+
+def _local_hour_key(epoch: int, tz: Any, cache: dict[int, str]) -> str:
+    """Local clock-hour start as ISO text, the same key shape the Insights reader uses."""
+    minute = epoch // 60
+    key = cache.get(minute)
+    if key is None:
+        key = datetime.fromtimestamp(epoch, tz).replace(minute=0, second=0, microsecond=0).isoformat()
+        cache[minute] = key
+    return key
+
+
 def usage_aggregates(now: float | None = None, root: Path | None = None,
                      days: int = TRACKING_DAYS) -> dict[str, Any]:
     """Provider-level 31-day totals, cache-hit rate, activity and model usage.
@@ -565,6 +584,12 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
     model_usage: dict[str, dict[str, int]] = {}
     daily: dict[int, int] = {}
     seen: set[int] = set()
+    tz = providers._local_timezone()
+    hour_keys: dict[int, str] = {}
+    insight_daily: dict[str, dict[str, dict[str, int]]] = {}
+    insight_hourly: dict[str, dict[str, dict[str, int]]] = {}
+    active_hours: set[str] = set()
+    session_activity: dict[str, dict[str, Any]] = {}
     for _created, _name, path in _usage_files(base, now - (days + 1) * 86400):
         state = providers._incremental_jsonl_reduce(_USAGE_KIND, path, _new_usage_state, _reduce_usage, unavailable=None)
         if not isinstance(state, dict):
@@ -596,6 +621,18 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
             if subagent:
                 usage["subagentTokens"] += amount
                 usage["subagentRequests"] += 1
+            record = {"input_tokens": fields[0], "output_tokens": fields[1], "cached_tokens": fields[2],
+                      "cache_5m_tokens": fields[3], "cache_1h_tokens": fields[4], "total_tokens": amount}
+            _insight_add(insight_daily.setdefault(date.fromordinal(day).isoformat(), {}), model, record)
+            epoch = state["epochs"][index]
+            if epoch:
+                hour = _local_hour_key(epoch, tz, hour_keys)
+                _insight_add(insight_hourly.setdefault(hour, {}), model, record)
+                active_hours.add(hour)
+            session = session_activity.setdefault(
+                path.stem, {"id": path.stem, "subagent": subagent, "lastActivityAt": None})
+            if epoch and (session["lastActivityAt"] is None or epoch > session["lastActivityAt"]):
+                session["lastActivityAt"] = epoch
     denominator = totals["input_tokens"] + totals["cached_tokens"] + totals["cache_5m_tokens"] + totals["cache_1h_tokens"]
     cache = {
         "percent": min(100, round(totals["cached_tokens"] * 100 / denominator)) if denominator else 0,
@@ -613,6 +650,9 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
                        for model, usage in sorted(model_usage.items(), key=lambda item: -item[1]["tokens"])],
         "modelUsageNote": ("Recorded transcript responses over the last 31 days, each response counted once; "
                            "subagent totals come from subagent transcripts."),
+        "_insightsData": {"trackingWindowDays": days, "dailyModels": insight_daily,
+                          "hourlyModels": insight_hourly, "activeHours": sorted(active_hours),
+                          "sessions": list(session_activity.values())},
         "tracked31Days": tracked,
         "tracked31DaysLabel": providers._human_tokens(tracked),
         "trackingWindowDays": days,

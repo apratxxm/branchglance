@@ -117,34 +117,65 @@ def test_insights_24h_uses_hour_series_and_all_is_bounded_to_31_days(tmp_path):
     assert thirty["providers"][0]["previous"] is None
 
 
-def test_unknown_models_make_cost_unreliable_and_identifiers_never_escape(tmp_path):
+def _unpriced_row(tokens=1):
+    return {"input_tokens": tokens, "cached_tokens": 0, "cache_5m_tokens": 0,
+            "cache_1h_tokens": 0, "output_tokens": 0, "total_tokens": tokens}
+
+
+def _quiet_store(tmp_path):
+    return insights.LimitPeakStore(tmp_path / "peaks.jsonl", owner_check=lambda: False)
+
+
+def test_mixed_priced_and_unpriced_claude_models_sum_priced_and_flag_partial(tmp_path):
     snapshot, now = _fixture()
-    provider = snapshot["providers"][0]
-    provider["_insightsData"]["dailyModels"][now.date().isoformat()] = {
-        "unlisted-model-secret": {
-            "input_tokens": 1, "cached_tokens": 0, "cache_5m_tokens": 0,
-            "cache_1h_tokens": 0, "output_tokens": 0, "total_tokens": 1,
-        },
-    }
-    result = insights.build_insights(
-        snapshot, "30d", now=now,
-        peak_store=insights.LimitPeakStore(tmp_path / "peaks.jsonl", owner_check=lambda: False))
-    payload = json.dumps(result)
-    assert result["providers"][0]["totals"]["apiEquivalentCost"] is None
+    today = now.date().isoformat()
+    baseline = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))
+    snapshot["providers"][0]["_insightsData"]["dailyModels"][today]["unlisted-model-secret"] = _unpriced_row()
+    result = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))
+    claude = result["providers"][0]
+    base_claude = baseline["providers"][0]
+    assert "costPartial" not in base_claude["totals"] and "unpricedModels" not in base_claude["totals"]
+    assert claude["totals"]["apiEquivalentCost"] == base_claude["totals"]["apiEquivalentCost"]
+    assert claude["totals"]["apiEquivalentCost"] is not None
+    assert claude["totals"]["costPartial"] is True
+    assert claude["totals"]["unpricedModels"] == ["unlisted-model-secret"]
+    today_row = next(row for row in claude["series"] if row["date"] == today)
+    assert today_row["costPartial"] is True and today_row["apiEquivalentCost"] is not None
+    assert next(row for row in claude["models"] if row["name"] == "unlisted-model-secret")["apiEquivalentCost"] is None
+    assert next(row for row in claude["models"] if row["name"] == "claude-opus-5")["apiEquivalentCost"] is not None
+
+
+def test_mixed_priced_and_unpriced_codex_models_in_range(tmp_path):
+    snapshot, now = _fixture()
+    codex = snapshot["providers"][1]
+    codex["_insightsData"]["dailyModels"][now.date().isoformat()]["gpt-6.1-sol"] = _unpriced_row(10)
+    provider = insights.build_insights(snapshot, "7d", now=now, peak_store=_quiet_store(tmp_path))["providers"][1]
+    assert provider["totals"]["apiEquivalentCost"] == 0.0005
+    assert provider["totals"]["costPartial"] is True
+    assert provider["totals"]["unpricedModels"] == ["gpt-6.1-sol"]
+    models = {row["name"]: row["apiEquivalentCost"] for row in provider["models"]}
+    assert models["gpt-6.1-sol"] is None and models["gpt-5.6-sol"] is not None
+
+
+def test_all_unpriced_models_leave_cost_null_and_flag_partial(tmp_path):
+    snapshot, now = _fixture()
+    codex = snapshot["providers"][1]
+    codex["_insightsData"]["dailyModels"] = {now.date().isoformat(): {"gpt-6.1-sol": _unpriced_row(10)}}
+    provider = insights.build_insights(snapshot, "7d", now=now, peak_store=_quiet_store(tmp_path))["providers"][1]
+    assert provider["totals"]["apiEquivalentCost"] is None
+    assert provider["totals"]["costPartial"] is True
+    assert provider["totals"]["unpricedModels"] == ["gpt-6.1-sol"]
+    today_row = next(row for row in provider["series"] if row["date"] == now.date().isoformat())
+    assert today_row["apiEquivalentCost"] is None and today_row["costPartial"] is True
+
+
+def test_unpriced_model_names_never_escape_private_identifiers(tmp_path):
+    snapshot, now = _fixture()
+    snapshot["providers"][0]["_insightsData"]["dailyModels"][now.date().isoformat()]["unlisted-model-secret"] = _unpriced_row()
+    payload = json.dumps(insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path)))
     for private in ("PRIVATE_ROOT_ID", "PRIVATE_CHILD_ID", "PRIVATE_CODEX_ROOT",
                     "secret title", "secret path", "another secret title", "another secret path"):
         assert private not in payload
-
-
-def test_unpriced_codex_model_makes_cost_null(tmp_path):
-    snapshot, now = _fixture()
-    codex = snapshot["providers"][1]
-    codex["_insightsData"]["dailyModels"][now.date().isoformat()] = {"gpt-6.1-sol": {
-        "input_tokens": 10, "cached_tokens": 0, "output_tokens": 0, "total_tokens": 10}}
-    result = insights.build_insights(
-        snapshot, "7d", now=now,
-        peak_store=insights.LimitPeakStore(tmp_path / "peaks.jsonl", owner_check=lambda: False))
-    assert result["providers"][1]["totals"]["apiEquivalentCost"] is None
 
 
 def test_snapshot_refresh_records_limit_peak_without_insights_request(monkeypatch, tmp_path):

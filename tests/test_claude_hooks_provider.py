@@ -1,5 +1,6 @@
 """Claude Code rows from hook events plus transcripts (synthetic files)."""
 
+import copy
 import json
 import os
 import time
@@ -729,3 +730,54 @@ def test_out_of_order_hook_arrival_never_links_the_wrong_session(arrival):
     assert sids["b"] not in linked
     if arrival == ((10, "a"), (20, "b"), (30, "a")):
         assert linked == [sids["a"]]
+
+
+def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, tmp_path):
+    """Reproduces the served case: the live Claude provider must emit insight data, and that
+    data must survive snapshot persistence and restore so the Insights reader sees sessions,
+    models, cost, cache and active hours."""
+    from token_tracker import insights, server
+
+    world.transcript(SID, [
+        assistant(NOW - 3600, "r1", use=_usage5(10, 5, 80, 4, 1)),
+        assistant(NOW - 7200, "r2", model="claude-haiku-4-5", use=_usage5(1, 1, 0, 0, 0)),
+        assistant(NOW - 40 * 86400, "r-old", use=_usage5(999, 999, 0, 0, 0)),
+    ])
+    child_dir = world.projects / SID / "subagents"
+    child_dir.mkdir(parents=True)
+    (child_dir / "agent-kid.jsonl").write_text(
+        json.dumps(assistant(NOW - 300, "c1", model="claude-haiku-4-5", use=_usage5(1, 1, 8, 0, 0))) + "\n",
+        encoding="utf-8")
+    monkeypatch.setattr(claude_provider, "projects_root", lambda: world.projects.parent)
+    monkeypatch.setattr(claude_provider, "build_rows", lambda *a, **k: [])
+
+    class Limits:
+        def snapshot(self):
+            return {"connected": True, "name": "Claude", "fiveHour": {"percent": 24},
+                    "weekly": {"percent": 4}, "activity": []}
+
+    live = claude_provider.ClaudeCodeProvider(limits_factory=Limits).snapshot()
+    insight_data = live["_insightsData"]
+    assert {(s["id"], s["subagent"]) for s in insight_data["sessions"]} == {(SID, False), ("agent-kid", True)}
+    assert insight_data["activeHours"]
+    assert "claude-opus-5" in insight_data["dailyModels"][_local_day(NOW - 3600)]
+
+    snapshot = {"generatedAt": datetime.now(timezone.utc).isoformat(), "enabledProviders": ["Claude"],
+                "limitProviders": [], "providers": [live]}
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: None)
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Claude"}))
+    monkeypatch.setattr(server, "build_snapshot", lambda: copy.deepcopy(snapshot))
+    path = tmp_path / "stats-snapshot.json"
+    server.SnapshotCache(persist_path=path, compatibility="test")._build()
+    restored = server.SnapshotCache(persist_path=path, compatibility="test").get()
+    assert restored is not None and restored["snapshotCache"]["stale"] is True
+
+    result = insights.build_insights(
+        restored, "30d", peak_store=insights.LimitPeakStore(tmp_path / "peaks.jsonl", owner_check=lambda: False),
+        allowed_names={"Claude"})
+    claude = result["providers"][0]
+    assert claude["totals"]["sessions"] == 1 and claude["totals"]["subagentsActive"] == 1
+    assert claude["totals"]["activeHours"] >= 2.0
+    assert claude["totals"]["cacheHitRate"] is not None
+    assert {model["name"] for model in claude["models"]} == {"claude-opus-5", "claude-haiku-4-5"}
+    assert claude["totals"]["apiEquivalentCost"] is not None
