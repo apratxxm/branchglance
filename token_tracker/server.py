@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gzip
 import hashlib
 import hmac
 import ipaddress
@@ -192,6 +193,9 @@ class LiveCache:
     def __init__(self) -> None:
         self.condition = threading.Condition()
         self.value = None
+        self._encoded_value = None
+        self._plain = None
+        self._gzip = None
         self.completed_at = 0.0
         self.building = False
         self.retry_after = 0.0
@@ -199,6 +203,7 @@ class LiveCache:
     def _refresh(self) -> None:
         try:
             value = live_state()
+            plain = json.dumps(value).encode("utf-8")
         except Exception as exc:
             _log_live_failure(exc)
             with self.condition:
@@ -207,8 +212,16 @@ class LiveCache:
                 self.condition.notify_all()
             return
 
+        try:
+            compressed = gzip.compress(plain, compresslevel=1, mtime=0)
+        except Exception:
+            compressed = None
+
         with self.condition:
             self.value = value
+            self._encoded_value = value
+            self._plain = plain
+            self._gzip = compressed
             self.completed_at = time.monotonic()
             self.building = False
             self.retry_after = 0.0
@@ -227,14 +240,21 @@ class LiveCache:
             self.condition.notify_all()
             _log_live_failure(exc)
 
-    def get(self):
+    def _selected_locked(self, encoded: bool):
+        if not encoded:
+            return self.value
+        if self._encoded_value is not self.value:
+            return self.value, None, None
+        return self.value, self._plain, self._gzip
+
+    def get(self, *, encoded: bool = False):
         with self.condition:
             now = time.monotonic()
             age = now - self.completed_at if self.value is not None else float("inf")
             if self.value is not None and age <= LIVE_MAX_AGE_SECONDS:
                 if age >= LIVE_REFRESH_TTL_SECONDS:
                     self._start_refresh_locked(now)
-                return self.value
+                return self._selected_locked(encoded)
 
             # A cold caller gets only a short chance to receive the first result.
             self._start_refresh_locked(now)
@@ -248,11 +268,31 @@ class LiveCache:
             now = time.monotonic()
             age = now - self.completed_at if self.value is not None else float("inf")
             if self.value is not None and age <= LIVE_MAX_AGE_SECONDS:
-                return self.value
+                return self._selected_locked(encoded)
             return None
 
 
 LIVE_CACHE = LiveCache()
+
+
+def _live_encodings(header: str) -> tuple[bool, bool]:
+    """Return whether gzip and identity are acceptable for this request."""
+    choices: dict[str, float] = {}
+    for item in header.split(","):
+        parts = [part.strip() for part in item.split(";")]
+        name = parts[0].lower()
+        if not name:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            key, sep, raw = parameter.partition("=")
+            if key.strip().lower() != "q" or not sep or not re.fullmatch(r"(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)", raw.strip()):
+                quality = 0.0
+                break
+            quality = min(quality, float(raw.strip()))
+        choices[name] = min(choices.get(name, 1.0), quality)
+    wildcard = choices.get("*", 0.0)
+    return choices.get("gzip", wildcard) > 0, choices.get("identity", 0.0 if choices.get("*") == 0 else 1.0) > 0
 
 
 class SnapshotCache:
@@ -796,7 +836,8 @@ class FastClaudeLimits:
         self.at = 0.0
         self.loading = False
 
-    def overlay(self, snapshot: dict) -> dict:
+    def overlay(self, snapshot: dict, *, owned: bool = False) -> dict:
+        """Overlay quota data, copying unless the caller owns its snapshot."""
         from .provider_policy import POLICIES, policy_for
         if not policy_for("Claude", POLICIES).allows("show"):
             return snapshot
@@ -828,7 +869,7 @@ class FastClaudeLimits:
             with self.condition:
                 self.value = copy.deepcopy(limits)
                 self.at = time.monotonic()
-        result = copy.deepcopy(snapshot)
+        result = snapshot if owned else copy.deepcopy(snapshot)
         for provider in result.get("providers", []):
             if isinstance(provider, dict) and provider.get("name") == "Claude":
                 for field in ("fiveHour", "weekly", "limitsUpdatedAt"):
@@ -889,7 +930,8 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
                 return
             if query.get("background", [""])[0] == "1":
-                snapshot = FAST_CLAUDE_LIMITS.overlay(snapshot)
+                # CACHE.get returns a private egress copy for each caller.
+                snapshot = FAST_CLAUDE_LIMITS.overlay(snapshot, owned=True)
             if "limit" in query:
                 try:
                     limit = max(1, min(200, int(query["limit"][0])))
@@ -928,11 +970,11 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(payload)
             return
         if parsed.path == "/api/live":
-            snapshot = LIVE_CACHE.get()
-            if snapshot is None:
+            selected = LIVE_CACHE.get(encoded=True)
+            if selected is None:
                 self._send_json({"ok": False, "error": "Live telemetry unavailable"}, 503)
             else:
-                self._send_json(snapshot)
+                self._send_live_json(*selected)
             return
         if parsed.path == "/api/today":
             self._send_json(today_usage())
@@ -1211,6 +1253,29 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(origin)
         return (parsed.scheme == "http" and parsed.netloc == host and not parsed.path
                 and parsed.hostname in {"127.0.0.1", "localhost", "::1"})
+
+    def _send_live_json(self, value, plain: bytes | None, compressed: bytes | None) -> None:
+        gzip_ok, identity_ok = _live_encodings(self.headers.get("Accept-Encoding", ""))
+        if gzip_ok and compressed is not None:
+            payload, encoding = compressed, "gzip"
+        elif identity_ok:
+            payload, encoding = plain if plain is not None else json.dumps(value).encode("utf-8"), None
+        else:
+            self.send_response(406)
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "Accept-Encoding")
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _send_json(self, value, status: int = 200) -> None:
         payload = json.dumps(value).encode("utf-8")

@@ -490,6 +490,7 @@ def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
                                "limitsUpdatedAt": None, "chats": [{"id": "chat"}]}]}
     first = cache.overlay(snapshot)
     second = cache.overlay(snapshot)
+    assert snapshot["providers"][0]["fiveHour"] is None
     provider = first["providers"][0]
     assert provider["fiveHour"] == {"percent": 17}
     assert provider["weekly"] == {"percent": 8}
@@ -497,6 +498,12 @@ def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
     assert provider["chats"] == [{"id": "chat"}]
     assert second["providers"][0]["fiveHour"] == {"percent": 17}
     assert calls == [1]
+
+    owned = cache.overlay(snapshot, owned=True)
+    assert owned is snapshot
+    assert owned["providers"][0]["fiveHour"] == {"percent": 17}
+    owned["providers"][0]["fiveHour"]["percent"] = 99
+    assert cache.overlay({"providers": [{"name": "Claude"}]}, owned=True)["providers"][0]["fiveHour"] == {"percent": 17}
 
 
 def test_cold_background_stats_and_quota_requests_do_not_wait_for_full_build(monkeypatch, tmp_path):
