@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build macos/build/Branchglance.app. Run it with: open macos/build/Branchglance.app
+# Build macos/build/Branchglance.app. `./macos/build.sh install` also copies it to /Applications.
 set -e
 cd "$(dirname "$0")"
 ROOT="$(cd .. && pwd)"
@@ -7,7 +7,7 @@ APP=build/Branchglance.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 swiftc -O -o "$APP/Contents/MacOS/Branchglance" Sources/*.swift \
-    -framework Cocoa -framework WebKit -framework SwiftUI -framework CoreAudio -framework AudioToolbox -framework IOKit
+    -framework Cocoa -framework WebKit -framework SwiftUI -framework CoreAudio -framework AudioToolbox -framework IOKit -framework ServiceManagement
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,3 +25,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --sign - "$APP"
 echo "Built $APP"
+
+if [ "$1" = "install" ]; then
+    pkill -x Branchglance 2>/dev/null || true
+    rm -rf /Applications/Branchglance.app
+    cp -R "$APP" /Applications/
+    open /Applications/Branchglance.app
+    echo "Installed /Applications/Branchglance.app"
+fi
