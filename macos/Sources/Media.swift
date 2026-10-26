@@ -458,21 +458,50 @@ struct PressStyle: ButtonStyle {
     }
 }
 
-/// Four bars in the artwork colour, beside the closed notch while music plays.
+/// Four bars in the artwork colour beside the closed notch, driven by the player's audio
+/// (bass on the left, treble on the right). Until audio arrives they breathe gently.
 struct MusicBars: View {
     @ObservedObject var media: NowPlaying
+    var levels: AudioLevels?
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 12, paused: !media.isPlaying)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<4, id: \.self) { i in
-                    let wave = (sin(t * (5 + Double(i) * 1.7) + Double(i)) + 1) / 2
-                    Capsule().fill(Color(nsColor: media.accent))
-                        .frame(width: 3, height: media.isPlaying ? 4 + 10 * wave : 3)
-                }
-            }
-            .frame(height: 16)
-            .animation(.easeInOut(duration: 0.12), value: t)
+        if let levels { LiveBars(media: media, levels: levels) } else { IdleBars(media: media) }
+    }
+}
+
+private struct LiveBars: View {
+    @ObservedObject var media: NowPlaying
+    @ObservedObject var levels: AudioLevels
+    var body: some View {
+        if levels.live && media.isPlaying {
+            Bars(heights: levels.bands.map { CGFloat($0) }, color: Color(nsColor: media.accent))
+                .animation(.linear(duration: 1.0 / 30), value: levels.bands)
+        } else {
+            IdleBars(media: media)
         }
+    }
+}
+
+private struct IdleBars: View {
+    @ObservedObject var media: NowPlaying
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !media.isPlaying)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            Bars(heights: (0..<4).map { i in media.isPlaying ? 0.35 + 0.2 * CGFloat(sin(t * 2.4 + Double(i) * 0.9)) : 0 },
+                 color: Color(nsColor: media.accent))
+        }
+    }
+}
+
+private struct Bars: View {
+    let heights: [CGFloat]
+    let color: Color
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(heights.indices, id: \.self) { i in
+                Capsule().fill(color).frame(width: 3, height: 3 + 13 * max(0, min(1, heights[i])))
+            }
+        }
+        .frame(height: 16)
     }
 }
