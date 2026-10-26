@@ -75,7 +75,7 @@ assert.match(html,/dash-stat-label">Sessions</);assert.match(html,/Subagents act
 
 // Priced payload keeps cost as the hero and chart metric; the toggle is not forced to Tokens.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,totals:{...p.totals,apiEquivalentCost:12.5},series:p.series.map(r=>({...r,apiEquivalentCost:1}))}))})}];
-dashboard.state.metric="cost";
+dashboard.state.metric="cost";dashboard.state.metricExplicit=true;
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost");
 html=dashboard.insightsHTML();
@@ -91,7 +91,7 @@ assert.match(html,/dash-hero-number">1\.2<\/strong><span class="dash-hero-unit">
 
 // Partial cost: the cost hero stays, with a muted note naming the unpriced models (formatted names).
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>({...p,totals:{...p.totals,apiEquivalentCost:i===0?9.25:null,costPartial:i===0,unpricedModels:i===0?["claude-haiku-5.5"]:[]},series:p.series.map((r,j)=>({...r,apiEquivalentCost:i===0&&j===0?1:null}))}))})}];
-dashboard.state.metric="cost";
+dashboard.state.metric="cost";dashboard.state.metricExplicit=true;
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.match(html,/dash-hero-currency/);
