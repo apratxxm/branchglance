@@ -632,6 +632,7 @@ class SnapshotCache:
                 return None
             raise
         built_at = self._utc_now()
+        _record_insights_peaks(value)
         with self.condition:
             published_at = time.monotonic()
             generation = self.generation + 1
@@ -742,6 +743,21 @@ class SnapshotCache:
                     self._start_background_locked()
                 return None
         return self._egress(selected[0], selected[1], restored=selected[2])
+
+
+def _insights_allowed_names() -> set[str]:
+    from .provider_policy import POLICIES, policy_for
+    full, limit_only = provider_module._provider_collection_sets(POLICIES)
+    return {name for name in (*full, *limit_only) if policy_for(name, POLICIES).allows("show")}
+
+
+def _record_insights_peaks(snapshot: dict) -> None:
+    """Sample limit peaks on every snapshot refresh; the store itself is owner-gated."""
+    try:
+        from . import insights
+        insights.record_limit_peaks(snapshot, allowed_names=_insights_allowed_names())
+    except Exception:
+        return
 
 
 def _snapshot_cache_compatibility() -> str:
@@ -885,7 +901,31 @@ class Handler(SimpleHTTPRequestHandler):
                                       status_filter=query.get("status", ["all"])[0],
                                       sort=query.get("sort", ["latest"])[0],
                                       days={"1d": 1, "7d": 7, "30d": 30}.get(query.get("range", ["7d"])[0], 7))
+            # Insights aggregates stay server-side; strip them with a shallow copy
+            # (a deep copy of the whole snapshot would cost every request).
+            snapshot = {**snapshot, "providers": [
+                {k: v for k, v in provider.items() if k != "_insightsData"} if isinstance(provider, dict) else provider
+                for provider in snapshot.get("providers") or []]}
             self._send_json(snapshot)
+            return
+        if parsed.path == "/api/insights":
+            from . import insights
+            from .provider_policy import POLICIES, public_policies
+            query = parse_qs(parsed.query)
+            range_name = query.get("range", ["30d"])[0]
+            if range_name not in insights.RANGES:
+                self._send_json({"ok": False, "error": "Invalid insights range."}, 400)
+                return
+            allowed = _insights_allowed_names()
+            generation = public_policies(POLICIES)["generation"]
+            payload = insights.INSIGHTS_CACHE.get(
+                range_name, generation, allowed_names=allowed,
+                snapshot_loader=lambda: CACHE.get(),
+                peak_store=insights.LimitPeakStore())
+            if payload is None:
+                self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
+            else:
+                self._send_json(payload)
             return
         if parsed.path == "/api/live":
             snapshot = LIVE_CACHE.get()
