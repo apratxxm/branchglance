@@ -30,7 +30,8 @@ codesign --force --sign - "$APP"
 echo "Built $APP"
 
 if [ "$1" = "install" ]; then
-    pkill -x Branchglance 2>/dev/null || true
+    osascript -e 'quit app id "com.branchglance.notch"' 2>/dev/null || true
+    sleep 1
     rm -rf /Applications/Branchglance.app
     # Move rather than copy, so Spotlight and Launchpad see a single Branchglance.
     mv "$APP" /Applications/
