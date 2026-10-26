@@ -33,7 +33,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   snapshotCache:null,snapshotCacheInvalid:false,watcherFetchError:null,watcherAcceptedSequence:new Map(),
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
-  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
+  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, graphlessBootstrapTimer:null, graphlessBootstrapSnapshot:null, graphlessBootstrapAttempts:0, graphlessBootstrapTimedOut:false, graphlessBootstrapFallback:false, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
   source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, notchOpeningTimer:null, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
@@ -2462,7 +2462,20 @@ function initialActiveSource(snapshot){
 function render(snapshot) {
   const firstRunwayPaint=COMPACT&&!state.runwaySnapshotPainted;
   const graph=snapshot?.graph?.edges;
-  if(firstRunwayPaint&&state.initialBootstrapPending&&(!graph||typeof graph!=='object'||Array.isArray(graph)))return false;
+  const hasGraph=Boolean(graph&&typeof graph==='object'&&!Array.isArray(graph));
+  const graphlessHold=firstRunwayPaint&&state.initialBootstrapPending&&!hasGraph;
+  if(graphlessHold){
+    state.graphlessBootstrapSnapshot=snapshot;
+    if(state.graphlessBootstrapTimer==null)state.graphlessBootstrapTimer=setTimeout(()=>{
+      state.graphlessBootstrapTimer=null;state.graphlessBootstrapTimedOut=true;
+      if(state.graphlessBootstrapSnapshot&&!state.runwaySnapshotPainted)render(state.graphlessBootstrapSnapshot);
+      if(state.graphlessBootstrapFallback)scheduleBootstrapRetry();
+    },2000);
+  }
+  const graphlessFallback=(graphlessHold&&(++state.graphlessBootstrapAttempts>=2||state.graphlessBootstrapTimedOut))||(!hasGraph&&state.graphlessBootstrapFallback);
+  if(graphlessHold&&!graphlessFallback)return false;
+  if(hasGraph){if(state.graphlessBootstrapTimer!=null)clearTimeout(state.graphlessBootstrapTimer);state.graphlessBootstrapTimer=null;state.graphlessBootstrapSnapshot=null;state.graphlessBootstrapAttempts=0;state.graphlessBootstrapTimedOut=false;state.graphlessBootstrapFallback=false;}
+  else if(graphlessFallback){state.graphlessBootstrapFallback=true;if(state.graphlessBootstrapTimer!=null)clearTimeout(state.graphlessBootstrapTimer);state.graphlessBootstrapTimer=null;state.graphlessBootstrapSnapshot=null;}
   syncProviderPolicyGeneration(snapshot);
   restrictSnapshotProviders(snapshot);
   acceptSnapshotCache(snapshot);
@@ -2473,9 +2486,14 @@ function render(snapshot) {
   if(!state.lastOkAt)state.lastOkAt=Date.now();
   if(RUNWAY&&!PHONE)state.runwaySnapshotPainted=true;
   const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot);
+  const chatProviders=graphlessFallback?providers.map(provider=>({...provider,chats:(provider.chats||[]).map(chat=>({...chat,
+    parentKey:null,parentId:null,status:'unknown',statusSource:'unavailable',telemetryUnavailable:true,
+    executionStatus:'unknown',executionSource:'unavailable',executionActivity:null,activity:null,activityUnavailable:true,
+    statusObservedAt:null,executionObservedAt:null
+  }))})):providers;
   $(".widget")?.classList?.remove("loading");
   const priorSourceSwitching=state.sourceSwitching;if(firstRunwayPaint)state.sourceSwitching=true;
-  try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);renderAnalytics(snapshot);}
+  try{renderTitle(providers);renderResets(limits);renderChats(chatProviders);renderTotals(providers);renderAnalytics(snapshot);}
   finally{state.sourceSwitching=priorSourceSwitching;}
   renderStrip(attentionItems(state.forest,limits));
   window.TokenTrackerDashboard?.setSnapshot?.(snapshot);
@@ -2659,12 +2677,12 @@ function clearBootstrapRetry(reset=false) {
   if(reset)state.bootstrapRetryMs=2000;
 }
 function scheduleBootstrapRetry() {
-  if(state.snapshot||document.hidden||state.bootstrapRetryTimer!=null)return;
+  if(state.snapshot&&!state.graphlessBootstrapFallback||document.hidden||state.bootstrapRetryTimer!=null)return;
   const delay=state.bootstrapRetryMs;
   state.bootstrapRetryMs=Math.min(15000,state.bootstrapRetryMs*2);
   state.bootstrapRetryTimer=setTimeout(()=>{
     state.bootstrapRetryTimer=null;
-    if(!state.snapshot&&!document.hidden)refresh();
+    if((!state.snapshot||state.graphlessBootstrapFallback)&&!document.hidden)refresh();
   },delay);
 }
 async function pollToday() {
@@ -2704,7 +2722,7 @@ async function refresh(force=false) {
   if(state.snapshot&&!PHONE)await loadWatcher();
   if(state.snapshot)tick();
   if(state.refreshPending){const queuedForce=state.refreshPendingForce;state.refreshPending=false;state.refreshPendingForce=false;refresh(queuedForce);return;}
-  if(!state.snapshot)scheduleBootstrapRetry();
+  if(!state.snapshot||state.graphlessBootstrapFallback)scheduleBootstrapRetry();
   if(PHONE&&state.foregroundLivePending&&state.snapshot){state.foregroundLivePending=false;await pollLive();}
 }
 function statsUrl(force) {
@@ -2992,7 +3010,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,

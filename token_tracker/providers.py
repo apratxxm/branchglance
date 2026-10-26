@@ -249,6 +249,10 @@ CLAUDE_PRICING = {
     "fable-5": (10, 1, 12.5, 20, 50),
     "opus-5": (5, .5, 6.25, 10, 25), "opus-4.8": (5, .5, 6.25, 10, 25),
     "sonnet-5": (2, .2, 2.5, 4, 10), "haiku-4.5": (1, .1, 1.25, 2, 5),
+    # Published 2026-10 rates; cache writes use the standard 1.25x/2x input multipliers.
+    # Haiku 5.5 doubles beyond 100K-token prompts, which per-response rows can't see.
+    "fable-5.1": (10, .25, 12.5, 20, 50), "opus-5.5": (4, .2, 5, 8, 20),
+    "sonnet-5.5": (2, .2, 2.5, 4, 10), "haiku-5.5": (.1, .01, .125, .2, .5),
 }
 CODEX_PRICING = {"gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20), "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2)}
 # Standard-tier long-prompt rule (OpenAI model page): a request whose input exceeds the
@@ -256,6 +260,21 @@ CODEX_PRICING = {"gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20), "gpt-5.
 CODEX_LONG_CONTEXT = {"gpt-6-astra": (272_000, 2.0, 1.5)}
 LONG_CONTEXT_SUFFIX = "|long-context"
 PRICE_BASIS = "Standard-tier list prices; Batch, Flex and Fast billing are not recorded locally"
+
+# Exact provider model IDs that intentionally share the listed price rows. Keep this
+# explicit: substring matching makes unknown derived names look priced.
+PRICE_MODEL_ALIASES = {
+    "claude-fable-5": "fable-5",
+    "claude-opus-5": "opus-5",
+    "claude-opus-4-8": "opus-4.8",
+    "claude-sonnet-5": "sonnet-5",
+    "claude-haiku-4-5": "haiku-4.5",
+    "claude-haiku-4-5-20251001": "haiku-4.5",
+    "claude-fable-5-1": "fable-5.1",
+    "claude-opus-5-5": "opus-5.5",
+    "claude-sonnet-5-5": "sonnet-5.5",
+    "claude-haiku-5-5": "haiku-5.5",
+}
 
 
 def _duration_since(minutes: float) -> str:
@@ -2632,8 +2651,11 @@ def _activity_age(updated: Any, now: datetime | None = None) -> str:
 
 
 def _price_for(model: str | None, table: dict[str, tuple[float, ...]]) -> tuple[float, ...] | None:
-    value = "".join(char for char in (model or "").lower() if char.isalnum())
-    return next((rates for key, rates in table.items() if "".join(char for char in key if char.isalnum()) in value), None)
+    value = (model or "").strip().lower()
+    if value.endswith(LONG_CONTEXT_SUFFIX):
+        value = value[:-len(LONG_CONTEXT_SUFFIX)]
+    price_key = PRICE_MODEL_ALIASES.get(value, value)
+    return next((rates for key, rates in table.items() if key.lower() == price_key), None)
 
 
 def _claude_context_window(model: str | None) -> int | None:
@@ -2658,7 +2680,8 @@ def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], tabl
     cost = savings = 0.0; covered = 0; total = int(totals.get("total_tokens") or 0)
     unpriced: dict[str, int] = defaultdict(int)
     for model_key, usage in model_totals.items():
-        model = model_key.split("|", 1)[0]
+        model = (model_key[:-len(LONG_CONTEXT_SUFFIX)]
+                 if model_key.endswith(LONG_CONTEXT_SUFFIX) else model_key)
         rates = _price_for(model, table)
         amount = int(usage.get("total_tokens") or 0)
         if not rates:
@@ -2678,7 +2701,8 @@ def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], tabl
         else:
             cost += ((input_tokens - cached) * rates[0] + cached * rates[1] + output * rates[2]) / 1_000_000
             savings += cached * (rates[0] - rates[1]) / 1_000_000
-    return {"apiEquivalentCost": round(cost, 4), "cacheSavings": round(savings, 4), "pricingCoverage": round(covered * 100 / total, 1) if total else 100,
+    return {"apiEquivalentCost": round(cost, 4) if covered or not total else None,
+            "cacheSavings": round(savings, 4), "pricingCoverage": round(covered * 100 / total, 1) if total else 100,
             "estimated": covered != total, "priceBasis": PRICE_BASIS,
             "unpricedModels": [{"model": name, "tokens": value} for name, value in sorted(unpriced.items(), key=lambda item: -item[1]) if value]}
 

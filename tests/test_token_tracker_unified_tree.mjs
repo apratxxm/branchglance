@@ -37,10 +37,36 @@ const claudeHaiku={id:"haiku",key:"Claude:haiku",parentKey:"Claude:op",title:"te
 const providers=[{name:"Codex",connected:true,chats:[codexLuna,codexSol],...quota},{name:"Claude",connected:true,chats:[claudeParent,claudeHaiku],...quota}];
 const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:sol":"Codex:luna","Claude:haiku":"Claude:op"}};
 
+// Repeated stats failures cannot postpone the graphless first-paint fallback.
+{
+  const {T,timers,context}=boot();
+  const parent={id:'parent',key:'Claude:parent',title:'cached parent',model:'claude-opus-5-5',status:'running'};
+  const child={id:'child',key:'Claude:child',parentKey:'Claude:parent',title:'cached child',model:'claude-sonnet-5-5',status:'running'};
+  const cached={generatedAt:ago(0),providerPolicies:policy,enabledProviders:['Claude'],providers:[{name:'Claude',connected:true,chats:[parent,child]}]};
+  T.state.initialBootstrapPending=true;
+  assert.equal(T.render(cached),false,'the first graphless snapshot is temporarily held');
+  context.fetch=async()=>({ok:false,status:503});
+  await T.refresh();
+  await T.refresh();
+  assert.equal(T.state.snapshot,null,'failed background builds do not accidentally accept the held snapshot');
+  const deadline=timers.get(T.state.graphlessBootstrapTimer);
+  assert.equal(deadline.delay,2000,'the hold has a two second deadline independent of request success');
+  deadline.callback();
+  assert.equal(T.state.forest.roots.length,2,'the deadline exposes cached rows as roots');
+  assert.ok(T.state.forest.rows.every(chat=>chat.telemetryUnavailable&&chat.statusSource==='unavailable'),'deadline fallback marks cached activity unavailable');
+  assert.ok(T.state.forest.rows.every(chat=>T.runwayActivityEvidence(chat).status==='unavailable'),'fallback rows cannot show stale activity as live');
+  assert.ok(T.state.bootstrapRetryTimer!=null,'the first-paint deadline leaves another background retry scheduled');
+  const linked={...cached,graph:{revision:1,edges:{'Claude:parent':null,'Claude:child':'Claude:parent'}}};
+  assert.equal(T.render(linked),true,'a later graph payload is accepted');
+  assert.equal(T.state.forest.roots.length,1,'the later graph re-trees the cached rows');
+  assert.equal(T.state.forest.roots[0].descendants[0].key,'Claude:child');
+  assert.equal(T.state.forest.rows[0].telemetryUnavailable,undefined,'the graph response restores original row evidence');
+}
+
 // First compact paint waits for the graph, and the same live-data rows keep
 // cache and workspace content inside the fixed inspect columns at every depth.
 {
-  const {T}=boot(),rich=(id,title,workspace,parentKey=null)=>({id,key:(id==='op'?'Claude:':'Codex:')+id,parentKey,title,agentName:id==='op'?'':'agent-'+id,
+  const {T,timers}=boot(),rich=(id,title,workspace,parentKey=null)=>({id,key:(id==='op'?'Claude:':'Codex:')+id,parentKey,title,agentName:id==='op'?'':'agent-'+id,
     model:id==='op'?'claude-opus-5-5':'gpt-6.1-sol',status:'running',statusSource:'transcript',statusObservedAt:ago(0),executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),
     activeRunStartedAt:ago(1),executionSince:ago(1),executionActivity:{kind:'reading',files:['A:\\pisha\\orchestrator\\src\\keyboard.py'],observedAt:ago(0)},
     workspace,workspaceKind:'project',contextTokens:98000,contextWindow:200000,contextPercent:49,contextObservedAt:ago(0),contextModel:id==='op'?'claude-opus-5-5':'gpt-6.1-sol',lastRequest:{input:1000,cached:980},updatedAt:ago(id==='op'?0:id==='luna'?1:2),...quota});
@@ -54,9 +80,19 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.equal(T.render(firstPayload),false,'a graphless initial payload is held until the graph arrives');
   assert.equal(T.state.runwaySnapshotPainted,false);
   assert.equal(T.state.snapshot,null);
+  assert.equal(T.render(firstPayload),true,'the graphless hold is bounded to two build attempts');
+  assert.equal(T.state.initialBootstrapPending,false,'the fallback releases the first-paint hold');
+  assert.equal(T.state.forest.roots.length,3,'graphless cached rows render as independent roots');
+  assert.ok(T.state.forest.roots.every(root=>root.descendants.length===0),'fallback rows do not invent a tree');
+  assert.equal(T.render(firstPayload),true,'graphless retries continue rendering while background builds continue');
+  assert.equal(T.state.forest.roots.length,3,'later graphless snapshots remain roots');
+  T.scheduleBootstrapRetry();
+  assert.equal(timers.get(T.state.bootstrapRetryTimer)?.delay,2000,'the graphless fallback keeps a background retry scheduled');
   assert.equal(T.render({...firstPayload,graph:richGraph}),true);
-  assert.equal(T.state.forest.roots.length,1);
+  assert.equal(T.state.forest.roots.length,1,'a later complete graph replaces fallback roots with the tree');
   assert.deepEqual(Array.from(T.state.forest.roots[0].descendants,chat=>chat.depth),[1,2]);
+  assert.equal(T.state.forest.rows[0].telemetryUnavailable,undefined,'the original snapshot evidence remains intact for the graph render');
+  assert.equal(T.runwayActivityEvidence(T.state.forest.rows[0]).status,'running','fresh graph-backed evidence is restored');
 
   const rendered=[T.state.forest.roots[0],...T.state.forest.roots[0].descendants].map((chat,index)=>index===0?T.rowHTML(chat):T.runwayTelemetryHTML(chat,true));
   const slotOrder=markup=>[...markup.matchAll(/data-runway-slot="(timing|status|activity-column|path-column|tokens)"/g)].map(([,slot])=>slot);
