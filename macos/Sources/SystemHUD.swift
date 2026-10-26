@@ -313,8 +313,13 @@ struct HUDView: View {
         if case .media = kind {
             Artwork(image: media.artwork, size: 22)
         } else {
-            Image(systemName: kind.symbol).font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(tint)
+            let icon = Image(systemName: kind.symbol).font(.system(size: 13, weight: .semibold)).foregroundStyle(tint)
+            if glows {
+                // Two soft shadows in the icon's colour give the lit-key bloom.
+                icon.shadow(color: tint.opacity(0.9), radius: 3).shadow(color: tint.opacity(0.6), radius: 8)
+            } else {
+                icon
+            }
         }
     }
 
@@ -328,6 +333,7 @@ struct HUDView: View {
             MusicBars(media: media, levels: levels)
         case let .capsLock(on):
             Text(on ? "On" : "Off").font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(on ? tint : .white.opacity(0.6))
         case .microphone, .camera:
             Circle().fill(tint).frame(width: 7, height: 7)
         case let .output(name, _):
@@ -335,10 +341,20 @@ struct HUDView: View {
         }
     }
 
+    /// Lit states that should bloom: Caps Lock turning on, mic and camera in use.
+    private var glows: Bool {
+        switch kind {
+        case let .capsLock(on): return on
+        case .microphone, .camera: return true
+        default: return false
+        }
+    }
+
     private var tint: Color {
         if case let .battery(percent, charging) = kind {
             return charging ? .green : percent <= 20 ? .red : .white
         }
+        if case let .capsLock(on) = kind { return on ? Color(red: 0.3, green: 0.95, blue: 0.45) : .white.opacity(0.6) }
         if case .microphone = kind { return .orange }
         if case .camera = kind { return .green }
         return .white

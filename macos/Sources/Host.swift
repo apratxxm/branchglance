@@ -63,7 +63,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         media.onChange = { [weak self] in self?.mediaChanged() }
         monitor.onEvent = { [weak self] kind in self?.showHUD(kind) }
         monitor.start()
-        lockScreen.onLockChange = { [weak self] locked in if locked { self?.hovering = false; self?.updateOpenState() } }
+        lockScreen.onLockChange = { [weak self] locked in if locked { self?.hovering = false; self?.hoverOpened = false; self?.updateOpenState() } }
         panel.orderFrontRegardless()
         loadWhenReady(attempt: 0)
 
@@ -130,27 +130,54 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     /// Open the inspection view after a short dwell, close it shortly after the pointer leaves,
     /// so passing the cursor across the menu bar doesn't flicker the notch.
+    /// Two stages, like Atoll: hovering makes the closed notch swell slightly (a peek);
+    /// staying on it for `dwell` seconds opens it fully. Leaving closes it after a short grace.
     func hoverChanged(_ inside: Bool) {
         // Tracking areas are rebuilt as the panel resizes, which re-sends "entered".
         guard inside != hovering else { return }
         hoverWork?.cancel()
         hovering = inside
-        if inside { open() }
-        let script = inside ? "window.tokenTrackerInspect && window.tokenTrackerInspect()"
-                            : "window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()"
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, !(self.keepOpen && !inside) else { return }
-            self.webView.evaluateJavaScript(script, completionHandler: nil)
-            self.updateOpenState()
+        if inside {
+            if !isOpen { peek() }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.hovering else { return }
+                self.hoverOpened = true
+                self.webView.evaluateJavaScript("window.tokenTrackerInspect && window.tokenTrackerInspect()", completionHandler: nil)
+                self.updateOpenState()
+            }
+            hoverWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.dwell, execute: work)
+        } else {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !self.hovering else { return }
+                self.hoverOpened = false
+                if !self.keepOpen {
+                    self.webView.evaluateJavaScript("window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()",
+                                                    completionHandler: nil)
+                }
+                self.updateOpenState()
+            }
+            hoverWork = work
+            // Peeking only: shrink back at once. Open: a grace period for a brief slip off the edge.
+            DispatchQueue.main.asyncAfter(deadline: .now() + (isOpen ? 0.35 : 0), execute: work)
         }
-        hoverWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + (inside ? 0.12 : 0.35), execute: work)
+    }
+
+    static let dwell: TimeInterval = 0.45
+    var hoverOpened = false
+
+    /// The closed notch (or its current activity) grown a little, content still hidden.
+    func peek() {
+        guard let screen = notchScreen() else { return }
+        let notch = hardwareNotchSize(screen)
+        let base = hudKind.map { wingSize(notch, $0) } ?? (media.isPlaying ? wingSize(notch, .media) : notch)
+        place(size: CGSize(width: base.width + 24, height: base.height + 8), animate: true, spring: true)
     }
 
     // MARK: Open / collapsed
 
     func updateOpenState() {
-        (hovering || keepOpen || (webWantsOpen && autoOpen)) ? open() : collapse(animate: true)
+        (hoverOpened || keepOpen || (webWantsOpen && autoOpen)) ? open() : collapse(animate: true)
     }
 
     var headerHeight: CGFloat { notchScreen().map { hardwareNotchSize($0).height } ?? 32 }
@@ -169,10 +196,12 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         hideHUD()
         updateVisualizer(showing: false)
         container.headerHeight = headerHeight
-        place(size: openSize, animate: true)
+        place(size: openSize, animate: true, spring: true)
         media.setVisible(tabs.selected == .media)
+        // Fade the content in once the shape has mostly grown, so it doesn't stretch into view.
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = reducedMotion ? 0 : 0.18
+            ctx.duration = reducedMotion ? 0 : 0.28
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
             container.content?.animator().alphaValue = 1
             container.header?.animator().alphaValue = 1
         }
@@ -255,7 +284,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     // MARK: Placement
 
     /// Pin the panel's top edge to the top of the notched screen, centred on the notch.
-    func place(size: CGSize, animate: Bool) {
+    /// `spring`: a soft overshoot for growing (peek, open); otherwise a quick ease for shrinking.
+    func place(size: CGSize, animate: Bool, spring: Bool = false) {
         guard let screen = notchScreen() else { return }
         let frame = screen.frame
         let width = min(size.width, frame.width), height = min(size.height, frame.height)
@@ -265,8 +295,9 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         placedFrame = rect
         if animate && !reducedMotion {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.22
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                ctx.duration = spring ? 0.42 : 0.26
+                ctx.timingFunction = spring ? CAMediaTimingFunction(controlPoints: 0.2, 1.25, 0.35, 1)
+                                            : CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
                 panel.animator().setFrame(rect, display: true)
             }
         } else {
