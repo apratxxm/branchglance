@@ -29,5 +29,19 @@ func renderPreviews(to directory: String) {
     save(MediaView(media: media), "media.png", CGSize(width: 484, height: 150))
     save(HUDView(kind: .media, notchWidth: 200, media: media), "activity-media.png", CGSize(width: 200 + 2 * 48, height: 38))
     save(HUDView(kind: .volume(level: 0.6, muted: false), notchWidth: 200, media: media), "activity-volume.png", CGSize(width: 200 + 2 * 84, height: 38))
+    save(HUDView(kind: .capsLock(on: true), notchWidth: 200, media: media), "activity-caps.png", CGSize(width: 200 + 2 * 56, height: 38))
+    save(HUDView(kind: .output(name: "AirPods Pro", symbol: "airpodspro"), notchWidth: 200, media: media), "activity-output.png", CGSize(width: 200 + 2 * 120, height: 38))
+    save(HUDView(kind: .microphone, notchWidth: 200, media: media), "activity-mic.png", CGSize(width: 200 + 2 * 48, height: 38))
     save(LockScreenMediaView(media: media), "lockscreen.png", CGSize(width: 400, height: 140))
+}
+
+/// `Branchglance --probe-audio <bundle id>` prints the visualizer bands for four seconds.
+func probeAudio(bundleID: String) {
+    let levels = AudioLevels()
+    levels.start(bundleID: bundleID)
+    for _ in 0..<8 {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        print(levels.live ? "live" : "no audio yet", levels.bands.map { String(format: "%.2f", $0) }.joined(separator: " "))
+    }
+    levels.stop()
 }

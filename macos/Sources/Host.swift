@@ -22,6 +22,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     let media = NowPlaying()
     let monitor = SystemMonitor()
+    let levels = AudioLevels()
     lazy var lockScreen = LockScreenController(media: media)
     let tabs = TabState()
     var container: NotchContainerView!
@@ -166,6 +167,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     func open() {
         isOpen = true
         hideHUD()
+        updateVisualizer(showing: false)
         container.headerHeight = headerHeight
         place(size: openSize, animate: true)
         media.setVisible(tabs.selected == .media)
@@ -188,7 +190,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             showIndicator(.media, animate: animate)
             return
         }
-        if hudKind == nil { container.indicator = nil }
+        if hudKind == nil { container.indicator = nil; updateVisualizer(showing: false) }
         let notch = hardwareNotchSize(screen)
         place(size: hudKind.map { wingSize(notch, $0) } ?? notch, animate: animate)
     }
@@ -207,7 +209,9 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         let wing: CGFloat
         switch kind {
         case .volume, .brightness: wing = 84
-        case .media, .battery: wing = notch.height + 10
+        case .output: wing = 120
+        case .capsLock: wing = notch.height + 18
+        case .media, .battery, .microphone, .camera: wing = notch.height + 10
         }
         // +16 for the container's 8pt side insets.
         return CGSize(width: notch.width + 2 * wing + 16, height: notch.height)
@@ -216,7 +220,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     func showIndicator(_ kind: HUDKind, animate: Bool) {
         guard let screen = notchScreen() else { return }
         let notch = hardwareNotchSize(screen)
-        container.indicator = NSHostingView(rootView: HUDView(kind: kind, notchWidth: notch.width, media: media))
+        container.indicator = NSHostingView(rootView: HUDView(kind: kind, notchWidth: notch.width, media: media, levels: levels))
+        updateVisualizer(showing: kind == .media)
         place(size: wingSize(notch, kind), animate: animate)
     }
 
@@ -229,6 +234,12 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         let work = DispatchWorkItem { [weak self] in self?.hideHUD(); if self?.isOpen == false { self?.collapse(animate: true) } }
         hudWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+    }
+
+    /// Run the audio tap only while the music bars are visible and something plays.
+    func updateVisualizer(showing: Bool) {
+        if showing, media.isPlaying, let player = media.player { levels.start(bundleID: player.bundleID) }
+        else { levels.stop() }
     }
 
     func hideHUD() {

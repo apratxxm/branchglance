@@ -2,6 +2,7 @@
 import AppKit
 import AudioToolbox
 import CoreAudio
+import CoreMediaIO
 import IOKit.ps
 import SwiftUI
 
@@ -10,6 +11,10 @@ enum HUDKind: Equatable {
     case brightness(level: Float)
     case battery(percent: Int, charging: Bool)
     case media
+    case capsLock(on: Bool)
+    case microphone
+    case camera
+    case output(name: String, symbol: String)
 
     var symbol: String {
         switch self {
@@ -22,6 +27,10 @@ enum HUDKind: Equatable {
             return percent < 15 ? "battery.0" : percent < 40 ? "battery.25" : percent < 65 ? "battery.50"
                 : percent < 90 ? "battery.75" : "battery.100"
         case .media: return "music.note"
+        case let .capsLock(on): return on ? "capslock.fill" : "capslock"
+        case .microphone: return "mic.fill"
+        case .camera: return "video.fill"
+        case let .output(_, symbol): return symbol
         }
     }
 }
@@ -40,6 +49,9 @@ final class SystemMonitor {
         watchDefaultOutput()
         watchBrightness()
         watchBattery()
+        watchCapsLock()
+        watchMicrophone()
+        watchCameras()
     }
 
     // MARK: Volume (CoreAudio property listeners, no polling)
@@ -63,7 +75,9 @@ final class SystemMonitor {
         var defaultAddress = address(kAudioHardwarePropertyDefaultOutputDevice)
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &defaultAddress, 0, nil, &size, &device) == noErr,
               device != outputDevice else { return }
+        let switched = outputDevice != kAudioObjectUnknown
         outputDevice = device
+        if switched, let name = deviceName(device) { onEvent?(.output(name: name, symbol: outputSymbol(device, name))) }
         for selector in [kAudioHardwareServiceDeviceProperty_VirtualMainVolume, kAudioDevicePropertyMute] {
             var property = address(selector, scope: kAudioDevicePropertyScopeOutput)
             AudioObjectAddPropertyListenerBlock(device, &property, .main) { [weak self, device] _, _ in
@@ -72,6 +86,32 @@ final class SystemMonitor {
             }
         }
         lastVolume = currentVolume()
+    }
+
+    private func deviceName(_ device: AudioObjectID) -> String? {
+        var name: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var property = address(kAudioObjectPropertyName)
+        guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &name) == noErr else { return nil }
+        return name?.takeRetainedValue() as String?
+    }
+
+    private func outputSymbol(_ device: AudioObjectID, _ name: String) -> String {
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var property = address(kAudioDevicePropertyTransportType)
+        _ = AudioObjectGetPropertyData(device, &property, 0, nil, &size, &transport)
+        let lower = name.lowercased()
+        if lower.contains("airpods max") { return "airpodsmax" }
+        if lower.contains("airpods pro") { return "airpodspro" }
+        if lower.contains("airpods") { return "airpods" }
+        switch transport {
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return "headphones"
+        case kAudioDeviceTransportTypeBuiltIn: return lower.contains("headphone") ? "headphones" : "laptopcomputer"
+        case kAudioDeviceTransportTypeAirPlay: return "airplayaudio"
+        case kAudioDeviceTransportTypeHDMI, kAudioDeviceTransportTypeDisplayPort: return "tv"
+        default: return "hifispeaker"
+        }
     }
 
     private func currentVolume() -> (Float, Bool)? {
@@ -121,6 +161,97 @@ final class SystemMonitor {
         brightnessTimer = timer
     }
 
+    // MARK: Caps Lock (modifier state; global key monitors would need Accessibility)
+
+    private var capsTimer: Timer?
+    private var capsOn = NSEvent.modifierFlags.contains(.capsLock)
+
+    private func watchCapsLock() {
+        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let on = CGEventSource.flagsState(.combinedSessionState).contains(.maskAlphaShift)
+            guard on != self.capsOn else { return }
+            self.capsOn = on
+            self.onEvent?(.capsLock(on: on))
+        }
+        timer.tolerance = 0.05
+        RunLoop.main.add(timer, forMode: .common)
+        capsTimer = timer
+    }
+
+    // MARK: Microphone and camera in use (Core Audio / CoreMediaIO listeners)
+
+    private var inputDevice = AudioObjectID(kAudioObjectUnknown)
+    private var micRunning = false
+
+    private func watchMicrophone() {
+        var defaultInput = address(kAudioHardwarePropertyDefaultInputDevice)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultInput, .main) { [weak self] _, _ in
+            self?.attachToInput()
+        }
+        attachToInput()
+    }
+
+    private func attachToInput() {
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var defaultInput = address(kAudioHardwarePropertyDefaultInputDevice)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &defaultInput, 0, nil, &size, &device) == noErr,
+              device != inputDevice, device != kAudioObjectUnknown else { return }
+        inputDevice = device
+        micRunning = isRunning(device)
+        var running = address(kAudioDevicePropertyDeviceIsRunningSomewhere)
+        AudioObjectAddPropertyListenerBlock(device, &running, .main) { [weak self, device] _, _ in
+            guard let self, device == self.inputDevice else { return }
+            let now = self.isRunning(device)
+            if now && !self.micRunning { self.onEvent?(.microphone) }
+            self.micRunning = now
+        }
+    }
+
+    private func isRunning(_ device: AudioObjectID) -> Bool {
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        var property = address(kAudioDevicePropertyDeviceIsRunningSomewhere)
+        return AudioObjectGetPropertyData(device, &property, 0, nil, &size, &running) == noErr && running != 0
+    }
+
+    private var cameraRunning: [CMIOObjectID: Bool] = [:]
+
+    private func watchCameras() {
+        var devicesAddress = CMIOObjectPropertyAddress(mSelector: CMIOObjectPropertySelector(kCMIOHardwarePropertyDevices),
+                                                       mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeGlobal),
+                                                       mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementMain))
+        var size: UInt32 = 0
+        guard CMIOObjectGetPropertyDataSize(CMIOObjectID(kCMIOObjectSystemObject), &devicesAddress, 0, nil, &size) == noErr else { return }
+        var devices = [CMIOObjectID](repeating: 0, count: Int(size) / MemoryLayout<CMIOObjectID>.size)
+        var used: UInt32 = 0
+        guard CMIOObjectGetPropertyData(CMIOObjectID(kCMIOObjectSystemObject), &devicesAddress, 0, nil, size, &used, &devices) == noErr
+        else { return }
+        for device in devices {
+            var running = CMIOObjectPropertyAddress(mSelector: CMIOObjectPropertySelector(kCMIODevicePropertyDeviceIsRunningSomewhere),
+                                                    mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeWildcard),
+                                                    mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementWildcard))
+            cameraRunning[device] = cameraIsRunning(device)
+            CMIOObjectAddPropertyListenerBlock(device, &running, .main) { [weak self] _, _ in
+                guard let self else { return }
+                let now = self.cameraIsRunning(device)
+                if now && self.cameraRunning[device] != true { self.onEvent?(.camera) }
+                self.cameraRunning[device] = now
+            }
+        }
+    }
+
+    private func cameraIsRunning(_ device: CMIOObjectID) -> Bool {
+        var address = CMIOObjectPropertyAddress(mSelector: CMIOObjectPropertySelector(kCMIODevicePropertyDeviceIsRunningSomewhere),
+                                                mScope: CMIOObjectPropertyScope(kCMIOObjectPropertyScopeWildcard),
+                                                mElement: CMIOObjectPropertyElement(kCMIOObjectPropertyElementWildcard))
+        var running: UInt32 = 0
+        var used: UInt32 = 0
+        return CMIOObjectGetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &used, &running) == noErr
+            && running != 0
+    }
+
     // MARK: Battery (IOKit power source notifications)
 
     private func watchBattery() {
@@ -164,6 +295,7 @@ struct HUDView: View {
     let kind: HUDKind
     let notchWidth: CGFloat
     @ObservedObject var media: NowPlaying
+    var levels: AudioLevels?
 
     var body: some View {
         // Each wing's content is centred in the wing, hugging the camera housing.
@@ -193,7 +325,13 @@ struct HUDView: View {
         case let .battery(percent, _):
             Text("\(percent)%").font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(tint)
         case .media:
-            MusicBars(media: media)
+            MusicBars(media: media, levels: levels)
+        case let .capsLock(on):
+            Text(on ? "On" : "Off").font(.system(size: 12, weight: .semibold, design: .rounded))
+        case .microphone, .camera:
+            Circle().fill(tint).frame(width: 7, height: 7)
+        case let .output(name, _):
+            Text(name).font(.system(size: 11, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
         }
     }
 
@@ -201,6 +339,8 @@ struct HUDView: View {
         if case let .battery(percent, charging) = kind {
             return charging ? .green : percent <= 20 ? .red : .white
         }
+        if case .microphone = kind { return .orange }
+        if case .camera = kind { return .green }
         return .white
     }
 }

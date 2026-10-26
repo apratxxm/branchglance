@@ -8,7 +8,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Branchglance.icns "$APP/Contents/Resources/"
 swiftc -O -o "$APP/Contents/MacOS/Branchglance" Sources/*.swift \
-    -framework Cocoa -framework WebKit -framework SwiftUI -framework CoreAudio -framework AudioToolbox -framework IOKit -framework ServiceManagement
+    -framework Cocoa -framework WebKit -framework SwiftUI -framework CoreAudio -framework AudioToolbox -framework IOKit -framework ServiceManagement -framework CoreMediaIO -framework Accelerate
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -21,6 +21,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSAudioCaptureUsageDescription</key><string>Branchglance reads the music player's audio levels to animate the notch visualizer. Nothing is recorded.</string>
   <key>NSAppleEventsUsageDescription</key><string>Branchglance shows and controls what Spotify or Music is playing.</string>
   <key>BranchglanceRoot</key><string>$ROOT</string>
 </dict></plist>
