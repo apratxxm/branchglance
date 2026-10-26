@@ -97,6 +97,16 @@ func notchScreen() -> NSScreen? {
     NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
 }
 
+/// Size of the camera housing, so the collapsed panel hides inside it. Screens without
+/// one get a slim menu-bar-height pill as the hover target.
+func hardwareNotchSize(_ screen: NSScreen) -> CGSize {
+    let top = screen.safeAreaInsets.top
+    if top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+        return CGSize(width: screen.frame.width - left.width - right.width, height: top)
+    }
+    return CGSize(width: 180, height: max(24, screen.frame.maxY - screen.visibleFrame.maxY))
+}
+
 final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
     let panel = NotchPanel()
     var webView: WKWebView!
@@ -105,6 +115,14 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     var keepOpen = false, keepOpenRevision = 0
     var expanded = false, lockRevision = 0
     var reducedMotion = false
+    /// Size the web UI last asked for; shown only while the notch is open.
+    var requestedSize = compactSizes["inspect"]!
+    /// The web UI is showing something worth keeping open (inspection, dashboard, new work).
+    var webWantsOpen = false
+    var hovering = false
+    var isOpen = false
+    let settingsToken = UUID().uuidString + UUID().uuidString
+    var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -124,14 +142,15 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         panel.contentView = container
         panel.acceptsMouseMovedEvents = true
 
-        place(size: compactSizes["idle"]!, animate: false)
+        webView.alphaValue = 0
+        collapse(animate: false)
         panel.orderFrontRegardless()
         loadWhenReady(attempt: 0)
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
-            self.place(size: self.panel.frame.size, animate: false)
+            self.isOpen ? self.place(size: self.requestedSize, animate: false) : self.collapse(animate: false)
         }
     }
 
@@ -162,8 +181,13 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         let process = Process()
         process.executableURL = FileManager.default.isExecutableFile(atPath: venvPython.path)
             ? venvPython : URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-m", "token_tracker.server", "--port", String(serverPort), "--no-open"]
+        process.arguments = ["-m", "token_tracker.macos_server", "--port", String(serverPort)]
         process.currentDirectoryURL = root
+        var env = ProcessInfo.processInfo.environment
+        env["BRANCHGLANCE_SETTINGS_TOKEN"] = settingsToken
+        env["BRANCHGLANCE_POLICY_FILE"] = env["BRANCHGLANCE_POLICY_FILE"] ?? NSHomeDirectory()
+            + "/Library/Application Support/Branchglance/policy.json"
+        process.environment = env
         do { try process.run(); server = process } catch { NSLog("Branchglance: server start failed: \(error)") }
     }
 
@@ -185,14 +209,40 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     /// so passing the cursor across the menu bar doesn't flicker the notch.
     func hoverChanged(_ inside: Bool) {
         hoverWork?.cancel()
+        hovering = inside
+        if inside { open() }
         let script = inside ? "window.tokenTrackerInspect && window.tokenTrackerInspect()"
                             : "window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()"
         let work = DispatchWorkItem { [weak self] in
             guard let self, !(self.keepOpen && !inside) else { return }
             self.webView.evaluateJavaScript(script, completionHandler: nil)
+            self.updateOpenState()
         }
         hoverWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + (inside ? 0.12 : 0.35), execute: work)
+    }
+
+    // MARK: Open / collapsed
+
+    func updateOpenState() {
+        (hovering || keepOpen || webWantsOpen) ? open() : collapse(animate: true)
+    }
+
+    func open() {
+        isOpen = true
+        place(size: requestedSize, animate: true)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = reducedMotion ? 0 : 0.18
+            webView.animator().alphaValue = 1
+        }
+    }
+
+    /// Shrink to the camera housing; the black panel then disappears into the notch.
+    func collapse(animate: Bool) {
+        guard let screen = notchScreen() else { return }
+        isOpen = false
+        webView.alphaValue = 0
+        place(size: hardwareNotchSize(screen), animate: animate)
     }
 
     // MARK: Placement
@@ -251,14 +301,19 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             reducedMotion = (args.count > 2 ? args[2] as? Bool : nil) ?? false
             let mode = args.count > 3 ? args[3] as? String : nil
             expanded = isExpanded
-            place(size: notchSize(expanded: isExpanded, height: height, mode: mode), animate: true)
+            requestedSize = notchSize(expanded: isExpanded, height: height, mode: mode)
+            // Compact idle/rest/controls are resting states; keep those hidden in the notch.
+            webWantsOpen = mode.map { $0 == "inspect" || $0 == "dashboard" } ?? isExpanded
+            updateOpenState()
             return nil
         case "get_widget_lock", "set_widget_lock":
             return lockState()
         case "get_keep_open":
             return ["keepOpen": keepOpen, "keepOpenRevision": keepOpenRevision]
         case "set_keep_open":
-            if let value = args.first as? Bool, value != keepOpen { keepOpen = value; keepOpenRevision += 1 }
+            if let value = args.first as? Bool, value != keepOpen {
+                keepOpen = value; keepOpenRevision += 1; updateOpenState()
+            }
             return ["keepOpen": keepOpen, "keepOpenRevision": keepOpenRevision]
         case "get_monitors", "select_monitor", "set_monitor_name":
             return []
@@ -266,6 +321,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             return ["width": panel.frame.width, "height": panel.frame.height]
         case "close":
             NSApp.terminate(nil); return nil
+        case "open_reset_actions":
+            openSettings(); return true
         case "begin_drag":
             return ["accepted": false, "generation": NSNull()]
         default:
@@ -290,12 +347,31 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         item.button?.image = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted",
                                      accessibilityDescription: "Branchglance")
         let menu = NSMenu()
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Reload", action: #selector(reload), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open in Browser", action: #selector(openInBrowser), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Branchglance", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.menu = menu
         statusItem = item
+    }
+
+    /// Reset action settings, including the Claude Code collection switch.
+    @objc func openSettings() {
+        if settingsWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 540),
+                                  styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.title = "Branchglance Settings"
+            window.isReleasedWhenClosed = false
+            window.backgroundColor = NSColor(red: 0x11/255, green: 0x13/255, blue: 0x16/255, alpha: 1)
+            let view = WKWebView(frame: .zero)
+            window.contentView = view
+            view.load(URLRequest(url: URL(string: "http://127.0.0.1:\(serverPort)/reset_actions.html#t=\(settingsToken)")!))
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc func reload() { webView.load(URLRequest(url: pageURL)) }

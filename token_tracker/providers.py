@@ -2677,6 +2677,8 @@ class ClaudeDesktopProvider:
         candidates = sorted(local.glob("Claude-Data/claude_*")) + [
             match / "LocalCache" / "Roaming" / "Claude" for match in sorted((local / "Packages").glob("Claude_*"))
         ]
+        if sys.platform == "darwin" and not local_app_data:
+            candidates.insert(0, Path.home() / "Library" / "Application Support" / "Claude")
         self.root = next((path for path in candidates if (path / "plan-usage-history.json").is_file()),
                          candidates[0] if candidates else Path("__missing__"))
         self.transcript_root = Path(os.environ.get("CLAUDE_HOME", Path.home() / ".claude")) / "projects"
