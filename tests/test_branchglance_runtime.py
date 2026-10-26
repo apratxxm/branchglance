@@ -1097,6 +1097,24 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert "ellipse 220px" not in refined and "ellipse 240px" not in refined
 
 
+def test_dashboard_assets_expose_insights_controls_without_settings_token_access():
+    from pathlib import Path
+    static = Path(widget.__file__).parent / "static"
+    page = (static / "runway.html").read_text(encoding="utf-8")
+    dashboard = (static / "dashboard.js").read_text(encoding="utf-8")
+    styles = (static / "dashboard.css").read_text(encoding="utf-8")
+    assert 'data-dashboard-range="24h"' in page and 'data-dashboard-range="all"' in page
+    assert 'data-dashboard-metric="tokens"' in page and 'data-dashboard-metric="cost"' in page
+    assert '/api/insights?range=' in dashboard and '/api/stats?background=1' in dashboard
+    assert 'branchglanceInsightsRange' in dashboard and 'branchglanceInsightsMetric' in dashboard
+    assert 'branchglanceClockFormat' in dashboard
+    assert 'window.TokenTrackerSetClockFormat' in dashboard
+    assert 'TokenTrackerFormatModel' in dashboard
+    assert 'X-Branchglance-Settings-Token' not in dashboard and 'settingsToken' not in dashboard
+    assert 'dash-chart-section' in styles and 'prefers-reduced-motion:reduce' in styles
+    assert '.area-fill.claude' in styles and '.area-fill.codex' in styles
+
+
 @pytest.mark.parametrize("during", ["http", "limit_reset", "window"])
 def test_maintenance_exit_during_startup_cancels_remaining_init_and_releases_resources(monkeypatch, during):
     monkeypatch.setattr(widget, "CONTROL_PORT", 0)
