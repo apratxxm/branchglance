@@ -4,7 +4,8 @@ const RUNWAY = Boolean(window.__TOKEN_TRACKER_RUNWAY__||PHONE);
 const REFINED = RUNWAY&&!PHONE&&window.__TOKEN_TRACKER_REFINED__===true;
 const COMPACT = REFINED&&window.__TOKEN_TRACKER_COMPACT__===true;
 const RUNWAY_REFRESH_ICON='<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4.8A4.5 4.5 0 1 0 10 7"/><path d="M7.7 2.2H10v2.3"/></svg>';
-const compactClockFormatter=COMPACT?new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:'h12'}):null;
+function preferredClockCycle(){try{return localStorage.getItem('branchglanceClockFormat')==='24'?'h23':'h12';}catch{return 'h12';}}
+let compactClockFormatter=COMPACT?new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:preferredClockCycle()}):null;
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumSignificantDigits: 3 });
 function loadPins() { try { const current=JSON.parse(localStorage.getItem("tokenTrackerPinsV2") || "null"); if(Array.isArray(current))return new Set(current.filter(k=>typeof k==="string"));const old=JSON.parse(localStorage.getItem("tokenTrackerPins") || "{}");return new Set(Object.entries(old||{}).filter(([,id])=>typeof id==="string").map(([provider,id])=>provider+":"+id)); } catch { return new Set(); } }
 function loadDismissed() { try { const list=JSON.parse(localStorage.getItem("tokenTrackerDismissed")||"[]"); return new Set(Array.isArray(list)?list.slice(-200):[]); } catch { return new Set(); } }
@@ -949,6 +950,7 @@ function runwayModelLabel(chat) {
   if(match)return match[1][0].toUpperCase()+match[1].slice(1).toLowerCase();
   return model;
 }
+window.TokenTrackerFormatModel=runwayModelLabel;
 function runwayModelRecentlyChanged(chat) {
   const key=chat.key||[chat.provider,chat.id].join(':'),model=chat.telemetryUnavailable?'':String(chat.model||'').trim(),changedAt=stamp(chat.modelChangeAt);
   const previous=state.modelVersions.get(key),now=Date.now();
@@ -2320,6 +2322,7 @@ function analyticsHTML(snapshot) {
 }
 function renderAnalytics(snapshot) { const node=$("#analytics");if(node&&!node.hidden){const html=analyticsHTML(snapshot);if(node.innerHTML!==html)node.innerHTML=html;} }
 function syncCompactClock(){if(!COMPACT)return;const localTime=compactClockFormatter.format(new Date());for(const node of [$('#compact-clock'),$('#toolbar-clock')])if(node&&node.textContent!==localTime)node.textContent=localTime;}
+window.TokenTrackerSetClockFormat=value=>{if(!['12','24'].includes(String(value)))return false;try{localStorage.setItem('branchglanceClockFormat',String(value));}catch{}compactClockFormatter=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:String(value)==='24'?'h23':'h12'});syncCompactClock();return true;};
 const SNAPSHOT_FAILURE_CATEGORIES=new Set(['timeout','io_error','invalid_snapshot','worker_start_failed','build_failed']);
 function isoObservationTime(value,now=Date.now()){
   if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))return null;
