@@ -1,111 +1,6 @@
-// Branchglance macOS notch host.
-// Hosts the existing runway web UI in a borderless panel pinned to the top-centre
-// of the notched display, and answers the window.pywebview.api calls that
-// token_tracker/widget.py answers on Windows.
 import Cocoa
+import SwiftUI
 import WebKit
-
-let serverPort = 8765
-let pageURL = URL(string: "http://127.0.0.1:\(serverPort)/runway.html")!
-
-// Mirrors COMPACT_NOTCH_SIZES / NOTCH_* in token_tracker/widget.py.
-let compactSizes: [String: CGSize] = [
-    "idle": CGSize(width: 420, height: 100), "rest": CGSize(width: 420, height: 100),
-    "controls": CGSize(width: 420, height: 110), "inspect": CGSize(width: 560, height: 114),
-    "dashboard": CGSize(width: 720, height: 540),
-]
-let compactInspectMaxHeight: CGFloat = 420
-let notchWidth: CGFloat = 680, notchCollapsedHeight: CGFloat = 148
-
-final class NotchPanel: NSPanel {
-    init() {
-        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
-                   backing: .buffered, defer: false)
-        isFloatingPanel = true
-        hidesOnDeactivate = false
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = false
-        isMovable = false
-        isReleasedWhenClosed = false
-        // Above the menu bar so the panel can sit over the notch, on every Space.
-        level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-    }
-    override var canBecomeKey: Bool { true }
-}
-
-/// Notch outline: the top corners curve outward into the menu bar, the bottom corners round off.
-func notchPath(in rect: CGRect, top: CGFloat = 8, bottom: CGFloat = 18) -> CGPath {
-    // AppKit coordinates: rect.maxY is the top edge touching the screen bezel.
-    let path = CGMutablePath()
-    let b = min(bottom, (rect.width - 2 * top) / 2, rect.height / 2)
-    path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-    path.addQuadCurve(to: CGPoint(x: rect.minX + top, y: rect.maxY - top),
-                      control: CGPoint(x: rect.minX + top, y: rect.maxY))
-    path.addLine(to: CGPoint(x: rect.minX + top, y: rect.minY + b))
-    path.addQuadCurve(to: CGPoint(x: rect.minX + top + b, y: rect.minY),
-                      control: CGPoint(x: rect.minX + top, y: rect.minY))
-    path.addLine(to: CGPoint(x: rect.maxX - top - b, y: rect.minY))
-    path.addQuadCurve(to: CGPoint(x: rect.maxX - top, y: rect.minY + b),
-                      control: CGPoint(x: rect.maxX - top, y: rect.minY))
-    path.addLine(to: CGPoint(x: rect.maxX - top, y: rect.maxY - top))
-    path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY),
-                      control: CGPoint(x: rect.maxX - top, y: rect.maxY))
-    path.closeSubpath()
-    return path
-}
-
-/// Clips its content to the notch outline and reports hover over the whole panel.
-final class NotchContainerView: NSView {
-    let mask = CAShapeLayer()
-    var onHover: ((Bool) -> Void)?
-    private var tracking: NSTrackingArea?
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
-        layer?.mask = mask
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        mask.frame = bounds
-        mask.path = notchPath(in: bounds)
-        CATransaction.commit()
-        subviews.forEach { $0.frame = bounds.insetBy(dx: 8, dy: 0) }
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                  owner: self, userInfo: nil)
-        addTrackingArea(area)
-        tracking = area
-    }
-    override func mouseEntered(with event: NSEvent) { onHover?(true) }
-    override func mouseExited(with event: NSEvent) { onHover?(false) }
-}
-
-/// The display with a camera housing, else the main display.
-func notchScreen() -> NSScreen? {
-    NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
-}
-
-/// Size of the camera housing, so the collapsed panel hides inside it. Screens without
-/// one get a slim menu-bar-height pill as the hover target.
-func hardwareNotchSize(_ screen: NSScreen) -> CGSize {
-    let top = screen.safeAreaInsets.top
-    if top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
-        return CGSize(width: screen.frame.width - left.width - right.width, height: top)
-    }
-    return CGSize(width: 180, height: max(24, screen.frame.maxY - screen.visibleFrame.maxY))
-}
 
 final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
     let panel = NotchPanel()
@@ -124,6 +19,15 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     let settingsToken = UUID().uuidString + UUID().uuidString
     var settingsWindow: NSWindow?
 
+    let media = NowPlaying()
+    let monitor = SystemMonitor()
+    lazy var lockScreen = LockScreenController(media: media)
+    let tabs = TabState()
+    var container: NotchContainerView!
+    var mediaHost: NSHostingView<MediaView>!
+    var hudKind: HUDKind?
+    var hudWork: DispatchWorkItem?
+
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.accessory)
         startServerIfNeeded()
@@ -136,21 +40,30 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self
-        let container = NotchContainerView(frame: .zero)
-        container.addSubview(webView)
+        container = NotchContainerView(frame: .zero)
+        mediaHost = NSHostingView(rootView: MediaView(media: media))
+        let header = NSHostingView(rootView: TabHeader(tabs: tabs, notchWidth: notchWidthForHeader))
+        container.header = header
+        container.content = webView
+        tabs.onSelect = { [weak self] _ in self?.tabChanged() }
         container.onHover = { [weak self] inside in self?.hoverChanged(inside) }
         panel.contentView = container
         panel.acceptsMouseMovedEvents = true
 
+        container.header?.alphaValue = 0
         webView.alphaValue = 0
         collapse(animate: false)
+        media.onChange = { [weak self] in self?.mediaChanged() }
+        monitor.onEvent = { [weak self] kind in self?.showHUD(kind) }
+        monitor.start()
+        lockScreen.onLockChange = { [weak self] locked in if locked { self?.hovering = false; self?.updateOpenState() } }
         panel.orderFrontRegardless()
         loadWhenReady(attempt: 0)
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
-            self.isOpen ? self.place(size: self.requestedSize, animate: false) : self.collapse(animate: false)
+            self.isOpen ? self.place(size: self.openSize, animate: false) : self.collapse(animate: false)
         }
     }
 
@@ -173,10 +86,13 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     func startServerIfNeeded() {
         if serverIsUp() { return }
-        // Repo root: BRANCHGLANCE_ROOT, else three levels up from macos/build/BranchglanceNotch.
-        let root = ProcessInfo.processInfo.environment["BRANCHGLANCE_ROOT"].map { URL(fileURLWithPath: $0) }
-            ?? URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        // Repo root: BRANCHGLANCE_ROOT, else the checkout build.sh recorded in Info.plist.
+        guard let rootPath = ProcessInfo.processInfo.environment["BRANCHGLANCE_ROOT"]
+                ?? Bundle.main.object(forInfoDictionaryKey: "BranchglanceRoot") as? String else {
+            NSLog("Branchglance: no repo root; set BRANCHGLANCE_ROOT")
+            return
+        }
+        let root = URL(fileURLWithPath: rootPath)
         let venvPython = root.appendingPathComponent(".venv/bin/python")
         let process = Process()
         process.executableURL = FileManager.default.isExecutableFile(atPath: venvPython.path)
@@ -228,21 +144,83 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         (hovering || keepOpen || webWantsOpen) ? open() : collapse(animate: true)
     }
 
+    var headerHeight: CGFloat { notchScreen().map { hardwareNotchSize($0).height } ?? 32 }
+    var notchWidthForHeader: CGFloat { notchScreen().map { hardwareNotchSize($0).width } ?? 180 }
+
+    /// Size of the open notch for the selected tab, header row included.
+    var openSize: CGSize {
+        switch tabs.selected {
+        case .tracker: return CGSize(width: requestedSize.width, height: requestedSize.height + headerHeight)
+        case .media: return CGSize(width: max(480, notchWidthForHeader + 200), height: 130 + headerHeight)
+        }
+    }
+
     func open() {
         isOpen = true
-        place(size: requestedSize, animate: true)
+        hideHUD()
+        container.headerHeight = headerHeight
+        place(size: openSize, animate: true)
+        media.setVisible(tabs.selected == .media)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = reducedMotion ? 0 : 0.18
-            webView.animator().alphaValue = 1
+            container.content?.animator().alphaValue = 1
+            container.header?.animator().alphaValue = 1
         }
     }
 
     /// Shrink to the camera housing; the black panel then disappears into the notch.
+    /// While music plays the closed notch keeps a small activity in its wings.
     func collapse(animate: Bool) {
         guard let screen = notchScreen() else { return }
         isOpen = false
-        webView.alphaValue = 0
-        place(size: hardwareNotchSize(screen), animate: animate)
+        container.content?.alphaValue = 0
+        container.header?.alphaValue = 0
+        media.setVisible(false)
+        if hudKind == nil, media.isPlaying, !lockScreen.isLocked {
+            showIndicator(.media, animate: animate)
+            return
+        }
+        if hudKind == nil { container.indicator = nil }
+        let notch = hardwareNotchSize(screen)
+        place(size: hudKind == nil ? notch : wingSize(notch), animate: animate)
+    }
+
+    // MARK: Tabs, activities
+
+    func tabChanged() {
+        container.content = tabs.selected == .tracker ? webView : mediaHost
+        container.content?.alphaValue = isOpen ? 1 : 0
+        if isOpen { open() }
+    }
+
+    func wingSize(_ notch: CGSize) -> CGSize { CGSize(width: notch.width + 160, height: notch.height) }
+
+    func showIndicator(_ kind: HUDKind, animate: Bool) {
+        guard let screen = notchScreen() else { return }
+        let notch = hardwareNotchSize(screen)
+        container.indicator = NSHostingView(rootView: HUDView(kind: kind, notchWidth: notch.width, media: media))
+        place(size: wingSize(notch), animate: animate)
+    }
+
+    /// Volume, brightness and battery: show for a moment beside the closed notch.
+    func showHUD(_ kind: HUDKind) {
+        guard !isOpen, !lockScreen.isLocked else { return }
+        hudKind = kind
+        showIndicator(kind, animate: true)
+        hudWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.hideHUD(); if self?.isOpen == false { self?.collapse(animate: true) } }
+        hudWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+    }
+
+    func hideHUD() {
+        hudWork?.cancel()
+        hudKind = nil
+        container.indicator = nil
+    }
+
+    func mediaChanged() {
+        if !isOpen && hudKind == nil { collapse(animate: true) }
     }
 
     // MARK: Placement
@@ -348,6 +326,15 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
                                      accessibilityDescription: "Branchglance")
         let menu = NSMenu()
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        let sounds = NSMenuItem(title: "Lock & Unlock Sounds", action: #selector(toggleLockSounds(_:)), keyEquivalent: "")
+        sounds.target = self
+        sounds.state = lockScreen.soundsEnabled ? .on : .off
+        menu.addItem(sounds)
+        let widget = NSMenuItem(title: "Media on Lock Screen", action: #selector(toggleLockWidget(_:)), keyEquivalent: "")
+        widget.target = self
+        widget.state = lockScreen.widgetEnabled ? .on : .off
+        menu.addItem(widget)
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Reload", action: #selector(reload), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open in Browser", action: #selector(openInBrowser), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -374,11 +361,58 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
+    @objc func toggleLockSounds(_ item: NSMenuItem) {
+        lockScreen.soundsEnabled.toggle()
+        item.state = lockScreen.soundsEnabled ? .on : .off
+    }
+
+    @objc func toggleLockWidget(_ item: NSMenuItem) {
+        lockScreen.widgetEnabled.toggle()
+        item.state = lockScreen.widgetEnabled ? .on : .off
+    }
+
     @objc func reload() { webView.load(URLRequest(url: pageURL)) }
     @objc func openInBrowser() { NSWorkspace.shared.open(pageURL) }
 }
 
-let app = NSApplication.shared
-let host = Host()
-app.delegate = host
-app.run()
+
+// MARK: Tabs
+
+enum NotchTab: CaseIterable {
+    case tracker, media
+    var symbol: String { self == .tracker ? "point.3.connected.trianglepath.dotted" : "music.note" }
+    var label: String { self == .tracker ? "Branchglance" : "Media" }
+}
+
+final class TabState: ObservableObject {
+    @Published var selected: NotchTab = .tracker { didSet { if oldValue != selected { onSelect?(selected) } } }
+    var onSelect: ((NotchTab) -> Void)?
+}
+
+/// Tab buttons in the left wing of the header; the camera housing sits in the middle.
+struct TabHeader: View {
+    @ObservedObject var tabs: TabState
+    let notchWidth: CGFloat
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 4) {
+                ForEach(NotchTab.allCases, id: \.self) { tab in
+                    Button { tabs.selected = tab } label: {
+                        Image(systemName: tab.symbol)
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 26, height: 20)
+                            .background(Capsule().fill(Color.white.opacity(tabs.selected == tab ? 0.16 : 0)))
+                    }
+                    .buttonStyle(.plain)
+                    .help(tab.label)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear.frame(width: notchWidth)
+            Spacer().frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 8)
+        .foregroundStyle(.white)
+    }
+}
