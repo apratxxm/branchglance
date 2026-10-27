@@ -223,7 +223,7 @@ window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
 function notchHeight() {
   if(COMPACT){
-    if(notch.mode==='dashboard')return 540;
+    if(notch.mode==='dashboard')return 608;
     if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
     if(notch.mode==='idle')return 100;
     if(notch.mode==='rest')return 100;
@@ -345,7 +345,7 @@ function setNotch(expanded, treeSynced=false) {
     if(notch.expanded&&!PHONE&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
     renderRunwayCounts(notch.counts);
     const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
-    if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded,height,reduced,mode],signature);}
+    if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded||mode==='dashboard',height,reduced,mode],signature);}
     if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
     return;
   }
