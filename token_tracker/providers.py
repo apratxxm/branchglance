@@ -670,7 +670,7 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
                 # projection, but never checkpoint it at the prior offset.
                 try:
                     item = json.loads(line.decode("utf-8", errors="ignore"))
-                except (ValueError, UnicodeError):
+                except (ValueError, UnicodeError, RecursionError):
                     break
                 reduce_record(state, item)
                 valid_unterminated_record = True
@@ -688,7 +688,7 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
                     continue
             try:
                 item = json.loads(line.decode("utf-8", errors="ignore"))
-            except (ValueError, UnicodeError):
+            except (ValueError, UnicodeError, RecursionError):
                 continue
             reduce_record(state, item)
 
@@ -2181,6 +2181,18 @@ def _chat_source(value: Any) -> str | None:
     return None
 
 
+_BRIEF_TITLE_PREFIX = re.compile(r"^(?:#+\s*)?(?:\[[^\]]{1,40}\]\s*)?")
+
+
+def _tidy_codex_title(title: str, model: Any) -> str:
+    """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
+    tidy = _BRIEF_TITLE_PREFIX.sub("", title, count=1)
+    head, sep, rest = tidy.partition(" · ")
+    if sep and rest.strip() and len(head) >= 3 and head.lower() in str(model or "").lower():
+        tidy = rest
+    return tidy.strip() or title
+
+
 def _workspace_kind(workspace: str | None) -> str | None:
     """Identify Codex's dated per-chat folders so the widget won't call them projects."""
     if not workspace:
@@ -3503,6 +3515,7 @@ class CodexProvider:
         provider_model = row.get("modelProvider")
         model = (row_model or insights.get("model") or token_event.get("model") or run_stats.get("settingsModel")
                  or (provider_model if str(provider_model or "").lower() not in {"", "openai"} else None) or "Codex")
+        title = _tidy_codex_title(title, model)
         guardian = _is_guardian(row.get("source")) or _is_guardian(run_stats.get("source")) or run_stats.get("threadSource") == "guardian_review"
         agent_role = "auto-review" if guardian else ("spawned" if parent_id else None)
         agent_stats = _codex_agent_stats(row.get("path"), status, bool(parent_id))
