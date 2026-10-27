@@ -67,6 +67,21 @@ def test_claude_filtered_reduction_matches_unfiltered_on_append(tmp_path, initia
     assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
 
 
+def test_over_deep_json_line_is_skipped_like_invalid_json(tmp_path):
+    path = tmp_path / "transcript.jsonl"
+    deep = b"[" * 100_000 + b"]" * 100_000
+    path.write_bytes(deep + b'\n{"type":"assistant","timestamp":"2026-10-01T00:00:01Z","message":{"id":"m1","usage":{"input_tokens":3}}}\n'
+                     + b'{"usage":' + deep + b'}\n')
+
+    state = providers._incremental_jsonl_reduce(
+        "claude-test-deep", path, claude_provider._new_usage_state, claude_provider._reduce_usage)
+
+    assert state == providers._incremental_jsonl_reduce(
+        "claude-test-deep-filtered", path, claude_provider._new_usage_state, claude_provider._reduce_usage,
+        needles=claude_provider._USAGE_NEEDLES)
+    assert state != claude_provider._new_usage_state()
+
+
 def test_claude_pid_associations_keep_all_time_scoped_process_identities():
     state = claude_events.new_file_state()
     claude_events.reduce_event(state, ev(10, "SessionStart"))
