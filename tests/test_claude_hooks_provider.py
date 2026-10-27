@@ -67,6 +67,29 @@ def test_claude_filtered_reduction_matches_unfiltered_on_append(tmp_path, initia
     assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
 
 
+def test_filtered_reduction_counts_usage_completed_by_append_and_replacement(tmp_path):
+    path = tmp_path / "transcript.jsonl"
+    ts = '"timestamp":"2026-10-01T00:00:0%dZ"'
+    path.write_bytes(b'{"type":"assistant",' + (ts % 1).encode() + b',"message":{"id":"m1","usage":{"input_tokens":3}}}\n'
+                     + b'{"type":"assistant",' + (ts % 2).encode() + b',"message":{"id":"m2","usa')
+
+    def read(kind, selected):
+        return providers._incremental_jsonl_reduce(
+            kind, path, claude_provider._new_usage_state, claude_provider._reduce_usage, needles=selected)
+
+    first = read("claude-append-filtered", claude_provider._USAGE_NEEDLES)
+    assert first == read("claude-append-unfiltered", None) != claude_provider._new_usage_state()
+    with path.open("ab") as stream:
+        stream.write(b'ge":{"input_tokens":5}}}\n')
+    completed = read("claude-append-filtered", claude_provider._USAGE_NEEDLES)
+    assert completed == read("claude-append-unfiltered", None) != first
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b'{"type":"assistant",' + (ts % 3).encode() + b',"message":{"id":"m3","usage":{"input_tokens":7}}}\n')
+    os.replace(replacement, path)
+    replaced = read("claude-append-filtered", claude_provider._USAGE_NEEDLES)
+    assert replaced == read("claude-append-unfiltered", None) not in (first, completed, claude_provider._new_usage_state())
+
+
 def test_over_deep_json_line_is_skipped_like_invalid_json(tmp_path):
     path = tmp_path / "transcript.jsonl"
     deep = b"[" * 100_000 + b"]" * 100_000

@@ -2181,14 +2181,14 @@ def _chat_source(value: Any) -> str | None:
     return None
 
 
-_BRIEF_TITLE_PREFIX = re.compile(r"^(?:#+\s*)?(?:\[[^\]]{1,40}\]\s*)?")
+_BRIEF_TITLE_PREFIX = re.compile(r"^(?:#+\s+)?(?:\[[^\]]{1,40}\]\s*)?")
 
 
 def _tidy_codex_title(title: str, model: Any) -> str:
     """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
     tidy = _BRIEF_TITLE_PREFIX.sub("", title, count=1)
     head, sep, rest = tidy.partition(" · ")
-    if sep and rest.strip() and len(head) >= 3 and head.lower() in str(model or "").lower():
+    if sep and rest.strip() and head.isalpha() and head.lower() in re.split(r"[^a-z]+", str(model or "").lower()):
         tidy = rest
     return tidy.strip() or title
 
