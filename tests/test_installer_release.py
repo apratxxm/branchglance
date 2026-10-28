@@ -1512,6 +1512,37 @@ def test_upgrade_startup_choice_and_quiet_default(tmp_path, monkeypatch, answer,
     assert integrations.startup_enabled() is expected
 
 
+def test_upgrade_no_removes_legacy_owned_startup_shortcut(tmp_path, monkeypatch):
+    from branchglance_installer import app, windows
+    root = _root(tmp_path)
+    paths = app.Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    native = _fake_installer_native(paths, running=False, events=[])
+    integrations = app._integrations(paths, native, "1.0.0+a")
+    shortcut = paths.startup / "Branchglance.lnk"
+    native.integration_adapter.links[str(shortcut)] = {
+        "description": "Branchglance managed shortcut " + "c" * 32,
+        "target": str(root / "Branchglance.exe"), "arguments": "--background",
+        "workdir": str(root), "app_id": "",
+    }
+    assert integrations.startup_enabled()
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    monkeypatch.setattr(app, "_prepare_appdata", lambda paths: [])
+    monkeypatch.setattr(windows, "cleanup_stale_workers", lambda *args: None)
+    def fake_install(paths, payload, native, *, startup, deadline):
+        integrations.apply(startup_enabled=startup)
+        return {}
+    monkeypatch.setattr(app, "install", fake_install)
+    class FakeUi(app.Ui):
+        def confirm(self, text, *, default):
+            assert default is True
+            return False
+        def info(self, text): pass
+    assert app.main(["--payload", str(payload)], paths=paths, native=native, ui=FakeUi()) == 0
+    assert str(shortcut) not in native.integration_adapter.links
+    assert not integrations.startup_enabled()
+
+
 @pytest.mark.parametrize("entry", ["uninstall", "rollback", "--uninstall", "--uninstall-worker"])
 @pytest.mark.parametrize("status", ["redirected", "unknown"])
 def test_removal_and_rollback_refuse_unverified_appdata_before_mutation(tmp_path, monkeypatch, entry, status):
@@ -1627,3 +1658,36 @@ def test_uninstall_refuses_resumed_finalizing_with_leftovers_before_claude_chang
         uninstall(paths, native)
     assert settings.read_bytes() == before
     assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+
+@pytest.mark.parametrize("damaged_location", ["source", "destination"])
+def test_resumed_trash_intent_refuses_before_external_changes(tmp_path, monkeypatch, damaged_location):
+    from branchglance_installer import app
+    from branchglance_installer.core import Journal
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    ReleaseOps(paths.root).install(_release(tmp_path, "bundle", version="1.0.0", build_id="a"), "1.0.0", "a")
+    integration = app._integrations(paths, native, "1.0.0+a")
+    integration.apply(startup_enabled=True)
+    def crash(name):
+        if name == "trash-intent-journaled":
+            raise RuntimeError("simulated crash")
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        uninstall_owned_root(paths.root, after_mutation=crash)
+    entry = Journal(paths.root).load()["trashIntent"]
+    source = paths.root / "releases" / entry["version"]
+    destination = paths.root / "releases" / entry["name"]
+    if damaged_location == "destination":
+        source.rename(destination)
+    damaged = source if damaged_location == "source" else destination
+    (damaged / "BranchglanceApp.exe").write_text("tampered")
+    before_settings = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    before_links = dict(native.integration_adapter.links)
+    before_registry = native.integration_adapter.registry
+    with pytest.raises(SafetyError):
+        app.uninstall(paths, native)
+    assert settings.read_bytes() == before_settings
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+    assert native.integration_adapter.links == before_links
+    assert native.integration_adapter.registry == before_registry

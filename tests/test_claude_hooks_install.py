@@ -75,6 +75,62 @@ def test_install_into_missing_file(env):
     assert len(data["hooks"]["Stop"]) == 1 and len(load(settings)["hooks"]["Stop"]) == 1
 
 
+def test_uninstall_uses_recorded_target_after_config_changes(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    data_dir = tmp_path / "data"
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(first))
+    installer.install(command=CMD, data_directory=data_dir)
+    consent = load(data_dir / claude_hook.CONSENT_NAME)
+    assert consent["settingsPath"] == str((first / "settings.json").resolve())
+    copied = second / "settings.json"
+    copied.write_bytes((first / "settings.json").read_bytes())
+    before = copied.read_bytes()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(second))
+    result = installer.uninstall(settings_path=copied, data_directory=data_dir)
+    assert result["ok"] and result["changed"]
+    assert "hooks" not in load(first / "settings.json")
+    assert copied.read_bytes() == before
+
+
+def test_uninstall_without_settings_provenance_retains_hooks(env, monkeypatch):
+    settings, data_dir = env
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(settings.parent))
+    installer.install(settings, CMD, data_dir)
+    marker = data_dir / claude_hook.CONSENT_NAME
+    record = load(marker)
+    record.pop("settingsPath")
+    marker.write_text(json.dumps(record), encoding="utf-8")
+    before = settings.read_bytes()
+    result = installer.uninstall(settings, data_dir)
+    assert not result["ok"] and result["consentRemoved"]
+    assert result["hooksLeft"] == "unknown"
+    assert "retained" in result["error"]
+    assert settings.read_bytes() == before
+
+
+def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
+    installer.install(settings, CMD, data_dir)
+    marker = data_dir / claude_hook.CONSENT_NAME
+    record = load(marker)
+    record.pop("settingsPath")
+    marker.write_text(json.dumps(record), encoding="utf-8")
+    result = installer.uninstall(None, data_dir)
+    assert result["ok"] and result["changed"] and result["consentRemoved"]
+    assert "hooks" not in load(settings)
+
+
 def test_user_hooks_preserved_semantically_and_backup_written(env):
     settings, data_dir = env
     original = {"model": "opus", "permissions": {"allow": ["Bash(ls)"]}, "disableAllHooks": False,
