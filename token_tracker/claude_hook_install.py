@@ -491,17 +491,24 @@ def _write_consent(data_directory: str | os.PathLike[str] | None, now: float, co
                                   "settingsPath": str(settings_path)}), encoding="utf-8")
 
 
-def _recorded_settings_path(data_directory: str | os.PathLike[str] | None) -> Path | None:
+def _recorded_settings_path(data_directory: str | os.PathLike[str] | None) -> tuple[str, Path | None]:
+    """("recorded", path) | ("legacy", None) for a valid record written before
+    targets were recorded | ("invalid", None) for anything unreadable or malformed."""
     try:
-        value = json.loads(_consent_file(data_directory).read_text(encoding="utf-8")).get("settingsPath")
+        record = json.loads(_consent_file(data_directory).read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            return "invalid", None
+        if "settingsPath" not in record:
+            return ("legacy", None) if record.get("enabled") is True or "executable" in record else ("invalid", None)
+        value = record["settingsPath"]
         if not isinstance(value, str) or not value:
-            return None
+            return "invalid", None
         path = Path(value)
         if not path.is_absolute() or path.resolve() != path:
-            return None
-        return path
+            return "invalid", None
+        return "recorded", path
     except (OSError, ValueError, AttributeError, RuntimeError):
-        return None
+        return "invalid", None
 
 
 def _recorded_executable(data_directory: str | os.PathLike[str] | None) -> str | None:
@@ -597,8 +604,8 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
     the settings edit then fails; any hooks left behind are reported."""
     now = time.time() if now is None else now
     marker_present = _consent_file(data_directory).exists()
-    path = _recorded_settings_path(data_directory)
-    if path is None and marker_present and not (os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")):
+    provenance, path = _recorded_settings_path(data_directory) if marker_present else ("absent", None)
+    if provenance == "legacy" and not (os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")):
         # Consent written before the target was recorded: those installs used
         # ~/.claude unless CLAUDE_HOME was set, so with no override now that is
         # the only file they can have edited.
