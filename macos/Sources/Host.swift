@@ -161,6 +161,9 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     // MARK: Hover
 
     var hoverWork: DispatchWorkItem?
+    var hoverPoll: Timer?
+    /// Set by Minimize: stay closed (no peek, no dwell) until the pointer has left the notch.
+    var hoverSuppressed = false
 
     /// Open the inspection view after a short dwell, close it shortly after the pointer leaves,
     /// so passing the cursor across the menu bar doesn't flicker the notch.
@@ -169,14 +172,23 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     func hoverChanged(_ inside: Bool) {
         // Tracking areas are rebuilt as the panel resizes, which re-sends "entered".
         guard inside != hovering else { return }
-        // A resize or animation can report "exited" while the pointer is still on the panel.
+        // A resize or animation can report "exited" while the pointer is still on the panel;
+        // the poll below notices when it really leaves, since AppKit won't send a second exit.
         if !inside, pointerOnPanel() { return }
         hoverWork?.cancel()
         hovering = inside
+        hoverPoll?.invalidate(); hoverPoll = nil
         if inside {
+            let poll = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
+                guard let self, self.hovering, !self.pointerOnPanel() else { return }
+                self.hoverChanged(false)
+            }
+            RunLoop.main.add(poll, forMode: .common)
+            hoverPoll = poll
+            if hoverSuppressed { return }
             if !isOpen { peek() }
             let work = DispatchWorkItem { [weak self] in
-                guard let self, self.hovering else { return }
+                guard let self, self.hovering, !self.hoverSuppressed else { return }
                 self.hoverOpened = true
                 self.webView.evaluateJavaScript("window.tokenTrackerInspect && window.tokenTrackerInspect()", completionHandler: nil)
                 self.updateOpenState()
@@ -186,7 +198,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         } else {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, !self.hovering else { return }
-                if self.pointerOnPanel() { self.hovering = true; return }
+                if self.pointerOnPanel() { self.hoverChanged(true); return }
+                self.hoverSuppressed = false
                 self.hoverOpened = false
                 if !self.keepOpen {
                     self.webView.evaluateJavaScript("window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()",
@@ -261,7 +274,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         media.setVisible(false)
         // Media updates and page calls land here mid-hover; shrinking the peek out from under the
         // pointer would send "exited" and cancel the pending open, so keep peeking instead.
-        if hovering, hudKind == nil { peek(); return }
+        if hovering, !hoverSuppressed, hudKind == nil { peek(); return }
         if hudKind == nil, media.isPlaying, !lockScreen.isLocked {
             showIndicator(.media, animate: animate)
             return
@@ -431,6 +444,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             return monitors()
         case "minimize":
             shortcutOpened = false; hoverOpened = false; keepOpen = false; keepOpenRevision += 1
+            hoverWork?.cancel(); hoverSuppressed = hovering
             webView.evaluateJavaScript("window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()", completionHandler: nil)
             collapse(animate: true)
             return nil
