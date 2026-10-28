@@ -3154,6 +3154,7 @@ class _FakeAppServer:
         self.lines = queue_module.Queue()
         self.thread_params = []
         self.methods = []
+        self.initialize_params = []
         self.rate_requests = 0
         outer = self
 
@@ -3179,6 +3180,8 @@ class _FakeAppServer:
     def _answer(self, message):
         method, ident = message.get("method"), message.get("id")
         self.methods.append(method)
+        if method == "initialize":
+            self.initialize_params.append(message["params"])
         if ident is None:
             return
         if method == "thread/list":
@@ -3234,6 +3237,21 @@ def test_codex_persistent_rate_limit_reader_reuses_initialized_process(monkeypat
     assert fake.methods.count("initialize") == 1
     assert fake.methods.count("initialized") == 1
     client.close()
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_codex_initialize_uses_product_identity(monkeypatch, persistent):
+    from token_tracker import codex_client, product
+    fake = _FakeAppServer()
+    monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(product, "VERSION", "1.0.0-test")
+    client = codex_client.CodexAppServer(executable="codex")
+    if persistent:
+        client.rate_limits()
+        client.close()
+    else:
+        client.snapshot()
+    assert fake.initialize_params[0]["clientInfo"] == {"name": "branchglance", "version": "1.0.0-test"}
 
 
 def test_keepalive_greetings_are_ephemeral():

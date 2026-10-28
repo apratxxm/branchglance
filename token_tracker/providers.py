@@ -2744,7 +2744,8 @@ class ClaudeDesktopProvider:
         ]
         self.root = next((path for path in candidates if (path / "plan-usage-history.json").is_file()),
                          candidates[0] if candidates else Path("__missing__"))
-        self.transcript_root = Path(os.environ.get("CLAUDE_HOME", Path.home() / ".claude")) / "projects"
+        from .claude_hook_install import claude_config_dir
+        self.transcript_root = claude_config_dir() / "projects"
 
     def _usage(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         path = self.root / "plan-usage-history.json"

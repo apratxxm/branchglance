@@ -1484,3 +1484,146 @@ def test_paths_use_known_folder_resolver_with_env_fallback(tmp_path):
     assert failed_fallback.desktop == fallback.desktop
     assert failed_fallback.start_menu == fallback.start_menu
     assert failed_fallback.startup == fallback.startup
+
+@pytest.mark.parametrize("answer,quiet,initial,expected", [(False, False, True, False), (True, False, False, True), (None, True, True, True)])
+def test_upgrade_startup_choice_and_quiet_default(tmp_path, monkeypatch, answer, quiet, initial, expected):
+    from branchglance_installer import app, windows
+    root = _root(tmp_path)
+    paths = app.Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    native = _fake_installer_native(paths, running=False, events=[])
+    integrations = app._integrations(paths, native, "1.0.0+a")
+    integrations.apply(startup_enabled=initial)
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    monkeypatch.setattr(app, "_prepare_appdata", lambda paths: [])
+    monkeypatch.setattr(windows, "cleanup_stale_workers", lambda *args: None)
+    def fake_install(paths, payload, native, *, startup, deadline):
+        integrations.apply(startup_enabled=startup)
+        return {}
+    monkeypatch.setattr(app, "install", fake_install)
+    class FakeUi(app.Ui):
+        def confirm(self, text, *, default):
+            assert default == initial
+            assert "Choose No" in text
+            return default if quiet else answer
+        def info(self, text): pass
+    args = ["--payload", str(payload)] + (["--quiet"] if quiet else [])
+    assert app.main(args, paths=paths, native=native, ui=FakeUi()) == 0
+    assert integrations.startup_enabled() is expected
+
+
+@pytest.mark.parametrize("entry", ["uninstall", "rollback", "--uninstall", "--uninstall-worker"])
+@pytest.mark.parametrize("status", ["redirected", "unknown"])
+def test_removal_and_rollback_refuse_unverified_appdata_before_mutation(tmp_path, monkeypatch, entry, status):
+    from branchglance_installer import app
+    paths = app.Paths(tmp_path / "root", tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    native = _fake_installer_native(paths, running=False, events=[])
+    monkeypatch.setattr(app.product, "appdata_probe", lambda env: (status, "test"))
+    if entry == "uninstall":
+        with pytest.raises(SafetyError, match="AppData probe"):
+            app.uninstall(paths, native)
+    elif entry == "rollback":
+        with pytest.raises(SafetyError, match="AppData probe"):
+            app.rollback(paths, native)
+    else:
+        assert app.main([entry, "--quiet"], paths=paths, native=native) == 2
+    assert not paths.root.exists()
+    assert not paths.product_root.exists()
+    assert not paths.temp.exists()
+
+
+def test_uninstall_checks_root_and_manifest_before_claude_changes(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    before = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    release = _release(tmp_path, "corrupt", version="1.0.0", build_id="a")
+    ReleaseOps(paths.root).install(release, "1.0.0", "a")
+    (paths.root / "releases" / "1.0.0+a" / "BranchglanceApp.exe").write_text("tampered")
+    with pytest.raises(SafetyError):
+        uninstall(paths, native)
+    assert settings.read_bytes() == before
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_rollback_preserves_startup_state(tmp_path, enabled):
+    from branchglance_installer import app
+    root = _root(tmp_path)
+    ops = ReleaseOps(root)
+    ops.install(_release(tmp_path, "first", version="1.0.0", build_id="a"), "1.0.0", "a")
+    ops.install(_release(tmp_path, "second", version="1.0.1", build_id="b"), "1.0.1", "b")
+    paths = app.Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    paths.product_root.parent.mkdir(parents=True)
+    native = _fake_installer_native(paths, running=False, events=[])
+    integration = app._integrations(paths, native, "1.0.1+b")
+    integration.apply(startup_enabled=enabled)
+    assert app.rollback(paths, native)["current"]["version"] == "1.0.0+a"
+    assert integration.startup_enabled() is enabled
+
+
+def test_uninstall_reports_claude_changes_if_later_removal_fails(tmp_path, monkeypatch):
+    from branchglance_installer import app
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    def fail(*args, **kwargs):
+        raise SafetyError("injected removal failure")
+    monkeypatch.setattr(app, "uninstall_owned_root", fail)
+    with pytest.raises(SafetyError, match="Claude consent.*Claude hooks.*injected removal failure"):
+        app.uninstall(paths, native)
+
+
+@pytest.mark.parametrize("operation,target", [("install", "1.0.0+a"), ("uninstall", "not-uninstall")])
+def test_uninstall_refuses_unfinished_or_corrupt_journal_before_claude_changes(tmp_path, monkeypatch, operation, target):
+    from branchglance_installer.app import uninstall
+    from branchglance_installer.core import Journal
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    ReleaseOps(paths.root).install(_release(tmp_path, "good", version="1.0.0", build_id="a"), "1.0.0", "a")
+    Journal(paths.root).begin(operation, target, {"pointer": None, "integration": {}})
+    before = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    with pytest.raises(SafetyError):
+        uninstall(paths, native)
+    assert settings.read_bytes() == before
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+
+
+def test_uninstall_after_install_folder_is_gone_still_removes_owned_hooks_and_shortcuts(tmp_path, monkeypatch):
+    import shutil
+    from branchglance_installer import app
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}, "keep": true}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    integration = app._integrations(paths, native, "1.0.0+a")
+    integration.apply(startup_enabled=True)
+    assert integration.startup_enabled()
+    shutil.rmtree(paths.root)
+    result = app.uninstall(paths, native)
+    assert result["claudeIntegration"]["ok"] is True and result["claudeIntegration"]["changed"] is True
+    remaining = json.loads(settings.read_text(encoding="utf-8"))
+    assert remaining["keep"] is True
+    assert not any(installer.is_ours(group) for groups in remaining.get("hooks", {}).values() for group in groups)
+    assert not (paths.product_root / "claude-consent.json").exists()
+    assert not integration.startup_enabled()
+
+
+def test_uninstall_refuses_resumed_finalizing_with_leftovers_before_claude_changes(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    from branchglance_installer.core import Journal
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    record = Journal(paths.root).begin("uninstall", "uninstall", {"pointer": None, "integration": {}})
+    record["phase"] = "finalizing"
+    Journal(paths.root).save(record)
+    (paths.root / "stray.txt").write_text("not ours")
+    before = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    with pytest.raises(SafetyError, match="unowned items"):
+        uninstall(paths, native)
+    assert settings.read_bytes() == before
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
