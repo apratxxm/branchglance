@@ -24,6 +24,7 @@ from token_tracker.provider_policy import (
 @pytest.fixture(autouse=True)
 def _no_real_snapshot_warmup(monkeypatch):
     monkeypatch.setattr(widget, "_warm_snapshot", lambda: None)
+    monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: True)
 
 
 # --- product roots ---------------------------------------------------------------------------
@@ -893,6 +894,18 @@ def test_run_passes_explicit_storage_path_to_webview(monkeypatch, tmp_path):
             app.server.shutdown(); app.server.server_close()
         app.control.close()
     assert started and started[0]["storage_path"] == str(product.webview_storage_path())
+
+
+def test_widget_prepares_receipt_inbox_after_claiming_instance(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(product, "validate_storage", lambda: None)
+    monkeypatch.setattr(product, "prepare_webview_storage", lambda _path: tmp_path)
+    app = widget.WidgetApp()
+    monkeypatch.setattr(app, "claim_instance", lambda: calls.append("claim") or True)
+    monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: calls.append("inbox") or True)
+    monkeypatch.setattr(app, "_run_claimed", lambda: calls.append("run"))
+    app.run()
+    assert calls == ["claim", "inbox", "run"]
 
 
 def test_app_user_model_id_is_explicit():
