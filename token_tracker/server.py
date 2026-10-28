@@ -14,6 +14,7 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -997,9 +998,16 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "unknown Codex thread"}, 404)
                 return
             try:
-                os.startfile(f"codex://threads/{thread}")  # type: ignore[attr-defined]
+                url = f"codex://threads/{thread}"
+                startfile = getattr(os, "startfile", None)
+                if startfile is None and sys.platform == "darwin":
+                    # macOS has no os.startfile; LaunchServices opens the codex:// link.
+                    subprocess.run(["/usr/bin/open", url], check=True, timeout=10,
+                                   stdin=subprocess.DEVNULL, capture_output=True)
+                else:
+                    startfile(url)  # type: ignore[misc]
                 self._send_json({"ok": True})
-            except (AttributeError, OSError) as exc:
+            except (AttributeError, TypeError, OSError, subprocess.SubprocessError) as exc:
                 self._send_json({"ok": False, "error": str(exc)[:120]})
             return
         if parsed.path == "/api/avatars":

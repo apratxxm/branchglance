@@ -1,9 +1,10 @@
+import Carbon.HIToolbox
 import Cocoa
 import ServiceManagement
 import SwiftUI
 import WebKit
 
-final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate {
+final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKUIDelegate {
     let panel = NotchPanel()
     var webView: WKWebView!
     var server: Process?
@@ -30,6 +31,11 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     var hudKind: HUDKind?
     var hudWork: DispatchWorkItem?
     var placedFrame = NSRect.zero
+    /// Opened with the inspection shortcut; stays open until the shortcut is pressed again.
+    var shortcutOpened = false
+    /// Hidden with the widget's Close button or Show/Hide; monitoring carries on.
+    var hiddenByUser = false
+    var hotKey: EventHotKeyRef?
     /// Open the notch by itself when the tracker reports new work. Off: only hover opens it.
     var autoOpen = UserDefaults.standard.object(forKey: "autoOpen") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoOpen, forKey: "autoOpen") }
@@ -47,6 +53,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         container = NotchContainerView(frame: .zero)
         mediaHost = NSHostingView(rootView: MediaView(media: media))
         let header = NSHostingView(rootView: TabHeader(tabs: tabs, notchWidth: notchWidthForHeader))
@@ -66,6 +73,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         lockScreen.onLockChange = { [weak self] locked in if locked { self?.hovering = false; self?.hoverOpened = false; self?.updateOpenState() } }
         panel.orderFrontRegardless()
         loadWhenReady(attempt: 0)
+        registerShortcut()
 
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
@@ -107,11 +115,35 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         process.arguments = ["-m", "token_tracker.macos_server", "--port", String(serverPort)]
         process.currentDirectoryURL = root
         var env = ProcessInfo.processInfo.environment
+        // Opened from Finder or at login, apps get launchd's bare PATH; use the login shell's,
+        // so the server finds the codex and claude CLIs the way a terminal does.
+        if let path = loginShellPath() { env["PATH"] = path }
         env["BRANCHGLANCE_SETTINGS_TOKEN"] = settingsToken
         env["BRANCHGLANCE_POLICY_FILE"] = env["BRANCHGLANCE_POLICY_FILE"] ?? NSHomeDirectory()
             + "/Library/Application Support/Branchglance/policy.json"
         process.environment = env
         do { try process.run(); server = process } catch { NSLog("Branchglance: server start failed: \(error)") }
+    }
+
+    func loginShellPath() -> String? {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        // Interactive too, since version managers such as nvm set PATH in .zshrc. A marker
+        // separates the value from anything the startup files print.
+        process.arguments = ["-i", "-l", "-c", "printf '\\n__BG_PATH__%s' \"$PATH\""]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let deadline = Date().addingTimeInterval(3)
+        while process.isRunning && Date() < deadline { usleep(20_000) }
+        if process.isRunning { process.terminate(); return nil }
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard let marker = output.range(of: "__BG_PATH__", options: .backwards) else { return nil }
+        let path = String(output[marker.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.contains("/usr/bin") ? path : nil
     }
 
     func loadWhenReady(attempt: Int) {
@@ -177,7 +209,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     // MARK: Open / collapsed
 
     func updateOpenState() {
-        (hoverOpened || keepOpen || (webWantsOpen && autoOpen)) ? open() : collapse(animate: true)
+        guard !hiddenByUser else { return }
+        (hoverOpened || shortcutOpened || keepOpen || (webWantsOpen && autoOpen)) ? open() : collapse(animate: true)
     }
 
     var headerHeight: CGFloat { notchScreen().map { hardwareNotchSize($0).height } ?? 32 }
@@ -356,12 +389,30 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
                 keepOpen = value; keepOpenRevision += 1; updateOpenState()
             }
             return ["keepOpen": keepOpen, "keepOpenRevision": keepOpenRevision]
-        case "get_monitors", "select_monitor", "set_monitor_name":
-            return []
+        case "get_monitors", "set_monitor_name":
+            return monitors()
+        case "select_monitor":
+            if let id = args.first as? String, let number = UInt32(id),
+               NSScreen.screens.contains(where: { displayID($0) == number }) {
+                UserDefaults.standard.set(Int(number), forKey: "displayID")
+                placedFrame = .zero
+                isOpen ? place(size: openSize, animate: false) : collapse(animate: false)
+            }
+            return monitors()
+        case "recenter":
+            placedFrame = .zero
+            isOpen ? place(size: openSize, animate: false) : collapse(animate: false)
+            return monitors()
+        case "minimize":
+            shortcutOpened = false; hoverOpened = false; keepOpen = false; keepOpenRevision += 1
+            webView.evaluateJavaScript("window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()", completionHandler: nil)
+            collapse(animate: true)
+            return nil
         case "size":
             return ["width": panel.frame.width, "height": panel.frame.height]
         case "close":
-            NSApp.terminate(nil); return nil
+            // As on Windows, Close hides the widget and monitoring carries on (Show/Hide brings it back).
+            setHidden(true); return nil
         case "open_reset_actions":
             openSettings(); return true
         case "begin_drag":
@@ -383,11 +434,130 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     // MARK: Status item
 
+    /// Displays in the shape the widget's Monitor button expects.
+    func monitors() -> [[String: Any]] {
+        let selected = notchScreen().map(displayID)
+        return NSScreen.screens.enumerated().map { index, screen in
+            let id = displayID(screen)
+            let builtIn = CGDisplayIsBuiltin(id) != 0
+            let area = screen.visibleFrame
+            return ["id": String(id), "stableId": String(id), "kind": builtIn ? "laptop" : "monitor",
+                    "label": screen.localizedName, "index": index, "primary": screen == NSScreen.screens.first,
+                    "selected": id == selected, "scale": screen.backingScaleFactor,
+                    "workArea": ["x": area.minX, "y": area.minY, "width": area.width, "height": area.height]]
+        }
+    }
+
+    func setHidden(_ hidden: Bool) {
+        hiddenByUser = hidden
+        if hidden {
+            shortcutOpened = false; hoverOpened = false
+            panel.orderOut(nil)
+            levels.stop()
+        } else {
+            panel.orderFrontRegardless()
+            collapse(animate: false)
+        }
+        showHideItem?.title = hidden ? "Show Branchglance" : "Hide Branchglance"
+    }
+
+    // MARK: Inspection shortcut
+
+    enum Shortcut: String, CaseIterable {
+        case controlShiftT = "⌃⇧T", controlOptionT = "⌃⌥T", off = "Off"
+        var modifiers: UInt32? {
+            switch self {
+            case .controlShiftT: return UInt32(controlKey | shiftKey)
+            case .controlOptionT: return UInt32(controlKey | optionKey)
+            case .off: return nil
+            }
+        }
+    }
+
+    var shortcut: Shortcut {
+        get { Shortcut(rawValue: UserDefaults.standard.string(forKey: "shortcut") ?? "") ?? .controlShiftT }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "shortcut"); registerShortcut() }
+    }
+
+    /// A Carbon hot key: works while other apps are in front and needs no Accessibility permission.
+    func registerShortcut() {
+        if let hotKey { UnregisterEventHotKey(hotKey); self.hotKey = nil }
+        guard let modifiers = shortcut.modifiers else { return }
+        if !shortcutHandlerInstalled {
+            shortcutHandlerInstalled = true
+            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
+                guard let context else { return noErr }
+                let host = Unmanaged<Host>.fromOpaque(context).takeUnretainedValue()
+                DispatchQueue.main.async { host.toggleInspection() }
+                return noErr
+            }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
+        }
+        RegisterEventHotKey(UInt32(kVK_ANSI_T), modifiers, EventHotKeyID(signature: 0x4247_4C4E, id: 1),
+                            GetApplicationEventTarget(), 0, &hotKey)
+    }
+    var shortcutHandlerInstalled = false
+
+    @objc func toggleInspection() {
+        if hiddenByUser { setHidden(false) }
+        shortcutOpened.toggle()
+        let script = shortcutOpened ? "window.tokenTrackerInspect && window.tokenTrackerInspect()"
+                                    : "window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()"
+        if shortcutOpened, tabs.selected != .tracker { tabs.selected = .tracker }
+        webView.evaluateJavaScript(script, completionHandler: nil)
+        updateOpenState()
+    }
+
+    // MARK: Web view policy
+
+    /// Only the local tracker page loads in the notch; any other link opens in the default browser.
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = action.request.url else { return decisionHandler(.cancel) }
+        if isLocalTracker(url) || url.absoluteString == "about:blank" { return decisionHandler(.allow) }
+        if action.navigationType == .linkActivated || action.targetFrame == nil,
+           ["http", "https", "codex", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+            NSWorkspace.shared.open(url)
+        }
+        decisionHandler(.cancel)
+    }
+
+    /// target=_blank and window.open: hand http(s) links to the browser, never open a web view.
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = action.request.url, ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+           !isLocalTracker(url) {
+            NSWorkspace.shared.open(url)
+        }
+        return nil
+    }
+
+    func isLocalTracker(_ url: URL) -> Bool {
+        url.scheme == "http" && url.host == "127.0.0.1" && url.port == serverPort
+    }
+
     func buildStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted",
                                      accessibilityDescription: "Branchglance")
         let menu = NSMenu()
+        let showHide = NSMenuItem(title: "Hide Branchglance", action: #selector(toggleHidden), keyEquivalent: "")
+        showHide.target = self
+        menu.addItem(showHide)
+        showHideItem = showHide
+        let shortcutItem = NSMenuItem(title: "Inspection Shortcut", action: nil, keyEquivalent: "")
+        let shortcutMenu = NSMenu()
+        for option in Shortcut.allCases {
+            let entry = NSMenuItem(title: option.rawValue, action: #selector(chooseShortcut(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = option.rawValue
+            entry.state = option == shortcut ? .on : .off
+            shortcutMenu.addItem(entry)
+        }
+        shortcutItem.submenu = shortcutMenu
+        menu.addItem(shortcutItem)
+        menu.addItem(withTitle: "Refresh", action: #selector(refresh), keyEquivalent: "").target = self
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         let login = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin(_:)), keyEquivalent: "")
         login.target = self
@@ -405,6 +575,11 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         widget.target = self
         widget.state = lockScreen.widgetEnabled ? .on : .off
         menu.addItem(widget)
+        let artwork = NSMenuItem(title: "Download Spotify Artwork", action: #selector(toggleArtwork(_:)), keyEquivalent: "")
+        artwork.target = self
+        artwork.state = UserDefaults.standard.bool(forKey: "downloadSpotifyArtwork") ? .on : .off
+        artwork.toolTip = "Spotify only provides artwork as a web link; fetching it contacts Spotify's image server."
+        menu.addItem(artwork)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Reload", action: #selector(reload), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open in Browser", action: #selector(openInBrowser), keyEquivalent: "").target = self
@@ -412,6 +587,27 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         menu.addItem(withTitle: "Quit Branchglance", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.menu = menu
         statusItem = item
+    }
+
+    var showHideItem: NSMenuItem?
+
+    @objc func toggleHidden() { setHidden(!hiddenByUser) }
+
+    @objc func chooseShortcut(_ item: NSMenuItem) {
+        guard let raw = item.representedObject as? String, let option = Shortcut(rawValue: raw) else { return }
+        shortcut = option
+        item.menu?.items.forEach { $0.state = ($0.representedObject as? String) == raw ? .on : .off }
+    }
+
+    @objc func refresh() {
+        webView.evaluateJavaScript("window.tokenTrackerRefresh && window.tokenTrackerRefresh(true)", completionHandler: nil)
+    }
+
+    @objc func toggleArtwork(_ item: NSMenuItem) {
+        let on = !UserDefaults.standard.bool(forKey: "downloadSpotifyArtwork")
+        UserDefaults.standard.set(on, forKey: "downloadSpotifyArtwork")
+        item.state = on ? .on : .off
+        media.refresh()
     }
 
     /// Reset action settings, including the Claude Code collection switch.
@@ -423,6 +619,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             window.isReleasedWhenClosed = false
             window.backgroundColor = NSColor(red: 0x11/255, green: 0x13/255, blue: 0x16/255, alpha: 1)
             let view = WKWebView(frame: .zero)
+            view.navigationDelegate = self
+            view.uiDelegate = self
             window.contentView = view
             view.load(URLRequest(url: URL(string: "http://127.0.0.1:\(serverPort)/reset_actions.html#t=\(settingsToken)")!))
             window.center()

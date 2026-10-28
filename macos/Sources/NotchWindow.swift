@@ -9,9 +9,9 @@ let pageURL = URL(string: "http://127.0.0.1:\(serverPort)/runway.html")!
 
 // Mirrors COMPACT_NOTCH_SIZES / NOTCH_* in token_tracker/widget.py.
 let compactSizes: [String: CGSize] = [
-    "idle": CGSize(width: 420, height: 100), "rest": CGSize(width: 420, height: 100),
-    "controls": CGSize(width: 420, height: 110), "inspect": CGSize(width: 560, height: 114),
-    "dashboard": CGSize(width: 720, height: 540),
+    "idle": CGSize(width: 328, height: 100), "rest": CGSize(width: 328, height: 100),
+    "controls": CGSize(width: 328, height: 110), "inspect": CGSize(width: 560, height: 114),
+    "dashboard": CGSize(width: 720, height: 608),
 ]
 let compactInspectMaxHeight: CGFloat = 420
 let notchWidth: CGFloat = 680, notchCollapsedHeight: CGFloat = 148
@@ -110,9 +110,18 @@ final class NotchContainerView: NSView {
     override func mouseExited(with event: NSEvent) { onHover?(false) }
 }
 
-/// The display with a camera housing, else the main display.
+/// The display chosen with the widget's Monitor button, else the one with a camera housing,
+/// else the main display.
 func notchScreen() -> NSScreen? {
-    NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
+    let chosen = UserDefaults.standard.integer(forKey: "displayID")
+    if chosen != 0, let screen = NSScreen.screens.first(where: { displayID($0) == CGDirectDisplayID(chosen) }) {
+        return screen
+    }
+    return NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main
+}
+
+func displayID(_ screen: NSScreen) -> CGDirectDisplayID {
+    (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
 }
 
 /// Size of the camera housing, so the collapsed panel hides inside it. Screens without

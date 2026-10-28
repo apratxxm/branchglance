@@ -126,6 +126,9 @@ final class NowPlaying: ObservableObject {
         artworkKey = key
         artwork = nil
         if player == .spotify {
+            // Spotify only exposes a web URL for artwork. Fetching it is opt-in (menu bar),
+            // since otherwise nothing Branchglance does leaves this Mac.
+            guard UserDefaults.standard.bool(forKey: "downloadSpotifyArtwork") else { return }
             run("tell application \"Spotify\" to return artwork url of current track") { [weak self] url in
                 guard let url, let link = URL(string: url) else { return }
                 URLSession.shared.dataTask(with: link) { data, _, _ in

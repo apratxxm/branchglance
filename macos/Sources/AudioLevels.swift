@@ -37,15 +37,12 @@ final class AudioLevels: ObservableObject {
 
     deinit { stop() }
 
-    /// Tap the given app's audio, or everything if it isn't found.
+    /// Tap the given app's audio; does nothing if that app isn't running.
     func start(bundleID: String) {
         guard !running else { return }
-        let description: CATapDescription
-        if let process = processObject(for: bundleID) {
-            description = CATapDescription(stereoMixdownOfProcesses: [process])
-        } else {
-            description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-        }
+        // Only ever the player's own audio; with no supported player running, tap nothing.
+        guard let process = processObject(for: bundleID) else { return }
+        let description = CATapDescription(stereoMixdownOfProcesses: [process])
         description.uuid = UUID()
         description.muteBehavior = .unmuted
         description.isPrivate = true
