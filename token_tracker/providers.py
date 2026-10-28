@@ -4621,7 +4621,8 @@ def live_state() -> dict[str, Any]:
             prior = _LIVE_INDEX.get(key)
             path = str(path_value)
             identity_fields = {
-                "identityTitle": record.get("threadName") or record.get("title") or record.get("name"),
+                "identityTitle": _tidy_codex_title(record.get("threadName") or record.get("title") or record.get("name") or "",
+                                                   record.get("model")) or None,
                 "identityWorkspace": record.get("cwd"),
                 "identityParentId": record.get("parentThreadId"),
                 "identityParentProvider": "Codex" if record.get("parentThreadId") else None,
@@ -4793,7 +4794,8 @@ def live_state() -> dict[str, Any]:
             parent_id, parent_provider = _codex_parent_pair(insights.get("parentId"), indexed)
             row.update({
                 "id": indexed.get("id") or (key.split(":", 1)[1] if ":" in key else None),
-                "title": indexed.get("identityTitle") or insights.get("title") or indexed.get("title"),
+                "title": _tidy_codex_title(indexed.get("identityTitle") or insights.get("title") or indexed.get("title") or "",
+                                           row.get("model") or indexed.get("model") or insights.get("model")) or None,
                 "parentId": parent_id,
                 "parentProvider": parent_provider,
                 "agentName": insights.get("agentName") or indexed.get("agentName") or indexed.get("identityAgentName"),
@@ -4880,7 +4882,8 @@ def live_state() -> dict[str, Any]:
                 previous_status = indexed.get("status") if indexed.get("status") != "unavailable" else indexed.get("previousStatus")
                 if previous_status:
                     row["previousStatus"] = previous_status
-                row.update(title=indexed.get("identityTitle") or indexed.get("title"),
+                row.update(title=_tidy_codex_title(indexed.get("identityTitle") or indexed.get("title") or "",
+                                                   indexed.get("model")) or None,
                            parentId=indexed.get("identityParentId") or indexed.get("parentId"),
                            parentProvider=indexed.get("parentProvider") or indexed.get("identityParentProvider"),
                            agentName=indexed.get("identityAgentName"),
