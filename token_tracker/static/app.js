@@ -272,7 +272,14 @@ function runwayTreePathGeometry(rootRect, entries, refined=false) {
 let treeScrollFrame=null,treeScrollListenerAttached=false;
 function scheduleRunwayTreeScrollSync(){
   if(treeScrollFrame!==null||typeof requestAnimationFrame!=='function')return;
-  treeScrollFrame=requestAnimationFrame(()=>{treeScrollFrame=null;syncRunwayTreeConnectors({updateTallRoot:false});});
+  treeScrollFrame=requestAnimationFrame(()=>{treeScrollFrame=null;syncRunwayRootStuck();});
+}
+// Scrolling only changes which parent rows are stuck; connector geometry is measured from the unstuck position, so it never needs redrawing here.
+function syncRunwayRootStuck(){
+  const list=$('#chat-list');if(PHONE||!realDom(list))return;
+  const inspect=COMPACT&&notch.mode==='inspect',rows=[];
+  for(const root of list.children){if(!root.classList?.contains('chat'))continue;const row=root.querySelector?.('.row');if(row)rows.push([row,inspect&&row.getBoundingClientRect().top-root.getBoundingClientRect().top>1]);}
+  for(const [row,stuck] of rows)cls(row,'runway-root-stuck',stuck);
 }
 function setupRunwayTreeScrollSync(){
   if(treeScrollListenerAttached||!RUNWAY||PHONE||!COMPACT)return;
@@ -289,9 +296,13 @@ function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
       const tallRoot=COMPACT&&notch.mode==='inspect'&&layoutHeight>0&&rowRect.height>Math.max(50,layoutHeight/3),hasTallClass=Boolean(row.classList?.contains?.('runway-tall-root'));
       if(tallRoot!==hasTallClass){row.classList?.toggle?.('runway-tall-root',tallRoot);tallRootChanged=true;rootRect=root.getBoundingClientRect?.()||rootRect;rowRect=row.getBoundingClientRect?.()||rowRect;}
     }
-    row.classList?.toggle?.('runway-root-stuck',COMPACT&&notch.mode==='inspect'&&rowRect.top-rootRect.top>1);
+    const stuckOffset=COMPACT&&notch.mode==='inspect'?rowRect.top-rootRect.top:0;
+    row.classList?.toggle?.('runway-root-stuck',stuckOffset>1);
+    // Measure a stuck parent where it sits unstuck, so the tree does not change as the list scrolls.
+    const unstick=rect=>rect&&stuckOffset>1?{left:rect.left,right:rect.right,width:rect.width,height:rect.height,top:rect.top-stuckOffset,bottom:rect.bottom-stuckOffset}:rect;
+    rowRect=unstick(rowRect);
     const visible=[...root.querySelectorAll('.ag.runway-agent[data-sub]')].filter(el=>!el._leaving&&el.getClientRects?.().length!==0);
-    const entries=[{key:root.dataset.key,...(()=>{const item=state.forest?.rows.find(candidate=>candidate.key===root.dataset.key),name=row.querySelector?.('.r-title'),anchor=REFINED?row.querySelector?.('.runway-refined-tree-anchor'):null;return {provider:item?.provider,id:item?.id,parentKey:treeParentKey(item),rowRect,messageRect:rowRect,nameRect:name?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()};})()}];
+    const entries=[{key:root.dataset.key,...(()=>{const item=state.forest?.rows.find(candidate=>candidate.key===root.dataset.key),name=row.querySelector?.('.r-title'),anchor=REFINED?row.querySelector?.('.runway-refined-tree-anchor'):null;return {provider:item?.provider,id:item?.id,parentKey:treeParentKey(item),rowRect,messageRect:rowRect,nameRect:unstick(name?.getBoundingClientRect?.()),dotRect:unstick(anchor?.getBoundingClientRect?.())};})()}];
     for(const el of visible){const item=state.forest?.rows.find(candidate=>candidate.key===el.dataset.sub),glance=el.querySelector?.('.runway-agent-glance'),name=el.querySelector?.('.runway-agent-name'),anchor=REFINED?glance?.querySelector?.('.runway-refined-tree-anchor'):null;if(item)entries.push({key:item.key,provider:item.provider,id:item.id,parentKey:treeParentKey(item),rowRect:el.getBoundingClientRect?.(),messageRect:glance?.getBoundingClientRect?.(),nameRect:name?.getBoundingClientRect?.(),glanceRect:glance?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()});}
     const geometry=runwayTreePathGeometry(rootRect,entries,REFINED),paths=geometry.paths.map(path=>path.d),dots=geometry.dots;
     if(!REFINED){
