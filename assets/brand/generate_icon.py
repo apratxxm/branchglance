@@ -109,7 +109,7 @@ def _square_wrapper(root: ET.Element, size: int, background: str, radius: int | 
         # Center the rounded background on the square viewport; the original mark group is untouched.
         outer.set("viewBox", f"0 0 {side:.4f} {side:.4f}")
         bg_attrs = {"x": "0", "y": "0", "width": f"{side:.4f}", "height": f"{side:.4f}", "rx": f"{side*radius/512:.4f}", "fill": background}
-        fit_width = side * 0.84
+        fit_width = side * 0.68
         fit_height = fit_width * height / width
         nested_x = (side - fit_width) / 2
         nested_y = (side - fit_height) / 2
