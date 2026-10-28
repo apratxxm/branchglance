@@ -12,6 +12,12 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-token-tracker.txt
 ```
 
+For local release builds, use a virtual environment with the release dependencies installed:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r packaging/requirements-release.txt
+```
+
 Run the widget from source with:
 
 ```powershell

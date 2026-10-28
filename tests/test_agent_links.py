@@ -305,6 +305,33 @@ def test_graph_keys_revisions_and_null_removal(monkeypatch):
     assert removal == {"revision": 2, "edges": {"Codex:codex-id": None}}
 
 
+def test_live_graph_is_full_for_every_poller(monkeypatch):
+    # Two clients polling /api/live: the second must not get an empty edge
+    # map just because the first one already saw the new revision.
+    monkeypatch.setattr(agent_links, "_GRAPH_EDGES", {})
+    monkeypatch.setattr(agent_links, "_GRAPH_REVISION", 0)
+    parent = {"id": "claude-id", "provider": "Claude"}
+    child = {"id": "codex-id", "provider": "Codex", "parentId": "claude-id", "parentProvider": "Claude"}
+    first = agent_links.snapshot_graph([dict(parent), dict(child)])
+    second = agent_links.snapshot_graph([dict(parent), dict(child)])
+    assert first["edges"] == second["edges"] == {
+        "Claude:claude-id": None, "Codex:codex-id": "Claude:claude-id"}
+    import inspect
+    from token_tracker import providers
+    assert "delta=True" not in inspect.getsource(providers.live_state)
+
+
+def test_verify_process_retires_gone_runs_but_not_unknown_ones(monkeypatch):
+    monkeypatch.setattr(agent_links, "_probe_process", lambda pid: ("gone", None))
+    assert agent_links.verify_process(17644, 123) is False
+    monkeypatch.setattr(agent_links, "_probe_process", lambda pid: ("unknown", None))
+    assert agent_links.verify_process(17644, 123) is None
+    monkeypatch.setattr(agent_links, "_probe_process", lambda pid: ("alive", 123))
+    assert agent_links.verify_process(17644, 123) is True
+    monkeypatch.setattr(agent_links, "_probe_process", lambda pid: ("alive", 999))
+    assert agent_links.verify_process(17644, 123) is False
+
+
 def test_graph_missing_parent_and_cycle_become_roots(monkeypatch):
     monkeypatch.setattr(agent_links, "_GRAPH_EDGES", {})
     monkeypatch.setattr(agent_links, "_GRAPH_REVISION", 0)

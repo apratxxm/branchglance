@@ -543,7 +543,7 @@ assert.equal(rowClasses.has("runway-root-stuck"), false, "nonsticky tall roots c
 delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
 
 // Time, status, activity, workspace, and tokens have shared columns at every depth.
-assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(120px,1\.7fr\) 46px 82px minmax\(70px,1fr\) minmax\(80px,1\.1fr\) 78px/);
+assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,2fr\) 44px 70px minmax\(0,1fr\) 84px 80px/);
 assert.match(css, /\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/);
 assert.match(css, /\.runway-refined-timing\{grid-column:2/);assert.match(css,/\.runway-refined-status\{grid-column:3/);
 assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\.runway-refined-path\{grid-column:5/);assert.match(css,/\.runway-refined-tokens\{grid-column:6/);
@@ -557,7 +557,7 @@ assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\
   assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
 }
 // Each information column has its own centred track instead of sharing or shifting with content.
-assert.match(css, /grid-template-columns:minmax\(120px,1\.7fr\) 46px 82px minmax\(70px,1fr\) minmax\(80px,1\.1fr\) 78px/);
+assert.match(css, /grid-template-columns:minmax\(0,2fr\) 44px 70px minmax\(0,1fr\) 84px 80px/);
 
 // The yellow waiting count is the way to the waiting chat.
 T.renderRunwayCounts({ roots: 2, total: 3, waiting: 1 });

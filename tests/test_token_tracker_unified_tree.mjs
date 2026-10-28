@@ -6,6 +6,7 @@ const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.u
 const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 const css=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const fixedNow=Date.parse("2026-10-25T13:05:00Z"),ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
+const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector).at(-1)?.[2]||"";
 
 function boot(){
   const nodes=new Map(),timers=new Map();let sequence=0;
@@ -35,6 +36,97 @@ const codexSol={id:"sol",key:"Codex:sol",parentKey:"Codex:luna",title:"review pa
 const claudeHaiku={id:"haiku",key:"Claude:haiku",parentKey:"Claude:op",title:"test pass",agentName:"haiku",model:"claude-haiku-5-5",status:"running",updatedAt:ago(3),workspace:"D:\\work\\sample-app",...quota};
 const providers=[{name:"Codex",connected:true,chats:[codexLuna,codexSol],...quota},{name:"Claude",connected:true,chats:[claudeParent,claudeHaiku],...quota}];
 const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:sol":"Codex:luna","Claude:haiku":"Claude:op"}};
+
+// Repeated stats failures cannot postpone the graphless first-paint fallback.
+{
+  const {T,timers,context}=boot();
+  const parent={id:'parent',key:'Claude:parent',title:'cached parent',model:'claude-opus-5-5',status:'running'};
+  const child={id:'child',key:'Claude:child',parentKey:'Claude:parent',title:'cached child',model:'claude-sonnet-5-5',status:'running'};
+  const cached={generatedAt:ago(0),providerPolicies:policy,enabledProviders:['Claude'],providers:[{name:'Claude',connected:true,chats:[parent,child]}]};
+  T.state.initialBootstrapPending=true;
+  assert.equal(T.render(cached),false,'the first graphless snapshot is temporarily held');
+  context.fetch=async()=>({ok:false,status:503});
+  await T.refresh();
+  await T.refresh();
+  assert.equal(T.state.snapshot,null,'failed background builds do not accidentally accept the held snapshot');
+  const deadline=timers.get(T.state.graphlessBootstrapTimer);
+  assert.equal(deadline.delay,2000,'the hold has a two second deadline independent of request success');
+  deadline.callback();
+  assert.equal(T.state.forest.roots.length,2,'the deadline exposes cached rows as roots');
+  assert.ok(T.state.forest.rows.every(chat=>chat.telemetryUnavailable&&chat.statusSource==='unavailable'),'deadline fallback marks cached activity unavailable');
+  assert.ok(T.state.forest.rows.every(chat=>T.runwayActivityEvidence(chat).status==='unavailable'),'fallback rows cannot show stale activity as live');
+  assert.ok(T.state.bootstrapRetryTimer!=null,'the first-paint deadline leaves another background retry scheduled');
+  const linked={...cached,graph:{revision:1,edges:{'Claude:parent':null,'Claude:child':'Claude:parent'}}};
+  assert.equal(T.render(linked),true,'a later graph payload is accepted');
+  assert.equal(T.state.forest.roots.length,1,'the later graph re-trees the cached rows');
+  assert.equal(T.state.forest.roots[0].descendants[0].key,'Claude:child');
+  assert.equal(T.state.forest.rows[0].telemetryUnavailable,undefined,'the graph response restores original row evidence');
+}
+
+// First compact paint waits for the graph, and the same live-data rows keep
+// cache and workspace content inside the fixed inspect columns at every depth.
+{
+  const {T,timers}=boot(),rich=(id,title,workspace,parentKey=null)=>({id,key:(id==='op'?'Claude:':'Codex:')+id,parentKey,title,agentName:id==='op'?'':'agent-'+id,
+    model:id==='op'?'claude-opus-5-5':'gpt-6.1-sol',status:'running',statusSource:'transcript',statusObservedAt:ago(0),executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),
+    activeRunStartedAt:ago(1),executionSince:ago(1),executionActivity:{kind:'reading',files:['A:\\pisha\\orchestrator\\src\\keyboard.py'],observedAt:ago(0)},
+    workspace,workspaceKind:'project',contextTokens:98000,contextWindow:200000,contextPercent:49,contextObservedAt:ago(0),contextModel:id==='op'?'claude-opus-5-5':'gpt-6.1-sol',lastRequest:{input:1000,cached:980},updatedAt:ago(id==='op'?0:id==='luna'?1:2),...quota});
+  const rows=[rich('op','Orchestrator','A:\\pisha\\orchestrator\\services\\orchestrator'),
+    rich('luna','Luna','A:\\pisha\\orchestrator\\agents\\review\\keyboard','Claude:op'),
+    rich('sol','Sol','A:\\pisha\\orchestrator\\agents\\review\\keyboard\\tests','Codex:luna')];
+  const richProviders=[{name:'Claude',connected:true,chats:[rows[0]],...quota},{name:'Codex',connected:true,chats:rows.slice(1),...quota}];
+  const richGraph={revision:1,edges:{'Claude:op':null,'Codex:luna':'Claude:op','Codex:sol':'Codex:luna'}};
+  const firstPayload={generatedAt:ago(0),providerPolicies:policy,enabledProviders:['Claude','Codex'],providers:richProviders};
+  T.state.initialBootstrapPending=true;
+  assert.equal(T.render(firstPayload),false,'a graphless initial payload is held until the graph arrives');
+  assert.equal(T.state.runwaySnapshotPainted,false);
+  assert.equal(T.state.snapshot,null);
+  assert.equal(T.render(firstPayload),true,'the graphless hold is bounded to two build attempts');
+  assert.equal(T.state.initialBootstrapPending,false,'the fallback releases the first-paint hold');
+  assert.equal(T.state.forest.roots.length,3,'graphless cached rows render as independent roots');
+  assert.ok(T.state.forest.roots.every(root=>root.descendants.length===0),'fallback rows do not invent a tree');
+  assert.equal(T.render(firstPayload),true,'graphless retries continue rendering while background builds continue');
+  assert.equal(T.state.forest.roots.length,3,'later graphless snapshots remain roots');
+  T.scheduleBootstrapRetry();
+  assert.equal(timers.get(T.state.bootstrapRetryTimer)?.delay,2000,'the graphless fallback keeps a background retry scheduled');
+  assert.equal(T.render({...firstPayload,graph:richGraph}),true);
+  assert.equal(T.state.forest.roots.length,1,'a later complete graph replaces fallback roots with the tree');
+  assert.deepEqual(Array.from(T.state.forest.roots[0].descendants,chat=>chat.depth),[1,2]);
+  assert.equal(T.state.forest.rows[0].telemetryUnavailable,undefined,'the original snapshot evidence remains intact for the graph render');
+  assert.equal(T.runwayActivityEvidence(T.state.forest.rows[0]).status,'running','fresh graph-backed evidence is restored');
+
+  const rendered=[T.state.forest.roots[0],...T.state.forest.roots[0].descendants].map((chat,index)=>index===0?T.rowHTML(chat):T.runwayTelemetryHTML(chat,true));
+  const slotOrder=markup=>[...markup.matchAll(/data-runway-slot="(timing|status|activity-column|path-column|tokens)"/g)].map(([,slot])=>slot);
+  assert.deepEqual(slotOrder(rendered[0]),['timing','status','activity-column','path-column','tokens']);
+  assert.ok(rendered.slice(1).every(markup=>JSON.stringify(slotOrder(markup))===JSON.stringify(slotOrder(rendered[0]))),
+    'parent and nested child rows share the same information columns');
+  for(const [index,markup] of rendered.entries()){
+    const activity=markup.match(/data-runway-slot="activity-column"[^>]*>([\s\S]*?)<\/span><span data-runway-slot="path-column"/)?.[1]||'';
+    const tokens=markup.match(/data-runway-slot="tokens"[^>]*>([\s\S]*?)<\/span><\/div>/)?.[1]||'';
+    const leaves=['orchestrator','keyboard','tests'];
+    assert.doesNotMatch(activity,/Cache \d+%/,`row ${index} keeps cache out of activity`);
+    assert.equal((activity.match(/class="[^"]*\brunway-activity\b[^"]*"/g)||[]).length,1,`row ${index} activity markup: ${activity}`);
+    assert.match(tokens,/ctx-tokens/);
+    assert.match(tokens,/Cache 98%/);
+    assert.ok(tokens.indexOf('ctx-tokens')<tokens.indexOf('Cache 98%'),'tokens stay above the muted cache line');
+    assert.match(markup,new RegExp('runway-path-leaf">'+leaves[index]+'<\\/span>'));
+    assert.match(markup,/title="Workspace \u00b7 A:\\pisha\\orchestrator/,'the full workspace path remains in the tooltip');
+    assert.equal((markup.match(/data-runway-slot="cache"/g)||[]).length,1);
+  }
+
+  const inspect='body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) ';
+  const rowRule=cssRule(inspect+'.runway-refined-row');
+  assert.match(rowRule,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
+  const cellRules=['runway-refined-timing','runway-refined-status','runway-refined-path','runway-refined-tokens'];
+  for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
+  assert.match(cssRule(inspect+'.runway-refined-activity'),/overflow:visible/);
+  assert.match(cssRule(inspect+'.runway-refined-activity>.runway-activity'),/white-space:normal;overflow-wrap:anywhere/);
+  for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-path'])
+    assert.match(cssRule(inspect+'.'+name),/grid-row:1\/3/);
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-template-rows:18px 14px;row-gap:2px/);
+  assert.match(css,/\.runway-refined-path \.runway-path-leaf\{overflow:visible;white-space:normal;overflow-wrap:break-word;text-overflow:clip;\}/,'workspace wraps instead of clipping');
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-row:1\/3/,'tokens span the same two-row axis as the single-line columns');
+  assert.match(cssRule(inspect+'.runway-refined-tokens'),/align-items:center/,'tokens centre their two lines on the shared row axis');
+}
 
 // Mixed provider lineage uses canonical keys and the graph across provider boundaries.
 {
@@ -165,11 +257,8 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard"},true);
   const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard review dashboard updates and coordination"},true);
   assert.equal((shortTitle.match(/class="runway-refined-row"/g)||[]).length,(longTitle.match(/class="runway-refined-row"/g)||[]).length,"title length does not add rows or change the fixed row tracks");
-  assert.match(css,/runway-refined-title>\.runway-agent-name\{[^}]*white-space:nowrap[^}]*overflow:hidden[^}]*text-overflow:ellipsis/);
-  assert.match(css,/runway-refined-title \.runway-agent-label\{[^}]*overflow:hidden[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/);
-  assert.match(css,/grid-template-rows:23px 21px;column-gap:8px;row-gap:2px;align-items:center;\s*width:100%;min-width:0;min-height:50px/);
-  assert.match(css,/runway-compact\[data-notch-mode="inspect"\][^\n]+\.runway-refined-title \.runway-agent-label\{[^}]*white-space:nowrap/);
-  assert.match(css,/grid-template-rows:23px 21px;column-gap:8px;row-gap:2px;align-items:center/);
+  assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center;\s*width:100%;min-width:0;min-height:50px/);
+  assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
 }
 
 console.log("unified agent tree contract checks passed");

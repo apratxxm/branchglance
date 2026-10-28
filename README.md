@@ -1,6 +1,6 @@
 # Branchglance
 
-![Branchglance Live Stack](assets/brand/lockup.svg)
+![Branchglance Live Stack](assets/brand/lockup-dark.svg)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -8,13 +8,16 @@ Branchglance is a compact Windows widget for keeping Codex and Claude Code chats
 
 ## What it does
 
-- Shows Codex and Claude Code chats as a parent/agent tree, with observed running, waiting, idle and terminal states. A waiting question links back to its source chat; Branchglance does not submit structured answers.
-- Tracks five-hour and weekly usage limits, reset observations, and the available token, cache and cost insights.
+- Shows Codex and Claude Code chats as a parent/agent tree, with observed running, waiting, idle and terminal states. Codex jobs started from a Claude Code chat nest under that chat. A waiting question links back to its source chat; Branchglance does not submit structured answers.
+- Tracks five-hour and weekly usage limits, reset observations, and token, cache and cost insights over 24h, 7d, 30d or all time.
 - Lets you switch provider views, search and hide chats, and configure one-shot reset actions. Greetings and Claude Code collection are opt-in; Claude collection installs Branchglance-owned hooks only after consent.
 - Includes a separate, explicitly started phone companion with pairing and optional Web Push alerts. The desktop widget does not start the phone service.
 
+**New here? Read the [walkthrough](docs/GUIDE.md)**: every feature, what it does, and how it fits a day of parallel agent work.
+
 Contributor and architecture references:
 
+- [Walkthrough](docs/GUIDE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Contributing](docs/CONTRIBUTING.md)
 - [Code signing policy](docs/CODE_SIGNING_POLICY.md)
@@ -42,17 +45,28 @@ Rendered from synthetic sample data; no real chats or accounts.
 
 Branchglance requires 64-bit Windows 10 build 19041 or newer, .NET Framework 4.8 or newer, and Microsoft Edge WebView2 Runtime. Setup checks these prerequisites and stops with an explanation when one is missing.
 
+### Verify the download
+
+In PowerShell, compare the SHA-256 hash with the published `BranchglanceSetup.exe.sha256` asset and check the signature status is `Valid` and the signer is SignPath Foundation:
+
+```powershell
+Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256
+Get-AuthenticodeSignature .\BranchglanceSetup.exe | Format-List Status, SignerCertificate
+```
+
 The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup creates Start menu and Desktop shortcuts, plus an optional sign-in Startup shortcut. Setup resolves these locations through Windows known folders, including redirected Desktop locations such as OneDrive. All shortcuts use the Branchglance Live Stack icon; uninstall removes the shortcuts it owns.
 
 Setup checks whether `%LOCALAPPDATA%` is redirected into a packaged app's private storage. It refuses with a visible explanation when redirection is detected or the check is inconclusive. If the Branchglance launcher detects redirected storage, it reopens through File Explorer before starting the widget. Run Setup from File Explorer or the Start menu, not from another app's terminal.
 
 ## Open and use
 
-- Open Branchglance from the Start menu. The widget stays in the Windows desktop session.
+- Open Branchglance from the Start menu. The widget stays in the Windows desktop session. Collapsed, it is a 328 px strip with the clock, chat counts and limit bands; hover or press Ctrl+Shift+T to expand it (change or turn off the shortcut from the tray menu).
 - When you reopen the widget, it can show the last snapshot immediately with a stale marker while refreshing in the background. Stale snapshots do not show live statuses or current limits. A first-ever launch loads normally.
 - Use the Codex | Claude switch when both providers are available. New provider activity can bring that provider into view; a manual selection takes priority briefly.
 - Limit meters show used percentage and stop at 100%. Reset times are observations; reaching zero on a countdown alone does not confirm a reset.
+- Press `/` or `Ctrl+K` to search. Filters: `is:needs`, `is:running`, `is:failed`, `is:hidden`.
 - Open search and enter `is:hidden` to find chats you previously hid. Clear the query to return to the normal list.
+- Open Insights from the widget's Insights button. Choose a range, and switch between tokens and cost. Cost totals cover priced models only and name the models left out; unknown models are never given a guessed price. The Settings tab sets a 12-hour or 24-hour clock, lock and keep-open, the display monitor, and shows the installed version.
 - Open **Reset Action Settings** from the widget's quota status pop-up to configure an optional greeting after a verified limit reset or to enable Claude Code collection. Greetings are off by default. Enabling Claude collection adds Branchglance hooks to Claude Code settings after backing up the settings file; disabling removes Branchglance-owned hooks and revokes consent.
 
 ## Uninstall and rollback
@@ -80,6 +94,10 @@ Runtime settings, hook events and history remain in the per-user application dat
 - **Claude is unavailable:** open Reset Action Settings, enable Claude Code collection, and restart Branchglance if it asks. Check that Claude Code hooks are allowed by Claude Code settings. Only events Claude Code reports can appear; missing events do not prove a session is idle.
 - **A hidden chat is missing:** search for `is:hidden`. Hiding is a local display choice, not deletion.
 - **No greeting appeared at countdown zero:** the app waits for a verified reset sample; zero on the timer is not enough. Confirm the correct provider's greeting setting is enabled and that its CLI is signed in.
+
+## Brand assets
+
+The [SVG master](assets/brand/mark-master.svg) comes from the Photoshop vector path, with straight edge segments and the original rounded corners. The app icon, web icons and colour/monochrome marks are generated from that same master. See the [source and reproduction notes](assets/brand/LOGO_MASTER.md). The concept was AI-generated and subsequently refined in Photoshop; no trademark clearance or exclusivity is claimed.
 
 ## License
 

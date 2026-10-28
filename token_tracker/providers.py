@@ -249,6 +249,10 @@ CLAUDE_PRICING = {
     "fable-5": (10, 1, 12.5, 20, 50),
     "opus-5": (5, .5, 6.25, 10, 25), "opus-4.8": (5, .5, 6.25, 10, 25),
     "sonnet-5": (2, .2, 2.5, 4, 10), "haiku-4.5": (1, .1, 1.25, 2, 5),
+    # Published 2026-10 rates; cache writes use the standard 1.25x/2x input multipliers.
+    # Haiku 5.5 doubles beyond 100K-token prompts, which per-response rows can't see.
+    "fable-5.1": (10, .25, 12.5, 20, 50), "opus-5.5": (4, .2, 5, 8, 20),
+    "sonnet-5.5": (2, .2, 2.5, 4, 10), "haiku-5.5": (.1, .01, .125, .2, .5),
 }
 CODEX_PRICING = {"gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20), "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2)}
 # Standard-tier long-prompt rule (OpenAI model page): a request whose input exceeds the
@@ -256,6 +260,21 @@ CODEX_PRICING = {"gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20), "gpt-5.
 CODEX_LONG_CONTEXT = {"gpt-6-astra": (272_000, 2.0, 1.5)}
 LONG_CONTEXT_SUFFIX = "|long-context"
 PRICE_BASIS = "Standard-tier list prices; Batch, Flex and Fast billing are not recorded locally"
+
+# Exact provider model IDs that intentionally share the listed price rows. Keep this
+# explicit: substring matching makes unknown derived names look priced.
+PRICE_MODEL_ALIASES = {
+    "claude-fable-5": "fable-5",
+    "claude-opus-5": "opus-5",
+    "claude-opus-4-8": "opus-4.8",
+    "claude-sonnet-5": "sonnet-5",
+    "claude-haiku-4-5": "haiku-4.5",
+    "claude-haiku-4-5-20251001": "haiku-4.5",
+    "claude-fable-5-1": "fable-5.1",
+    "claude-opus-5-5": "opus-5.5",
+    "claude-sonnet-5-5": "sonnet-5.5",
+    "claude-haiku-5-5": "haiku-5.5",
+}
 
 
 def _duration_since(minutes: float) -> str:
@@ -535,7 +554,8 @@ def _jsonl_state_uncacheable(state: Any) -> bool:
 
 def _incremental_jsonl_reduce(kind: str, path: Path, initial_state: Any,
                               reduce_record: Any, project: Any = None,
-                              fingerprint_extra: Any = None, unavailable: Any = None) -> Any:
+                              fingerprint_extra: Any = None, unavailable: Any = None,
+                              needles: tuple[bytes, ...] | None = None) -> Any:
     """Reduce complete JSONL records incrementally.
 
     ``initial_state`` is a value or zero-argument factory. ``reduce_record``
@@ -574,7 +594,7 @@ def _incremental_jsonl_reduce(kind: str, path: Path, initial_state: Any,
                 return project(state) if project else state
             result = _incremental_jsonl_reduce_locked(
                 key, path, initial_state, reduce_record, project, fingerprint_extra,
-                unavailable, before, cached, retry_on_stale=not fresh)
+                unavailable, before, cached, retry_on_stale=not fresh, needles=needles)
             if result is not _STALE_PRE_READ_STAT:
                 return result
             fresh = True
@@ -586,7 +606,8 @@ _STALE_PRE_READ_STAT = object()
 def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_state: Any,
                                      reduce_record: Any, project: Any, fingerprint_extra: Any,
                                      unavailable: Any, before: tuple[int, int, int, int, int],
-                                     cached: dict[str, Any] | None, retry_on_stale: bool) -> Any:
+                                     cached: dict[str, Any] | None, retry_on_stale: bool,
+                                     needles: tuple[bytes, ...] | None = None) -> Any:
     try:
         handle_context = path.open("rb")
     except OSError:
@@ -649,15 +670,25 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
                 # projection, but never checkpoint it at the prior offset.
                 try:
                     item = json.loads(line.decode("utf-8", errors="ignore"))
-                except (ValueError, UnicodeError):
+                except (ValueError, UnicodeError, RecursionError):
                     break
                 reduce_record(state, item)
                 valid_unterminated_record = True
                 break
             committed_offset = handle.tell()
+            # A reducer that only reads records carrying a key can skip lines
+            # without that key's bytes. A \u escape or invalid UTF-8 (dropped on
+            # decode) could hide the key, so those lines are always parsed.
+            if needles and b"\\u" not in line and not any(needle in line for needle in needles):
+                try:
+                    line.decode("utf-8")
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    continue
             try:
                 item = json.loads(line.decode("utf-8", errors="ignore"))
-            except (ValueError, UnicodeError):
+            except (ValueError, UnicodeError, RecursionError):
                 continue
             reduce_record(state, item)
 
@@ -1750,6 +1781,8 @@ def _decode_js_string(raw: str, quote: str) -> str | None:
 
 def _scan_literal_exec_commands(source: str) -> list[str]:
     """Find literal exec_command cmd strings while skipping JS strings/comments."""
+    if "exec_command" not in source:
+        return []
     commands: list[str] = []
     i = 0
     length = len(source)
@@ -2148,6 +2181,18 @@ def _chat_source(value: Any) -> str | None:
     return None
 
 
+_BRIEF_TITLE_PREFIX = re.compile(r"^(?:#+\s+)?(?:\[[^\]]{1,40}\]\s*)?")
+
+
+def _tidy_codex_title(title: str, model: Any) -> str:
+    """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
+    tidy = _BRIEF_TITLE_PREFIX.sub("", title, count=1)
+    head, sep, rest = tidy.partition(" · ")
+    if sep and rest.strip() and head.isalpha() and head.lower() in re.split(r"[^a-z]+", str(model or "").lower()):
+        tidy = rest
+    return tidy.strip() or title
+
+
 def _workspace_kind(workspace: str | None) -> str | None:
     """Identify Codex's dated per-chat folders so the widget won't call them projects."""
     if not workspace:
@@ -2342,9 +2387,10 @@ def _read_codex_run_stats(path: Path) -> dict[str, Any]:
                                      _project_run_stats, unavailable={})
 
 
-def _codex_agent_stats(path_value: str | Path | None, status: str, is_subagent: bool) -> dict[str, Any]:
+def _codex_agent_stats(path_value: str | Path | None, status: str, is_subagent: bool,
+                       *, run_stats: dict[str, Any] | None = None) -> dict[str, Any]:
     """toolCalls, filesEdited, runStartedAt, runEndedAt and failureReason for one chat row."""
-    stats = _codex_run_stats(path_value)
+    stats = _codex_run_stats(path_value) if run_stats is None else run_stats
     start = stats.get("sessionStart") if is_subagent else stats.get("runStart") or stats.get("sessionStart")
     ended = None if status in _ACTIVE_STATES else stats.get("runEnd") or stats.get("lastEventAt")
     return {
@@ -2591,6 +2637,20 @@ def _local_date_from_timestamp(value: Any, fallback_epoch: float | None = None) 
     return datetime.fromtimestamp(epoch, _local_timezone()).date().isoformat()
 
 
+def _insights_hour_from_timestamp(value: Any, fallback_epoch: float | None = None) -> str | None:
+    epoch = _timestamp_epoch(value) if value else fallback_epoch
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, _local_timezone()).replace(
+        minute=0, second=0, microsecond=0).isoformat()
+
+
+def _insights_add_model(bucket: dict[str, Any], model: str, usage: dict[str, int]) -> None:
+    target = bucket.setdefault(model, defaultdict(int))
+    for key, value in usage.items():
+        target[key] += int(value or 0)
+
+
 def _last_calendar_dates(days: int, today: date | None = None) -> set[str]:
     """Return calendar dates inclusive of today (seven means today plus six days)."""
     anchor = today or _local_today()
@@ -2615,8 +2675,11 @@ def _activity_age(updated: Any, now: datetime | None = None) -> str:
 
 
 def _price_for(model: str | None, table: dict[str, tuple[float, ...]]) -> tuple[float, ...] | None:
-    value = "".join(char for char in (model or "").lower() if char.isalnum())
-    return next((rates for key, rates in table.items() if "".join(char for char in key if char.isalnum()) in value), None)
+    value = (model or "").strip().lower()
+    if value.endswith(LONG_CONTEXT_SUFFIX):
+        value = value[:-len(LONG_CONTEXT_SUFFIX)]
+    price_key = PRICE_MODEL_ALIASES.get(value, value)
+    return next((rates for key, rates in table.items() if key.lower() == price_key), None)
 
 
 def _claude_context_window(model: str | None) -> int | None:
@@ -2641,7 +2704,8 @@ def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], tabl
     cost = savings = 0.0; covered = 0; total = int(totals.get("total_tokens") or 0)
     unpriced: dict[str, int] = defaultdict(int)
     for model_key, usage in model_totals.items():
-        model = model_key.split("|", 1)[0]
+        model = (model_key[:-len(LONG_CONTEXT_SUFFIX)]
+                 if model_key.endswith(LONG_CONTEXT_SUFFIX) else model_key)
         rates = _price_for(model, table)
         amount = int(usage.get("total_tokens") or 0)
         if not rates:
@@ -2661,7 +2725,8 @@ def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], tabl
         else:
             cost += ((input_tokens - cached) * rates[0] + cached * rates[1] + output * rates[2]) / 1_000_000
             savings += cached * (rates[0] - rates[1]) / 1_000_000
-    return {"apiEquivalentCost": round(cost, 4), "cacheSavings": round(savings, 4), "pricingCoverage": round(covered * 100 / total, 1) if total else 100,
+    return {"apiEquivalentCost": round(cost, 4) if covered or not total else None,
+            "cacheSavings": round(savings, 4), "pricingCoverage": round(covered * 100 / total, 1) if total else 100,
             "estimated": covered != total, "priceBasis": PRICE_BASIS,
             "unpricedModels": [{"model": name, "tokens": value} for name, value in sorted(unpriced.items(), key=lambda item: -item[1]) if value]}
 
@@ -2681,7 +2746,8 @@ class ClaudeDesktopProvider:
             candidates.insert(0, Path.home() / "Library" / "Application Support" / "Claude")
         self.root = next((path for path in candidates if (path / "plan-usage-history.json").is_file()),
                          candidates[0] if candidates else Path("__missing__"))
-        self.transcript_root = Path(os.environ.get("CLAUDE_HOME", Path.home() / ".claude")) / "projects"
+        from .claude_hook_install import claude_config_dir
+        self.transcript_root = claude_config_dir() / "projects"
 
     def _usage(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         path = self.root / "plan-usage-history.json"
@@ -3452,6 +3518,7 @@ class CodexProvider:
         provider_model = row.get("modelProvider")
         model = (row_model or insights.get("model") or token_event.get("model") or run_stats.get("settingsModel")
                  or (provider_model if str(provider_model or "").lower() not in {"", "openai"} else None) or "Codex")
+        title = _tidy_codex_title(title, model)
         guardian = _is_guardian(row.get("source")) or _is_guardian(run_stats.get("source")) or run_stats.get("threadSource") == "guardian_review"
         agent_role = "auto-review" if guardian else ("spawned" if parent_id else None)
         agent_stats = _codex_agent_stats(row.get("path"), status, bool(parent_id))
@@ -3627,6 +3694,10 @@ class CodexProvider:
         daily: dict[str, int] = defaultdict(int)
         totals: dict[str, int] = defaultdict(int)
         models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        daily_models: dict[str, dict[str, Any]] = defaultdict(dict)
+        hourly_models: dict[str, dict[str, Any]] = defaultdict(dict)
+        active_hours: set[str] = set()
+        session_activity: dict[str, dict[str, Any]] = {}
         latest_rate: dict[str, Any] | None = None
         latest_rate_at = ""
         live_keys: set[tuple[str, int, int, int, int, int]] = set()
@@ -3634,7 +3705,10 @@ class CodexProvider:
         if session_paths is None:
             session_paths = _codex_session_inventory()
         if not session_paths:
-            return {"daily": daily, "totals": totals, "models": models, "rate": latest_rate, "rateUpdatedAt": None, "paths": paths}
+            return {"daily": daily, "totals": totals, "models": models, "rate": latest_rate,
+                    "rateUpdatedAt": None, "paths": paths,
+                    "insightsData": {"trackingWindowDays": days, "dailyModels": {},
+                                     "hourlyModels": {}, "activeHours": [], "sessions": []}}
         for path in session_paths:
             try:
                 live_keys.add((str(path.resolve()), *_stat_fingerprint(path)))
@@ -3685,6 +3759,23 @@ class CodexProvider:
                 models[model]["cached_tokens"] += delta["cached_input_tokens"]
                 models[model]["output_tokens"] += delta["output_tokens"]
                 models[model]["total_tokens"] += delta["total_tokens"]
+                insight_usage = {
+                    "input_tokens": delta["input_tokens"],
+                    "cached_tokens": delta["cached_input_tokens"],
+                    "output_tokens": delta["output_tokens"],
+                    "total_tokens": delta["total_tokens"],
+                }
+                _insights_add_model(daily_models[local_date], model, insight_usage)
+                hour = _insights_hour_from_timestamp(timestamp, stat.st_mtime)
+                if hour and delta["total_tokens"] > 0:
+                    _insights_add_model(hourly_models[hour], model, insight_usage)
+                    active_hours.add(hour)
+                    session = session_activity.setdefault(
+                        path.stem, {"id": path.stem, "subagent": is_subagent, "lastActivityAt": None})
+                    if (session["lastActivityAt"] is None
+                            or str(timestamp or "") > str(session["lastActivityAt"])):
+                        session["lastActivityAt"] = timestamp or datetime.fromtimestamp(
+                            stat.st_mtime, timezone.utc).isoformat()
                 # Codex records cumulative token_count snapshots, not explicit
                 # request objects. Count only snapshots that add usage and
                 # expose them as observed requests, never exact turns.
@@ -3699,7 +3790,13 @@ class CodexProvider:
             for key in list(self._token_event_cache):
                 if key not in live_keys:
                     self._drop_token_event_cache_entry(key)
-        return {"daily": daily, "totals": totals, "models": models, "rate": latest_rate, "rateUpdatedAt": latest_rate_at or None, "paths": paths}
+        return {"daily": daily, "totals": totals, "models": models, "rate": latest_rate,
+                "rateUpdatedAt": latest_rate_at or None, "paths": paths,
+                "insightsData": {"trackingWindowDays": days,
+                                 "dailyModels": {day: dict(value) for day, value in daily_models.items()},
+                                 "hourlyModels": {hour: dict(value) for hour, value in hourly_models.items()},
+                                 "activeHours": sorted(active_hours),
+                                 "sessions": list(session_activity.values())}}
 
     _WARMTH_EDGES_MIN = (2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 240, 1e9)
 
@@ -4237,6 +4334,7 @@ class CodexProvider:
                 "Local token_count deltas over the last 31 days. Observed requests count nonzero counter updates, "
                 "not guaranteed one-per-turn; subagent totals use session parent metadata."
             ),
+            "_insightsData": local.get("insightsData", {}),
             "cacheWarmth": cache_warmth,
             "chats": chats,
             "activity": [
@@ -4721,7 +4819,8 @@ def live_state() -> dict[str, Any]:
                 window = None
                 context_tokens = None
                 context_model = None
-            row.update(_codex_agent_stats(path_value, state["status"], bool(insights.get("parentId"))))
+            row.update(_codex_agent_stats(path_value, state["status"], bool(insights.get("parentId")),
+                                          run_stats=run_stats))
             unavailable = bool(state.get("telemetryUnavailable"))
             def retained_value(field: str, observed: Any) -> Any:
                 return indexed.get(field) if unavailable and observed is None else observed
@@ -4809,7 +4908,9 @@ def live_state() -> dict[str, Any]:
     for chat in chats:
         chat["provider"] = "Codex" if str(chat.get("key") or "").startswith("Codex:") else "Claude"
     from .agent_links import snapshot_graph
-    graph = snapshot_graph(chats, delta=True)
+    # Full edges, not a delta: the revision is process-wide, so a delta is
+    # "changes since anyone's last request" and other pollers would eat it.
+    graph = snapshot_graph(chats)
     return {"generatedAt": datetime.now(timezone.utc).isoformat(),
             "structureStamp": _structure_stamp(visible_full), "chats": chats,
             "providerPolicies": policy_payload, "graph": graph}

@@ -4,7 +4,8 @@ const RUNWAY = Boolean(window.__TOKEN_TRACKER_RUNWAY__||PHONE);
 const REFINED = RUNWAY&&!PHONE&&window.__TOKEN_TRACKER_REFINED__===true;
 const COMPACT = REFINED&&window.__TOKEN_TRACKER_COMPACT__===true;
 const RUNWAY_REFRESH_ICON='<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4.8A4.5 4.5 0 1 0 10 7"/><path d="M7.7 2.2H10v2.3"/></svg>';
-const compactClockFormatter=COMPACT?new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:'h12'}):null;
+function preferredClockCycle(){try{return localStorage.getItem('branchglanceClockFormat')==='24'?'h23':'h12';}catch{return 'h12';}}
+let compactClockFormatter=COMPACT?new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:preferredClockCycle()}):null;
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumSignificantDigits: 3 });
 function loadPins() { try { const current=JSON.parse(localStorage.getItem("tokenTrackerPinsV2") || "null"); if(Array.isArray(current))return new Set(current.filter(k=>typeof k==="string"));const old=JSON.parse(localStorage.getItem("tokenTrackerPins") || "{}");return new Set(Object.entries(old||{}).filter(([,id])=>typeof id==="string").map(([provider,id])=>provider+":"+id)); } catch { return new Set(); } }
 function loadDismissed() { try { const list=JSON.parse(localStorage.getItem("tokenTrackerDismissed")||"[]"); return new Set(Array.isArray(list)?list.slice(-200):[]); } catch { return new Set(); } }
@@ -32,7 +33,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   snapshotCache:null,snapshotCacheInvalid:false,watcherFetchError:null,watcherAcceptedSequence:new Map(),
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
-  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
+  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, graphlessBootstrapTimer:null, graphlessBootstrapSnapshot:null, graphlessBootstrapAttempts:0, graphlessBootstrapTimedOut:false, graphlessBootstrapFallback:false, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
   source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, notchOpeningTimer:null, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
@@ -222,7 +223,7 @@ window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
 function notchHeight() {
   if(COMPACT){
-    if(notch.mode==='dashboard')return 540;
+    if(notch.mode==='dashboard')return 608;
     if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
     if(notch.mode==='idle')return 100;
     if(notch.mode==='rest')return 100;
@@ -313,6 +314,10 @@ function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
   }
   return tallRootChanged;
 }
+// Idle ticks re-render the same values; skip identical writes so they don't churn the DOM.
+function put(el,key,value){if(el&&el[key]!==value)el[key]=value;}
+function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttribute?.(name,value);}
+function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
   if(!RUNWAY||PHONE)return;
   if(COMPACT){
@@ -327,20 +332,20 @@ function setNotch(expanded, treeSynced=false) {
     notch.mode=mode;notch.expanded=mode==='inspect';
     if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
     const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
-    if(dashboardView){dashboardView.hidden=!dashboardVisible;dashboardView.inert=!dashboardVisible;dashboardView.setAttribute?.('aria-hidden',String(!dashboardVisible));}
+    if(dashboardView){put(dashboardView,'hidden',!dashboardVisible);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
     const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
     if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
     for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
-    for(const name of ['idle','rest','controls','inspect','dashboard'])document.body?.classList?.toggle('compact-'+name,mode===name);
-    if(document.body?.dataset)document.body.dataset.notchMode=mode;
-    document.body?.classList?.toggle('notch-expanded',notch.expanded);
-    document.body?.classList?.toggle('notch-collapsed',!notch.expanded);
-    document.body?.classList?.toggle('notch-auto-open',Boolean(notch.autoExpanded&&notch.expanded));
-    document.body?.classList?.toggle('notch-inspecting',mode==='inspect');
+    for(const name of ['idle','rest','controls','inspect','dashboard'])cls(document.body,'compact-'+name,mode===name);
+    if(document.body?.dataset&&document.body.dataset.notchMode!==mode)document.body.dataset.notchMode=mode;
+    cls(document.body,'notch-expanded',notch.expanded);
+    cls(document.body,'notch-collapsed',!notch.expanded);
+    cls(document.body,'notch-auto-open',notch.autoExpanded&&notch.expanded);
+    cls(document.body,'notch-inspecting',mode==='inspect');
     if(notch.expanded&&!PHONE&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
     renderRunwayCounts(notch.counts);
     const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
-    if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded,height,reduced,mode],signature);}
+    if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded||mode==='dashboard',height,reduced,mode],signature);}
     if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
     return;
   }
@@ -949,6 +954,7 @@ function runwayModelLabel(chat) {
   if(match)return match[1][0].toUpperCase()+match[1].slice(1).toLowerCase();
   return model;
 }
+window.TokenTrackerFormatModel=runwayModelLabel;
 function runwayModelRecentlyChanged(chat) {
   const key=chat.key||[chat.provider,chat.id].join(':'),model=chat.telemetryUnavailable?'':String(chat.model||'').trim(),changedAt=stamp(chat.modelChangeAt);
   const previous=state.modelVersions.get(key),now=Date.now();
@@ -1566,15 +1572,15 @@ function renderResets(providers) {
     else node.innerHTML=markup("fiveHour")+markup("weekly");
   }
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
-    const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");if(row)row.title=view.tip;
+    const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");put(row,"title",view.tip);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
-    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;left.title=view.tip;}}
+    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;put(left,"title",view.tip);}}
     else set("-left",view.usedText);
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
-    const left=$(id+"-left");if(left){left.className="rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:"");left.title=view.tip;}
-    const cd=$(id+"-cd");if(cd){cd.className="rr-cd"+(view.due?" t-attn":"");if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;cd.title=countdownText?'Resets '+view.day+' '+view.time:'';cd.setAttribute?.('aria-hidden',String(!countdownText));}}
-    const meter=$(id+"-meter");if(meter){meter.className="meter"+(view.lastKnown?" last-known":"");if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{meter.setAttribute("aria-valuenow",String(Math.round(view.usedPercent)));meter.setAttribute?.('aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
-    const bar=$(id+"-bar");if(bar){bar.style.width=(view.usedPercent??0)+"%";bar.className=view.lastKnown?"last-known":view.tone?"t-"+view.tone:"";}
+    const left=$(id+"-left");put(left,"className","rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.tip);
+    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}}
+    const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
+    const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"&&!PHONE){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
   }));
   if(RUNWAY&&!PHONE)renderGreeterStatus(providers);
@@ -1895,12 +1901,16 @@ function runwayTelemetryHTML(chat,agent=false) {
     const elapsed=currentEvidence&&elapsedTarget&&!statusUnavailable?runwayStateElapsed(elapsedTarget):'';
     const request=chat.lastRequest||chat.latestRequest||{},input=safeNumber(request.input),cached=safeNumber(request.cached);
     const cachePercent=currentEvidence&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&input>0&&cached!=null?Math.round(cached*100/input):null;
-    const path=runwayWorkspaceHTML(chat);
-    const cleanPath=path?path.replace('data-runway-slot="workspace"','data-runway-slot="workspace"'):'';
+    const workspace=chat.workspace||chat.root?.workspace,workspacePath=runwayWorkspacePath(workspace),workspaceLeaf=runwayWorkspaceLeaf(workspace);
+    const inherited=!chat.workspace&&Boolean(chat.root?.workspace);
+    const workspaceTitle=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+workspacePath;
+    const workspaceLabel=(inherited?'Inherited workspace: ':'Workspace: ')+workspacePath;
+    const cleanPath=workspacePath&&workspaceLeaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(workspaceLeaf)+'</span></span>':'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
+    const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
     // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
     const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
-     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'<span data-runway-slot="cache" class="runway-refined-cache">'+(cachePercent==null?'':'Cache '+cachePercent+'%')+'</span></span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+'</span></div>';
+     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+'</span></div>';
   }
   return agent?messageLane+topline+'<span class="runway-agent-secondary">'+modelTiming+'</span>'+contextSlot+objectiveSlot:messageLane+topline+modelTiming+contextSlot;
 }
@@ -2320,6 +2330,7 @@ function analyticsHTML(snapshot) {
 }
 function renderAnalytics(snapshot) { const node=$("#analytics");if(node&&!node.hidden){const html=analyticsHTML(snapshot);if(node.innerHTML!==html)node.innerHTML=html;} }
 function syncCompactClock(){if(!COMPACT)return;const localTime=compactClockFormatter.format(new Date());for(const node of [$('#compact-clock'),$('#toolbar-clock')])if(node&&node.textContent!==localTime)node.textContent=localTime;}
+window.TokenTrackerSetClockFormat=value=>{if(!['12','24'].includes(String(value)))return false;try{localStorage.setItem('branchglanceClockFormat',String(value));}catch{}compactClockFormatter=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:String(value)==='24'?'h23':'h12'});syncCompactClock();return true;};
 const SNAPSHOT_FAILURE_CATEGORIES=new Set(['timeout','io_error','invalid_snapshot','worker_start_failed','build_failed']);
 function isoObservationTime(value,now=Date.now()){
   if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))return null;
@@ -2454,6 +2465,21 @@ function initialActiveSource(snapshot){
 }
 function render(snapshot) {
   const firstRunwayPaint=COMPACT&&!state.runwaySnapshotPainted;
+  const graph=snapshot?.graph?.edges;
+  const hasGraph=Boolean(graph&&typeof graph==='object'&&!Array.isArray(graph));
+  const graphlessHold=firstRunwayPaint&&state.initialBootstrapPending&&!hasGraph;
+  if(graphlessHold){
+    state.graphlessBootstrapSnapshot=snapshot;
+    if(state.graphlessBootstrapTimer==null)state.graphlessBootstrapTimer=setTimeout(()=>{
+      state.graphlessBootstrapTimer=null;state.graphlessBootstrapTimedOut=true;
+      if(state.graphlessBootstrapSnapshot&&!state.runwaySnapshotPainted)render(state.graphlessBootstrapSnapshot);
+      if(state.graphlessBootstrapFallback)scheduleBootstrapRetry();
+    },2000);
+  }
+  const graphlessFallback=(graphlessHold&&(++state.graphlessBootstrapAttempts>=2||state.graphlessBootstrapTimedOut))||(!hasGraph&&state.graphlessBootstrapFallback);
+  if(graphlessHold&&!graphlessFallback)return false;
+  if(hasGraph){if(state.graphlessBootstrapTimer!=null)clearTimeout(state.graphlessBootstrapTimer);state.graphlessBootstrapTimer=null;state.graphlessBootstrapSnapshot=null;state.graphlessBootstrapAttempts=0;state.graphlessBootstrapTimedOut=false;state.graphlessBootstrapFallback=false;}
+  else if(graphlessFallback){state.graphlessBootstrapFallback=true;if(state.graphlessBootstrapTimer!=null)clearTimeout(state.graphlessBootstrapTimer);state.graphlessBootstrapTimer=null;state.graphlessBootstrapSnapshot=null;}
   syncProviderPolicyGeneration(snapshot);
   restrictSnapshotProviders(snapshot);
   acceptSnapshotCache(snapshot);
@@ -2464,12 +2490,18 @@ function render(snapshot) {
   if(!state.lastOkAt)state.lastOkAt=Date.now();
   if(RUNWAY&&!PHONE)state.runwaySnapshotPainted=true;
   const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot);
+  const chatProviders=graphlessFallback?providers.map(provider=>({...provider,chats:(provider.chats||[]).map(chat=>({...chat,
+    parentKey:null,parentId:null,status:'unknown',statusSource:'unavailable',telemetryUnavailable:true,
+    executionStatus:'unknown',executionSource:'unavailable',executionActivity:null,activity:null,activityUnavailable:true,
+    statusObservedAt:null,executionObservedAt:null
+  }))})):providers;
   $(".widget")?.classList?.remove("loading");
   const priorSourceSwitching=state.sourceSwitching;if(firstRunwayPaint)state.sourceSwitching=true;
-  try{renderTitle(providers);renderResets(limits);renderChats(providers);renderTotals(providers);renderAnalytics(snapshot);}
+  try{renderTitle(providers);renderResets(limits);renderChats(chatProviders);renderTotals(providers);renderAnalytics(snapshot);}
   finally{state.sourceSwitching=priorSourceSwitching;}
   renderStrip(attentionItems(state.forest,limits));
   window.TokenTrackerDashboard?.setSnapshot?.(snapshot);
+  return true;
 }
 function renderLoading() {
   syncCompactClock();
@@ -2649,12 +2681,12 @@ function clearBootstrapRetry(reset=false) {
   if(reset)state.bootstrapRetryMs=2000;
 }
 function scheduleBootstrapRetry() {
-  if(state.snapshot||document.hidden||state.bootstrapRetryTimer!=null)return;
+  if(state.snapshot&&!state.graphlessBootstrapFallback||document.hidden||state.bootstrapRetryTimer!=null)return;
   const delay=state.bootstrapRetryMs;
   state.bootstrapRetryMs=Math.min(15000,state.bootstrapRetryMs*2);
   state.bootstrapRetryTimer=setTimeout(()=>{
     state.bootstrapRetryTimer=null;
-    if(!state.snapshot&&!document.hidden)refresh();
+    if((!state.snapshot||state.graphlessBootstrapFallback)&&!document.hidden)refresh();
   },delay);
 }
 async function pollToday() {
@@ -2685,7 +2717,7 @@ async function refresh(force=false) {
     const snapshot=await response.json();if(!snapshot||typeof snapshot!=="object"||!Array.isArray(snapshot.providers))throw new Error("Invalid stats snapshot");applyLive(snapshot,state.live);markOk();
     const present=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
     for(const [key,at] of state.pendingOutside)if(present.has(key)){state.outsideSeen.set(key,at);state.pendingOutside.delete(key);}
-    if(selection===statsUrl(false)){render(snapshot);clearBootstrapRetry(true);}
+    if(selection===statsUrl(false)){if(render(snapshot)===false)scheduleBootstrapRetry();else clearBootstrapRetry(true);}
     else state.refreshPending=true;
   } catch { markFail(); tick(); }
   finally{clearTimeout(timeout);state.loading=false;}
@@ -2694,7 +2726,7 @@ async function refresh(force=false) {
   if(state.snapshot&&!PHONE)await loadWatcher();
   if(state.snapshot)tick();
   if(state.refreshPending){const queuedForce=state.refreshPendingForce;state.refreshPending=false;state.refreshPendingForce=false;refresh(queuedForce);return;}
-  if(!state.snapshot)scheduleBootstrapRetry();
+  if(!state.snapshot||state.graphlessBootstrapFallback)scheduleBootstrapRetry();
   if(PHONE&&state.foregroundLivePending&&state.snapshot){state.foregroundLivePending=false;await pollLive();}
 }
 function statsUrl(force) {
@@ -2982,7 +3014,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
