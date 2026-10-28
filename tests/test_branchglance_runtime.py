@@ -1101,7 +1101,8 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 11%,transparent),transparent 100%" in refined
     assert ".runway-refined-row::after{content:\"\";position:absolute;z-index:0;inset:0;border-radius:0;background:radial-gradient(" in refined
     assert ".chat[data-provider=\"Claude\"]>.row::after{background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--claude-accent) 22%" in refined
-    assert ".chat>.row.runway-root-stuck{background:" not in refined
+    # A stuck parent paints the panel colour so the surface stays continuous.
+    assert ".chat>.row.runway-root-stuck{background:#0e1017;" in refined
     assert "background-color:var(--tree-claude-surface)" not in refined
     assert "background-color:var(--tree-codex-surface)" not in refined
     assert "linear-gradient(to bottom,var(--tree-claude-surface)" not in refined

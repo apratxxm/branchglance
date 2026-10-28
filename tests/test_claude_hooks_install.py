@@ -131,6 +131,24 @@ def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_pa
     assert "hooks" not in load(settings)
 
 
+@pytest.mark.parametrize("record", ['{"version": 1, "enabled": tr', '["not", "a", "record"]',
+                                    '{"version": 1, "enabled": true, "settingsPath": "relative/settings.json"}'])
+def test_uninstall_with_invalid_provenance_retains_hooks_even_without_overrides(tmp_path, monkeypatch, record):
+    home = tmp_path / "home"
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
+    installer.install(settings, CMD, data_dir)
+    (data_dir / claude_hook.CONSENT_NAME).write_text(record, encoding="utf-8")
+    before = settings.read_bytes()
+    result = installer.uninstall(settings, data_dir)
+    assert not result["ok"] and result["hooksLeft"] == "unknown"
+    assert settings.read_bytes() == before
+
+
 def test_user_hooks_preserved_semantically_and_backup_written(env):
     settings, data_dir = env
     original = {"model": "opus", "permissions": {"allow": ["Bash(ls)"]}, "disableAllHooks": False,
