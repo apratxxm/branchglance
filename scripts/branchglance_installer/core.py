@@ -193,8 +193,20 @@ def uninstall_preflight(root: Path, *, verify_releases: bool = False):
             raise SafetyError("Uninstall kept unowned items in the install root: " + ", ".join(remaining))
         if ledger is not None and any(ledger.get(name) for name in ("releases", "trash", "tools", "files", "directories")):
             raise SafetyError("Uninstall finalization found owned items still recorded")
-    # A resumed trash intent is reconciled by uninstall itself before verification.
-    if verify_releases and ledger is not None and not (resuming and record.get("trashIntent")):
+    if verify_releases and ledger is not None:
+        intent = record.get("trashIntent") if resuming else None
+        if intent:
+            version = intent["version"]
+            source = safe_child(root, f"releases/{version}")
+            destination = safe_child(root, f"releases/{intent['name']}")
+            if version not in ledger["releases"] or os.path.lexists(source) == os.path.lexists(destination):
+                raise SafetyError("Uninstall trash intent has an inconsistent source or destination")
+            for existing in ledger["trash"] + record.get("trashEntries", []):
+                if existing["name"] == intent["name"] and (existing["version"] != version or existing.get("files") != intent.get("files")):
+                    raise SafetyError("Uninstall trash intent conflicts with its reservation")
+            path = source if os.path.lexists(source) else destination
+            if trash_hash_snapshot(path, version) != intent.get("files"):
+                raise SafetyError("Uninstall trash intent contents changed")
         for version in ledger["releases"]:
             path = safe_child(root, f"releases/{version}")
             if path.exists():
@@ -202,6 +214,22 @@ def uninstall_preflight(root: Path, *, verify_releases: bool = False):
                     verify_manifest(path, expected_version=version)
                 except SafetyError as exc:
                     raise SafetyError(f"Owned release {version} is unverifiable and was retained") from exc
+                pending = next((item for item in (record.get("trashEntries", []) if resuming else [])
+                                if item.get("version") == version
+                                and not safe_child(root, f"releases/{item['name']}").exists()), None)
+                if pending:
+                    if pending.get("files") != trash_hash_snapshot(path, version):
+                        raise SafetyError("Reserved uninstall trash source changed")
+                    owned = next((item for item in ledger["trash"] if item["name"] == pending["name"]), None)
+                    if owned is None or owned.get("version") != version or owned.get("files") != pending.get("files"):
+                        raise SafetyError("Trash deletion record does not match its ownership ledger")
+        for entry in ledger["trash"]:
+            path = safe_child(root, f"releases/{entry['name']}")
+            if path.exists():
+                if entry.get("files"):
+                    verify_trash_contents(path, entry, allow_missing=bool(entry.get("deleting")))
+                else:
+                    verify_manifest(path, expected_version=entry["version"])
     return record, owner_exists, resuming, ledger
 
 
@@ -215,7 +243,7 @@ def uninstall_owned_root(root: Path, *, integration_remove: Callable[[], None] =
     removed. Foreign/unverifiable content is retained and leaves the root.
     """
     root = Path(root).absolute()
-    state = uninstall_preflight(root)
+    state = uninstall_preflight(root, verify_releases=True)
     if state is None:
         return  # repeated uninstall after successful removal
     record, owner_exists, resuming, ledger = state
