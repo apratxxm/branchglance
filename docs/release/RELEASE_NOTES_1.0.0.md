@@ -25,3 +25,14 @@ Monitoring reads local Codex session/transcript and application-state data, loca
 ## Install
 
 Download `BranchglanceSetup.exe` and run it from File Explorer or the Start menu as a standard user. Do not start Setup from another app's terminal or with administrator privileges. The target install folder is `%LOCALAPPDATA%\Programs\Branchglance`; optional sign-in startup is offered during setup.
+
+Setup does not migrate a pre-1.0 Token Tracker install; developers can use `scripts/cutover_branchglance.py`.
+
+### Verify the download
+
+In PowerShell, compare the SHA-256 hash with the published `BranchglanceSetup.exe.sha256` asset and check the signature status is `Valid` and the signer is SignPath Foundation:
+
+```powershell
+Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256
+Get-AuthenticodeSignature .\BranchglanceSetup.exe | Format-List Status, SignerCertificate
+```

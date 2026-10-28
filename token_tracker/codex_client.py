@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import product
+
 
 class CodexUnavailable(RuntimeError):
     pass
@@ -157,7 +159,7 @@ class CodexAppServer:
         if self._persistent_id != 0:
             return
         initialized = self._persistent_request("initialize", {
-            "clientInfo": {"name": "token-tracker", "version": "0.1.0"},
+            "clientInfo": {"name": "branchglance", "version": product.VERSION},
             "capabilities": {"experimentalApi": True},
         })
         if "error" in initialized:
@@ -263,7 +265,7 @@ class CodexAppServer:
             "id": 1,
             "method": "initialize",
             "params": {
-                "clientInfo": {"name": "token-tracker", "version": "0.1.0"},
+                "clientInfo": {"name": "branchglance", "version": product.VERSION},
                 "capabilities": {"experimentalApi": True},
             },
         }

@@ -17,6 +17,20 @@ REAL_FIND_GIT_BASH = installer.find_git_bash  # captured before the autouse stub
 USER_GROUP = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine", "timeout": 5}]}
 
 
+def test_config_dir_precedence_and_default(monkeypatch, tmp_path):
+    legacy = tmp_path / "legacy"
+    configured = tmp_path / "configured"
+    monkeypatch.setenv("CLAUDE_HOME", str(legacy))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
+    assert installer.default_settings_path() == legacy / "settings.json"
+    monkeypatch.delenv("CLAUDE_HOME")
+    assert installer.default_settings_path() == configured / "settings.json"
+    monkeypatch.setenv("CLAUDE_HOME", "")
+    assert installer.claude_config_dir(tmp_path) == configured
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert installer.claude_config_dir(tmp_path) == tmp_path / ".claude"
+
+
 @pytest.fixture()
 def env(tmp_path):
     settings = tmp_path / "claude" / "settings.json"

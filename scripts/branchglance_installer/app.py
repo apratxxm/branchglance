@@ -26,7 +26,7 @@ from typing import Callable
 from token_tracker import product
 
 from .core import (JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, SCHEMA, UNINSTALLER, Journal, LocalFileSystem,
-                   ReleaseOps, SafetyError, atomic_json, create_owner, is_reparse, read_json, require_owned_root,
+                   ReleaseOps, SafetyError, atomic_json, create_owner, is_reparse, read_json, read_owned_ledger, require_owned_root, safe_child, uninstall_preflight,
                    uninstall_owned_root, validate_version, verify_manifest)
 from .integration import Integrations
 from .lifecycle import Lifecycle
@@ -165,7 +165,7 @@ class Ui:
     def confirm(self, text: str, *, default: bool) -> bool:
         if self.quiet:
             return default
-        return self._show(text, 0x24) == 6  # MB_YESNO | MB_ICONQUESTION -> IDYES
+        return self._show(text, 0x24 | (0 if default else 0x100)) == 6  # MB_YESNO | MB_ICONQUESTION -> IDYES
 
 
 @dataclass
@@ -214,13 +214,18 @@ def _claim_root(root: Path) -> None:
         create_owner(root)
 
 
-def _prepare_appdata(paths: Paths) -> list[str]:
+def _check_appdata(paths: Paths, action: str = "Branchglance Setup") -> None:
     local = paths.product_root.parent
     environment = {"LOCALAPPDATA": str(local)}
     probe_status, reason = product.appdata_probe(environment)
     if probe_status != "not_redirected":
-        raise SafetyError("Run Branchglance Setup from File Explorer or the Start menu, not from inside another app's terminal. "
+        raise SafetyError(f"Run {action} from File Explorer or the Start menu, not from inside another app's terminal. "
                           f"AppData probe: {probe_status}; {reason or 'destination could not be verified'}")
+
+
+def _prepare_appdata(paths: Paths) -> list[str]:
+    _check_appdata(paths)
+    local = paths.product_root.parent
     stranded = [str(path) for path in product.stranded_appdata_paths(local)]
     paths.product_root.mkdir(parents=True, exist_ok=True)
     (paths.product_root / "claude-events").mkdir(parents=True, exist_ok=True)
@@ -266,7 +271,14 @@ def _raise_already_installed(paths: Paths, staged_manifest: dict) -> None:
 
 def _integration_snapshot_bounded(paths: Paths, native: Native, version_full: str,
                                  deadline: float | None) -> dict:
-    operation = lambda: _integrations(paths, native, version_full).snapshot()
+    return _bounded_shortcut_read(lambda: _integrations(paths, native, version_full).snapshot(), deadline)
+
+
+def _startup_enabled_bounded(paths: Paths, native: Native, deadline: float | None) -> bool:
+    return _bounded_shortcut_read(lambda: _integrations(paths, native, "0.0.0+unknown").startup_enabled(), deadline)
+
+
+def _bounded_shortcut_read(operation, deadline: float | None):
     if deadline is None:
         return operation()
     timeout = min(5.0, deadline - time.monotonic())
@@ -588,14 +600,17 @@ def start_uninstall(paths: Paths, native: Native, executable: Path, *, quiet: bo
 
 
 def uninstall(paths: Paths, native: Native) -> dict:
+    _check_appdata(paths, "the Branchglance uninstaller")
     if native.elevated():
         raise SafetyError("Run the Branchglance uninstaller as a standard user, not as administrator.")
+    # Refuse before stopping the app or touching Claude settings wherever removal would refuse.
+    uninstall_preflight(paths.root, verify_releases=True)
     with Lifecycle(native.mutex, native.control, native.processes, lambda: None):
         root = paths.root
-        claude_home = Path(os.environ.get("CLAUDE_HOME") or (paths.home or Path.home()) / ".claude")
-        claude_settings = claude_home / "settings.json"
+        uninstall_preflight(root, verify_releases=True)
         try:
             from token_tracker import claude_hook_install
+            claude_settings = claude_hook_install.claude_config_dir(paths.home) / "settings.json"
             claude_integration = claude_hook_install.uninstall(
                 settings_path=claude_settings, data_directory=paths.product_root,
                 command=claude_hook_install.default_command(executable=paths.root / LAUNCHER))
@@ -612,17 +627,40 @@ def uninstall(paths: Paths, native: Native) -> dict:
         except (SafetyError, KeyError, TypeError):
             pass
         integrations = _integrations(paths, native, version)
-        if os.path.lexists(root):
-            uninstall_owned_root(root, integration_remove=integrations.remove, after_mutation=native.after_mutation,
-                                 integration_snapshot=integrations.snapshot,
-                                 fs=native.file_system or LocalFileSystem())
-        else:
-            integrations.remove()
+        completed = []
+        def report_mutation(name: str) -> None:
+            if name == "integrations-removed":
+                completed.append("managed shortcuts and registry entries")
+            elif name in {"uninstall-release-trashed", "uninstall-release-deleted"}:
+                completed.append("program release files")
+            elif name == "ledger-deleted":
+                completed.append("install ledger")
+            elif name in {"root-removed", "owner-marker-deleted"}:
+                completed.append(name.replace("-", " "))
+            native.after_mutation(name)
+        try:
+            if os.path.lexists(root):
+                uninstall_owned_root(root, integration_remove=integrations.remove, after_mutation=report_mutation,
+                                     integration_snapshot=integrations.snapshot,
+                                     fs=native.file_system or LocalFileSystem())
+            else:
+                integrations.remove()  # ownership-checked; cleans up after a removed install folder
+                completed.append("managed shortcuts and registry entries")
+        except Exception as exc:
+            removed = []
+            if claude_integration.get("consentRemoved"):
+                removed.append("Claude consent")
+            if claude_integration.get("changed"):
+                removed.append("Claude hooks")
+            removed.extend(completed)
+            detail = ", ".join(removed) if removed else "no confirmed items"
+            raise SafetyError(f"Uninstall failed; already removed or changed: {detail}. Other steps may have partially completed: {exc}") from exc
     return {"uninstalled": str(paths.root), "keptData": str(paths.product_root),
             "claudeIntegration": claude_integration}
 
 
 def rollback(paths: Paths, native: Native) -> dict:
+    _check_appdata(paths, "Branchglance rollback")
     with Lifecycle(native.mutex, native.control, native.processes, lambda: None):
         root = require_owned_root(paths.root)
         pointer = read_json(root / "current.json")
@@ -630,7 +668,7 @@ def rollback(paths: Paths, native: Native) -> dict:
         integrations = _integrations(paths, native, version)
         ops = ReleaseOps(root, fs=native.file_system or LocalFileSystem(),
                          integration_snapshot=integrations.snapshot, integration_restore=integrations.restore,
-                         integration_apply=lambda release: integrations.apply(startup_enabled=False),
+                         integration_apply=lambda release: integrations.apply(startup_enabled=integrations.startup_enabled()),
                          after_mutation=native.after_mutation)
         ops.recover()
         return ops.rollback()
@@ -662,6 +700,8 @@ def main(argv=None, *, role: str = "setup", paths: Paths | None = None, native: 
         stranded_appdata = None
         if role == "setup" and not (args.uninstall or args.rollback or args.uninstall_worker):
             stranded_appdata = _prepare_appdata(paths)
+        else:
+            _check_appdata(paths, "Branchglance rollback" if args.rollback else "the Branchglance uninstaller")
         from .windows import cleanup_stale_workers
         cleanup_stale_workers(paths.temp, paths.product_root / "temp-workers.json")
         if args.uninstall_worker:
@@ -701,8 +741,9 @@ def main(argv=None, *, role: str = "setup", paths: Paths | None = None, native: 
         payload = args.payload or _payload_dir()
         if payload is None:
             raise SafetyError("This setup program has no Branchglance release inside it.")
-        startup = args.with_startup or ui.confirm("Start Branchglance automatically when you sign in?",
-                                                  default=False)
+        startup = args.with_startup or ui.confirm(
+            "Start Branchglance automatically when you sign in? Choose No to turn this off.",
+            default=_startup_enabled_bounded(paths, native, wait_deadline))
         result = install(paths, payload, native, startup=startup, deadline=wait_deadline)
         suffix = ""
         if stranded_appdata:

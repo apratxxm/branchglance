@@ -28,7 +28,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import claude_events, claude_hook
+from . import claude_events, claude_hook, claude_hook_install
 
 HOOK_COVERAGE_SECONDS = 150
 ROW_WINDOW_SECONDS = 24 * 3600
@@ -50,7 +50,7 @@ PUBLIC_FIELDS = frozenset({
 
 
 def claude_home() -> Path:
-    return Path(os.environ.get("CLAUDE_HOME", Path.home() / ".claude"))
+    return claude_hook_install.claude_config_dir()
 
 
 def projects_root() -> Path:

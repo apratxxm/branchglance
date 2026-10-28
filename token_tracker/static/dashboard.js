@@ -140,7 +140,8 @@
     const monitorOptions=state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("");
     const display=`<section class="dash-settings-group"><h2>Display</h2>${state.monitors.length?rowHTML("Monitor","Choose where the widget opens",`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor">${monitorOptions}</select>`):""}${rowHTML("Recenter widget","Return to the selected display",`<button class="dash-action" data-dashboard-action="recenter">Recenter</button>`)}</section>`;
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
-    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${providers}${notifications}</div><div class="dash-settings-column">${display}${status}</div></div>`;
+    const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:"";
+    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${providers}${notifications}</div><div class="dash-settings-column">${display}${status}${version}</div></div>`;
   }
   function bindTooltips(){
     const root=$("#dashboard-view"),tip=$("#dash-tooltip");if(!root||!tip)return;
@@ -210,7 +211,7 @@
     if(insightsKey!==state.renderKey){state.renderKey=insightsKey;const insights=$("#dashboard-insights");if(insights)insights.innerHTML=insightsHTML();}
     const settings=$("#dashboard-settings");
     if(settings&&state.tab==="settings"){
-      const settingsKey=[state.source,state.policy?.generation,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.lock?.revision,state.keepOpen?.keepOpenRevision,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
+      const settingsKey=[state.source,state.policy?.generation,state.identity?.version,state.identity?.build,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.lock?.revision,state.keepOpen?.keepOpenRevision,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
       if(settingsKey!==state.settingsRenderKey){state.settingsRenderKey=settingsKey;settings.innerHTML=settingsHTML();state.frame=$("#dashboard-settings iframe");}
     }
     bindTooltipsOnce();

@@ -36,6 +36,51 @@ def test_release_build_has_one_final_version_default():
     assert 'parser.add_argument("--version", default=RELEASE_VERSION)' in (ROOT / "packaging" / "build.py").read_text()
 
 
+@pytest.mark.parametrize("setup_only", [False, True])
+def test_build_rejects_missing_python_before_creating_output(tmp_path, setup_only):
+    module = _build_module()
+    output = tmp_path / "output"
+    with pytest.raises(FileNotFoundError, match="Python interpreter is not a file"):
+        if setup_only:
+            module.build_setup_from_components(output, tmp_path / "components", "1.0.0", "abc", python=tmp_path / "missing")
+        else:
+            module.build(output, "1.0.0", "abc", python=tmp_path / "missing")
+    assert not output.exists()
+
+
+def test_build_python_checks_pyinstaller_with_resolved_interpreter(tmp_path, monkeypatch):
+    module = _build_module()
+    python = tmp_path / "python.exe"
+    python.touch()
+    calls = []
+    monkeypatch.setattr(module.subprocess, "run", lambda args, **kwargs: calls.append((args, kwargs)))
+    assert module._resolve_build_python(python) == python.resolve()
+    assert calls[0][0] == [str(python.resolve()), "-c", "import PyInstaller"]
+    assert calls[0][1]["check"] is True
+
+
+def test_build_python_reports_missing_pyinstaller(tmp_path, monkeypatch):
+    module = _build_module()
+    python = tmp_path / "python.exe"
+    python.touch()
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, args[0])
+    monkeypatch.setattr(module.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="cannot import PyInstaller"):
+        module._resolve_build_python(python)
+
+
+def test_release_workflow_uses_frozen_notes_and_matching_checksum_assets():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert 'RELEASE_NOTES_$env:VERSION.md' in workflow
+    assert 'releases/generate-notes' in workflow
+    assert 'blob/$env:SOURCE_SHA/docs/CODE_SIGNING_POLICY.md' in workflow
+    assert 'Branchglance-$env:VERSION-windows-components.zip.sha256' in workflow
+    assert 'Branchglance-components.zip.sha256' not in workflow
+    assert 'packaging/build.py RELEASE_VERSION' in workflow
+    assert 'top CHANGELOG.md version heading' in workflow
+
+
 def test_all_executable_builds_get_branchglance_version_resources():
     module = _build_module()
     python_resource = module._pyinstaller_version_info("1.2.3")
