@@ -10,7 +10,7 @@ Branchglance is a compact Windows widget for keeping Codex and Claude Code chats
 
 - Shows Codex and Claude Code chats as a parent/agent tree, with observed running, waiting, idle and terminal states. Codex jobs started from a Claude Code chat nest under that chat. A waiting question links back to its source chat; Branchglance does not submit structured answers.
 - Tracks five-hour and weekly usage limits, reset observations, and token, cache and cost insights over 24h, 7d, 30d or all time.
-- Lets you switch provider views, search and hide chats, and configure one-shot reset actions. Greetings and Claude Code collection are opt-in; Claude collection installs Branchglance-owned hooks only after consent.
+- Shows Codex and Claude in one tree, lets you search chats, and configure one-shot reset actions. Greetings and Claude Code collection are opt-in; Claude collection installs Branchglance-owned hooks only after consent.
 - Includes a separate, explicitly started phone companion with pairing and optional Web Push alerts. The desktop widget does not start the phone service.
 
 **New here? Read the [walkthrough](docs/GUIDE.md)**: every feature, what it does, and how it fits a day of parallel agent work.
@@ -24,7 +24,7 @@ Contributor and architecture references:
 - [Code signing policy](docs/CODE_SIGNING_POLICY.md)
 - [macOS port inventory](docs/MAC_PORT.md)
 
-The Codex source uses blue accents; Claude uses orange. Limit meters count upward to 100% used. In compact mode, new activity can bring the relevant provider into view; use the Codex | Claude switch to change sources yourself. A pop-up can surface new work or a waiting question. Search hidden chats with `is:hidden`; hiding a chat does not delete it.
+Codex rows use blue-violet accents; Claude rows use orange. Both providers' limits share the 5-hour and weekly bands, and the meters count upward to 100% used. In compact mode, a pop-up can surface new work or a waiting question.
 
 Claude Code collection is off until you enable it in Reset Action Settings. It uses local hooks and Claude session data. Subagent rows reflect the hook events received; completeness across real sessions has not been established.
 
@@ -61,14 +61,12 @@ Setup checks whether `%LOCALAPPDATA%` is redirected into a packaged app's privat
 
 ## Open and use
 
-- Open Branchglance from the Start menu. The widget stays in the Windows desktop session. Collapsed, it is a 328 px strip with the clock, chat counts and limit bands; hover or press Ctrl+Shift+T to expand it (change or turn off the shortcut from the tray menu).
+- Open Branchglance from the Start menu. The widget stays in the Windows desktop session. Collapsed, it is a 328 px strip with the clock, chat counts and limit bands; hover to show its controls (and, with active chats, the tree), or press Ctrl+Shift+T to open the tree directly (change or turn off the shortcut from the tray menu).
 - When you reopen the widget, it can show the last snapshot immediately with a stale marker while refreshing in the background. Stale snapshots do not show live statuses or current limits. A first-ever launch loads normally.
-- Use the Codex | Claude switch when both providers are available. New provider activity can bring that provider into view; a manual selection takes priority briefly.
 - Limit meters show used percentage and stop at 100%. Reset times are observations; reaching zero on a countdown alone does not confirm a reset.
 - Press `/` or `Ctrl+K` to search. Filters: `is:needs`, `is:running`, `is:failed`, `is:hidden`.
-- Open search and enter `is:hidden` to find chats you previously hid. Clear the query to return to the normal list.
 - Open Insights from the widget's Insights button. Choose a range, and switch between tokens and cost. Cost totals cover priced models only and name the models left out; unknown models are never given a guessed price. The Settings tab sets a 12-hour or 24-hour clock, lock and keep-open, the display monitor, and shows the installed version.
-- Open **Reset Action Settings** from the widget's quota status pop-up to configure an optional greeting after a verified limit reset or to enable Claude Code collection. Greetings are off by default. Enabling Claude collection adds Branchglance hooks to Claude Code settings after backing up the settings file; disabling removes Branchglance-owned hooks and revokes consent.
+- Open **Reset Action Settings** from the widget's quota status pop-up to configure an optional greeting after a verified limit reset or to enable Claude Code collection. Greetings are off by default. Enabling Claude collection backs up an existing Claude Code settings file, then adds Branchglance hooks. Disabling revokes consent and removes Branchglance-owned hooks, reporting any it had to leave.
 
 ## Uninstall and rollback
 
@@ -93,7 +91,7 @@ Runtime settings, hook events and history remain in the per-user application dat
 - **Setup refuses an existing folder or shortcut:** it will not overwrite files it cannot identify as Branchglance-owned. Preserve the folder and contact the release maintainer; do not delete files to force an install.
 - **Setup ran but Branchglance is not in the Start menu:** check whether Windows or endpoint protection prevented Setup from running, then rerun Setup from File Explorer. Do not launch it from another app's terminal.
 - **Claude is unavailable:** open Reset Action Settings, enable Claude Code collection, and restart Branchglance if it asks. Check that Claude Code hooks are allowed by Claude Code settings. Only events Claude Code reports can appear; missing events do not prove a session is idle.
-- **A hidden chat is missing:** search for `is:hidden`. Hiding is a local display choice, not deletion.
+- **A chat hidden in an earlier version is missing:** search for `is:hidden`. Hiding was a local display choice, not deletion.
 - **No greeting appeared at countdown zero:** the app waits for a verified reset sample; zero on the timer is not enough. Confirm the correct provider's greeting setting is enabled and that its CLI is signed in.
 
 ## Brand assets

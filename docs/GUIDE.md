@@ -10,7 +10,7 @@ When work is spread across many chats and subagents, checking progress means ope
 
 1. **What is running?** Every Codex chat and its subagents, as a tree.
 2. **What needs me?** Chats waiting for an answer are pulled to the top, with a shortcut to the exact chat.
-3. **How much room do I have?** Five-hour and weekly limits and their reset times, for the provider you are looking at.
+3. **How much room do I have?** Five-hour and weekly limits and their reset times, for Codex and Claude side by side.
 
 It reads local data only. It never answers for you, and never starts or stops work on its own. The one exception is reset actions, which you have to switch on yourself (see [Reset actions](#reset-actions)).
 
@@ -20,13 +20,13 @@ It reads local data only. It never answers for you, and never starts or stops wo
 
 **Starting work.** Kick off a few Codex chats and let them spawn workers. Each root chat appears with its subagents nested under it. Codex jobs launched from a Claude Code chat nest under that Claude chat.
 
-**Heads-down.** Leave the widget collapsed. When something new starts or a chat asks a question, the widget can expand and bring that provider into view, so you notice without switching windows.
+**Heads-down.** Leave the widget collapsed. When something new starts or a chat asks a question, the widget can expand to show it, so you notice without switching windows.
 
-**A chat needs you.** It shows in the **Needs you** strip at the top. Open the question, pick a choice, and Branchglance opens that chat in Codex and copies the choice for you. You answer in Codex.
+**A chat needs you.** It shows in the **Needs you** strip at the top. For a Codex question, pick a choice: Branchglance opens that chat in Codex and tries to copy the choice. You answer in Codex.
 
-**Limit check.** Glance at the 5-hour and weekly bands before starting something big. When you are close to a limit, open Insights to see which models and days used it.
+**Limit check.** Glance at the 5-hour and weekly bands before starting something big. When you are close to a limit, open Insights to compare token use, models and cache reuse over time.
 
-**End of the day.** Hide finished chats to keep the tree clean; they are still searchable with `is:hidden`. If you are near the five-hour limit, a reset action can send a greeting or a one-time `continue` to selected chats after the next real reset.
+**End of the day.** If you are near the five-hour limit, you can arm a reset action: a greeting, or a one-time `continue` queued for selected chats after the next verified reset.
 
 ## The widget
 
@@ -38,7 +38,7 @@ The collapsed widget is 328 px wide at 100% scaling. It is a thin strip with:
 - live chat counts
 - the **5-hour** limit band, and the **weekly** band beneath it
 
-Hover over the widget, or press the inspection shortcut (**Ctrl+Shift+T** by default), to expand it. Move the pointer away and it collapses again, unless **Keep open** is on.
+Hover over the widget to show its controls; when chats are active, hovering can also reveal the tree. Press the inspection shortcut (**Ctrl+Shift+T** by default) to open the tree directly. Move the pointer away and it collapses again, unless **Keep open** is on.
 
 ### Expanded
 
@@ -56,9 +56,9 @@ The toolbar runs left to right:
 | Search | Opens search. You can also press `/` or `Ctrl+K` |
 | Minimize, Fit, Maximize, Close | Window controls. Fit sizes the widget to the screen. Close hides it to the tray |
 
-### Sources and themes
+### Providers and colours
 
-Branchglance shows one provider at a time: **Codex** in blue, **Claude** in orange. Use the Codex | Claude switch to change it. When new work appears for the other provider, the widget can switch to it; a choice you make yourself takes priority for a short while.
+Codex and Claude share one tree. Codex rows use a blue-violet accent; Claude rows use orange, and a Claude parent chat has a warm background. Both providers' limits share the 5-hour and weekly bands, each with its own reset time in its own colour. A provider with no data is left out.
 
 ### Tray and shortcut
 
@@ -66,11 +66,11 @@ The tray icon menu has **Show / hide**, **Inspection shortcut** (Ctrl+Shift+T, C
 
 ## The chat tree
 
-Each root chat is a row. Its subagents are nested under it, in the order they were spawned. Rows share column tracks, so title, model, activity, workspace and elapsed time line up down the tree. Long text wraps rather than being cut off.
+Each root chat is a row, with its subagents nested beneath it, ordered by recent activity. Rows share column tracks, so title, model, activity, workspace and elapsed time line up down the tree. In the expanded tree, long titles wrap; in tighter layouts they can be shortened.
 
 **What a row shows**
 
-- the title, tidied: brief-style prefixes like `# ` and `[Project]`, and a leading word that just repeats the model name, are dropped, so `# [Orchestrator] Release fixes` reads as `Release fixes`
+- the title, tidied: brief-style prefixes like `# ` and `[Project]`, and a leading word that just repeats the model name, are dropped, so `# [Orchestrator] Terra · row layout` reads as `row layout`. Other titles are left as written
 - a status glyph: running (breathing), waiting, idle, failed or finished
 - the model, current tool activity and time spent in the current state, when available
 - context and cache figures from the last observed request
@@ -79,32 +79,29 @@ Each root chat is a row. Its subagents are nested under it, in the order they we
 
 **Lineage is strict.** A subagent is nested under a chat only when its parent link is exact. A Codex job started from a Claude Code session (`codex exec resume <thread>`) nests under that Claude chat only on exact ancestry or a receipt bound to that session and process. Links that conflict, are stale or can't be verified are left out, so you never see a wrong tree. If your own scripts start Codex jobs, see [INTEGRATION.md](INTEGRATION.md) for what they need to do so the jobs nest correctly.
 
-**Row actions** (right-click or the row menu):
-
-- **Pin** keeps a chat at the top.
-- **Copy resume** copies the CLI command to resume that chat in a terminal.
-- **Hide** removes a chat from the normal list. Nothing is deleted.
-- **Open** opens the chat in Codex.
+**Acting on a row.** The widget is for watching, not driving: rows have no general menu. A waiting Codex chat can be opened in Codex from its status, and a Claude question may offer a command to resume that session.
 
 ## Needs you
 
-Chats waiting on you collect in the **Needs you** strip above the tree. Click **more** to see them all. A waiting question lists its choices:
+Chats waiting on you collect in the **Needs you** strip above the tree. Click **more** to see them all. A Codex question with choices lists them:
 
-- **Open in Codex** opens that chat at its question prompt and copies the choice. You select it in Codex.
-- **Queue** saves the choice as a later message, sent after the chat's current turn rather than as the answer to the prompt.
+- **Open in Codex** opens that chat and tries to copy the choice. You select it in Codex's own prompt.
+- **Queue** sends the choice as a later message after the chat's current turn. It is not an answer to the prompt.
+
+A Claude question shows what was observed about it and may offer a resume command.
 
 Branchglance never submits a structured answer itself. This keeps you in control when a question needs real judgment.
 
 ## Search
 
-Press `/` or `Ctrl+K`, or click the search icon. Plain text matches titles, agent names, models and workspaces. Filters:
+Press `/` or `Ctrl+K`, or click the search icon. Plain text matches titles, agent names, models and workspaces, plus the assignment, objective and latest request or update text when available. Filters:
 
 | Filter | Shows |
 |---|---|
 | `is:needs` | chats waiting for input |
 | `is:running` | chats running now |
 | `is:failed` | failed runs |
-| `is:hidden` | chats you've hidden |
+| `is:hidden` | chats hidden in earlier versions |
 
 Clear the query, or press Escape, to go back to the tree.
 
@@ -122,10 +119,10 @@ Open **Insights** from the toolbar. It opens as a panel the shape of the widget,
 
 - **Range:** 24h, 7d, 30d (default) or All.
 - **Metric:** tokens or cost.
-- Daily usage, per-model breakdown, cache reads and daily limit peaks (the highest 5-hour and weekly percentages seen each day).
+- Usage over time, a model breakdown (up to five models, with a count of the rest), cache hit rate, and the highest 5-hour and weekly percentages seen in the period. Statistics that aren't available are hidden.
 - **Cost** covers only models with a known price, and the models left out are named. A model without a price is never given a guessed one. Cost is an estimate for comparison, not a bill.
 
-Use it to work out what is eating your allowance: a single long chat, a model you didn't mean to use, or low cache reuse.
+Use it to see what is eating your allowance: a model you didn't mean to use, a heavy day, or low cache reuse. It doesn't break usage down by individual chat.
 
 ## Settings
 
@@ -135,26 +132,26 @@ The **Settings** tab sits next to Insights.
 - **Providers:** the show, collect and send flags from your policy file. These are read-only here.
 - **Notifications:** reset actions and Claude tracking (see below).
 - **Display:** the monitor the widget opens on, and **Recenter**, which brings the widget back to that display.
-- **Version:** the installed version and build, for example `1.0.0+63c443c`.
+- **Version:** the installed version and build, for example `1.0.0+942f13f`.
 
 ## Reset actions
 
-Off by default. Configure them from Settings or the reset-action status pop-up. Each is a **one-shot** choice for the next genuine reset:
+Off by default. Configure them from Settings or the reset-action status pop-up. Each is a **one-shot** choice for the next verified reset:
 
 - **Greeting:** sends a short greeting through the provider's own CLI once a real reset is observed. This sends a request to that provider. A greeting does not reset your allowance and does not prove work finished.
-- **Continue selected chats once:** queues the exact message `continue` for chats you pick, delivered after the next genuine reset. Use it when you hit the limit mid-task and want work to resume as soon as allowance returns.
+- **Continue selected chats once:** with the needed Codex permissions, queues the exact message `continue` for eligible chats you pick, after the next verified reset. Chats that are active or can't be verified are skipped. Queued doesn't mean started.
 
-Before acting, Branchglance checks again that the reset is real and records each delivery, so an action never runs twice.
+Before acting, Branchglance checks again that the reset is real and records each delivery to avoid repeats. A greeting that fails can be retried.
 
 ## Claude Code
 
 Claude collection is off until you turn it on in **Claude tracking**.
 
-- Turning it on backs up your Claude Code settings file, then adds Branchglance-owned hooks. Your other hooks stay as they are.
-- The hooks record event metadata only: event and session ids, model and tool categories, and state. They never record prompts, tool inputs or outputs, full paths or chat titles. Titles are read from local transcripts for display only.
-- Branchglance follows `CLAUDE_HOME` and `CLAUDE_CONFIG_DIR` if you set them. Otherwise it uses `~/.claude`.
+- Turning it on backs up your existing Claude Code settings file, then adds Branchglance-owned hooks. Your other hooks stay as they are.
+- The hooks record event metadata only: identifiers, model and tool categories, state, and the workspace drive and final folder name. They never record prompts, tool inputs or outputs, full paths or chat titles. Titles are read from local transcripts for display only.
+- Branchglance uses `CLAUDE_HOME` if set, otherwise `CLAUDE_CONFIG_DIR`, otherwise `~/.claude`. The settings file it edits is recorded, so turning tracking off or uninstalling edits that same file.
 - Claude rows and subagents appear only when Claude Code reports hook events for them. Coverage across real sessions has not been fully established yet.
-- Turning it off removes Branchglance's hooks and revokes consent.
+- Turning it off revokes consent and removes Branchglance's hooks. If removal isn't safe or fails, the hooks left behind are reported.
 
 ## Phone companion
 
@@ -165,7 +162,7 @@ A separate phone web app with pairing and optional Web Push alerts exists in the
 - **Install:** run `BranchglanceSetup.exe` from File Explorer or the Start menu, as your normal user (not as administrator). It installs to `%LOCALAPPDATA%\Programs\Branchglance` and adds Start menu and Desktop shortcuts. It can also start Branchglance at sign-in; that is off unless you choose it, and an upgrade keeps your earlier choice.
 - **Update:** run the newer Setup. It installs the new release next to the old one, self-tests it, and only then switches over.
 - **Rollback:** `BranchglanceSetup.exe --rollback` restores the previous verified release.
-- **Uninstall:** go to Settings → Apps → Installed apps → Branchglance. The uninstaller checks the install first and makes no changes if anything looks wrong. It then revokes Claude consent, backs up Claude settings, removes only Branchglance's hooks, shortcuts and files, and keeps your history under `%LOCALAPPDATA%\Branchglance`.
+- **Uninstall:** go to Settings → Apps → Installed apps → Branchglance. The uninstaller checks the install and its releases first and stops before changing anything if they don't verify. It then revokes Claude consent, backs up Claude settings, and removes only Branchglance's hooks, shortcuts and program files. Anything it can't safely remove is kept and reported. Your settings and history under `%LOCALAPPDATA%\Branchglance` are kept.
 - **Verify a download:** see [Verify the download](../README.md#verify-the-download).
 
 ## Power-user tips
@@ -173,10 +170,8 @@ A separate phone web app with pairing and optional Web Push alerts exists in the
 - **Keep the widget collapsed.** The limit bands and counts are enough most of the time, and the widget expands when something needs you.
 - **Bind the shortcut.** Ctrl+Shift+T opens the full tree without touching the mouse. If it clashes with another app, switch to Ctrl+Alt+T from the tray menu.
 - **Search with filters.** `is:needs` gives you a queue of chats to answer. `is:failed` after a long run shows what to retry.
-- **Pin the root chat** you are working in, and **hide** chats that are finished but that you might want later.
-- **Use Copy resume** to pick a chat up in a terminal.
 - **Plan around the weekly band,** not just the 5-hour one. Check Insights → 7d before a big parallel run.
-- **Queue `continue` before a limit hits.** Work then picks up after the reset, even if you are away.
+- **Arm `continue` before a limit hits.** After the next verified reset, Branchglance queues `continue` for the chats you picked, so they can pick up again without you.
 - **Lock the widget** on a multi-monitor setup, and use Recenter after docking or undocking a laptop.
 
 ## Limits of what it knows
