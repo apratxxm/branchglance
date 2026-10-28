@@ -248,7 +248,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(css,/\.ag\[data-provider="Claude"\]>.runway-agent-glance>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 9%[^}]*transparent 100%/,"Claude children use a softer transparent tint");
   assert.match(css,/\.ag\[data-provider="Codex"\]>.runway-agent-glance>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--source-glow-primary\) 11%[^}]*transparent 100%/,"OpenAI rows use a subtle transparent tint");
   assert.doesNotMatch(css,/\.runway-refined-row\{[^}]*background-color:/,"tree rows have no rectangular background fill");
-  assert.doesNotMatch(css,/\.chat>\.row\.runway-root-stuck\{[^}]*background:/,"sticky parent rows stay on the continuous panel background");
+  assert.match(css,/\.chat>\.row\.runway-root-stuck\{background:#0e1017;/,"stuck parent rows paint the same colour as the panel, so the surface stays continuous");
   assert.doesNotMatch(css,/\.chat\[data-provider=[^\n]+background-image:linear-gradient/,"provider rows have no full-width linear fills");
   assert.doesNotMatch(css,/radial-gradient\(ellipse (?:1[4-9][0-9]|[2-9][0-9]{2,})px/ ,"identity glow remains at most 140px wide");
   assert.match(css,/\.chat\[data-provider="Claude"\]>\.row::after\{background:radial-gradient\(ellipse at 48% 110%,color-mix\(in srgb,var\(--claude-accent\) 22%/,"Claude parents keep a warm, edgeless identifier glow");

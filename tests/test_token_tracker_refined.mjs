@@ -108,8 +108,8 @@ assert.doesNotMatch(node("#resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-bar"/);
 assert.match(css, /runway-refined-row \.runway-refined-path>\*\{grid-column:1;min-width:0;max-width:100%/);
-assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:#0e1017;/, "sticky parents cover children scrolling under them");
-assert.match(css, /\.chat>\.row\.runway-root-stuck\{box-shadow:[^}]+\}/, "a stuck parent casts a shadow over the scrolled list");
+assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:transparent;/, "a resting parent lets the trunk line show through");
+assert.match(css, /\.chat>\.row\.runway-root-stuck\{background:#0e1017;box-shadow:[^}]+\}/, "a stuck parent covers children scrolling under it and casts a shadow");
 assert.match(css, /\.chat:has\(>\.runway-tree-connectors\)>\.row\.runway-root-stuck/);
 assert.doesNotMatch(css, /#chat-list>\.chat:only-child/);
 

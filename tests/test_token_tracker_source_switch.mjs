@@ -22,7 +22,7 @@ assert.match(refined,/--claude-accent:#e8813f/);assert.match(refined,/--tree-cla
 assert.match(refined,/var\(--claude-accent\) 12%/);assert.match(refined,/var\(--source-glow-primary\) 11%/);
 assert.doesNotMatch(refined,/\.runway-refined-row\{[^}]*background-color:/);
 assert.match(refined,/\.chat>\.row::after\{[^}]*radial-gradient\([^}]*transparent 70%/);
-assert.doesNotMatch(refined,/\.chat>\.row\.runway-root-stuck\{[^}]*background:/);
+assert.match(refined,/\.chat>\.row\.runway-root-stuck\{background:#0e1017;/);assert.match(refined,/\.layout\{[^}]*background:#0e1017;/);
 assert.match(refined,/radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 12%[^}]*transparent 100%/);
 assert.match(refined,/radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--source-glow-primary\) 11%[^}]*transparent 100%/);
 assert.match(refined,/\.runway-refined-row::after\{[^}]*border-radius:0;[^}]*radial-gradient\([^}]*transparent 100%/);
