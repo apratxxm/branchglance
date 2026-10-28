@@ -744,8 +744,17 @@ def apply_exact_links(
         except Exception:
             return
     runs = registry_reader(registry_path)
+    claude_ids = {str(row.get("id")) for row in claude.get("chats") or [] if row.get("id")}
+
+    def cross_provider_candidate(row: dict[str, Any]) -> bool:
+        # A cached Claude parent can arrive without its provider tag; it is
+        # still a cross-provider link to revalidate, not native Codex lineage.
+        parent = row.get("parentId")
+        return (not parent or row.get("parentProvider") == "Claude"
+                or (not row.get("parentProvider") and str(parent) in claude_ids))
+
     live_rows = [row for row in codex.get("chats") or []
-                 if (not row.get("parentId") or row.get("parentProvider") == "Claude")
+                 if cross_provider_candidate(row)
                  and row.get("source") == "exec"
                  and row.get("executionStatus") == "running"]
     global _LAST_FULL_SCAN_AT
@@ -902,15 +911,13 @@ def apply_exact_links(
             by_thread.setdefault(thread, []).append(run)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
-    claude_ids = {str(row.get("id")) for row in claude.get("chats") or [] if row.get("id")}
     for row in codex.get("chats") or []:
         thread = str(row.get("id") or "").lower()
-        native_parent = bool(row.get("parentId") and row.get("parentProvider") != "Claude")
-        if native_parent:
+        if not cross_provider_candidate(row):
             continue
         # Existing Claude links must be revalidated from the registry/discovery
         # before they are republished in this poll.
-        if row.get("parentProvider") == "Claude":
+        if row.get("parentId"):
             row.pop("parentId", None)
             row.pop("parentProvider", None)
             row.pop("parentLinkMethod", None)
