@@ -1,6 +1,6 @@
 "use strict";
 
-const SHELL_CACHE = "token-tracker-phone-shell-v2";
+const SHELL_CACHE = "token-tracker-phone-shell-v3";
 const SHELL_ASSETS = [
   "/phone.html",
   "/phone.css",

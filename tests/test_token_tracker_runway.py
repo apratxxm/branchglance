@@ -155,12 +155,12 @@ def test_compact_profile_sizes_modes_and_validates_before_mutating(native_notch,
     assert app._compact_notch_mode == "controls", "new compact profiles start with persistent toolbar controls"
     assert widget.COMPACT_NOTCH_TRANSITION_SECONDS == 0.286
     assert widget.COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS == 0.22
-    assert app.initial_bounds() == (420, 110, 750, 0)
-    assert rect == [750, 0, 420, 110]
+    assert app.initial_bounds() == (328, 110, 796, 0)
+    assert rect == [796, 0, 328, 110]
     assert rect[0] + rect[2] / 2 == 960
 
-    for mode, expected in (("idle", (420, 100)), ("rest", (420, 100)),
-                           ("controls", (420, 110)), ("inspect", (560, 114))):
+    for mode, expected in (("idle", (328, 100)), ("rest", (328, 100)),
+                           ("controls", (328, 110)), ("inspect", (560, 114))):
         app.set_notch(False, None, False, mode)
         assert (rect[2], rect[3]) == expected
     app.set_notch(True, 80, False, "inspect")
@@ -247,10 +247,10 @@ def test_compact_stable_anchor_returns_when_work_area_widens(native_notch):
     app._notch_position = (1800, 160)
 
     monitors[0]["area"] = (0, 0, 1600, 1080)
-    assert app._notch_target() == (420, 100, 1180, 160)
+    assert app._notch_target() == (328, 100, 1272, 160)
     assert app._notch_position == (1800, 160)
     monitors[0]["area"] = (0, 0, 1920, 1080)
-    assert app._notch_target() == (420, 100, 1500, 160)
+    assert app._notch_target() == (328, 100, 1592, 160)
     assert app._notch_position == (1800, 160)
 
 
@@ -261,7 +261,7 @@ def test_compact_typed_anchor_centers_expansion_and_drag_saves_actual_width(nati
     app._notch_manual_position = True
     app._notch_position = (1500, 100)  # Old untyped anchors retain their left-edge meaning.
     app._notch_reference_width = None
-    assert app._notch_target() == (420, 100, 1500, 100)
+    assert app._notch_target() == (328, 100, 1500, 100)
     app._compact_notch_mode = "inspect"
     app.notch_height = 180
     assert app._notch_target() == (560, 180, 1360, 100)
@@ -283,7 +283,7 @@ def test_compact_typed_anchor_centers_expansion_and_drag_saves_actual_width(nati
     assert app._notch_reference_width == 560
 
     app.set_notch(False, None, False, "idle")
-    assert rect == [470, 100, 420, 100]
+    assert rect == [516, 100, 328, 100]
     app.set_notch(True, 180, False, "inspect")
     assert rect == [400, 100, 560, 180]
     assert app._notch_position == (400, 100)
@@ -293,11 +293,11 @@ def test_compact_typed_anchor_centers_expansion_and_drag_saves_actual_width(nati
 def test_dashboard_mode_uses_fixed_size_and_clamps_to_work_area(native_notch):
     app, monitors, rect, calls = native_notch
     app._compact_notch_mode = "dashboard"
-    assert widget._compact_notch_dimensions("dashboard") == (720, 540)
-    assert app._notch_target() == (720, 540, 600, 0)
-    app.set_notch(False, 540, False, "dashboard")
-    assert rect == [600, 0, 720, 540]
-    assert calls[-1] == (720, 540, 600, 0)
+    assert widget._compact_notch_dimensions("dashboard") == (720, 608)
+    assert app._notch_target() == (720, 608, 600, 0)
+    app.set_notch(False, 608, False, "dashboard")
+    assert rect == [600, 0, 720, 608]
+    assert calls[-1] == (720, 608, 600, 0)
     monitors[0]["area"] = (0, 0, 640, 480)
     assert app._notch_target() == (640, 480, 0, 0)
 
@@ -340,7 +340,7 @@ def test_compact_drag_reference_width_uses_physical_dpi_geometry(native_notch, m
     assert app._notch_reference_width == 700
 
     app.set_notch(False, None, False, "rest")
-    assert rect[2] == 525
+    assert rect[2] == 410
     saved_center = -2100 + 700 / 2
     rendered_center = rect[0] + rect[2] / 2
     assert abs(saved_center - rendered_center) <= 0.5
@@ -396,7 +396,7 @@ def test_locked_compact_drag_requires_token_and_updates_physical_anchor(native_n
     button_down = False
     assert app.end_drag(generation, True) is True
     assert app._notch_position == (-2300, 900)
-    assert app._notch_reference_width == 420
+    assert app._notch_reference_width == 328
     assert app.selected_monitor_id == "display-two"
     assert app.widget_locked is True
     assert app.end_drag(generation, True) is False
@@ -485,7 +485,7 @@ def test_compact_release_watchdog_commits_without_bridge_mouseup(native_notch, m
     app._watch_compact_drag_release(generation)
     assert app._active_compact_drag_generation is None
     assert app._notch_position == (1400, 800)
-    assert app._notch_reference_width == 420
+    assert app._notch_reference_width == 328
     assert app.widget_locked is True
 
 
@@ -651,7 +651,7 @@ def test_startup_recenter_is_opt_in_and_preserves_lock_and_keep_open(tmp_path, m
         if recenter_on_start:
             assert app._notch_manual_position is False
             assert app._notch_reference_width is None
-            assert app.initial_bounds() == (420, 110, 750, 0)
+            assert app.initial_bounds() == (328, 110, 796, 0)
 
             rect = list(app.initial_bounds())
             app.window = SimpleNamespace(evaluate_js=lambda _script: None,
@@ -670,14 +670,14 @@ def test_startup_recenter_is_opt_in_and_preserves_lock_and_keep_open(tmp_path, m
             assert app.widget_locked is True
             assert app.keep_open is True
             assert app._widget_lock_revision == 0
-            assert app.initial_bounds() == (420, 110, 750, 0)
+            assert app.initial_bounds() == (328, 110, 796, 0)
             saved = json.loads(path.read_text(encoding="utf-8"))
             assert saved["widget_locked"] is True and saved["keep_open"] is True
             assert saved["notch"] == {"monitor_id": "display-one", "manual": False}
         else:
             assert app._notch_manual_position is True
             assert app._notch_reference_width == 560
-            assert app.initial_bounds() == (420, 110, 970, 300)
+            assert app.initial_bounds() == (328, 110, 1016, 300)
     finally:
         if app._bounds_timer:
             app._bounds_timer.cancel()
@@ -959,7 +959,7 @@ def test_manual_drag_survives_hover_refresh_show_and_restart(native_notch):
     app.save_bounds()
     restarted = widget.WidgetApp()
     try:
-        assert restarted.initial_bounds() == (420, 110, 250, 170)
+        assert restarted.initial_bounds() == (328, 110, 296, 170)
         assert restarted._notch_manual_position is True
         assert widget._load_notch_placement(app.window_state_path) == {
             "monitor_id": "display-one", "manual": True, "x": 120, "y": 170,
@@ -1078,7 +1078,7 @@ def test_widget_lock_persists_without_overwriting_state_and_recenter_unlocks(nat
 
         monkeypatch.setattr(restarted, "_place", place_startup)
         restarted.restore_saved_placement()
-        assert startup_rect == [750, 0, 420, 110]
+        assert startup_rect == [796, 0, 328, 110]
         assert restarted.notch_expanded is True
     finally:
         if restarted._bounds_timer:

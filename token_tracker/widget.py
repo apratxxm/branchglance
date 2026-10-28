@@ -240,8 +240,8 @@ NOTCH_WIDTH = 680
 NOTCH_COLLAPSED_HEIGHT = 148
 NOTCH_MIN_HEIGHT, NOTCH_DEFAULT_HEIGHT = NOTCH_COLLAPSED_HEIGHT, 560
 COMPACT_NOTCH_MODES = {"idle", "rest", "controls", "inspect", "dashboard"}
-COMPACT_NOTCH_SIZES = {"idle": (420, 100), "rest": (420, 100),
-                       "controls": (420, 110), "inspect": (560, 114),
+COMPACT_NOTCH_SIZES = {"idle": (328, 100), "rest": (328, 100),
+                       "controls": (328, 110), "inspect": (560, 114),
                        "dashboard": (720, 608)}
 COMPACT_INSPECT_MAX_HEIGHT = 420
 COMPACT_DRAG_LEASE_SECONDS = 60
