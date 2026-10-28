@@ -1519,7 +1519,7 @@ function resetView(provider, key) {
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const hasReset=Boolean((measured&&parts.target)||(lastKnown&&parts.target&&parts.seconds>0));
-  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m "+pad2(parts.seconds%60)+"s":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
+  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
   return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,
