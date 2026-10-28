@@ -11,6 +11,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     var statusItem: NSStatusItem?
     var keepOpen = false, keepOpenRevision = 0
     var expanded = false, lockRevision = 0
+    /// The notch never moves, so Lock only records the choice (and keeps Settings and the toolbar in step).
+    var widgetLocked = UserDefaults.standard.bool(forKey: "widgetLocked")
     var reducedMotion = false
     /// Size the web UI last asked for; shown only while the notch is open.
     var requestedSize = compactSizes["inspect"]!
@@ -363,7 +365,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     }
 
     func lockState() -> [String: Any] {
-        ["locked": false, "expanded": expanded, "revision": lockRevision,
+        ["locked": widgetLocked, "expanded": expanded, "revision": lockRevision,
          "keepOpen": keepOpen, "keepOpenRevision": keepOpenRevision]
     }
 
@@ -380,11 +382,23 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             webWantsOpen = mode.map { $0 == "inspect" || $0 == "dashboard" } ?? isExpanded
             updateOpenState()
             return nil
-        case "get_widget_lock", "set_widget_lock":
+        case "get_widget_lock":
+            return lockState()
+        case "set_widget_lock":
+            // Same contract as WindowApi: reject bad input or a stale revision by returning current state.
+            guard let locked = args.first as? Bool else { return lockState() }
+            if args.count > 3, let expected = args[3] as? Int, expected != lockRevision { return lockState() }
+            if locked != widgetLocked {
+                widgetLocked = locked; lockRevision += 1
+                UserDefaults.standard.set(locked, forKey: "widgetLocked")
+            }
             return lockState()
         case "get_keep_open":
             return ["keepOpen": keepOpen, "keepOpenRevision": keepOpenRevision]
         case "set_keep_open":
+            if args.count > 1, let expected = args[1] as? Int, expected != keepOpenRevision {
+                return ["keepOpen": keepOpen, "keepOpenRevision": keepOpenRevision]
+            }
             if let value = args.first as? Bool, value != keepOpen {
                 keepOpen = value; keepOpenRevision += 1; updateOpenState()
             }
@@ -408,8 +422,16 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             webView.evaluateJavaScript("window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()", completionHandler: nil)
             collapse(animate: true)
             return nil
-        case "size":
+        case "size", "resize_start":
             return ["width": panel.frame.width, "height": panel.frame.height]
+        case "fit", "toggle_maximize":
+            // The notch has one open size; Fit and Maximize open the full tree as the shortcut does.
+            if !shortcutOpened { toggleInspection() } else if name == "toggle_maximize" { toggleInspection() }
+            return nil
+        case "resize":
+            return nil  // The notch panel is sized by its content, not by edge drags.
+        case "end_drag":
+            return false
         case "close":
             // As on Windows, Close hides the widget and monitoring carries on (Show/Hide brings it back).
             setHidden(true); return nil

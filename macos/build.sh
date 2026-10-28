@@ -20,6 +20,11 @@ if [ "$1" = "install" ]; then
 fi
 # Same version as the Windows release.
 VERSION="$(sed -n 's/^RELEASE_VERSION = "\(.*\)"/\1/p' ../packaging/build.py)"
+if [ "$1" = "install" ]; then
+    # Settings > Version reads this, as in the Windows release build.
+    printf 'VERSION = %s\nBUILD_ID = %s\n' "'$VERSION'" "'$(git -C "$REPO" rev-parse --short HEAD)'" \
+        > "$ROOT/token_tracker/_build.py"
+fi
 APP=build/Branchglance.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
