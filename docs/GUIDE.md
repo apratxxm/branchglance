@@ -77,7 +77,7 @@ Each root chat is a row. Its subagents are nested under it, in the order they we
 
 **Status is only what was observed.** Branchglance shows a status only when it has seen evidence for it. Missing or old evidence is shown as unknown, never as "stopped".
 
-**Lineage is strict.** A subagent is nested under a chat only when its parent link is exact. A Codex job started from a Claude Code session (`codex exec resume <thread>`) nests under that Claude chat only on exact ancestry or a receipt bound to that session and process. Links that conflict, are stale or can't be verified are left out, so you never see a wrong tree.
+**Lineage is strict.** A subagent is nested under a chat only when its parent link is exact. A Codex job started from a Claude Code session (`codex exec resume <thread>`) nests under that Claude chat only on exact ancestry or a receipt bound to that session and process. Links that conflict, are stale or can't be verified are left out, so you never see a wrong tree. If your own scripts start Codex jobs, see [INTEGRATION.md](INTEGRATION.md) for what they need to do so the jobs nest correctly.
 
 **Row actions** (right-click or the row menu):
 

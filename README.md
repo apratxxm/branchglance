@@ -18,6 +18,7 @@ Branchglance is a compact Windows widget for keeping Codex and Claude Code chats
 Contributor and architecture references:
 
 - [Walkthrough](docs/GUIDE.md)
+- [Client integration](docs/INTEGRATION.md): what launchers and scripts must do for linking and signals
 - [Architecture](docs/ARCHITECTURE.md)
 - [Contributing](docs/CONTRIBUTING.md)
 - [Code signing policy](docs/CODE_SIGNING_POLICY.md)
