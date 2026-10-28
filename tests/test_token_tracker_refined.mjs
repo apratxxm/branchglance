@@ -108,8 +108,8 @@ assert.doesNotMatch(node("#resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-bar"/);
 assert.match(css, /runway-refined-row \.runway-refined-path>\*\{grid-column:1;min-width:0;max-width:100%/);
-assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:transparent;\}/);
-assert.doesNotMatch(css, /\.chat>\.row\.runway-root-stuck\{background:#05070b;\}/, "stuck rows do not paint an opaque surface");
+assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:#0e1017;/, "sticky parents cover children scrolling under them");
+assert.match(css, /\.chat>\.row\.runway-root-stuck\{box-shadow:[^}]+\}/, "a stuck parent casts a shadow over the scrolled list");
 assert.match(css, /\.chat:has\(>\.runway-tree-connectors\)>\.row\.runway-root-stuck/);
 assert.doesNotMatch(css, /#chat-list>\.chat:only-child/);
 
@@ -514,6 +514,7 @@ layoutClientHeight = 300; measuredRowHeight = 80; rootTop = 0; rowTop = 0; child
 assert.equal(rowClasses.has("runway-root-stuck"), false, "a root at its own flow top uses the transparent rest surface");
 const svg = rootElement.children.find(el => el.classList?.contains("runway-tree-connectors"));
 assert.ok(svg, "one active child creates the root SVG");
+const restSvgSignature = svg.dataset.geometry;
 const notchBeforeScroll = { mode: T.notch.mode, expanded: T.notch.expanded, frame: T.notch.frame };
 rootTop = -40; rowTop = 0; childOffset = -40;
 layoutHeightReads = 0;
@@ -529,7 +530,10 @@ const unchangedSvgSignature = svg.dataset.geometry, unchangedSvgReplacements = s
 onLayoutScroll(); runGeometryFrame();
 assert.equal(rowClasses.has("runway-root-stuck"), true, "an unchanged SVG signature does not clear stuck paint state");
 assert.equal(svg.dataset.geometry, unchangedSvgSignature); assert.equal(svg.replaceCount, unchangedSvgReplacements, "unchanged geometry leaves SVG children untouched");
-visibleAgentRows = []; onLayoutScroll(); runGeometryFrame();
+assert.equal(svg.dataset.geometry, restSvgSignature, "scrolling never redraws the tree");
+inspectGeometry(); queuedFrames.clear();
+assert.equal(svg.dataset.geometry, restSvgSignature, "a stuck parent is measured where it sits unstuck, so the tree keeps its geometry");
+visibleAgentRows = []; inspectGeometry(); queuedFrames.clear();
 assert.equal(rowClasses.has("runway-root-stuck"), true, "stuck state is updated before the no-path cleanup");
 assert.equal(rootElement.children.some(el => el.classList?.contains("runway-tree-connectors")), false, "the empty tree removes its stale SVG");
 rowTop = rootTop; onLayoutScroll(); runGeometryFrame();
