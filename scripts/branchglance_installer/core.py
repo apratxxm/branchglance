@@ -158,24 +158,19 @@ def _finish_uninstall(root: Path, record: dict, journal: Journal, fs: FileSystem
         after_mutation("root-removed")
 
 
-def uninstall_owned_root(root: Path, *, integration_remove: Callable[[], None] = lambda: None,
-                        after_mutation: Callable[[str], None] = lambda _name: None,
-                        integration_snapshot: Callable[[], dict] = lambda: {},
-                        fs: FileSystem | None = None) -> None:
-    """Remove only the owned program tree; leave sibling state and unknown root content intact.
+def uninstall_preflight(root: Path, *, verify_releases: bool = False):
+    """Read-only checks that decide whether uninstall_owned_root may proceed.
 
-    Only release versions and tool names recorded in install-owned.json are
-    removed. Foreign/unverifiable content is retained and leaves the root.
+    Returns None when the root is absent, else (journal record, owner marker
+    present, resuming an uninstall, ledger or None). Raises SafetyError exactly
+    where uninstall would refuse, so callers can check before external changes.
     """
     root = Path(root).absolute()
     if not os.path.lexists(root):
-        return  # repeated uninstall after successful removal
+        return None
     if is_reparse(root) or not root.is_dir():
         raise SafetyError("Install root is absent or is a reparse point")
-    fs = fs or LocalFileSystem()
-    journal = root / JOURNAL
-    journal_store = Journal(root, replace=fs.replace)
-    record = journal_store.load()
+    record = Journal(root).load()
     owner_exists = os.path.lexists(root / OWNER_FILE)
     resuming = record is not None and record.get("operation") == "uninstall"
     if resuming:
@@ -188,9 +183,40 @@ def uninstall_owned_root(root: Path, *, integration_remove: Callable[[], None] =
             ledger = None
     else:
         require_owned_root(root)
+        if record is not None and record.get("phase") not in {"committed", "rolled-back"}:
+            raise SafetyError("Unfinished installer transaction prevents uninstall")
+        ledger = read_owned_ledger(root)
+    # A resumed trash intent is reconciled by uninstall itself before verification.
+    if verify_releases and ledger is not None and not (resuming and record.get("trashIntent")):
+        for version in ledger["releases"]:
+            path = safe_child(root, f"releases/{version}")
+            if path.exists():
+                try:
+                    verify_manifest(path, expected_version=version)
+                except SafetyError as exc:
+                    raise SafetyError(f"Owned release {version} is unverifiable and was retained") from exc
+    return record, owner_exists, resuming, ledger
+
+
+def uninstall_owned_root(root: Path, *, integration_remove: Callable[[], None] = lambda: None,
+                        after_mutation: Callable[[str], None] = lambda _name: None,
+                        integration_snapshot: Callable[[], dict] = lambda: {},
+                        fs: FileSystem | None = None) -> None:
+    """Remove only the owned program tree; leave sibling state and unknown root content intact.
+
+    Only release versions and tool names recorded in install-owned.json are
+    removed. Foreign/unverifiable content is retained and leaves the root.
+    """
+    root = Path(root).absolute()
+    state = uninstall_preflight(root)
+    if state is None:
+        return  # repeated uninstall after successful removal
+    record, owner_exists, resuming, ledger = state
+    fs = fs or LocalFileSystem()
+    journal = root / JOURNAL
+    journal_store = Journal(root, replace=fs.replace)
+    if not resuming:
         if record is not None:
-            if record.get("phase") not in {"committed", "rolled-back"}:
-                raise SafetyError("Unfinished installer transaction prevents uninstall")
             journal.unlink()
             after_mutation("install-journal-removed")
         ledger = read_owned_ledger(root)

@@ -42,6 +42,15 @@ Rendered from synthetic sample data; no real chats or accounts.
 
 Branchglance requires 64-bit Windows 10 build 19041 or newer, .NET Framework 4.8 or newer, and Microsoft Edge WebView2 Runtime. Setup checks these prerequisites and stops with an explanation when one is missing.
 
+### Verify the download
+
+In PowerShell, compare the SHA-256 hash with the published `BranchglanceSetup.exe.sha256` asset and check the signature status is `Valid` and the signer is SignPath Foundation:
+
+```powershell
+Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256
+Get-AuthenticodeSignature .\BranchglanceSetup.exe | Format-List Status, SignerCertificate
+```
+
 The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup creates Start menu and Desktop shortcuts, plus an optional sign-in Startup shortcut. Setup resolves these locations through Windows known folders, including redirected Desktop locations such as OneDrive. All shortcuts use the Branchglance Live Stack icon; uninstall removes the shortcuts it owns.
 
 Setup checks whether `%LOCALAPPDATA%` is redirected into a packaged app's private storage. It refuses with a visible explanation when redirection is detected or the check is inconclusive. If the Branchglance launcher detects redirected storage, it reopens through File Explorer before starting the widget. Run Setup from File Explorer or the Start menu, not from another app's terminal.

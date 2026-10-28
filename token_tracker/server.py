@@ -801,11 +801,12 @@ def _record_insights_peaks(snapshot: dict) -> None:
 
 
 def _snapshot_cache_compatibility() -> str:
+    from .claude_hook_install import claude_config_dir
     from .provider_policy import POLICIES, public_policies
     full, limits = provider_module._provider_collection_sets(POLICIES)
     roots = [
         os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"),
-        os.environ.get("CLAUDE_HOME") or str(Path.home() / ".claude"),
+        str(claude_config_dir()),
         os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local"),
     ]
     normalized = []

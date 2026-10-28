@@ -100,11 +100,24 @@ def _pyinstaller(py: Path, spec: Path, work: Path, name: str, env: dict) -> Path
     return dist
 
 
+def _resolve_build_python(python: Path | None) -> Path:
+    py = (python or Path(sys.executable)).resolve()
+    if not py.is_file():
+        raise FileNotFoundError(f"Python interpreter is not a file: {py}")
+    try:
+        subprocess.run([str(py), "-c", "import PyInstaller"], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"Python interpreter cannot import PyInstaller: {py}; install packaging/requirements-release.txt") from exc
+    return py
+
+
 def build(output: Path, version: str, build_id: str, *, python: Path | None = None) -> dict:
     versioned = validate_version(f"{version}+{build_id}")
     output = output.resolve()
     if output == ROOT or ROOT in output.parents:
         raise RuntimeError("Build output must be outside the source checkout")
+    py = _resolve_build_python(python)
     output.mkdir(parents=True, exist_ok=True)
     releases = output / "releases"
     final = releases / versioned
@@ -131,7 +144,6 @@ def build(output: Path, version: str, build_id: str, *, python: Path | None = No
     (source / "branchglance_entry.py").write_text(_entry_source(), encoding="utf-8")
     for role in ("setup", "uninstall"):
         (source / f"branchglance_{role}_entry.py").write_text(_installer_entry_source(role), encoding="utf-8")
-    py = python or Path(sys.executable)
     env = os.environ.copy()
     env.update({"BRANCHGLANCE_SOURCE": str(source), "BRANCHGLANCE_ICON": str(ICON), "PYTHONDONTWRITEBYTECODE": "1",
                 "PYINSTALLER_CONFIG_DIR": str(work / "pyinstaller-config"),
@@ -201,6 +213,7 @@ def build_setup_from_components(output: Path, components: Path, version: str, bu
     components = components.resolve()
     if output == ROOT or ROOT in output.parents:
         raise RuntimeError("Build output must be outside the source checkout")
+    py = _resolve_build_python(python)
     release = components / "releases" / versioned
     verify_manifest(release, expected_version=versioned)
     for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
@@ -232,7 +245,6 @@ def build_setup_from_components(output: Path, components: Path, version: str, bu
                 "BRANCHGLANCE_VERSION_INFO": str(version_info), "BRANCHGLANCE_INSTALLER_ROLE": "setup",
                 "BRANCHGLANCE_PAYLOAD": str(payload), "PYTHONDONTWRITEBYTECODE": "1",
                 "PYINSTALLER_CONFIG_DIR": str(work / "pyinstaller-config")})
-    py = python or Path(sys.executable)
     setup_dist = _pyinstaller(py, INSTALLER_SPEC, work, "setup", env)
     setup = output / "BranchglanceSetup.exe"
     shutil.copyfile(setup_dist / "BranchglanceSetup.exe", setup)

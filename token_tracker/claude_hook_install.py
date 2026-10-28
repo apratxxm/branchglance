@@ -67,9 +67,14 @@ class _SettingsSnapshot:
                 and self.device == other.device and self.inode == other.inode and self.size == other.size)
 
 
+def claude_config_dir(home: Path | None = None) -> Path:
+    """Resolve Claude's user configuration, retaining the legacy override priority."""
+    configured = os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(configured) if configured else (home or Path.home()) / ".claude"
+
+
 def default_settings_path() -> Path:
-    home = os.environ.get("CLAUDE_HOME")
-    return (Path(home) if home else Path.home() / ".claude") / "settings.json"
+    return claude_config_dir() / "settings.json"
 
 
 def _bash_quote(value: str | os.PathLike[str]) -> str:

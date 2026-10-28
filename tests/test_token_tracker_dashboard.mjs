@@ -98,7 +98,13 @@ assert.match(dashboard.settingsHTML(),/24-hour/);
 
 dashboard.state.policy={policyFile:"D:\\work\\sample-app\\policy.json",providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:true,collect:false,send:false}]};
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];dashboard.state.settingsLoaded=true;
+dashboard.state.identity={version:"1.0.0",build:"abc123"};
 const settings=dashboard.settingsHTML();
+assert.match(settings,/<p class="dash-setting-note">Version 1\.0\.0\+abc123<\/p>/);
+dashboard.state.identity={version:"<script>",build:"&"};
+assert.match(dashboard.settingsHTML(),/Version &lt;script&gt;\+&amp;/,"identity values are escaped");
+dashboard.state.identity=null;
+assert.doesNotMatch(dashboard.settingsHTML(),/Version /,"missing identity is not fabricated");
 assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget open/);
 assert.match(settings,/Current provider policy/);assert.match(settings,/Monitor/);assert.match(settings,/Recenter/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
