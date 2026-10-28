@@ -5474,3 +5474,17 @@ def test_live_state_missing_or_locked_sqlite_keeps_existing_index(tmp_path, monk
     finally:
         connection.rollback()
         connection.close()
+
+
+def test_live_state_tidies_brief_style_codex_titles(tmp_path, monkeypatch):
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    providers._index_live_paths([{"name": "Codex", "chats": [{"id": "brief", "path": str(transcript)}]}])
+    monkeypatch.setattr(providers, "_codex_rollout_state", lambda path: {"status": "running", "question": None})
+    monkeypatch.setattr(CodexProvider, "_last_token_event", classmethod(lambda cls, path: {"model": "gpt-6.1-terra"}))
+    monkeypatch.setattr(providers, "_session_insights", lambda path: {
+        "title": "# [Orchestrator] Terra · row layout", "model": "gpt-6.1-terra"})
+    monkeypatch.setattr(providers, "_codex_run_stats", lambda path: {})
+
+    chat = next(row for row in providers.live_state()["chats"] if row["key"] == "Codex:brief")
+    assert chat["title"] == "row layout"
