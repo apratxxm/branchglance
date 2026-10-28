@@ -169,6 +169,8 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     func hoverChanged(_ inside: Bool) {
         // Tracking areas are rebuilt as the panel resizes, which re-sends "entered".
         guard inside != hovering else { return }
+        // A resize or animation can report "exited" while the pointer is still on the panel.
+        if !inside, pointerOnPanel() { return }
         hoverWork?.cancel()
         hovering = inside
         if inside {
@@ -184,6 +186,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         } else {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, !self.hovering else { return }
+                if self.pointerOnPanel() { self.hovering = true; return }
                 self.hoverOpened = false
                 if !self.keepOpen {
                     self.webView.evaluateJavaScript("window.tokenTrackerCloseInspection && window.tokenTrackerCloseInspection()",
@@ -195,6 +198,12 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             // Peeking only: shrink back at once. Open: a grace period for a brief slip off the edge.
             DispatchQueue.main.asyncAfter(deadline: .now() + (isOpen ? 0.35 : 0), execute: work)
         }
+    }
+
+    /// The panel's frame grown by a couple of points, since the pointer at the very top of the
+    /// screen sits on the frame's top edge, which NSRect.contains leaves out.
+    func pointerOnPanel() -> Bool {
+        panel.isVisible && panel.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
     }
 
     static let dwell: TimeInterval = 0.45
@@ -250,6 +259,9 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         container.content?.alphaValue = 0
         container.header?.alphaValue = 0
         media.setVisible(false)
+        // Media updates and page calls land here mid-hover; shrinking the peek out from under the
+        // pointer would send "exited" and cancel the pending open, so keep peeking instead.
+        if hovering, hudKind == nil { peek(); return }
         if hudKind == nil, media.isPlaying, !lockScreen.isLocked {
             showIndicator(.media, animate: animate)
             return
