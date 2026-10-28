@@ -1609,3 +1609,21 @@ def test_uninstall_after_install_folder_is_gone_still_removes_owned_hooks_and_sh
     assert not any(installer.is_ours(group) for groups in remaining.get("hooks", {}).values() for group in groups)
     assert not (paths.product_root / "claude-consent.json").exists()
     assert not integration.startup_enabled()
+
+
+def test_uninstall_refuses_resumed_finalizing_with_leftovers_before_claude_changes(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    from branchglance_installer.core import Journal
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    record = Journal(paths.root).begin("uninstall", "uninstall", {"pointer": None, "integration": {}})
+    record["phase"] = "finalizing"
+    Journal(paths.root).save(record)
+    (paths.root / "stray.txt").write_text("not ours")
+    before = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    with pytest.raises(SafetyError, match="unowned items"):
+        uninstall(paths, native)
+    assert settings.read_bytes() == before
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
