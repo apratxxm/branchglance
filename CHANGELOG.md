@@ -19,6 +19,12 @@
 
 ### Changed
 
+- The collapsed widget is narrower (328 px at 100% scaling).
+- Insights opens as a widget-shaped panel between the 5-hour and weekly bands. Settings shows the installed version and build.
+- Codex row titles drop brief-style prefixes (`# `, `[Project]`) and a leading word that only repeats the model name.
+- The app icon has more margin around the mark.
+- Claude Code settings follow `CLAUDE_HOME` or `CLAUDE_CONFIG_DIR` when set, for hooks, transcripts and uninstall.
+- Upgrades keep the existing start-at-sign-in choice.
 - Tree rows use shared column tracks. Titles, actions, workspace and status text wrap instead of truncating.
 - `/api/live` is gzip-compressed (about 387 KB to about 82 KB).
 - Cold builds are faster: snapshot about 35 s to 25 s, live about 19.7 s to 14 s (measured on copied data).

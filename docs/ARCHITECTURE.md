@@ -20,8 +20,8 @@ Codex data roots are discovered from the user's Codex installation and home dire
 
 Claude data is split across three inputs:
 
-- `ClaudeCodeProvider` in `claude_provider.py` reads `~/.claude/projects` transcripts for identity, titles, usage and context.
-- With explicit consent, `claude_collection.py` installs Branchglance-owned hooks in `~/.claude/settings.json`. The launcher or Python hook receives allowlisted Claude Code events and appends bounded records to the Branchglance `claude-events` JSONL directory. Event records omit prompts, tool inputs/outputs, full paths and chat titles.
+- `ClaudeCodeProvider` in `claude_provider.py` reads `<Claude config dir>/projects` transcripts (`CLAUDE_HOME`, then `CLAUDE_CONFIG_DIR`, then `~/.claude`) for identity, titles, usage and context.
+- With explicit consent, `claude_collection.py` installs Branchglance-owned hooks in `settings.json` in that same config dir. The launcher or Python hook receives allowlisted Claude Code events and appends bounded records to the Branchglance `claude-events` JSONL directory. Event records omit prompts, tool inputs/outputs, full paths and chat titles.
 - A Claude-launched Codex execution may record an exact display association with `Branchglance.exe --link-codex <thread-uuid> --codex-pid <pid>`. The helper binds the receipt to `CLAUDE_CODE_SESSION_ID` and the Codex process creation time; receipts never establish execution status or collection authority.
 - `ClaudeDesktopProvider` in `providers.py` reads Claude Desktop's local quota cache. This is quota input; it is not Claude Code transcript state.
 
