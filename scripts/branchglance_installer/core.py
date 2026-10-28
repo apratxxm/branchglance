@@ -186,6 +186,13 @@ def uninstall_preflight(root: Path, *, verify_releases: bool = False):
         if record is not None and record.get("phase") not in {"committed", "rolled-back"}:
             raise SafetyError("Unfinished installer transaction prevents uninstall")
         ledger = read_owned_ledger(root)
+    if verify_releases and resuming and record.get("phase") == "finalizing":
+        # Mirror _finish_uninstall's refusals so callers can stop before external changes.
+        remaining = [item.name for item in root.iterdir() if item.name not in {JOURNAL, OWNER_FILE, OWNED_LEDGER}]
+        if remaining:
+            raise SafetyError("Uninstall kept unowned items in the install root: " + ", ".join(remaining))
+        if ledger is not None and any(ledger.get(name) for name in ("releases", "trash", "tools", "files", "directories")):
+            raise SafetyError("Uninstall finalization found owned items still recorded")
     # A resumed trash intent is reconciled by uninstall itself before verification.
     if verify_releases and ledger is not None and not (resuming and record.get("trashIntent")):
         for version in ledger["releases"]:

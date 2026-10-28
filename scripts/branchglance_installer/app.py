@@ -26,7 +26,7 @@ from typing import Callable
 from token_tracker import product
 
 from .core import (JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, SCHEMA, UNINSTALLER, Journal, LocalFileSystem,
-                   ReleaseOps, SafetyError, atomic_json, create_owner, is_reparse, read_json, read_owned_ledger, require_owned_root, safe_child, uninstall_preflight,
+                   ReleaseOps, SafetyError, atomic_json, create_owner, is_reparse, read_json, require_owned_root, uninstall_preflight,
                    uninstall_owned_root, validate_version, verify_manifest)
 from .integration import Integrations
 from .lifecycle import Lifecycle
