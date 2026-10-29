@@ -29,8 +29,6 @@ def main():
   w=r.find(NS+"path"); assert w.get("d")==word.get("d") and w.get("fill-rule")=="evenodd"
  assert (ROOT/"lockup.svg").read_bytes()==(ROOT/"lockup-dark.svg").read_bytes()
  files.extend([(ROOT/"lockup-dark.svg",ROOT/"lockup-dark.png",(1280,640)),(ROOT/"lockup-light.svg",ROOT/"lockup-light.png",(1280,640)),(ROOT/"lockup-dark.svg",ROOT/"social-preview.png",(1280,640))])
- for path in (STATIC/"phone-icon-192.png",STATIC/"phone-icon-512.png",STATIC/"apple-touch-icon.png"):
-  n=180 if path.name.startswith("apple") else int(path.stem.rsplit("-",1)[1]); files.append((STATIC/"phone-icon.svg",path,(n,n)))
  for mode in ("full","mono-dark","mono-light"):
   for n in (256,512,1024):
    p=ROOT/f"mark-{mode}-{n}.png"; h=round(n*float(src.get("height"))/float(src.get("width")))
@@ -39,7 +37,7 @@ def main():
    files.append((source_svg,p,(n,h)))
  for p in (ROOT/"branchglance.ico",STATIC/"favicon.ico"):
   with Image.open(p) as im: assert {w for w,h in im.ico.sizes()}==set(SIZES)
- for s in (STATIC/"phone-icon.svg",STATIC/"favicon.svg"):
+ for s in (ROOT/"icon-tile.svg",STATIC/"favicon.svg"):
   r=ET.parse(s).getroot(); g=r.find(".//"+NS+"g"); assert g.get("transform")==transform and [p.get("d") for p in g.findall(NS+"path")] == ds
  jobs=[]
  with tempfile.TemporaryDirectory(prefix="brand-prod-check-") as td:
@@ -49,7 +47,7 @@ def main():
   for ico_path in (ROOT/"branchglance.ico",STATIC/"favicon.ico"):
    for n in SIZES:
     frame_path=td/f"ico-{ico_path.stem}-{n}.png"
-    jobs.append({"source":str(STATIC/"phone-icon.svg"),"output":str(frame_path),"width":n,"height":n})
+    jobs.append({"source":str(ROOT/"icon-tile.svg"),"output":str(frame_path),"width":n,"height":n})
     ico_checks.append((ico_path,n,frame_path))
   env=os.environ.copy(); env["NODE_PATH"]=a.node_modules; subprocess.run([a.node,str(ROOT/"render_svgs.js")],input=json.dumps(jobs),text=True,check=True,env=env)
   for j,(_,out,_) in zip(jobs,files):

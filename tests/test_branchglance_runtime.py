@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from token_tracker import limit_reset, phone_server, product, provider_policy, widget
+from token_tracker import limit_reset, product, provider_policy, widget
 from token_tracker.provider_policy import (
     ProviderPolicyError,
     load_policies,
@@ -24,6 +24,20 @@ from token_tracker.provider_policy import (
 @pytest.fixture(autouse=True)
 def _no_real_snapshot_warmup(monkeypatch):
     monkeypatch.setattr(widget, "_warm_snapshot", lambda: None)
+    monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: True)
+
+
+def test_server_root_serves_runway(monkeypatch):
+    from token_tracker import server
+
+    handler = object.__new__(server.Handler)
+    handler.path = "/"
+    monkeypatch.setattr(server.Handler, "_valid_local_host", lambda self: True)
+    served = []
+    monkeypatch.setattr(server.SimpleHTTPRequestHandler, "do_GET", lambda self: served.append(self.path))
+    handler.do_GET()
+    assert served == ["/runway.html"]
+    assert (server.STATIC / "runway.html").is_file()
 
 
 # --- product roots ---------------------------------------------------------------------------
@@ -33,7 +47,6 @@ def test_frozen_roots_are_constants_and_ignore_env_override(tmp_path):
     assert product.state_root(frozen=True, environ=env) == tmp_path / "Branchglance" / "state"
     assert product.webview_storage_path(frozen=True, environ=env) == tmp_path / "Branchglance" / "webview"
     assert product.policy_file_path(frozen=True, environ=env) == tmp_path / "Branchglance" / "policy.json"
-    assert product.phone_state_path(frozen=True, environ=env) == tmp_path / "Branchglance" / "state" / "phone-state.json"
 
 
 def test_dev_roots_keep_legacy_dir_unless_overridden(tmp_path):
@@ -64,7 +77,6 @@ def test_frozen_mode_never_writes_under_legacy_tokentracker_dir(tmp_path, monkey
     service = limit_reset.LimitResetService(sources={}, senders={}, enabled=False)
     assert service.state_path.parent == root and service.cwd == root
     assert widget._window_state_path().parent == root
-    assert phone_server._state_path().parent == root
     app = widget.WidgetApp()
     try:
         app.start_control()
@@ -895,6 +907,18 @@ def test_run_passes_explicit_storage_path_to_webview(monkeypatch, tmp_path):
     assert started and started[0]["storage_path"] == str(product.webview_storage_path())
 
 
+def test_widget_prepares_receipt_inbox_after_claiming_instance(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(product, "validate_storage", lambda: None)
+    monkeypatch.setattr(product, "prepare_webview_storage", lambda _path: tmp_path)
+    app = widget.WidgetApp()
+    monkeypatch.setattr(app, "claim_instance", lambda: calls.append("claim") or True)
+    monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: calls.append("inbox") or True)
+    monkeypatch.setattr(app, "_run_claimed", lambda: calls.append("run"))
+    app.run()
+    assert calls == ["claim", "inbox", "run"]
+
+
 def test_app_user_model_id_is_explicit():
     assert product.APP_USER_MODEL_ID == "Branchglance.App"
 
@@ -1077,7 +1101,7 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert 'parentKey' in app and 'graphValue.edges' in app
     assert 'GPT-' in app and 'family[0].toUpperCase()' in app
     assert 'is-codex-model' in refined and 'is-claude-model' in refined
-    assert 'grid-template-columns:minmax(0,2fr) 44px 70px minmax(0,1fr) 84px 80px' in refined
+    assert 'grid-template-columns:minmax(0,2fr) 58px 64px minmax(0,1fr) 84px 80px' in refined
     assert '.runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' in refined
     assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
@@ -1088,7 +1112,8 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 11%,transparent),transparent 100%" in refined
     assert ".runway-refined-row::after{content:\"\";position:absolute;z-index:0;inset:0;border-radius:0;background:radial-gradient(" in refined
     assert ".chat[data-provider=\"Claude\"]>.row::after{background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--claude-accent) 22%" in refined
-    assert ".chat>.row.runway-root-stuck{background:" not in refined
+    # A stuck parent paints the panel colour so the surface stays continuous.
+    assert ".chat>.row.runway-root-stuck{background:#0e1017;" in refined
     assert "background-color:var(--tree-claude-surface)" not in refined
     assert "background-color:var(--tree-codex-surface)" not in refined
     assert "linear-gradient(to bottom,var(--tree-claude-surface)" not in refined

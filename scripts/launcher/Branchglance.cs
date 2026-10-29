@@ -529,8 +529,10 @@ public static class BranchglanceLauncher
     public static int Main(string[] args)
     {
         string root = AppDomain.CurrentDomain.BaseDirectory;
-        // Hook mode never shows UI and never fails Claude Code.
-        if (args.Length > 0 && args[0] == "--claude-hook") return RunHook(root, args);
+        // These helper modes must retain the caller's environment and never show UI
+        // or go through the Explorer AppData relaunch.
+        if (args.Length > 0 && (args[0] == "--claude-hook" || args[0] == "--link-codex"))
+            return RunHook(root, args);
         if (args.Length > 0 && args[0] == "--appdata-probe" && args.Length == 2)
         {
             long elapsed;

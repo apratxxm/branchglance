@@ -5,7 +5,6 @@ import os
 import queue
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -48,10 +47,6 @@ class CodexAppServer:
                     Path(local_app_data) / "Programs" / "codex" / "bin" / "codex.exe",
                     Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
                 ]
-                if sys.platform == "darwin":
-                    # The Codex desktop app bundles its CLI; Homebrew and npm installs land on PATH.
-                    candidates += [Path("/Applications/Codex.app/Contents/Resources/codex"),
-                                   Path.home() / "Applications" / "Codex.app" / "Contents" / "Resources" / "codex"]
                 for candidate in candidates:
                     if candidate.is_file():
                         found = str(candidate)

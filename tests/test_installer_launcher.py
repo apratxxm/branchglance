@@ -54,6 +54,7 @@ HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { 
 # A stand-in hook entry that echoes raw bytes: args as UTF-8, then '|', then stdin verbatim.
 ECHO = r'''using System; using System.IO; using System.Text; using System.Diagnostics; class Echo { static int Main(string[] a) {
     if (Array.IndexOf(a, "--sleep") >= 0) System.Threading.Thread.Sleep(20000);
+    if (Array.IndexOf(a, "--show-session") >= 0) { Console.Write(Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID") + "|"); }
     int spawn = Array.IndexOf(a, "--spawn-blocker");
     if (spawn >= 0) { Process.Start(new ProcessStartInfo(a[spawn+1]) { UseShellExecute=false, CreateNoWindow=true }); System.Threading.Thread.Sleep(20000); return 0; }
     var input = new MemoryStream(); Console.OpenStandardInput().CopyTo(input);
@@ -248,6 +249,24 @@ def _hook_release(root, echo_exe, version="1.0.0+hook", extra_files=0, blocker_e
 
 EVENT = ('{"tool":"Edit","text":"h\u00e9llo \u2713 \u65e5\u672c \U0001F600"}'.encode("utf-8")
          + b"\n\xff\xfe\x80 invalid utf-8 \xc3(")
+
+
+def test_link_codex_main_uses_early_helper_path_and_preserves_args_and_session(launcher, tmp_path):
+    folder, _harness = launcher
+    exe = tmp_path / "Branchglance.exe"
+    shutil.copyfile(folder / "Branchglance.exe", exe)
+    _hook_release(tmp_path, folder / "Echo.exe")
+    session = "fd38a25d-c632-4e32-97c3-5e6ed2842260"
+    env = dict(os.environ, CLAUDE_CODE_SESSION_ID=session)
+    args = ["--link-codex", "a title", 'quote"and\\', "--show-session"]
+    result = subprocess.run([str(exe), *args], input=b"", capture_output=True, env=env, timeout=30)
+    assert result.returncode == 0
+    assert result.stdout == (session + "|" + ",".join(args) + "|").encode()
+    # The dispatch is before the AppData probe/relaunch, including when redirected.
+    source = CS.read_text(encoding="utf-8")
+    main = source[source.index("public static int Main(string[] args)"):source.index("public static int HookDeadlineMs")]
+    assert main.index('args[0] == "--link-codex"') < main.index("ProbeAppData(local")
+    assert main.index('args[0] == "--link-codex"') < main.index('Process.Start(new ProcessStartInfo("explorer.exe"')
 
 
 def test_hook_mode_relays_stdio_bytes_exactly_and_always_exits_zero(launcher, tmp_path):

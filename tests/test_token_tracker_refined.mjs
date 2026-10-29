@@ -45,7 +45,6 @@ vm.createContext(context);
 vm.runInContext(app, context);
 const T = context.window.__tokenTrackerTest, stamp = minutes => new Date(now - minutes * 60000).toISOString();
 assert.equal(T.runway, true);
-assert.equal(T.phone, false);
 assert.equal(T.compact, true);
 
 const parent = { id: "exact-thread-id", title: "Parent title", model: "gpt-6.1-sol", contextModel: "gpt-6.1-sol",
@@ -108,8 +107,8 @@ assert.doesNotMatch(node("#resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-left"/);
 assert.match(node("#weekly-resets").innerHTML, /id="r0-weekly-bar"/);
 assert.match(css, /runway-refined-row \.runway-refined-path>\*\{grid-column:1;min-width:0;max-width:100%/);
-assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:#0e1017;/, "sticky parents cover children scrolling under them");
-assert.match(css, /\.chat>\.row\.runway-root-stuck\{box-shadow:[^}]+\}/, "a stuck parent casts a shadow over the scrolled list");
+assert.match(css, /\.chat>\.row\{position:sticky;top:0;z-index:3;[^}]*background:transparent;/, "a resting parent lets the trunk line show through");
+assert.match(css, /\.chat>\.row\.runway-root-stuck\{background:#0e1017;box-shadow:[^}]+\}/, "a stuck parent covers children scrolling under it and casts a shadow");
 assert.match(css, /\.chat:has\(>\.runway-tree-connectors\)>\.row\.runway-root-stuck/);
 assert.doesNotMatch(css, /#chat-list>\.chat:only-child/);
 
@@ -547,7 +546,7 @@ assert.equal(rowClasses.has("runway-root-stuck"), false, "nonsticky tall roots c
 delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
 
 // Time, status, activity, workspace, and tokens have shared columns at every depth.
-assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,2fr\) 44px 70px minmax\(0,1fr\) 84px 80px/);
+assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,2fr\) 58px 64px minmax\(0,1fr\) 84px 80px/);
 assert.match(css, /\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/);
 assert.match(css, /\.runway-refined-timing\{grid-column:2/);assert.match(css,/\.runway-refined-status\{grid-column:3/);
 assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\.runway-refined-path\{grid-column:5/);assert.match(css,/\.runway-refined-tokens\{grid-column:6/);
@@ -561,7 +560,9 @@ assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\
   assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
 }
 // Each information column has its own centred track instead of sharing or shifting with content.
-assert.match(css, /grid-template-columns:minmax\(0,2fr\) 44px 70px minmax\(0,1fr\) 84px 80px/);
+assert.match(css, /grid-template-columns:minmax\(0,2fr\) 58px 64px minmax\(0,1fr\) 84px 80px/);
+// Timing (58px) holds the longest elapsed text ("12h 59m", "12d 23h"); 44px clipped "1h 06m".
+assert.doesNotMatch(css, /grid-template-columns:minmax\(0,2fr\) (44px 70px|60px 70px)/);
 
 // The yellow waiting count is the way to the waiting chat.
 T.renderRunwayCounts({ roots: 2, total: 3, waiting: 1 });

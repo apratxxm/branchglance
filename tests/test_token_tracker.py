@@ -26,6 +26,7 @@ def isolated_agent_homes(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("CLAUDE_HOME", str(homes / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(homes / "codex"))
     monkeypatch.setattr(widget, "_warm_snapshot", lambda: None)  # no real snapshot builds from widget tests
+    monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: True)
     monkeypatch.setattr(widget, "_window_state_path", lambda: homes / "window-state.json")  # never the user's saved bounds
     monkeypatch.setattr(widget, "_monitor_work_areas", lambda physical=False: [(0, 0, 2560, 1392)])
     monkeypatch.setattr(widget, "_system_scale", lambda: 1.0)
@@ -5233,7 +5234,7 @@ def test_open_endpoint_checks_host_and_supplied_browser_origin_without_launching
         response.read()
         assert launched == ["codex://threads/01a0cad8-0000-7000-8000-000000000001"]
 
-        connection.request("GET", route, headers={"Referer": origin + "/index.html", "Sec-Fetch-Site": "same-site"})
+        connection.request("GET", route, headers={"Referer": origin + "/runway.html", "Sec-Fetch-Site": "same-site"})
         response = connection.getresponse()
         assert response.status == 200
         response.read()
@@ -5488,3 +5489,14 @@ def test_live_state_tidies_brief_style_codex_titles(tmp_path, monkeypatch):
 
     chat = next(row for row in providers.live_state()["chats"] if row["key"] == "Codex:brief")
     assert chat["title"] == "row layout"
+
+
+def test_thread_keeps_cached_parent_provider_and_tags_native_parents(monkeypatch):
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {
+        "Codex:linked": {"parentId": "claude-session", "parentProvider": "Claude"}})
+    linked = CodexProvider._thread({"id": "linked", "status": "inactive"})
+    assert (linked["parentId"], linked["parentProvider"]) == ("claude-session", "Claude")
+    native = CodexProvider._thread({"id": "child", "status": "inactive", "parentThreadId": "codex-parent"})
+    assert (native["parentId"], native["parentProvider"]) == ("codex-parent", "Codex")
+    root = CodexProvider._thread({"id": "root", "status": "inactive"})
+    assert root["parentId"] is None and root["parentProvider"] is None

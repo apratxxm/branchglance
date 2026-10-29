@@ -122,11 +122,7 @@ class Integrations:
         for index, path in enumerate(self.shortcut_paths):
             is_startup = path == (self.startup / "Branchglance.lnk" if self.startup is not None else None)
             if is_startup and not startup_enabled:
-                found = self.adapter.read_shortcut(path)
-                if (found is not None and found.get("description") == MARKER
-                        and Path(found.get("target", "")).resolve() == self.launcher.resolve()
-                        and found.get("app_id") == APP_USER_MODEL_ID
-                        and Path(found.get("workdir", "")).resolve() == self.root.resolve()):
+                if self._owned_shortcut(path) is not None:
                     self.adapter.remove_shortcut(path)
                 continue
             self.adapter.replace_shortcut(path, target=launcher, arguments="--background" if is_startup else "", workdir=str(self.root),

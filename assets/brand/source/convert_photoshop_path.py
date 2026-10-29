@@ -1,9 +1,8 @@
 """Convert the frozen Photoshop Illustrator path export to two exact SVGs.
 
-The original LiveStack04 concept was AI-generated in this Codex conversation,
-then refined as the Photoshop vector layer `Logo - matched corners`.
+The mark is the Photoshop vector layer `Logo - matched corners`.
 `mark-native.svg` retains every native cubic. `mark-master.svg` applies the
-lead-approved straight-span cleanup to the named 0-based native segments;
+approved straight-span cleanup to the named 0-based native segments;
 all unselected rounded corners retain their original cubic controls. Only
 native path records are parsed. Illustrator/PostScript operators are never
 executed. Native coordinate values are emitted as stored; one group transform
@@ -40,7 +39,7 @@ def parse_native() -> tuple[list[list[tuple[str, list[str]]]], dict[str, int]]:
     raw = SOURCE.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     if digest != EXPECTED_SOURCE_SHA256:
-        raise SystemExit(f"STOP: frozen native AI source hash mismatch: {digest}")
+        raise SystemExit(f"STOP: frozen Illustrator source hash mismatch: {digest}")
     text = raw.decode("ascii")
     paths: list[list[tuple[str, list[str]]]] = []
     current: list[tuple[str, list[str]]] | None = None
@@ -108,7 +107,7 @@ def svg_path(path: list[tuple[str, list[str]]], contour: int, clean: bool) -> st
 
 def write_svg(paths: list[list[tuple[str, list[str]]]], clean: bool, label: str) -> str:
     path_elements = "\n".join(f'<path d="{svg_path(path,i,clean)}" fill="#000000"/>' for i,path in enumerate(paths))
-    description = "Photoshop native paths with approved straight-span cleanup; all other native corner cubics retained." if clean else "Literal Photoshop AI path conversion; all native cubic control points retained."
+    description = "Photoshop native paths with approved straight-span cleanup; all other native corner cubics retained." if clean else "Literal Photoshop path conversion; all native cubic control points retained."
     return (
         f'<svg xmlns="{SVG_NS}" width="{WIDTH:.4f}" height="{HEIGHT:.4f}" '
         f'viewBox="0 0 {WIDTH:.4f} {HEIGHT:.4f}">\n'

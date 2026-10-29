@@ -1,6 +1,6 @@
 @import url('fonts/localfonts.css');
 
-/* Refined desktop only. Classic fallback and phone retain runway.css. */
+/* Refined desktop styling. */
 body.runway-refined:not(.phone){
   --paper:#0b0d12;--card:#11141c;--ink:#f3f4fa;--muted:#bcc4dc;--quiet:var(--source-muted);
   --line:#282d39;--blue:var(--source-accent);--orange:#f4ce38;--red:#f33442;--green:#35e596;
@@ -202,7 +202,6 @@ body.runway-refined:not(.phone) :focus-visible{outline:2px solid var(--focus);ou
 body.runway-refined.runway-compact:not(.phone){--paper:#020305;--card:#05070b;--compact-toolbar-height:30px;--motion-info:110ms;--motion-panel:140ms;--motion-reveal:220ms;--motion-source:240ms;--notch-open-delay:143ms;--notch-open-suppression:383ms;}
 body:not(.runway-compact) #compact-counts,body:not(.runway-compact) #compact-summary,
 body:not(.runway-compact) .compact-clock,body:not(.runway-compact) .compact-keep-open,
-body.phone #compact-counts,body.phone #compact-summary,body.phone .compact-clock,body.phone .compact-keep-open{display:none;}
 body.runway-refined.runway-compact:not(.phone) .widget{position:relative;isolation:isolate;gap:4px;padding:2px;overflow:hidden;border:0;border-radius:0;background:transparent;box-shadow:none;}
 body.runway-refined.runway-compact:not(.phone) .rr{position:relative;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 9%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 9%,transparent),transparent 52%),linear-gradient(105deg,#080a10,#030407 65%,#080a10);box-shadow:inset 0 0 0 1px var(--source-edge),inset 0 0 16px color-mix(in srgb,var(--source-glow-primary) 7%,transparent),inset 0 0 24px color-mix(in srgb,var(--source-glow-secondary) 6%,transparent);}
 body.runway-refined.runway-compact:not(.phone) .rr::after,
@@ -347,9 +346,9 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 /* Names wrap at 560px; shared metric columns stay anchored to the first and model lines. */
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat-list{min-width:0;margin:0;padding:0;border:0;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row{position:sticky;top:0;z-index:3;min-width:0;margin:0;padding:0;border:0;display:block;background:#0e1017;transition:box-shadow var(--motion-info) var(--ease-standard);}
-/* A stuck parent covers the children scrolling under it; the shadow marks the edge. */
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row.runway-root-stuck{box-shadow:0 1px 0 #ffffff0d,0 6px 10px -4px #000000d9;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row{position:sticky;top:0;z-index:3;min-width:0;margin:0;padding:0;border:0;display:block;background:transparent;transition:background-color var(--motion-info) var(--ease-standard),box-shadow var(--motion-info) var(--ease-standard);}
+/* At rest the row stays clear so the trunk line shows through; once stuck it covers the children scrolling under it, the ::before fill-in carries the trunk, and the shadow marks the edge. */
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row.runway-root-stuck{background:#0e1017;box-shadow:0 1px 0 #ffffff0d,0 6px 10px -4px #000000d9;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat.runway-tall-root>.row,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row.runway-tall-root,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row:has(>.runway-refined-row.runway-tall-root){position:relative;top:auto;z-index:auto;}
@@ -367,8 +366,8 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row .runway-refined-activity>*,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row .runway-refined-path>*{grid-column:1;min-width:0;max-width:100%;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.r-title,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{grid-column:1;grid-row:1;justify-self:stretch;align-self:start;width:100%;min-width:0;padding:0;display:flex;flex-wrap:nowrap;align-items:center;align-content:flex-start;gap:2px 4px;overflow:visible;color:var(--ink);font:650 14px/17px var(--sans);letter-spacing:-.2px;white-space:normal;text-overflow:clip;overflow-wrap:normal;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{flex:0 1 auto;min-width:0;width:auto;max-width:100%;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:normal;word-break:normal;line-height:17px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{grid-column:1;grid-row:1;justify-self:stretch;align-self:start;width:100%;min-width:0;padding:0;display:flex;flex-wrap:nowrap;align-items:center;align-content:flex-start;gap:2px 4px;overflow:visible;color:var(--ink);font:650 13px/16px var(--sans);letter-spacing:-.2px;white-space:normal;text-overflow:clip;overflow-wrap:normal;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{flex:0 1 auto;min-width:0;width:auto;max-width:100%;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:normal;word-break:normal;line-height:16px;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-message-slot:has(.runway-message-indicator){position:static;inset:auto;transform:none;z-index:auto;display:inline-flex;align-items:center;align-self:flex-start;justify-content:flex-start;flex:0 0 auto;width:auto;height:18px;min-width:max-content;max-width:none;overflow:visible;margin:0;white-space:nowrap;pointer-events:auto;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-message-slot:not(:has(.runway-message-indicator)){display:none;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-telemetry-model{grid-column:1;grid-row:2;justify-self:stretch;align-self:center;width:100%;height:16px;display:flex;align-items:center;overflow:hidden;color:var(--muted);font:400 13px/16px var(--sans);white-space:nowrap;}
@@ -432,7 +431,7 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chats
 
 /* Unified provider tree: column tracks stay fixed at every nesting depth. */
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row{
-  grid-template-columns:minmax(0,2fr) 44px 70px minmax(0,1fr) 84px 80px;
+  grid-template-columns:minmax(0,2fr) 58px 64px minmax(0,1fr) 84px 80px;
   grid-template-rows:minmax(0,1fr) minmax(0,1fr);column-gap:8px;row-gap:0;align-items:center;
   width:100%;min-width:0;min-height:50px;padding:2px 10px 2px 30px;
 }
@@ -499,7 +498,9 @@ body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left{color
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left{color:#f0a06e;}
 body.runway-refined.runway-compact:not(.phone) .rr-left b{min-width:0;width:auto;color:inherit;font-size:13px;line-height:18px;font-weight:650;}
 body.runway-refined.runway-compact:not(.phone) .rr-left i{display:none;}
-body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{display:inline;margin-left:3px;font-size:9px;}
+/* The strip has no room for the age: it lives in the tooltip, and a grey value matches the grey meter. */
+body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{display:none;}
+body.runway-refined.runway-compact:not(.phone) .rr .rr-left.last-known b{color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-attn,
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-err{color:#f0a06e;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-attn,

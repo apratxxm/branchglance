@@ -32,7 +32,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #pop
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .dashboard-content{width:100%;min-width:0;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view[hidden]{display:none!important;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .resize-edge{display:block;opacity:.3;}
-/* Insights and Settings: hairline-led Branchglance treatment, ported from docs/mockups/insights. */
+/* Insights and Settings: hairline-led Branchglance treatment. */
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view:not([hidden]){position:relative;order:1;display:flex;flex-direction:column;flex:1 1 540px;align-self:stretch;width:calc(100% - 20px);height:540px;margin:0 10px;min-width:0;max-width:none;min-height:0;overflow:hidden;border:1px solid #39364d;border-radius:10px;background:#09090b;box-shadow:inset 0 1px var(--source-edge-strong);}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .widget{padding:0;gap:0;background:#09090b;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .dashboard-header{display:grid;grid-template-columns:auto minmax(0,1fr) 28px;align-items:center;gap:16px;height:27px;min-height:27px;padding:0 24px;border-bottom:1px solid #252830;background:#0b0c0fe8;}

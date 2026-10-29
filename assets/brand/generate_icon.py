@@ -175,13 +175,10 @@ def _render_jobs(vectors: dict[str, str], jobs: list[dict], scratch: Path) -> No
     icon = _square_wrapper(full, 512, INK, radius=96)
     icon_svg = _serialize(icon)
     (ROOT / "icon-tile.svg").write_text(icon_svg, encoding="utf-8")
-    (STATIC / "phone-icon.svg").write_text(icon_svg, encoding="utf-8")
     (STATIC / "favicon.svg").write_text(icon_svg, encoding="utf-8")
     (scratch / "icon-tile.svg").write_text(icon_svg, encoding="utf-8")
     for size in SIZES:
         jobs.append({"source": str(scratch / "icon-tile.svg"), "output": str(scratch / f"icon-{size}.png"), "width": size, "height": size})
-    for size, path in ((180, STATIC / "apple-touch-icon.png"), (192, STATIC / "phone-icon-192.png"), (512, STATIC / "phone-icon-512.png")):
-        jobs.append({"source": str(scratch / "icon-tile.svg"), "output": str(path), "width": size, "height": size})
     width, height = float(source.get("width")), float(source.get("height"))
     for name, svg_name in (("full", "full"), ("mono-dark", "mono-dark"), ("mono-light", "mono-light-transparent")):
         for size in (256, 512, 1024):

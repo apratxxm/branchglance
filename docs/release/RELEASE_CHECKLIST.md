@@ -33,26 +33,25 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 
 ### Codex limits, tree and pop-up
 
-- [ ] With Codex signed in, confirm five-hour and weekly values appear when fresh data is available. Verify both meters count **used** upward and cap at 100%; confirm unavailable/stale values are not presented as current.
-- [ ] Confirm the Codex source uses the blue theme and the provider switch is available when both providers are enabled.
-- [ ] Create a synthetic root chat with multiple child agents. Verify parent/child relationship, observed statuses, activity and elapsed time.
-- [ ] Trigger a new-work or waiting-question event in the synthetic/test session. Confirm the compact pop-up surfaces and follows Codex when eligible; then manually select Claude and confirm that recent manual selection is respected.
-- [ ] Hide one synthetic chat, confirm it leaves the normal list, search `is:hidden`, confirm the hidden chat can be found, then clear search and restore the test state.
+- [ ] With Codex signed in, confirm 5-hour and weekly values appear when fresh data is available. Verify both meters count **used** upward and cap at 100%, and that a stale value shows its age in the tooltip and a grey value, never as current.
+- [ ] Confirm the collapsed strip is 328 px wide at 100% scaling and the countdown never overlaps the percentage, including when a value is last-known.
+- [ ] Create a synthetic root chat with several child agents. Verify parent/child nesting, observed statuses, activity and elapsed time, and that tree lines stay unbroken at rest and while scrolling with several roots.
+- [ ] Scroll a long subtree. Confirm the parent row sticks with a shadow and its children don't show through it.
+- [ ] Trigger new work or a waiting question in the synthetic session. Confirm the compact pop-up surfaces it and the waiting chat appears under **Needs you**.
 
 ### Claude limits, consent and tree
 
 - [ ] Before consent, inspect Claude Code settings and local Branchglance state. Confirm Branchglance hooks are absent, no Claude hook events are collected, and Claude rows are not shown.
-- [ ] Open Reset Action Settings and enable Claude Code collection. Confirm the settings backup exists, only Branchglance-owned hook entries are added, and consent status becomes enabled.
-- [ ] Restart if prompted. In a synthetic/test Claude Code session, confirm the provider switch, orange theme, chat row and reported hook activity appear.
-- [ ] Verify Claude Desktop's locally cached five-hour and weekly usage values and used-percent meters. Confirm stale/missing data remains unknown rather than becoming a fabricated current value.
+- [ ] Enable Claude tracking in **Settings → Notifications**. Confirm the settings backup exists, only Branchglance-owned hook entries are added, the consent record names the settings file, and Claude rows appear in the same tree as Codex with orange accents.
+- [ ] Verify Claude Desktop's cached 5-hour and weekly values. Confirm stale or missing data stays unknown rather than becoming a fabricated current value.
 - [ ] Trigger a synthetic hook-reported child agent if available. Record observed coverage; do not infer that all real Claude subagents are captured.
-- [ ] Disable Claude collection. Confirm consent is revoked and only Branchglance-owned hook entries are removed; leave unrelated settings untouched.
+- [ ] From a synthetic Claude Code session, run `codex exec resume <thread>` and confirm the Codex job nests under that Claude chat while it runs and after it finishes.
+- [ ] From the same session, start a new `codex exec`, then call `Branchglance.exe --link-codex <thread> --codex-pid <pid>` while it runs. Confirm a receipt lands in `%LOCALAPPDATA%\Branchglance\codex-link-receipts\receipts.jsonl` and the job nests under the chat.
+- [ ] Disable Claude tracking. Confirm consent is revoked and only Branchglance-owned hook entries are removed from the recorded settings file; leave unrelated settings untouched.
 
-### Search and active-provider behavior
+### Search
 
-- [ ] With both sources enabled, trigger new work and a waiting question in the currently unselected provider. Verify the source indicator marks attention and compact view follows the provider when no manual hold/search/popover interaction prevents it.
-- [ ] Manually switch sources and verify theme, limit display and chat tree update together.
-- [ ] Verify `is:hidden` finds hidden roots and children, and that ordinary search does not silently unhide them.
+- [ ] Verify plain search matches titles, agents, models and workspaces, and that `is:needs`, `is:running` and `is:failed` filter as described. Clear the search and confirm the full tree returns.
 
 ### Optional greeting
 
@@ -90,7 +89,7 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 - [ ] Confirm Codex and Claude monitoring are local reads and no transcript or hook event is uploaded to a Branchglance service.
 - [ ] Confirm provider usage reads go through their local application integrations and that an enabled greeting invokes the provider CLI with a short request. Release copy must not say “nothing is ever sent anywhere.”
 - [ ] Re-run the private-material scan on the exact final tree and release assets. Record any hits and their disposition.
-- [ ] Review the three README screenshots (rendered from synthetic fixtures; no EXIF or text metadata). Inspect pixels and metadata for usernames, local paths, titles, tokens and account identifiers.
+- [ ] Review the README screenshots (rendered by `scripts/screenshots` from synthetic data; no EXIF or text metadata). Inspect pixels and metadata for usernames, local paths, titles, tokens and account identifiers.
 - [ ] Confirm release assets, version and checksum match the signed-off build. Verify the private GitHub release draft renders correctly.
 
 ## Sign-off

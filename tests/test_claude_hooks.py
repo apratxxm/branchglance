@@ -1,6 +1,7 @@
 """Hook collector and event reducer (synthetic event files only)."""
 
 import json
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,8 +35,11 @@ def yesterday(now=NOW):
 
 
 def project(tmp_path, records, now=NOW, alive=True, **write_kw):
-    write(tmp_path, today(now), records, **write_kw)
-    states = claude_events.load_states(now, tmp_path)
+    # Each call describes a separate synthetic history, not an in-place rewrite
+    # of the append-only hook log used by the incremental production reader.
+    event_dir = Path(tempfile.mkdtemp(dir=tmp_path))
+    write(event_dir, today(now), records, **write_kw)
+    states = claude_events.load_states(now, event_dir)
     rows = claude_events.project_all(states, lambda pid, created: alive)
     return {(r["sid"], r["aid"]): r for r in rows}
 
