@@ -5488,3 +5488,14 @@ def test_live_state_tidies_brief_style_codex_titles(tmp_path, monkeypatch):
 
     chat = next(row for row in providers.live_state()["chats"] if row["key"] == "Codex:brief")
     assert chat["title"] == "row layout"
+
+
+def test_thread_keeps_cached_parent_provider_and_tags_native_parents(monkeypatch):
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {
+        "Codex:linked": {"parentId": "claude-session", "parentProvider": "Claude"}})
+    linked = CodexProvider._thread({"id": "linked", "status": "inactive"})
+    assert (linked["parentId"], linked["parentProvider"]) == ("claude-session", "Claude")
+    native = CodexProvider._thread({"id": "child", "status": "inactive", "parentThreadId": "codex-parent"})
+    assert (native["parentId"], native["parentProvider"]) == ("codex-parent", "Codex")
+    root = CodexProvider._thread({"id": "root", "status": "inactive"})
+    assert root["parentId"] is None and root["parentProvider"] is None

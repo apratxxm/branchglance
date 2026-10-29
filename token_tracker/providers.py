@@ -3418,9 +3418,13 @@ class CodexProvider:
         recorded = _codex_rollout_state(row.get("path"))
         run_stats = _codex_run_stats(row.get("path"))
         parent_id = row.get("parentThreadId") or row.get("parentId") or insights.get("parentId")
+        parent_provider = "Codex" if parent_id else None
         if not parent_id and (row.get("id") or row.get("threadId")):
+            # A cached parent keeps its provider with it; a Claude link must not
+            # come back looking like native Codex lineage.
             with _LIVE_LOCK:
-                parent_id = _LIVE_INDEX.get(f"Codex:{row.get('id') or row.get('threadId')}", {}).get("parentId")
+                cached = _LIVE_INDEX.get(f"Codex:{row.get('id') or row.get('threadId')}", {})
+                parent_id, parent_provider = cached.get("parentId"), cached.get("parentProvider")
         now_epoch = time.time()
         app_observed = row.get("statusObservedAt")
         if app_observed is not None:
@@ -3590,6 +3594,7 @@ class CodexProvider:
             "modelChangeAt": run_stats.get("modelChangeAt"),
             "updatedAt": updated_iso,
             "parentId": parent_id,
+            "parentProvider": parent_provider if parent_id else None,
             # Task paths are stable and descriptive; generated nicknames can vary
             # between ingestion sources, so keep them as secondary metadata.
             "agentName": (agent_path or insights.get("agentName") or row.get("agentNickname")

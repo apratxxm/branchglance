@@ -132,6 +132,8 @@ def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_pa
 
 
 @pytest.mark.parametrize("record", ['{"version": 1, "enabled": tr', '["not", "a", "record"]',
+                                    '{"executable": null}', '{"version": 1, "enabled": false, "executable": 17}',
+                                    '{"version": 1, "enabled": true, "executable": ""}',
                                     '{"version": 1, "enabled": true, "settingsPath": "relative/settings.json"}'])
 def test_uninstall_with_invalid_provenance_retains_hooks_even_without_overrides(tmp_path, monkeypatch, record):
     home = tmp_path / "home"

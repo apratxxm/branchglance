@@ -499,7 +499,11 @@ def _recorded_settings_path(data_directory: str | os.PathLike[str] | None) -> tu
         if not isinstance(record, dict):
             return "invalid", None
         if "settingsPath" not in record:
-            return ("legacy", None) if record.get("enabled") is True or "executable" in record else ("invalid", None)
+            # The only format written before targets were recorded.
+            executable = record.get("executable")
+            legacy = (record.get("version") == 1 and record.get("enabled") is True
+                      and isinstance(executable, str) and bool(executable.strip()))
+            return ("legacy", None) if legacy else ("invalid", None)
         value = record["settingsPath"]
         if not isinstance(value, str) or not value:
             return "invalid", None

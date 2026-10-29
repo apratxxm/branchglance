@@ -745,13 +745,16 @@ def apply_exact_links(
             return
     runs = registry_reader(registry_path)
     claude_ids = {str(row.get("id")) for row in claude.get("chats") or [] if row.get("id")}
+    codex_ids = {str(row.get("id")) for row in codex.get("chats") or [] if row.get("id")}
 
     def cross_provider_candidate(row: dict[str, Any]) -> bool:
         # A cached Claude parent can arrive without its provider tag; it is
-        # still a cross-provider link to revalidate, not native Codex lineage.
+        # still a cross-provider link to revalidate. Native Codex lineage wins:
+        # an untagged parent that names a Codex row stays native.
         parent = row.get("parentId")
         return (not parent or row.get("parentProvider") == "Claude"
-                or (not row.get("parentProvider") and str(parent) in claude_ids))
+                or (not row.get("parentProvider") and str(parent) in claude_ids
+                    and str(parent) not in codex_ids))
 
     live_rows = [row for row in codex.get("chats") or []
                  if cross_provider_candidate(row)
