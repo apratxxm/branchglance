@@ -250,6 +250,9 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     func open() {
         isOpen = true
+        // WebKit only tracks hover in the key window; the panel is non-activating, so this
+        // doesn't pull focus from the frontmost app but lets chart tooltips work before a click.
+        panel.makeKey()
         hideHUD()
         updateVisualizer(showing: false)
         container.headerHeight = headerHeight
