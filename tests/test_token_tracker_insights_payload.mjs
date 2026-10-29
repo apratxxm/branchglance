@@ -42,6 +42,12 @@ assert.match(html,/class="dash-chart"/);
 assert.match(html,/area-fill claude/);assert.match(html,/area-fill codex/);
 assert.equal((html.match(/class="dash-point"/g)||[]).length,30,"one hover point per series day");
 assert.equal((html.match(/class="dash-hit"/g)||[]).length,30,"one full-height hover column per series day");
+const hits=[...html.matchAll(/class="dash-hit" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)].map(m=>m.slice(1).map(Number));
+assert.equal(hits.length,30,"every hover column carries its geometry");
+for(const [,y,,height] of hits){assert.equal(y,9,"hover column starts at the plot top");assert.equal(height,84,"hover column spans the full plot height");}
+assert.equal(hits[0][0],42,"first column starts at the plot's left edge");
+assert.ok(Math.abs(hits.at(-1)[0]+hits.at(-1)[2]-664)<0.2,"last column ends at the plot's right edge");
+for(let i=1;i<hits.length;i++)assert.ok(Math.abs(hits[i-1][0]+hits[i-1][2]-hits[i][0])<0.2,"neighbouring columns meet midway between days, leaving no gaps");
 assert.match(html,/Daily · tokens/);
 
 // (3) Zero figures next to non-zero tokens are treated as missing, not shown as 0.
