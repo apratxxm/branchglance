@@ -41,5 +41,3 @@ This repository has no `pyproject.toml`, `setup.cfg`, `setup.py`, or `package.js
 ## JavaScript and brand artwork
 
 The static frontend and `.mjs` checks use vanilla JavaScript and Node built-ins; there is no `package.json` or third-party JavaScript package to list. `assets/brand/generate_icon.py` creates the project's SVG and icon outputs from the repository's geometry and bundled Geist font. The source and generated mark files are Branchglance artwork, subject to the repository license except where a third-party asset is identified above.
-
-The separate image `assets/brand/reference/live-stack-reference.webp` is documented as a visual reference, but its creator/source and license are not recorded in the repository. It is not included by the current application packaging spec. Confirm that it may be published in the source repository, or remove it in a later authorized change; it is not asserted to be MIT-licensed here.
