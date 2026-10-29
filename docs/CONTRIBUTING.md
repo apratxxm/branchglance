@@ -74,15 +74,54 @@ If you fork the project to ship your own build, change the product name and icon
 - Keep reading, displaying and sending separate. Anything that sends to a provider must be opt-in and off by default.
 - Never touch files or settings Branchglance doesn't own. Installer and hook changes need failure-path tests with temporary folders or fakes.
 - Say in docs whether something is implemented or planned.
-- Write commit messages as a short summary of what changed and why.
 
-## Pull requests
+## Commits
 
-1. Create a branch from `master` and keep the change focused.
-2. Run both test suites.
-3. Open a pull request against `master`. Describe the user-visible change, anything platform-specific, any change to stored data or permissions, and the checks you ran.
+Format: `Area: what changed`, written as a statement, no trailing period. Keep the first line under about 72 characters.
+
+```
+Widget: open only when a subagent starts, finishes or comes back
+Installer: keep the newest bg-codex on rollback
+```
+
+- The area is the part of the app a user would name: `Widget`, `Insights`, `Settings`, `Installer`, `Codex`, `Claude`, `Docs`, `CI`, `macOS`.
+- Add a body when the reason isn't obvious from the diff: what was wrong and why this fixes it.
+- One logical change per commit. Don't mix a refactor with a behaviour change.
+- No generated-by lines or co-author trailers for tools.
+
+## Branches and pull requests
+
+1. Branch from `master` with a short kebab-case name for the change: `insights-hover`, `bg-codex-path`.
+2. Keep the pull request to one topic. Its title follows the commit format.
+3. Fill in the template: what changes for the user, screenshots for anything visible, platform notes, changes to stored data or permissions, and the checks you ran.
+4. CI must pass. Run both test suites locally first.
+5. Pull requests from contributors are squash-merged with a clean message. Branches from maintainers are merged with a merge commit, `Merge branch '<name>': <summary>`.
 
 Platform-specific work is merged after review by someone who can test on that platform.
+
+### Review comments
+
+Say what to change and why, in one or two sentences. Separate blocking changes from optional ones by saying which is which. Reply to every blocking comment before merging, either with the change or with the reason not to.
+
+## Versions and releases
+
+Branchglance is in **alpha**: features are still being added and behaviour can change between releases. Versions follow [Semantic Versioning](https://semver.org) below 1.0:
+
+| Change | Bump | Example |
+|---|---|---|
+| New feature or a visible behaviour change | minor | 0.1.0 → 0.2.0 |
+| Bug fix only | patch | 0.2.0 → 0.2.1 |
+
+- The stage moves to **beta** once the planned feature set is in and releases are signed, and to **1.0** once it has been stable for daily use.
+- Every build has a build ID after a `+`, for example `0.2.0+910b6d3`. That's the commit it was built from.
+- `CHANGELOG.md` keeps an `Unreleased` section. Add a line there in the same pull request as the change, under Added, Changed or Fixed.
+
+To cut a release:
+
+1. Set `RELEASE_VERSION` in `packaging/build.py`.
+2. Rename `Unreleased` in `CHANGELOG.md` to the version and date, and start a new empty `Unreleased`.
+3. Tag the release commit `v<version>` and push the tag. The `Windows release` workflow builds and signs it.
+4. Publish the GitHub release marked as a pre-release while the stage is alpha or beta, with the changelog section as its notes.
 
 ## Reporting bugs
 

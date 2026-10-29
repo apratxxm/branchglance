@@ -23,7 +23,8 @@ JOURNAL = "install-journal.json"
 POINTER = "current.json"
 LAUNCHER = "Branchglance.exe"
 UNINSTALLER = "BranchglanceUninstall.exe"
-TOOLS = (LAUNCHER, UNINSTALLER)
+CODEX_WRAPPER = "bg-codex.exe"
+TOOLS = (LAUNCHER, UNINSTALLER, CODEX_WRAPPER)
 # FILETIME (100 ns ticks since 1601) of the Unix epoch; the launcher compares
 # FileInfo.LastWriteTimeUtc.ToFileTimeUtc() against these stamps.
 _EPOCH_AS_FILETIME = 116444736000000000
@@ -120,6 +121,133 @@ def remove_plain_tree(path: Path) -> None:
     path.rmdir()
 
 
+class _LockedWrapper:
+    """A wrapper held against writes/deletes until a handle-bound mutation finishes."""
+    def __init__(self, path: Path, *, create: bool = False):
+        if os.name != "nt":
+            raise SafetyError("Handle-bound wrapper operations require Windows")
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        self.ctypes, self.wintypes = ctypes, wintypes
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        k = self.kernel
+        k.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                  wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        k.CreateFileW.restype = wintypes.HANDLE
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.SetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k.SetFileInformationByHandle.restype = wintypes.BOOL
+        access = 0x80000000 | 0x00010000 | (0x40000000 if create else 0)
+        handle = k.CreateFileW(str(path), access, 1, None, 1 if create else 3, 0x00200000, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise SafetyError(f"Cannot lock wrapper file: {path} (Windows {ctypes.get_last_error()})")
+        try:
+            fd = msvcrt.open_osfhandle(handle, os.O_RDWR if create else os.O_RDONLY)
+            self.stream = os.fdopen(fd, "w+b" if create else "rb")
+        except BaseException:
+            k.CloseHandle(handle)
+            raise
+        self.handle = msvcrt.get_osfhandle(self.stream.fileno())
+        self.path = path
+
+    def __enter__(self): return self
+    def __exit__(self, *_): self.stream.close()
+
+    def provenance(self) -> dict:
+        ctypes, w, k = self.ctypes, self.wintypes, self.kernel
+        class Info(ctypes.Structure):
+            _fields_ = [("attributes", w.DWORD), ("created", w.FILETIME), ("accessed", w.FILETIME),
+                        ("modified", w.FILETIME), ("volume", w.DWORD), ("sizeHigh", w.DWORD),
+                        ("sizeLow", w.DWORD), ("links", w.DWORD), ("indexHigh", w.DWORD), ("indexLow", w.DWORD)]
+        k.GetFileInformationByHandle.argtypes = [w.HANDLE, ctypes.POINTER(Info)]
+        info = Info()
+        if not k.GetFileInformationByHandle(self.handle, ctypes.byref(info)) or info.attributes & (0x400 | 0x10):
+            raise SafetyError(f"Wrapper handle identity unavailable or unsafe: {self.path}")
+        index = (int(info.indexHigh) << 32) | int(info.indexLow)
+        if not info.volume or not index:
+            raise SafetyError(f"Wrapper handle identity unavailable: {self.path}")
+        self.stream.flush()
+        self.stream.seek(0)
+        digest = hashlib.sha256()
+        for block in iter(lambda: self.stream.read(1024 * 1024), b""):
+            digest.update(block)
+        return {"sha256": digest.hexdigest(), "dev": int(info.volume), "ino": index}
+
+    def verify(self, expected: Any) -> None:
+        if not _valid_wrapper_provenance(expected) or self.provenance() != expected:
+            raise SafetyError(f"Wrapper ownership cannot be verified: {self.path}")
+
+    def delete(self) -> None:
+        ctypes = self.ctypes
+        disposition = ctypes.c_int(1)
+        if not self.kernel.SetFileInformationByHandle(self.handle, 4, ctypes.byref(disposition), ctypes.sizeof(disposition)):
+            raise SafetyError(f"Cannot delete verified wrapper: {self.path} (Windows {ctypes.get_last_error()})")
+
+    def rename(self, target: Path) -> None:
+        ctypes, w = self.ctypes, self.wintypes
+        class RenameInfo(ctypes.Structure):
+            _fields_ = [("replace", ctypes.c_byte), ("root", w.HANDLE), ("length", w.DWORD), ("name", w.WCHAR * 1)]
+        encoded = str(target.absolute()).encode("utf-16-le")
+        offset = RenameInfo.name.offset
+        buffer = ctypes.create_string_buffer(offset + len(encoded) + ctypes.sizeof(w.WCHAR))
+        info = ctypes.cast(buffer, ctypes.POINTER(RenameInfo)).contents
+        info.replace = 0
+        info.root = None
+        info.length = len(encoded)
+        ctypes.memmove(ctypes.addressof(buffer) + offset, encoded, len(encoded))
+        if not self.kernel.SetFileInformationByHandle(self.handle, 3, buffer, len(buffer)):
+            raise SafetyError(f"Cannot rename verified wrapper to {target} (Windows {ctypes.get_last_error()})")
+
+
+def _delete_wrapper(path: Path, expected: Any) -> None:
+    with _LockedWrapper(path) as handle:
+        handle.verify(expected)
+        handle.delete()
+
+
+def _rename_wrapper(path: Path, target: Path, expected: Any) -> None:
+    with _LockedWrapper(path) as handle:
+        handle.verify(expected)
+        handle.rename(target)
+
+
+def _wrapper_provenance(path: Path) -> dict:
+    if is_reparse(path) or not path.is_file():
+        raise SafetyError(f"Unsafe wrapper file: {path}")
+    before = path.stat()
+    if not before.st_dev or not before.st_ino:
+        raise SafetyError(f"Wrapper file identity unavailable: {path}")
+    digest = sha256_file(path)
+    after = path.stat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise SafetyError(f"Wrapper changed while verifying: {path}")
+    return {"sha256": digest, "dev": before.st_dev, "ino": before.st_ino}
+
+
+def _valid_wrapper_provenance(value: Any) -> bool:
+    return (isinstance(value, dict) and set(value) == {"sha256", "dev", "ino"}
+            and isinstance(value["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
+            and type(value["dev"]) is int and value["dev"] > 0
+            and type(value["ino"]) is int and value["ino"] > 0)
+
+
+def _check_wrapper(path: Path, expected: Any) -> None:
+    if not _valid_wrapper_provenance(expected) or _wrapper_provenance(path) != expected:
+        raise SafetyError(f"Wrapper ownership cannot be verified: {path}")
+
+
+def _check_wrapper_ledger(root: Path, ledger: dict) -> None:
+    provenance = ledger.get("wrapperFiles", {})
+    for name in ledger["tools"]:
+        if name == CODEX_WRAPPER or name.startswith(CODEX_WRAPPER + ".old-"):
+            if not _valid_wrapper_provenance(provenance.get(name)):
+                raise SafetyError(f"Wrapper ownership is missing: {name}")
+            path = root / name
+            if os.path.lexists(path):
+                _check_wrapper(path, provenance[name])
+
+
 def _remove_known_file(path: Path) -> bool:
     if not os.path.lexists(path):
         return False
@@ -186,6 +314,8 @@ def uninstall_preflight(root: Path, *, verify_releases: bool = False):
         if record is not None and record.get("phase") not in {"committed", "rolled-back"}:
             raise SafetyError("Unfinished installer transaction prevents uninstall")
         ledger = read_owned_ledger(root)
+    if ledger is not None:
+        _check_wrapper_ledger(root, ledger)
     if verify_releases and resuming and record.get("phase") == "finalizing":
         # Mirror _finish_uninstall's refusals so callers can stop before external changes.
         remaining = [item.name for item in root.iterdir() if item.name not in {JOURNAL, OWNER_FILE, OWNED_LEDGER}]
@@ -315,9 +445,14 @@ def uninstall_owned_root(root: Path, *, integration_remove: Callable[[], None] =
             ledger = read_owned_ledger(root)
             after_mutation("uninstall-recorded-trash-deleted")
         for name in list(ledger["tools"]):
-            if _remove_known_file(root / name):
+            if name == CODEX_WRAPPER or name.startswith(CODEX_WRAPPER + ".old-"):
+                if os.path.lexists(root / name):
+                    _delete_wrapper(root / name, ledger.get("wrapperFiles", {}).get(name))
+                    after_mutation("known-file-removed")
+            elif _remove_known_file(root / name):
                 after_mutation("known-file-removed")
             ledger["tools"].remove(name)
+            ledger.get("wrapperFiles", {}).pop(name, None)
             write_owned_ledger(root, ledger, replace=fs.replace)
         for name in list(ledger["files"]):
             if _remove_known_file(safe_child(root, name)):
@@ -360,9 +495,14 @@ def validate_owned_ledger(value: dict) -> dict:
     if (not isinstance(value, dict) or value.get("schemaVersion") != SCHEMA or value.get("product") != "Branchglance"
             or any(not isinstance(value.get(name), list) for name in ("releases", "trash", "tools", "files", "directories"))):
         raise SafetyError("Install ownership ledger is corrupt or unsupported")
+    wrappers = value.get("wrapperFiles", {})
+    if not isinstance(wrappers, dict) or any(
+        name not in value["tools"] or not (name == CODEX_WRAPPER or re.fullmatch(r"bg-codex\.exe\.old-[0-9a-f]{32}", name))
+        or not _valid_wrapper_provenance(provenance) for name, provenance in wrappers.items()):
+        raise SafetyError("Install wrapper provenance is invalid")
     for version in value["releases"]:
         validate_version(version)
-    if any(name not in TOOLS and not re.fullmatch(r"(?:Branchglance|BranchglanceUninstall)\.exe\.old-[0-9a-f]{32}", name)
+    if any(name not in TOOLS and not re.fullmatch(r"(?:Branchglance|BranchglanceUninstall|bg-codex)\.exe\.old-[0-9a-f]{32}", name)
            for name in value["tools"]):
         raise SafetyError("Install ownership ledger contains an unknown tool")
     if any(name != "releases" for name in value["directories"]):
@@ -386,7 +526,8 @@ def validate_owned_ledger(value: dict) -> dict:
 def write_owned_ledger(root: Path, ledger: dict, *, replace=os.replace) -> None:
     probe = {"schemaVersion": ledger.get("schemaVersion"), "product": ledger.get("product"),
              "releases": ledger.get("releases"), "trash": ledger.get("trash"), "tools": ledger.get("tools"),
-             "files": ledger.get("files", []), "directories": ledger.get("directories", [])}
+             "files": ledger.get("files", []), "directories": ledger.get("directories", []),
+             "wrapperFiles": ledger.get("wrapperFiles", {})}
     validate_owned_ledger(probe)
     atomic_json(Path(root) / OWNED_LEDGER, probe, replace=replace)
 
@@ -831,6 +972,7 @@ class ReleaseOps:
             return "clean"
         if journal["operation"] == "uninstall":
             raise SafetyError("Interrupted uninstall must resume through app.main --uninstall-worker")
+        self._verify_wrapper_recovery(journal)
         self._reconcile_trash_intent(journal)
         phase = journal["phase"]
         if phase in ("committed", "rolled-back"):
@@ -901,11 +1043,112 @@ class ReleaseOps:
         self.after_mutation("journal-cleared")
         return "rolled-back"
 
+    def _verify_wrapper_recovery(self, journal: dict) -> None:
+        entry = (journal.get("tools") or {}).get(CODEX_WRAPPER)
+        if entry is None:
+            _check_wrapper_ledger(self.root, self._ledger())
+            return
+        old, new = entry.get("oldProvenance"), entry.get("newProvenance")
+        if old is not None and not _valid_wrapper_provenance(old):
+            raise SafetyError("Invalid old wrapper provenance")
+        if new is not None and not _valid_wrapper_provenance(new):
+            raise SafetyError("Invalid new wrapper provenance")
+        live = self.root / CODEX_WRAPPER
+        staged = self.root / entry["staged"]
+        backup = self.root / entry["backup"] if entry.get("backup") else None
+        if os.path.lexists(staged):
+            _check_wrapper(staged, new)
+        if backup is not None and os.path.lexists(backup):
+            _check_wrapper(backup, old)
+        if os.path.lexists(live):
+            found = _wrapper_provenance(live)
+            if found != old and found != new:
+                raise SafetyError("Live wrapper ownership cannot be verified")
+        if old is not None and not os.path.lexists(live) and (backup is None or not os.path.lexists(backup)):
+            raise SafetyError("Original wrapper is missing")
+        if old is not None and os.path.lexists(live) and _wrapper_provenance(live) == new and (backup is None or not os.path.lexists(backup)):
+            raise SafetyError("Original wrapper backup is missing")
+
+    def _restore_wrapper(self, entry: dict, ledger: dict) -> None:
+        live = self.root / CODEX_WRAPPER
+        backup = self.root / entry["backup"] if entry.get("backup") else None
+        staged = self.root / entry["staged"]
+        old, new = entry.get("oldProvenance"), entry.get("newProvenance")
+        if backup is not None and os.path.lexists(backup):
+            if os.path.lexists(live):
+                _delete_wrapper(live, new)
+                self.after_mutation("wrapper-new-removed")
+            _rename_wrapper(backup, live, old)
+            self.after_mutation("wrapper-old-restored")
+        elif old is None and os.path.lexists(live):
+            _delete_wrapper(live, new)
+        if os.path.lexists(staged):
+            _delete_wrapper(staged, new)
+        files = ledger.setdefault("wrapperFiles", {})
+        if backup is not None:
+            files.pop(backup.name, None)
+            if backup.name in ledger["tools"]:
+                ledger["tools"].remove(backup.name)
+        if old is None:
+            files.pop(CODEX_WRAPPER, None)
+            if CODEX_WRAPPER in ledger["tools"]:
+                ledger["tools"].remove(CODEX_WRAPPER)
+        else:
+            files[CODEX_WRAPPER] = old
+            if CODEX_WRAPPER not in ledger["tools"]:
+                ledger["tools"].append(CODEX_WRAPPER)
+        self._save_ledger(ledger)
+
+    def _replace_wrapper(self, source: Path, record: dict, ledger: dict) -> None:
+        name = CODEX_WRAPPER
+        live = self.root / name
+        old = ledger.get("wrapperFiles", {}).get(name)
+        if os.path.lexists(live):
+            if name not in ledger["tools"]:
+                raise SafetyError(f"Refusing to replace unowned install file: {live}")
+            _check_wrapper(live, old)
+            if sha256_file(live) == sha256_file(source):
+                return
+        elif name in ledger["tools"]:
+            raise SafetyError("Owned wrapper is missing")
+        entry = {"backup": f"{name}.old-{record['id']}" if old else None,
+                 "created": old is None, "staged": f"{name}.new-{record['id']}",
+                 "oldProvenance": old, "newProvenance": None}
+        record["tools"][name] = entry
+        self.journal.save(record)
+        staged = self.root / entry["staged"]
+        with source.open("rb") as reader, _LockedWrapper(staged, create=True) as writer:
+            shutil.copyfileobj(reader, writer.stream)
+            writer.stream.flush()
+            entry["newProvenance"] = writer.provenance()
+            self.journal.save(record)
+        self.after_mutation("tool-staged")
+        if old:
+            backup = self.root / entry["backup"]
+            if os.path.lexists(backup):
+                raise SafetyError("Wrapper backup collision")
+            ledger["tools"].append(backup.name)
+            ledger.setdefault("wrapperFiles", {})[backup.name] = old
+            self._save_ledger(ledger)
+            _rename_wrapper(live, backup, old)
+            self.after_mutation("tool-backed-up")
+        elif os.path.lexists(live):
+            raise SafetyError("Wrapper install destination collision")
+        _rename_wrapper(staged, live, entry["newProvenance"])
+        self.after_mutation("tool-replaced")
+        if name not in ledger["tools"]:
+            ledger["tools"].append(name)
+        ledger.setdefault("wrapperFiles", {})[name] = entry["newProvenance"]
+        self._save_ledger(ledger)
+
     def _restore_tools(self, journal: dict) -> None:
         ledger = self._ledger()
         for name, entry in (journal.get("tools") or {}).items():
             if name not in TOOLS or not isinstance(entry, dict):
                 raise SafetyError("Installer journal tool record is invalid")
+            if name == CODEX_WRAPPER:
+                self._restore_wrapper(entry, ledger)
+                continue
             live = self.root / name
             backup = entry.get("backup")
             staged = entry.get("staged")
@@ -939,6 +1182,9 @@ class ReleaseOps:
             if os.path.lexists(live) and (is_reparse(live) or not live.is_file()):
                 raise SafetyError(f"Unsafe owned install file: {live}")
             ledger = self._ledger()
+            if name == CODEX_WRAPPER:
+                self._replace_wrapper(source, record, ledger)
+                continue
             if name not in ledger["tools"]:
                 ledger["tools"].append(name)
                 self._save_ledger(ledger)
@@ -966,16 +1212,22 @@ class ReleaseOps:
                 continue
             path = safe_child(self.root, backup)
             try:
-                _remove_known_file(path)
+                if backup.startswith(CODEX_WRAPPER + ".old-"):
+                    if os.path.lexists(path):
+                        _delete_wrapper(path, ledger.get("wrapperFiles", {}).get(backup))
+                else:
+                    _remove_known_file(path)
             except (OSError, SafetyError):
                 continue  # still running or unsafe; the ownership ledger retains its exact name
             if backup in ledger["tools"]:
                 ledger["tools"].remove(backup)
+                ledger.get("wrapperFiles", {}).pop(backup, None)
                 self._save_ledger(ledger)
 
     def install(self, staged: Path, version: str, build_id: str) -> dict:
         require_owned_root(self.root)
         self.recover()
+        _check_wrapper_ledger(self.root, self._ledger())
         version = validate_version(f"{version}+{build_id}")
         staged = Path(staged)
         if is_reparse(staged) or not staged.is_dir():

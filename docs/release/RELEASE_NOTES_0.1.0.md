@@ -1,4 +1,4 @@
-# Branchglance 1.0.0
+# Branchglance 0.1.0 (alpha)
 
 Branchglance is a compact Windows widget for keeping Codex and Claude Code chats, subagents, limit usage and waiting work in view.
 

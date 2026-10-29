@@ -25,7 +25,7 @@ from typing import Callable
 
 from token_tracker import product
 
-from .core import (JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, SCHEMA, UNINSTALLER, Journal, LocalFileSystem,
+from .core import (CODEX_WRAPPER, JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, SCHEMA, UNINSTALLER, Journal, LocalFileSystem,
                    ReleaseOps, SafetyError, atomic_json, create_owner, is_reparse, read_json, require_owned_root, uninstall_preflight,
                    uninstall_owned_root, validate_version, verify_manifest)
 from .integration import Integrations
@@ -314,6 +314,12 @@ def _setup_preflight(paths: Paths, native: Native, manifest: dict, version_full:
             raise SafetyError(f"The install folder is a link or a file: {root}")
         if (root / OWNER_FILE).exists():
             require_owned_root(root)
+            ops = ReleaseOps(root)
+            journal = ops.journal.load()
+            ops._verify_wrapper_recovery(journal or {})
+            ledger = ops._ledger()
+            if os.path.lexists(root / CODEX_WRAPPER) and CODEX_WRAPPER not in ledger["tools"] and not (journal and CODEX_WRAPPER in (journal.get("tools") or {})):
+                raise SafetyError(f"Refusing to replace unowned install file: {root / CODEX_WRAPPER}")
         elif any(root.iterdir()):
             raise SafetyError(f"The install folder is not owned by Branchglance: {root}")
     handoff = root / ".cutover-handoff.json"
@@ -498,7 +504,8 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
     manifest = verify_manifest(release)
     version_full = validate_version(manifest.get("version"))
     version, build_id = version_full.split("+", 1)
-    tools = {LAUNCHER: payload / LAUNCHER, UNINSTALLER: payload / UNINSTALLER}
+    tools = {LAUNCHER: payload / LAUNCHER, UNINSTALLER: payload / UNINSTALLER,
+             CODEX_WRAPPER: payload / CODEX_WRAPPER}
     holder: dict = {}
 
     # Fast, read-only refusal before Lifecycle can send maintenance-exit.

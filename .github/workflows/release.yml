@@ -135,6 +135,7 @@ jobs:
           $components = Join-Path $env:RUNNER_TEMP "branchglance-components"
           New-Item -ItemType Directory -Path $components | Out-Null
           Copy-Item (Join-Path $output "Branchglance.exe") $components
+          Copy-Item (Join-Path $output "bg-codex.exe") $components
           Copy-Item (Join-Path $output "BranchglanceUninstall.exe") $components
           Copy-Item (Join-Path $output "releases") $components -Recurse
           $inventoryDirectory = Join-Path $env:RUNNER_TEMP "branchglance-component-inventory"
@@ -150,6 +151,7 @@ jobs:
           $unsigned = Join-Path $env:RUNNER_TEMP "branchglance-unsigned-build"
           New-Item -ItemType Directory -Path $unsigned | Out-Null
           Copy-Item (Join-Path $output "Branchglance.exe") $unsigned
+          Copy-Item (Join-Path $output "bg-codex.exe") $unsigned
           Copy-Item (Join-Path $output "BranchglanceUninstall.exe") $unsigned
           Copy-Item (Join-Path $output "BranchglanceSetup.exe") $unsigned
           Copy-Item (Join-Path $output "BranchglanceSetup.exe.sha256") $unsigned

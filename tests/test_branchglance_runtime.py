@@ -1101,7 +1101,7 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert 'parentKey' in app and 'graphValue.edges' in app
     assert 'GPT-' in app and 'family[0].toUpperCase()' in app
     assert 'is-codex-model' in refined and 'is-claude-model' in refined
-    assert 'grid-template-columns:minmax(0,2fr) 58px 64px minmax(0,1fr) 84px 80px' in refined
+    assert 'grid-template-columns:minmax(0,1fr) 52px 112px 96px 80px' in refined
     assert '.runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' in refined
     assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined

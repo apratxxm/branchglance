@@ -8,6 +8,9 @@
     <pe-file path="Branchglance.exe" product-name="Branchglance" product-version="${version}">
       <authenticode-sign />
     </pe-file>
+    <pe-file path="bg-codex.exe" product-name="Branchglance" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
     <pe-file path="BranchglanceUninstall.exe" product-name="Branchglance" product-version="${version}">
       <authenticode-sign />
     </pe-file>
