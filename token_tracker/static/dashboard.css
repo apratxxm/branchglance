@@ -100,6 +100,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .area-edge.codex{stroke:#7180ff;}
 .area-edge.claude{stroke:#e98953;stroke-width:1.1;}
 .dash-point{outline:none;}
+.dash-hit{fill:transparent;pointer-events:all;}
 .dash-point line{stroke:#d8dce6;stroke-width:1;stroke-dasharray:2 3;opacity:0;}
 .dash-point:hover line,.dash-point:focus line{opacity:.62;}
 .dash-point circle{fill:transparent;stroke:transparent;}
