@@ -2205,13 +2205,31 @@ _REPLACEMENT_CUT = re.compile(r" �+ ")
 _STANDALONE_REPLACEMENT = re.compile(r"(?<!\S)�+(?!\S)\s*")
 
 
+_MOJIBAKE_MARKERS = ("Â", "â€")  # "Â" and "â€": UTF-8 read back as cp1252
+_CODEX_MODEL_FAMILIES = frozenset({"astra", "sol", "terra", "luna"})
+
+
+def _repair_mojibake(title: str) -> str:
+    if not any(marker in title for marker in _MOJIBAKE_MARKERS):
+        return title
+    try:
+        repaired = title.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return title
+    return title if any(marker in repaired for marker in _MOJIBAKE_MARKERS) else repaired
+
+
 def _tidy_codex_title(title: str, model: Any) -> str:
     """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
-    tidy = _BRIEF_TITLE_PREFIX.sub("", title, count=1)
+    title = _repair_mojibake(title)
+    first = next((line for line in title.splitlines() if line.strip()), title)
+    tidy = _BRIEF_TITLE_PREFIX.sub("", first, count=1)
     head_sep = _BRIEF_HEAD_SEP.search(tidy)
     if head_sep:
         head, rest = tidy[:head_sep.start()], tidy[head_sep.end():]
-        model_words = re.split(r"[^a-z]+", str(model or "").lower())
+        model_id = str(model or "").strip().lower()
+        # Without a model id, fall back to the Codex model family names.
+        model_words = set(re.split(r"[^a-z]+", model_id)) if model_id else _CODEX_MODEL_FAMILIES
         if rest.strip() and head.isalpha() and head.lower() in model_words:
             # Brief-style title: the goal follows the first dash or separator; keep only the task part.
             goal = _BRIEF_GOAL_SEP.search(rest)
@@ -2222,7 +2240,7 @@ def _tidy_codex_title(title: str, model: Any) -> str:
     if kept:
         tidy = kept
     tidy = _STANDALONE_REPLACEMENT.sub("", tidy).strip()
-    return tidy or title
+    return tidy or first
 
 
 def _workspace_kind(workspace: str | None) -> str | None:
