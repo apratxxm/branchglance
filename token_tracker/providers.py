@@ -2225,6 +2225,31 @@ def _repair_mojibake(title: str) -> str:
     return re.sub(r"[^\x00-\x7f]+", fix, title)
 
 
+def _codex_exec_title(path_value: str | Path | None) -> str | None:
+    if not path_value:
+        return None
+
+    def reduce_title(state: dict[str, Any], item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        payload = item.get("payload") or {}
+        if not isinstance(payload, dict):
+            return
+        text = None
+        if item.get("type") == "event_msg" and payload.get("type") == "user_message":
+            text = payload.get("message")
+        elif item.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+            text = "\n".join(str(block.get("text") or "") for block in (payload.get("content") or []) if isinstance(block, dict))
+        if isinstance(text, str):
+            first = next((line.strip() for line in text.splitlines() if line.strip()), None)
+            # Codex also logs injected context (AGENTS.md, <environment_context>) as user messages.
+            if first and not first.startswith(("# AGENTS.md", "<")):
+                state["title"] = re.sub(r"\s*\((?:continue|retry)\b[^)]*\)\s*$", "", first, flags=re.I)[:240] or first[:240]
+
+    state = _incremental_jsonl_reduce("codex-exec-title", Path(path_value), dict, reduce_title, unavailable={})
+    return state.get("title") if state else None
+
+
 def _tidy_codex_title(title: str, model: Any) -> str:
     """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
     title = _repair_mojibake(title)
@@ -3571,7 +3596,7 @@ class CodexProvider:
             status = "unavailable"
             status_source = "unavailable"
         agent_path = insights.get("agentPath") or row.get("agentPath") or row.get("agent_path")
-        named = row.get("name") or row.get("title") or row.get("displayName") or insights.get("title") or agent_path or insights.get("agentName")
+        named = (_codex_exec_title(row.get("path")) if (insights.get("source") or row.get("source")) == "exec" else None) or row.get("name") or row.get("title") or row.get("displayName") or insights.get("title") or agent_path or insights.get("agentName")
         title = named or row.get("preview") or "Untitled task"
         title = " ".join(str(title).split())
         if title.startswith("/root/") and (row.get("parentThreadId") or insights.get("parentId")):
@@ -4863,7 +4888,7 @@ def live_state() -> dict[str, Any]:
             parent_id, parent_provider = _codex_parent_pair(insights.get("parentId"), indexed)
             row.update({
                 "id": indexed.get("id") or (key.split(":", 1)[1] if ":" in key else None),
-                "title": _tidy_codex_title(indexed.get("identityTitle") or insights.get("title") or indexed.get("title") or "",
+                "title": _tidy_codex_title((_codex_exec_title(path_value) if (insights.get("source") or indexed.get("source") or indexed.get("identitySource")) == "exec" else None) or indexed.get("identityTitle") or insights.get("title") or indexed.get("title") or "",
                                            row.get("model") or indexed.get("model") or insights.get("model")) or None,
                 "parentId": parent_id,
                 "parentProvider": parent_provider,
