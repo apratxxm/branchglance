@@ -1757,7 +1757,10 @@ function runwayStateElapsed(chat) {
 const runwayMessageDirection = chat => ({"parent-to-agent":"from parent","agent-to-parent":"to parent","agent-to-agent":"between agents"})[chat.latestMessageDirection]||'';
 const runwayMessageAge = chat => { const sent=stamp(chat.latestMessageAt),age=Date.now()-sent;return runwayMessageDirection(chat)&&sent&&age>=0&&age<10000?age:null; };
 const runwayAgentHasNewMessage = chat => runwayMessageAge(chat)!=null;
+// macOS paths have no drive: the Mac app reports POSIX paths, and Claude hooks a bare folder name.
+const MAC_HOST=/^Mac/i.test(globalThis.navigator?.platform||'');
 function runwayWorkspacePath(workspace) {
+  if(MAC_HOST){const raw=String(workspace||'').trim();if(/^\//.test(raw))return raw.replace(/\/+$/,'')||'/';if(raw&&!/[\\/:]/.test(raw))return raw;}
   const normalized=String(workspace||'').trim().replace(/\//g,'\\');
   const path=/^[A-Za-z]:\\+$/.test(normalized)?normalized.slice(0,3):normalized.replace(/\\+$/,'');
   // Show the absolute Windows location from its volume root. If telemetry is not
@@ -1766,7 +1769,7 @@ function runwayWorkspacePath(workspace) {
 }
 function runwayWorkspaceLeaf(workspace) {
   const path=runwayWorkspacePath(workspace);
-  return path?path.split('\\').at(-1)||path:'';
+  return path?path.split(MAC_HOST&&path.startsWith('/')?'/':'\\').at(-1)||path:'';
 }
 function runwayWorkspaceHTML(chat) {
   if(!chat.workspace&&!chat.root?.workspace)return '';
@@ -1774,7 +1777,9 @@ function runwayWorkspaceHTML(chat) {
   if(!path)return '';
   const inherited=!own&&Boolean(chat.root?.workspace),full=workspace;
   const title=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+full;
-  const drive=path.slice(0,3),parts=path.slice(3).split('\\').filter(Boolean),leafPart=parts.pop()||'',middle=parts.join('\\'),leaf=(middle?'\\':'')+leafPart;
+  // A Mac path has no drive; same markup with an empty drive, "/" separators.
+  const posix=MAC_HOST&&!/^[A-Za-z]:/.test(path),sep=posix?'/':'\\',rest=posix?path:path.slice(3);
+  const drive=posix?'':path.slice(0,3),parts=rest.split(sep).filter(Boolean),leafPart=parts.pop()||'',middle=(posix&&path.startsWith('/')?'/':'')+parts.join(sep),leaf=(parts.length?sep:'')+leafPart;
   return '<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(title)+'" aria-label="'+esc((inherited?'Inherited workspace: ':'Workspace: ')+path)+'">'+(inherited?'<span class="runway-workspace-inherited" aria-label="Inherited workspace">'+ICON.branch+'</span>':'')+'<span class="runway-path-drive">'+esc(drive)+'</span><span class="runway-path-middle">'+esc(middle)+'</span><span class="runway-path-leaf">'+esc(leaf)+'</span></span>';
 }
 function runwayActivityMarkup(label,fullText=label) {

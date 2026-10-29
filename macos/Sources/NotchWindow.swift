@@ -65,6 +65,10 @@ final class NotchContainerView: NSView {
     var header: NSView? { didSet { swap(oldValue, header) } }
     var content: NSView? { didSet { swap(oldValue, content) } }
     var indicator: NSView? { didSet { swap(oldValue, indicator) } }
+    /// The open panel's content size. The content is laid out at this size at once, while the
+    /// panel's shape animates around it: the page measures its width shortly after opening and
+    /// keeps that layout, so it must never see a half-grown frame.
+    var contentSize: CGSize? { didSet { needsLayout = true } }
     private var tracking: NSTrackingArea?
 
     override init(frame: NSRect) {
@@ -84,8 +88,13 @@ final class NotchContainerView: NSView {
         CATransaction.commit()
         let inner = bounds.insetBy(dx: 8, dy: 0)
         header?.frame = NSRect(x: inner.minX, y: inner.maxY - headerHeight, width: inner.width, height: headerHeight)
-        content?.frame = NSRect(x: inner.minX, y: inner.minY, width: inner.width,
-                                height: max(0, inner.height - headerHeight))
+        if let size = contentSize {
+            content?.frame = NSRect(x: bounds.midX - size.width / 2, y: inner.maxY - headerHeight - size.height,
+                                    width: size.width, height: size.height)
+        } else {
+            content?.frame = NSRect(x: inner.minX, y: inner.minY, width: inner.width,
+                                    height: max(0, inner.height - headerHeight))
+        }
         indicator?.frame = inner
     }
 

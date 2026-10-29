@@ -80,7 +80,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
-            self.isOpen ? self.place(size: self.openSize, animate: false) : self.collapse(animate: false)
+            self.isOpen ? { self.syncContentSize(); self.place(size: self.openSize, animate: false) }() : self.collapse(animate: false)
         }
     }
 
@@ -253,6 +253,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         hideHUD()
         updateVisualizer(showing: false)
         container.headerHeight = headerHeight
+        syncContentSize()
         place(size: openSize, animate: true, spring: true)
         media.setVisible(tabs.selected == .media)
         // Fade the content in once the shape has mostly grown, so it doesn't stretch into view.
@@ -262,6 +263,13 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             container.content?.animator().alphaValue = 1
             container.header?.animator().alphaValue = 1
         }
+    }
+
+    /// Lay the content out at the open size up front (see NotchContainerView.contentSize).
+    func syncContentSize() {
+        container.headerHeight = headerHeight
+        let size = openSize
+        container.contentSize = CGSize(width: size.width - 16, height: max(0, size.height - headerHeight))
     }
 
     /// Shrink to the camera housing; the black panel then disappears into the notch.
@@ -435,12 +443,12 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
                NSScreen.screens.contains(where: { displayID($0) == number }) {
                 UserDefaults.standard.set(Int(number), forKey: "displayID")
                 placedFrame = .zero
-                isOpen ? place(size: openSize, animate: false) : collapse(animate: false)
+                isOpen ? { syncContentSize(); place(size: openSize, animate: false) }() : collapse(animate: false)
             }
             return monitors()
         case "recenter":
             placedFrame = .zero
-            isOpen ? place(size: openSize, animate: false) : collapse(animate: false)
+            isOpen ? { syncContentSize(); place(size: openSize, animate: false) }() : collapse(animate: false)
             return monitors()
         case "minimize":
             shortcutOpened = false; hoverOpened = false; keepOpen = false; keepOpenRevision += 1
