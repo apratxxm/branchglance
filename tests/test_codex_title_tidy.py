@@ -41,7 +41,7 @@ def test_goal_separator_with_empty_task_keeps_remainder():
 
 def test_question_mark_titles_with_non_model_head_are_unchanged():
     assert _tidy_codex_title("Why is it slow ? fix it", "gpt-6.1-sol") == "Why is it slow ? fix it"
-    assert _tidy_codex_title("Sol ? task", "gpt-6.1-terra") == "Sol ? task"
+    assert _tidy_codex_title("Plan ? task", "gpt-6.1-terra") == "Plan ? task"
     assert _tidy_codex_title("Why is it slow ?? fix it", "gpt-6.1-sol") == "Why is it slow ?? fix it"
 
 
@@ -86,9 +86,10 @@ def test_model_family_names_are_head_words_without_model_id():
     assert _tidy_codex_title("astra ? plan lanes", "") == "plan lanes"
 
 
-def test_model_family_fallback_does_not_apply_when_model_id_is_present():
-    assert _tidy_codex_title("Sol ? task", "gpt-6.1-terra") == "Sol ? task"
-    assert _tidy_codex_title("Luna · core loop", "gpt-6.1-terra") == "Luna · core loop"
+def test_model_family_names_count_even_when_the_thread_moved_to_another_model():
+    assert _tidy_codex_title("Sol ? task", "gpt-6.1-terra") == "task"
+    assert _tidy_codex_title("Luna · core loop", "gpt-6.1-terra") == "core loop"
+    assert _tidy_codex_title("Solar · panel app", "gpt-6.1-terra") == "Solar · panel app"
 
 
 def test_non_model_heads_are_unchanged_with_or_without_model_id():
@@ -97,3 +98,21 @@ def test_non_model_heads_are_unchanged_with_or_without_model_id():
     assert _tidy_codex_title("Track Route Review · review user-approved track URI change", None) == (
         "Track Route Review · review user-approved track URI change")
     assert _tidy_codex_title("Why is it slow ? fix it", None) == "Why is it slow ? fix it"
+
+
+def test_family_head_drops_even_when_thread_moved_to_another_model():
+    assert _tidy_codex_title("Luna · core loop", "gpt-6.1-terra") == "core loop"
+
+
+def test_long_goal_after_dash_is_cut_but_short_tail_stays():
+    assert _tidy_codex_title("state-audit — establish ground-truth source/test state after", "gpt-6.1-terra") == "state-audit"
+    assert _tidy_codex_title("Fix bug — urgent", "gpt-6.1-terra") == "Fix bug — urgent"
+
+
+def test_mojibake_is_repaired_even_next_to_a_real_ellipsis():
+    garbled = "Sol Â· api â€” implement the HTTP/WS API and learning…"
+    assert _tidy_codex_title(garbled, "gpt-6.1-sol") == "api"
+
+
+def test_agent_task_paths_become_readable_labels():
+    assert _tidy_codex_title("/root/audit_widget_footprint", "gpt-6.1-terra") == "Audit widget footprint"
