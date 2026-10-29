@@ -10,7 +10,7 @@ A small always-on-top Windows widget that shows what your Codex and Claude Code 
 
 It is built for people who run several agent chats at once and keep losing track of which one finished, which one is stuck on a question, and how close they are to a limit.
 
-![Expanded widget: a Claude chat with nested Codex jobs and a waiting question](docs/release/screenshots/tree-expanded.png)
+![Expanded widget: a Claude chat with nested Codex jobs and a waiting question](docs/release/screenshots/tree-expanded.png?v=aligned)
 
 ## Features
 

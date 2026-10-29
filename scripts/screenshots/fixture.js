@@ -17,6 +17,12 @@
       tracker.notch.manual = true;
       tracker.notch.inspecting = true;
       tracker.setNotch(true);
+      // A headless browser cannot perform the native window resize requested by
+      // set_notch. Match the capture surface to its toolbar instead of applying
+      // viewport corrections intended for the real WebView host.
+      const surface = document.querySelector('.layout');
+      surface.style.setProperty('width', '100%', 'important');
+      surface.style.setProperty('min-width', '100%', 'important');
     } else if (mode === "settings") {
       tracker.openDashboard();
       window.TokenTrackerDashboard.selectTab("settings");
