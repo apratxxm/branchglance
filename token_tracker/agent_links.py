@@ -26,6 +26,7 @@ MAX_INBOX_BYTES = 1024 * 1024
 REGISTRY_NAME = "agent-runs.json"
 INBOX_NAME = "codex-link-receipts"
 RECEIPT_FILE = "receipts.jsonl"
+KF_FLAG_NO_PACKAGE_REDIRECTION = 0x00010000
 RETENTION_SECONDS = 7 * 86400
 _GRAPH_LOCK = threading.Lock()
 _GRAPH_EDGES: dict[str, str | None] = {}
@@ -494,7 +495,10 @@ def _known_local_app_data() -> Path:
     shell.SHGetKnownFolderPath.restype = ctypes.c_long
     ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
     value = ctypes.c_void_p()
-    if shell.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(value)) != 0 or not value.value:
+    # Ask for the real folder even from inside a packaged (MSIX) process, so a
+    # receipt can never land in a package-private copy the widget doesn't read.
+    if shell.SHGetKnownFolderPath(ctypes.byref(folder), KF_FLAG_NO_PACKAGE_REDIRECTION, None,
+                                  ctypes.byref(value)) != 0 or not value.value:
         raise OSError("LocalAppData known folder unavailable")
     try:
         return Path(ctypes.wstring_at(value))

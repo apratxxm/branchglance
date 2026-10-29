@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import ctypes
 from pathlib import Path
 import pytest
@@ -807,3 +808,34 @@ def test_disabled_collection_skips_process_hooks_and_receipt_readers(monkeypatch
             AssertionError(f"{name} must not be read when collection is disabled")))
     snapshot = providers.build_snapshot()
     assert snapshot["providers"] == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows known folders")
+def test_known_folder_lookup_disables_package_redirection(monkeypatch):
+    import ctypes
+    seen = []
+    buffer = ctypes.create_unicode_buffer(r"C:\Users\someone\AppData\Local")
+
+    class Fn:
+        def __init__(self, impl):
+            self.impl, self.argtypes, self.restype = impl, None, None
+
+        def __call__(self, *args):
+            return self.impl(*args)
+
+    def known_folder(_folder, flags, _token, out):
+        seen.append(flags)
+        out._obj.value = ctypes.addressof(buffer)
+        return 0
+
+    class Shell:
+        SHGetKnownFolderPath = Fn(known_folder)
+
+    class Ole:
+        CoTaskMemFree = Fn(lambda _ptr: None)
+
+    real = ctypes.WinDLL
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: Shell() if name == "shell32"
+                        else Ole() if name == "ole32" else real(name, **kw))
+    assert str(agent_links._known_local_app_data()) == r"C:\Users\someone\AppData\Local"
+    assert seen == [agent_links.KF_FLAG_NO_PACKAGE_REDIRECTION] and seen[0] == 0x10000
