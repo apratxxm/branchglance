@@ -17,6 +17,9 @@
       tracker.notch.manual = true;
       tracker.notch.inspecting = true;
       tracker.setNotch(true);
+    } else if (mode === "settings") {
+      tracker.openDashboard();
+      window.TokenTrackerDashboard.selectTab("settings");
     } else if (mode.startsWith("insights")) {
       localStorage.setItem("branchglanceInsightsRange", mode.endsWith("24h") ? "24h" : "30d");
       tracker.openDashboard();

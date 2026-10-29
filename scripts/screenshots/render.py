@@ -152,6 +152,7 @@ def edge_path():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--insights-only", action="store_true")
+    parser.add_argument("--settings-only", action="store_true")
     parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     parser.add_argument("--prefix", default="")
     args = parser.parse_args()
@@ -163,6 +164,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="branchglance-screenshots-") as profile:
             captures = [("insights-24h", "insights-24h.png", 720, 608),
                         ("insights-30d", "insights-30d.png", 720, 608)] if args.insights_only else [
+                        ("settings", "settings.png", 720, 608)] if args.settings_only else [
                         ("collapsed", "widget-collapsed.png", 328, 110),
                         ("tree", "tree-expanded.png", 560, 420),
                         ("insights", "insights.png", 720, 608)]
