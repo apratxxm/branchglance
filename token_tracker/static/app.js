@@ -402,22 +402,40 @@ function expandForNewWork() {
     if(notch.inspecting||notch.manual)setNotch(true);else setNotch(false);
   },3000);
 }
+// Reveal only on subagent lifecycle (started, finished, back after finishing) and on new questions;
+// messages, turns and token updates never pop the widget. A status flap shorter than
+// LIFECYCLE_SETTLE_MS counts as neither a finish nor a return.
+const LIFECYCLE_SETTLE_MS=8000;
+function lifecycleStates(current,now=Date.now()) {
+  const next=new Map();let changed=false;const changedItems=[];
+  const baseline=notch.activeKeys===null;
+  const keys=new Set([...current.keys(),...notch.workStates.keys()]);
+  for(const key of keys){
+    const previous=notch.workStates.get(key),item={...(current.get(key)||{...previous,active:false})};
+    if(item.active){
+      const born=!baseline&&!previous&&item.subagent,back=Boolean(item.subagent&&previous&&!previous.active&&(previous.finished||!previous.wasActive));
+      const asked=Boolean(item.waiting&&(!previous?.waiting||previous.questionToken!==item.questionToken));
+      item.wasActive=true;item.finished=false;item.inactiveSince=0;
+      if(!baseline&&(born||back||asked)){changed=true;changedItems.push(item);}
+    }else{
+      item.wasActive=Boolean(previous?.wasActive||previous?.active);item.finished=Boolean(previous?.finished);
+      item.inactiveSince=previous?.active?now:(previous?.inactiveSince||0);
+      if(item.subagent&&item.wasActive&&!item.finished&&item.inactiveSince&&now-item.inactiveSince>=LIFECYCLE_SETTLE_MS){
+        item.finished=true;item.wasActive=false;if(!baseline){changed=true;changedItems.push(item);}
+      }
+    }
+    next.set(key,item);
+  }
+  return {next,changed,changedItems};
+}
 function syncCompactNotch(count,items) {
   const fresh=runwayCurrentEvidenceFresh(),current=fresh?new Map(items.map(item=>typeof item==="string"?[item,{key:item,active:true}]:[item.key,item])):new Map();
   const activeKeys=new Set([...current.values()].filter(item=>item.active).map(item=>item.key));
-  let newWork=notch.activeKeys===null?activeKeys.size>0:[...activeKeys].some(key=>!notch.activeKeys.has(key));
-  const newWorkItems=[];
-  if(notch.activeKeys===null){for(const item of current.values())if(item.active)newWorkItems.push(item);}
-  else for(const [key,item] of current)if(item.active&&!notch.activeKeys.has(key))newWorkItems.push(item);
-  for(const [key,item] of current){
-    if(!item.active)continue;
-    const previous=notch.workStates.get(key);
-    const restarted=Boolean(previous?.active&&previous.runStartedAt&&item.runStartedAt&&previous.runStartedAt!==item.runStartedAt);
-    const messageArrived=Boolean(item.subagent&&item.latestMessageDirection&&["parent-to-agent","agent-to-parent","agent-to-agent"].includes(item.latestMessageDirection)&&item.latestMessageAt&&previous&&(!previous.latestMessageAt||item.latestMessageAt>previous.latestMessageAt));
-    const questionArrived=Boolean(item.waiting&&(!previous?.waiting||previous.questionToken!==item.questionToken));
-    if(!previous||!previous.active||restarted||messageArrived||questionArrived){newWork=true;if(!newWorkItems.some(candidate=>candidate.key===key))newWorkItems.push(item);}
-  }
-  const nextStates=new Map(current);for(const [key,item] of notch.workStates)if(!current.has(key))nextStates.set(key,{...item,active:false});
+  const lifecycle=lifecycleStates(current);
+  let newWork=notch.activeKeys===null?activeKeys.size>0:lifecycle.changed;
+  const newWorkItems=notch.activeKeys===null?[...current.values()].filter(item=>item.active):lifecycle.changedItems;
+  const nextStates=lifecycle.next;
+  const previousActive=notch.activeKeys;
   notch.workStates=nextStates;notch.activeKeys=activeKeys;notch.active=fresh?count:0;
   if(!fresh){
     clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
@@ -427,7 +445,9 @@ function syncCompactNotch(count,items) {
     setNotch(false);return;
   }
   if(newWork&&!notch.active)notch.autoExpanded=true;
-  if(newWork)selectSourceForNewWork(newWorkItems);
+  // The source still follows any chat that starts, even when that start doesn't reveal the widget.
+  const started=previousActive===null?[]:[...current.values()].filter(item=>item.active&&!previousActive.has(item.key));
+  if(newWork||started.length)selectSourceForNewWork(newWork?newWorkItems:started);
   if(!notch.active){
     clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
     notch.inspectTimer=notch.exitTimer=notch.autoTimer=notch.timer=null;notch.autoExpanded=false;notch.autoClosePending=false;
@@ -450,17 +470,9 @@ function syncNotch(count,items=[]) {
     if(state.popover?.dataset?.action==='runway-question')closePopover({restoreFocus:false,updateNotch:false});
     setNotch(Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded));return;
   }
-  let newWork=notch.activeKeys===null?activeKeys.size>0:[...activeKeys].some(key=>!notch.activeKeys.has(key));
-  for(const [key,item] of current){
-    if(!item.active)continue;
-    const previous=notch.workStates.get(key);
-    const restarted=Boolean(previous?.active&&previous.runStartedAt&&item.runStartedAt&&previous.runStartedAt!==item.runStartedAt);
-    const messageArrived=Boolean(item.subagent&&item.latestMessageDirection&&["parent-to-agent","agent-to-parent","agent-to-agent"].includes(item.latestMessageDirection)&&item.latestMessageAt&&previous&&(!previous.latestMessageAt||item.latestMessageAt>previous.latestMessageAt));
-    const questionArrived=Boolean(item.waiting&&(!previous?.waiting||previous.questionToken!==item.questionToken));
-    if(!previous||!previous.active||restarted||messageArrived||questionArrived)newWork=true;
-  }
-  const nextStates=new Map(current);
-  for(const [key,item] of notch.workStates)if(!current.has(key))nextStates.set(key,{...item,active:false});
+  const lifecycle=lifecycleStates(current);
+  const newWork=notch.activeKeys===null?activeKeys.size>0:lifecycle.changed;
+  const nextStates=lifecycle.next;
   notch.workStates=nextStates;
   notch.activeKeys=activeKeys;
   notch.active=count;
@@ -1171,7 +1183,21 @@ function buildForest(providers, graph=undefined) {
     if(!RUNWAY||!interacting)chat.children.sort((a,b)=>b.latest-a.latest);
   }
   roots.forEach(root=>aggregate(root,root));
+  if(RUNWAY){
+    placeRows([...map.values()]);
+    const byPlace=(a,b)=>rowPlace.rank.get(a.key)-rowPlace.rank.get(b.key);
+    const visit=chat=>{chat.children.sort(byPlace);chat.descendants=[];for(const child of chat.children){visit(child);chat.descendants.push(child,...child.descendants);}};
+    roots.forEach(visit);
+  }
   return {roots,rows:[...map.values()]};
+}
+// Rows keep the place they first appeared in, so activity never shuffles the tree.
+// The first load orders by latest activity; rows seen later go on top.
+const rowPlace={rank:new Map(),next:-1};
+function placeRows(rows) {
+  const fresh=rows.filter(chat=>!rowPlace.rank.has(chat.key));
+  if(!rowPlace.rank.size)fresh.sort((a,b)=>b.latest-a.latest).forEach((chat,index)=>rowPlace.rank.set(chat.key,index));
+  else fresh.sort((a,b)=>a.latest-b.latest).forEach(chat=>rowPlace.rank.set(chat.key,rowPlace.next--));
 }
 function stabilizeRunwayForest(forest, previous) {
   const container=$('#chat-list'),interacting=state.pointerInList||container?.contains?.(document.activeElement)||state.popover?.dataset?.action==='runway-question';
@@ -1210,7 +1236,7 @@ const inWindow = (chat, days) => Date.now()-chat.latest<=days*86400000;
 function visibleRoots(forest, days=state.windowDays) {
   const query=parseQuery(state.query);
   const byLatest=[...forest.roots].sort((a,b)=>b.latest-a.latest);
-  if(RUNWAY)return byLatest.filter(chat=>{
+  if(RUNWAY)return [...forest.roots].sort((a,b)=>(rowPlace.rank.get(a.key)??0)-(rowPlace.rank.get(b.key)??0)).filter(chat=>{
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
@@ -2995,7 +3021,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,

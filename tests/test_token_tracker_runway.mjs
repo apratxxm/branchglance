@@ -707,13 +707,35 @@ assert.equal(node('#search-toggle').hidden,false,'a valid active snapshot reveal
 T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleChats.map(chat=>({...chat,updatedAt:ago(0),usageUpdatedAt:ago(0),latestMessageAt:ago(0),latestMessageDirection:'assistant-analysis'}))}]});
 assert.equal(T.notch.expanded,false);assert.equal(T.notch.autoTimer,null); // ordinary activity/transcript updates do not reveal again
 let lifecycleNext=lifecycleChats.map(chat=>chat.id==='lifecycle-root'?{...chat,activeRunStartedAt:ago(1)}:chat);
-T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // changed run start means restart
+T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.autoTimer,null); // a new turn in a running chat does not pop the widget
 lifecycleNext=lifecycleNext.map(chat=>chat.id==='paused-worker'?{...chat,status:'running',activeRunStartedAt:ago(2)}:chat);
 T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // previously inactive chat becomes active
 lifecycleNext=[...lifecycleNext,{...child,id:'new-worker',parentId:'lifecycle-root',status:'running',activeRunStartedAt:ago(1),latestRequestAt:null}];
 T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // a new subagent appears
 lifecycleNext=lifecycleNext.map(chat=>chat.id==='new-worker'?{...chat,latestMessageAt:ago(0),latestMessageDirection:'parent-to-agent'}:chat);
-T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // new message to the active subagent
+T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.autoTimer,null); // a message to an active subagent does not pop the widget
+{ // A subagent that stops for under 8 s is a flap; once it stays stopped, its finish reveals once.
+  const finished=lifecycleNext.map(chat=>chat.id==='new-worker'?{...chat,status:'idle',stateDetail:'completed',activeRunStartedAt:null}:chat);
+  T.state.liveSampleAccepted=false;
+  const at=testNow,shot=chats=>({...lifecycleSnapshot,generatedAt:new Date(testNow).toISOString(),providers:[{...provider,chats}]});
+  T.render(shot(finished));assert.equal(T.notch.autoTimer,null,'a fresh stop is not yet a finish');
+  testNow=at+8001;
+  T.render(shot(finished));assert.equal(T.notch.expanded,true,'a settled finish reveals');expireReveal();
+  T.render(shot(finished));assert.equal(T.notch.autoTimer,null,'a finish reveals only once');
+  T.render(shot(lifecycleNext));assert.equal(T.notch.expanded,true,'a finished subagent coming back reveals');expireReveal();
+  testNow=at;T.render(shot(lifecycleNext));
+}
+{ // Activity never reorders rows: a quiet chat that becomes busiest keeps its place; a new chat goes on top.
+  const row=(id,updated,parentId)=>({...root,id,parentId,status:'running',activeRunStartedAt:ago(1),updatedAt:ago(updated),usageUpdatedAt:ago(updated)});
+  const keys=forest=>JSON.stringify(T.visibleRoots(forest).map(chat=>chat.id).filter(id=>id.startsWith('order-')));
+  const first=T.buildForest([{...provider,chats:[row('order-a',1),row('order-b',5),row('order-b1',6,'order-b'),row('order-b2',7,'order-b')]}]);
+  assert.equal(keys(first),'["order-a","order-b"]');
+  const busy=T.buildForest([{...provider,chats:[row('order-a',3),row('order-b',0),row('order-b1',6,'order-b'),row('order-b2',0,'order-b')]}]);
+  assert.equal(keys(busy),'["order-a","order-b"]','roots keep their order');
+  assert.equal(busy.roots.find(chat=>chat.id==='order-b').children.map(chat=>chat.id).join(),'order-b1,order-b2','children keep their order');
+  const added=T.buildForest([{...provider,chats:[row('order-a',3),row('order-b',0),row('order-c',2)]}]);
+  assert.equal(JSON.parse(keys(added))[0],'order-c','a new chat goes on top');
+}
 T.setNotch(false);T.notch.activeKeys=null;T.notch.workStates.clear();
 T.render(lifecycleSnapshot);const burstTimer=T.notch.autoTimer;
 const burstChats=[...lifecycleChats,{...child,id:'burst-worker',parentId:'lifecycle-root',status:'running',activeRunStartedAt:ago(1)}];
