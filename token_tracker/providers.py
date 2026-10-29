@@ -2198,24 +2198,31 @@ def _chat_source(value: Any) -> str | None:
 _BRIEF_TITLE_PREFIX = re.compile(r"^(?:#+\s+)?(?:\[[^\]]{1,40}\]\s*)?")
 
 
-_BRIEF_SEPARATORS = (" · ", " ? ", " � ")  # "?" and U+FFFD are the lossy-encoded forms of "·"
-_BRIEF_GOAL_SEPARATORS = (" — ", " – ", " ? ", " � ")
+# Codex stored "·" as "?" or U+FFFD in lossy-encoded titles; a run of 1-3 "?" counts as a separator too.
+_BRIEF_HEAD_SEP = re.compile(r" (?:·|\?{1,3}|�+) ")
+_BRIEF_GOAL_SEP = re.compile(r" (?:—|–|\?{1,3}|�+) ")
+_REPLACEMENT_CUT = re.compile(r" �+ ")
+_STANDALONE_REPLACEMENT = re.compile(r"(?<!\S)�+(?!\S)\s*")
 
 
 def _tidy_codex_title(title: str, model: Any) -> str:
     """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
     tidy = _BRIEF_TITLE_PREFIX.sub("", title, count=1)
-    earliest = [(tidy.find(sep), sep) for sep in _BRIEF_SEPARATORS if sep in tidy]
-    if earliest:
-        index, sep = min(earliest)
-        head, rest = tidy[:index], tidy[index + len(sep):]
+    head_sep = _BRIEF_HEAD_SEP.search(tidy)
+    if head_sep:
+        head, rest = tidy[:head_sep.start()], tidy[head_sep.end():]
         model_words = re.split(r"[^a-z]+", str(model or "").lower())
         if rest.strip() and head.isalpha() and head.lower() in model_words:
             # Brief-style title: the goal follows the first dash or separator; keep only the task part.
-            goals = [rest.find(goal) for goal in _BRIEF_GOAL_SEPARATORS if goal in rest]
-            task = rest[:min(goals)] if goals else rest
+            goal = _BRIEF_GOAL_SEP.search(rest)
+            task = rest[:goal.start()] if goal else rest
             tidy = task.strip() or rest.strip()
-    return tidy.strip() or title
+    # U+FFFD is never typed on purpose: anything after a replacement run is the goal, not the title.
+    kept = _REPLACEMENT_CUT.split(tidy, maxsplit=1)[0].strip()
+    if kept:
+        tidy = kept
+    tidy = _STANDALONE_REPLACEMENT.sub("", tidy).strip()
+    return tidy or title
 
 
 def _workspace_kind(workspace: str | None) -> str | None:

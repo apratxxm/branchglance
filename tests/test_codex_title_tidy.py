@@ -42,4 +42,19 @@ def test_goal_separator_with_empty_task_keeps_remainder():
 def test_question_mark_titles_with_non_model_head_are_unchanged():
     assert _tidy_codex_title("Why is it slow ? fix it", "gpt-6.1-sol") == "Why is it slow ? fix it"
     assert _tidy_codex_title("Sol ? task", "gpt-6.1-terra") == "Sol ? task"
-    assert _tidy_codex_title("Sol � task", "gpt-6.1-terra") == "Sol � task"
+    assert _tidy_codex_title("Why is it slow ?? fix it", "gpt-6.1-sol") == "Why is it slow ?? fix it"
+
+
+def test_run_of_question_marks_is_a_separator_in_brief_titles():
+    assert _tidy_codex_title("Luna ?? state-audit ??? establish ground", "gpt-6-luna") == "state-audit"
+    assert _tidy_codex_title("Luna ? state-audit ?? establish ground", "gpt-6-luna") == "state-audit"
+
+
+def test_replacement_run_cuts_title_without_model_head():
+    assert _tidy_codex_title("review claude-support � design review of", "gpt-6.1-sol") == "review claude-support"
+    assert _tidy_codex_title("review claude-support �� design review of", "gpt-6.1-sol") == "review claude-support"
+
+
+def test_standalone_replacement_characters_are_stripped():
+    assert _tidy_codex_title("� task name", "gpt-6.1-sol") == "task name"
+    assert _tidy_codex_title("task name �", "gpt-6.1-sol") == "task name"
