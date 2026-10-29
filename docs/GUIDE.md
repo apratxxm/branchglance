@@ -2,7 +2,7 @@
 
 A guide to every part of Branchglance and how it fits a day of running Codex and Claude Code in parallel. It is written for power users: people who keep several chats going at once, delegate to subagents, and hit usage limits.
 
-Behaviour below matches release 1.0.0. Where Branchglance only reports what it has observed, the guide says so.
+Behaviour below matches release 0.1.0 (alpha). Where Branchglance only reports what it has observed, the guide says so.
 
 ## The idea
 
@@ -132,7 +132,7 @@ The **Settings** tab sits next to Insights.
 - **Providers:** the show, collect and send flags from your policy file. These are read-only here.
 - **Notifications:** reset actions and Claude tracking (see below).
 - **Display:** the monitor the widget opens on, and **Recenter**, which brings the widget back to that display.
-- **Version:** the installed version and build, for example `1.0.0+942f13f`.
+- **Version:** the installed version and build, for example `0.1.0+910b6d3`.
 
 ## Reset actions
 
