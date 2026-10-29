@@ -545,10 +545,10 @@ assert.equal(rowClasses.has("runway-root-stuck"), false, "nonsticky tall roots c
 delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
 
 // Time, status, activity, workspace, and tokens have shared columns at every depth.
-assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,2fr\) 58px 64px minmax\(0,1fr\) 84px 80px/);
+assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,1fr\) 52px 112px 96px 80px/);
 assert.match(css, /\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/);
 assert.match(css, /\.runway-refined-timing\{grid-column:2/);assert.match(css,/\.runway-refined-status\{grid-column:3/);
-assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\.runway-refined-path\{grid-column:5/);assert.match(css,/\.runway-refined-tokens\{grid-column:6/);
+assert.match(css,/\.runway-refined-activity\{grid-column:3;grid-row:2/);assert.match(css,/\.runway-refined-path\{grid-column:4/);assert.match(css,/\.runway-refined-tokens\{grid-column:5/);
 
 // A Claude chat waiting on a permission prompt has no question text but still explains itself.
 {
@@ -559,7 +559,8 @@ assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\
   assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
 }
 // Each information column has its own centred track instead of sharing or shifting with content.
-assert.match(css, /grid-template-columns:minmax\(0,2fr\) 58px 64px minmax\(0,1fr\) 84px 80px/);
+assert.match(css, /grid-template-columns:minmax\(0,1fr\) 52px 112px 96px 80px/);
+assert.doesNotMatch(css, /\.runway-refined-(?:activity>\.runway-activity|path>\.runway-workspace|path \.runway-path-leaf|status \.runway-state-word)\{[^}]*white-space:normal/);
 // Timing (58px) holds the longest elapsed text ("12h 59m", "12d 23h"); 44px clipped "1h 06m".
 assert.doesNotMatch(css, /grid-template-columns:minmax\(0,2fr\) (44px 70px|60px 70px)/);
 

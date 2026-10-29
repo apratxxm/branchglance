@@ -118,12 +118,16 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(rowRule,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
   const cellRules=['runway-refined-timing','runway-refined-status','runway-refined-path','runway-refined-tokens'];
   for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
-  assert.match(cssRule(inspect+'.runway-refined-activity'),/overflow:visible/);
-  assert.match(cssRule(inspect+'.runway-refined-activity>.runway-activity'),/white-space:normal;overflow-wrap:anywhere/);
-  for(const name of ['runway-refined-timing','runway-refined-status','runway-refined-path'])
+  assert.doesNotMatch(cssRule(inspect+'.runway-refined-activity'),/overflow:visible/);
+  assert.doesNotMatch(cssRule(inspect+'.runway-refined-activity>.runway-activity'),/white-space:normal/,'activity stays on one line');
+  for(const name of ['runway-refined-timing','runway-refined-path'])
     assert.match(cssRule(inspect+'.'+name),/grid-row:1\/3/);
+  // Status sits above its activity in one column; alone, it centres across both lines.
+  assert.match(cssRule(inspect+'.runway-refined-status'),/grid-column:3;grid-row:1;/);
+  assert.match(cssRule(inspect+'.runway-refined-activity'),/grid-column:3;grid-row:2;/);
+  assert.match(css,/\.runway-refined-row:not\(:has\(\.runway-activity\)\) \.runway-refined-status\{grid-row:1\/3;align-self:center/);
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-template-rows:18px 14px;row-gap:2px/);
-  assert.match(css,/\.runway-refined-path \.runway-path-leaf\{overflow:visible;white-space:normal;overflow-wrap:break-word;text-overflow:clip;\}/,'workspace wraps instead of clipping');
+  assert.doesNotMatch(css,/\.runway-refined-path \.runway-path-leaf\{overflow:visible;white-space:normal/,'workspace stays on one line');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-row:1\/3/,'tokens span the same two-row axis as the single-line columns');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/align-items:center/,'tokens centre their two lines on the shared row axis');
 }
