@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from token_tracker import insights, providers
 
 
@@ -46,12 +48,14 @@ def test_prices_only_registered_ids_and_existing_model_aliases():
     known = {
         "Claude": {
             "claude-fable-5": "fable-5",
+            "claude-mythos-5": "fable-5",
             "claude-opus-5": "opus-5",
             "claude-opus-4-8": "opus-4.8",
             "claude-sonnet-5": "sonnet-5",
             "claude-haiku-4-5": "haiku-4.5",
             "claude-haiku-4-5-20251001": "haiku-4.5",
             "claude-fable-5-1": "fable-5.1",
+            "claude-mythos-5-1": "fable-5.1",
             "claude-opus-5-5": "opus-5.5",
             "claude-sonnet-5-5": "sonnet-5.5",
             "claude-haiku-5-5": "haiku-5.5",
@@ -66,7 +70,7 @@ def test_prices_only_registered_ids_and_existing_model_aliases():
     # Opus 5.5 is its own price row, not Opus 5's (the old substring matcher conflated them).
     assert providers._price_for("claude-opus-5-5", providers.CLAUDE_PRICING) == (4, .2, 5, 8, 20)
 
-    for unknown in ("gpt-5.6-sol-unlisted-premium", "gpt-6.astra", "gpt6astra",
+    for unknown in ("gpt-6.1-terra-preview", "gpt-5.6-sol-unlisted-premium", "gpt-6.astra", "gpt6astra",
                     "gpt-6-astra|unlisted"):
         assert providers._price_for(unknown, providers.CODEX_PRICING) is None
         cost = providers._costs({"total_tokens": 1_000_000}, {unknown: _usage(1_000_000)}, providers.CODEX_PRICING)
@@ -74,6 +78,43 @@ def test_prices_only_registered_ids_and_existing_model_aliases():
         assert cost["unpricedModels"] == [{"model": unknown, "tokens": 1_000_000}]
         assert cost["apiEquivalentCost"] is None
         assert cost["estimated"] is True
+
+
+@pytest.mark.parametrize("model,rates", [
+    ("gpt-6.1-sol", (2, .1, 10)),
+    ("gpt-6.1-terra", (1, .05, 5)),
+    ("gpt-6-luna", (.1, .01, .5)),
+    ("gpt-6-sol", (2, .2, 10)),
+    ("gpt-5.6-sol", (4, .4, 20)),
+])
+def test_current_codex_prices_and_long_context_costs(model, rates, tmp_path):
+    assert providers._price_for(model, providers.CODEX_PRICING) == rates
+    assert providers.CODEX_LONG_CONTEXT[model] == (272_000, 2.0, 1.5)
+    usage = {"input_tokens": 1_000_000, "cached_tokens": 400_000,
+             "output_tokens": 200_000, "total_tokens": 1_200_000}
+    base = (0.6 * rates[0] + 0.4 * rates[1] + 0.2 * rates[2])
+    long = (1.2 * rates[0] + 0.8 * rates[1] + 0.3 * rates[2])
+    assert providers._costs({"total_tokens": 1_200_000}, {model: usage}, providers.CODEX_PRICING)["apiEquivalentCost"] == pytest.approx(base)
+    now = datetime(2026, 10, 27, 13, 35, tzinfo=timezone.utc)
+    snapshot = {"providers": [{"name": "Codex", "_insightsData": {"dailyModels": {
+        "2026-10-27": {model + providers.LONG_CONTEXT_SUFFIX: usage}}, "hourlyModels": {}}}]}
+    result = insights.build_insights(snapshot, "30d", now=now, peak_store=_empty_peaks(tmp_path))["providers"][0]
+    assert result["totals"]["apiEquivalentCost"] == pytest.approx(long)
+    assert not result["totals"].get("costPartial")
+
+
+@pytest.mark.parametrize("model,rates", [
+    ("claude-mythos-5", (10, 1, 12.5, 20, 50)),
+    ("claude-mythos-5-1", (10, .25, 12.5, 20, 50)),
+])
+def test_mythos_aliases_price_cache_and_output(model, rates):
+    assert providers._price_for(model, providers.CLAUDE_PRICING) == rates
+    usage = {"input_tokens": 100_000, "cached_tokens": 200_000, "output_tokens": 300_000,
+             "cache_5m_tokens": 0, "cache_1h_tokens": 0, "total_tokens": 600_000}
+    expected = 0.1 * rates[0] + 0.2 * rates[1] + 0.3 * rates[4]
+    result = providers._costs({"total_tokens": 600_000}, {model: usage}, providers.CLAUDE_PRICING, claude=True)
+    assert result["apiEquivalentCost"] == pytest.approx(expected)
+    assert result["unpricedModels"] == []
 
 
 def test_insights_unknown_derived_model_is_unpriced(tmp_path):

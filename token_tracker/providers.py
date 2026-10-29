@@ -254,10 +254,22 @@ CLAUDE_PRICING = {
     "fable-5.1": (10, .25, 12.5, 20, 50), "opus-5.5": (4, .2, 5, 8, 20),
     "sonnet-5.5": (2, .2, 2.5, 4, 10), "haiku-5.5": (.1, .01, .125, .2, .5),
 }
-CODEX_PRICING = {"gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20), "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2)}
+CODEX_PRICING = {
+    "gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20),
+    "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2),
+    # Standard API rates, read 2026-10-29: https://developers.openai.com/api/docs/pricing
+    "gpt-6.1-sol": (2, .1, 10), "gpt-6.1-terra": (1, .05, 5), "gpt-6-luna": (.1, .01, .5),
+    # https://developers.openai.com/api/docs/models/gpt-6-sol (read 2026-10-29)
+    "gpt-6-sol": (2, .2, 10),
+}
 # Standard-tier long-prompt rule (OpenAI model page): a request whose input exceeds the
 # threshold is priced at the input/cache multiplier and output multiplier for the whole request.
-CODEX_LONG_CONTEXT = {"gpt-6-astra": (272_000, 2.0, 1.5)}
+# Read 2026-10-29: https://developers.openai.com/api/docs/models/gpt-6.1-sol
+# https://developers.openai.com/api/docs/models/gpt-6.1-terra
+# https://developers.openai.com/api/docs/models/gpt-6-luna
+# https://developers.openai.com/api/docs/pricing?r44b=no (GPT-5.6 Sol)
+CODEX_LONG_CONTEXT = {name: (272_000, 2.0, 1.5) for name in
+                      ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol")}
 LONG_CONTEXT_SUFFIX = "|long-context"
 PRICE_BASIS = "Standard-tier list prices; Batch, Flex and Fast billing are not recorded locally"
 
@@ -265,12 +277,14 @@ PRICE_BASIS = "Standard-tier list prices; Batch, Flex and Fast billing are not r
 # explicit: substring matching makes unknown derived names look priced.
 PRICE_MODEL_ALIASES = {
     "claude-fable-5": "fable-5",
+    "claude-mythos-5": "fable-5",
     "claude-opus-5": "opus-5",
     "claude-opus-4-8": "opus-4.8",
     "claude-sonnet-5": "sonnet-5",
     "claude-haiku-4-5": "haiku-4.5",
     "claude-haiku-4-5-20251001": "haiku-4.5",
     "claude-fable-5-1": "fable-5.1",
+    "claude-mythos-5-1": "fable-5.1",
     "claude-opus-5-5": "opus-5.5",
     "claude-sonnet-5-5": "sonnet-5.5",
     "claude-haiku-5-5": "haiku-5.5",
