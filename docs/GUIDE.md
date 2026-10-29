@@ -153,10 +153,6 @@ Claude collection is off until you turn it on in **Claude tracking**.
 - Claude rows and subagents appear only when Claude Code reports hook events for them. Coverage across real sessions has not been fully established yet.
 - Turning it off revokes consent and removes Branchglance's hooks. If removal isn't safe or fails, the hooks left behind are reported.
 
-## Phone companion
-
-A separate phone web app with pairing and optional Web Push alerts exists in the source code. The desktop widget never starts it; you have to launch and set it up yourself. It is not a hosted service.
-
 ## Install, update and remove
 
 - **Install:** run `BranchglanceSetup.exe` from File Explorer or the Start menu, as your normal user (not as administrator). It installs to `%LOCALAPPDATA%\Programs\Branchglance` and adds Start menu and Desktop shortcuts. It can also start Branchglance at sign-in; that is off unless you choose it, and an upgrade keeps your earlier choice.

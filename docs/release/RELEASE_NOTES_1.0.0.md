@@ -26,7 +26,7 @@ Monitoring reads local Codex session/transcript and application-state data, loca
 
 Download `BranchglanceSetup.exe` and run it from File Explorer or the Start menu as a standard user. Do not start Setup from another app's terminal or with administrator privileges. The target install folder is `%LOCALAPPDATA%\Programs\Branchglance`; optional sign-in startup is offered during setup.
 
-Setup does not migrate a pre-1.0 Token Tracker install; developers can use `scripts/cutover_branchglance.py`.
+Setup does not migrate a pre-1.0 Token Tracker install.
 
 ### Verify the download
 

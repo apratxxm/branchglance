@@ -25,10 +25,9 @@ The direct requirements and their licenses are:
 | pystray | 0.19.5 | GNU LGPL 3.0-or-later | Copyright (C) 2016–2025 Moses Palmér. System tray; [source/license](https://github.com/moses-palmer/pystray/blob/master/COPYING.LGPL) |
 | Pillow | 12.3.0 | MIT-CMU | Copyright © 1997–2011 Secret Labs AB; Copyright © 1995–2011 Fredrik Lundh and contributors; Copyright © 2010 Jeffrey “Alex” Clark and contributors. Used by icon generation; [source/license](https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE) |
 | zstandard | 0.25.0 | BSD 3-Clause | Copyright (c) 2016 Gregory Szorc. The included Zstandard library source is separately copyright Meta Platforms, Inc. and affiliates under BSD terms, with a GPLv2 alternative; [Python binding license](https://github.com/indygreg/python-zstandard/blob/0.25.0/LICENSE), [Zstandard source license](https://github.com/indygreg/python-zstandard/blob/0.25.0/zstd/LICENSE) |
-| pywebpush | 2.5.0 | Mozilla Public License 2.0 (MPL-2.0) | Optional phone Web Push support; package author JR Conlin; [license/source](https://github.com/web-push-libs/pywebpush) |
 | pytest | 8.4.2 | MIT | Copyright Holger Krekel and others, 2004. Development/test dependency only; [source/license](https://github.com/pytest-dev/pytest/blob/8.4.2/LICENSE) |
 
-These licenses are compatible with using Branchglance's own source under MIT when their component terms are preserved. pystray and pywebpush remain separately licensed; changes to those components, if any, must follow their respective licenses. The application does not modify these dependencies.
+These licenses are compatible with using Branchglance's own source under MIT when their component terms are preserved. pystray remains separately licensed; changes to those components, if any, must follow their respective licenses. The application does not modify these dependencies.
 
 `requirements-token-tracker.txt` pins the direct packages above, but does not lock transitive dependencies. Pip resolves those from the packages' declared metadata. Any frozen release should retain a build-specific dependency inventory and include the corresponding notices/licenses. The PyInstaller app build freezes the resolved runtime tree; its LGPL and MPL components need their separate notices in any binary distribution.
 

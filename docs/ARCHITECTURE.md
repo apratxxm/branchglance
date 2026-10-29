@@ -55,22 +55,18 @@ The frontend offers compact idle/rest/control modes and larger inspection/dashbo
 
 The host is a frameless, transparent, resizable, always-on-top pywebview window with a loopback URL. A child settings window is used for reset-action configuration. These window behaviours currently rely on Windows-specific APIs and event semantics.
 
-## Phone companion status
-
-`phone_server.py` is a separate, explicitly launched loopback service serving the phone web app. It supports pairing, authenticated phone state, limited roster refresh and optional Web Push subscriptions; `phone_push.py` and `phone_events.py` handle notification polling and delivery. The desktop widget does not launch this service. The phone feature and push path exist in source but require separate configuration and user action; they are not a hosted service.
-
 ## Packaging and lifecycle
 
-`packaging/build.py` creates the Windows app release payload, native launcher, setup and uninstall executables from PyInstaller specs. `scripts/branchglance_installer/` stages verified releases, manages owned shortcuts and integrations, performs install/uninstall/rollback, and preserves user data. `scripts/launcher/Branchglance.cs` is the stable launcher used across versioned app releases and Claude hook invocation. `scripts/cutover_branchglance.py` contains the separate legacy-install cutover path. The PowerShell scripts at `scripts/` also include the older source-checkout installer and starter.
+`packaging/build.py` creates the Windows app release payload, native launcher, setup and uninstall executables from PyInstaller specs. `scripts/branchglance_installer/` stages verified releases, manages owned shortcuts and integrations, performs install/uninstall/rollback, and preserves user data. `scripts/launcher/Branchglance.cs` is the stable launcher used across versioned app releases and Claude hook invocation.
 
-There is no in-app network updater described here: update and rollback are handled through the release payload and installer lifecycle. Setup, uninstall and cutover code are Windows-specific.
+There is no in-app network updater described here: update and rollback are handled through the release payload and installer lifecycle. Setup and uninstall code are Windows-specific.
 
 ## Storage
 
-`token_tracker/product.py` centralizes product paths. A frozen Windows build stores application state under `%LOCALAPPDATA%\Branchglance\state`, with other product-owned files below `%LOCALAPPDATA%\Branchglance`. Development uses the legacy `%LOCALAPPDATA%\TokenTracker` state root unless an explicit test/development override is supplied. Claude hook consent and `claude-events` live in the stable product data root so hooks can write outside the frozen app process. The phone companion has a separate phone-state file. WebView storage is placed under product data; legacy pywebview storage is under `%APPDATA%\pywebview` and is considered during migration/redirect checks.
+`token_tracker/product.py` centralizes product paths. A frozen Windows build stores application state under `%LOCALAPPDATA%\Branchglance\state`, with other product-owned files below `%LOCALAPPDATA%\Branchglance`. Development uses the legacy `%LOCALAPPDATA%\TokenTracker` state root unless an explicit test/development override is supplied. Claude hook consent and `claude-events` live in the stable product data root so hooks can write outside the frozen app process. WebView storage is placed under product data; legacy pywebview storage is under `%APPDATA%\pywebview` and is considered during migration/redirect checks.
 
 Provider input remains in provider-owned locations: Codex home/session/state files, Claude Code's `~/.claude` tree, and Claude Desktop's local cache. Uninstall preserves Branchglance user data.
 
 ## Tests
 
-`tests/test_*.py` covers providers, JSONL reducers, cache freshness, server routes, policy and reset delivery, Claude hook installation/collection, phone service, widget/window behaviour and installer lifecycle. Installer tests use temporary directories and fake native adapters where possible; some compile or inspect Windows-only components. `tests/*.mjs` exercises the static UI and its polling, rendering, consent and layout logic with Node's built-in test/assertion APIs. There is no npm package manifest or build step for the frontend.
+`tests/test_*.py` covers providers, JSONL reducers, cache freshness, server routes, policy and reset delivery, Claude hook installation/collection, widget/window behaviour and installer lifecycle. Installer tests use temporary directories and fake native adapters where possible; some compile or inspect Windows-only components. `tests/*.mjs` exercises the static UI and its polling, rendering, consent and layout logic with Node's built-in test/assertion APIs. There is no npm package manifest or build step for the frontend.

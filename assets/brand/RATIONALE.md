@@ -8,6 +8,6 @@ Full colour assigns off-white to the top, diagonal, and wedge, with lavender on 
 
 `generate_icon.py` verifies the canonical master SHA-256 before producing all brand SVGs and raster icons. It renders SVGs with the existing build-only `sharp`/libvips runtime, then packages the SVG-rendered frames into ICO files. `render_svgs.js` is the shared renderer. Supply the existing runtime using `--node` and `--node-modules`, or `BRAND_NODE` and `BRAND_NODE_MODULES`. No application dependency is added.
 
-The generator updates `branchglance.ico` and these static assets: `favicon.svg`, `favicon.ico`, `phone-icon.svg`, `phone-icon-192.png`, `phone-icon-512.png`, and `apple-touch-icon.png`. Static icons use a charcoal tile for light/dark surface contrast. No phone-feature logic or release state is changed by asset generation.
+The generator updates `branchglance.ico` and these static assets: `favicon.svg` and `favicon.ico`. Static icons use a charcoal tile for light/dark surface contrast.
 
 The source and its refinement history do not establish trademark clearance, exclusivity, or legal originality.

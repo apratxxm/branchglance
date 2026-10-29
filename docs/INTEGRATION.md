@@ -4,7 +4,7 @@ What a launcher, orchestrator script or other client has to do so that Branchgla
 
 Branchglance links rows only on exact evidence. A wrong parent is worse than no parent, so anything it can't prove is shown as a separate top-level chat. Most "this job shows up as its own parent" problems come from a client that didn't leave that evidence.
 
-See [design/UNIFIED_TREE.md](design/UNIFIED_TREE.md) for the linking design, and [ARCHITECTURE.md](ARCHITECTURE.md) for the data flow.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the data flow and link verification.
 
 ## Checklist
 
