@@ -65,11 +65,11 @@ A new `codex exec` has no thread id on its command line, so ancestry can't ident
 
 Call it while the Codex process is alive. A receipt can't be added for a run that has already ended.
 
-The launcher handles `--link-codex` directly, preserving the Claude session environment instead of relaunching through Explorer. The running widget prepares the receipt inbox; the helper refuses an unsafe or redirected destination. The helper always exits with code 0, including when a receipt is not written, so its exit code is not confirmation of a link. Native Claude desktop verification is still required.
+The launcher handles `--link-codex` directly, keeping the Claude session environment instead of relaunching through Explorer, so receipts work from Claude desktop sessions too. The running widget creates the inbox and `receipts.jsonl`; the helper only appends to that existing file, finds it through the real (unredirected) AppData folder, and refuses if the file is missing, the path has a reparse point, the file isn't the widget's, or a leftover copy exists inside an app package. Verified on Windows 11 from a Claude desktop session on 2026-10-29: a new `codex exec` nested under its chat; a planted package copy and a missing file were both refused without writing anything.
 
 ### Why a job shows up as its own parent
 
-- It's a new `codex exec` with no receipt, or the receipt failed (see the known issue above).
+- It's a new `codex exec` with no receipt, or the receipt was refused (see the helper rules above). The widget must be running for the inbox to exist.
 - The Claude session hadn't fired a hook yet, or Claude collection is off.
 - Either provider's `collect` policy is off.
 - The process chain to `claude.exe` is broken or more than 16 steps long.
@@ -122,6 +122,7 @@ Get-Content brief.md -Raw | & $codex exec resume $Thread --json -
 
 Running list of things clients must do, or must avoid, that we found in practice. Add new findings here.
 
-- **2026-10-28.** Jobs launched by our orchestration scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Write receipts from the launcher (see the worked example); the direct helper path avoids the Explorer relaunch.
+- **2026-10-28.** Jobs launched by our orchestration scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Write receipts from the launcher (see the worked example). Since 1eb47e0 this also works from Claude desktop sessions.
 - **2026-10-28.** Brief titles like `# [Orchestrator] Terra · row layout` showed raw on the live view. Fixed in the product (tidying now applies on the live and indexed paths too). Clients should still put the task first in titles.
 - **2026-10-28.** `CLAUDE_CONFIG_DIR` changes after enabling collection leave hooks in the old folder. Enable collection again after switching, and check the old folder for leftover hooks. Since 942f13f, enabling records the exact settings file, and turning tracking off or uninstalling edits only that file.
+- **2026-10-29.** Running Codex jobs started from Claude chats showed as separate parents even though they were linked: a cached Claude parent lost its provider tag. Fixed in the product (938aae6, 2192a77); nothing for clients to change.
