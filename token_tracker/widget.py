@@ -21,7 +21,7 @@ from PIL import Image
 
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
-from . import product, reset_delivery, server as server_module
+from . import agent_links, product, reset_delivery, server as server_module
 
 
 _WAIT_OBJECT_0 = 0x0
@@ -2650,6 +2650,8 @@ class WidgetApp:
                 return
             if not self.claim_instance():
                 return
+            if not agent_links.initialize_receipt_inbox():
+                logging.getLogger(__name__).warning("Receipt inbox unavailable; Codex link receipts are disabled")
             # The policy is already loaded by LimitResetService.__init__. The
             # control listener is now bound, so a waiting installer can safely
             # discover and stop this instance.

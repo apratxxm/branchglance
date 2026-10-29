@@ -26,6 +26,7 @@ def isolated_agent_homes(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("CLAUDE_HOME", str(homes / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(homes / "codex"))
     monkeypatch.setattr(widget, "_warm_snapshot", lambda: None)  # no real snapshot builds from widget tests
+    monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: True)
     monkeypatch.setattr(widget, "_window_state_path", lambda: homes / "window-state.json")  # never the user's saved bounds
     monkeypatch.setattr(widget, "_monitor_work_areas", lambda physical=False: [(0, 0, 2560, 1392)])
     monkeypatch.setattr(widget, "_system_scale", lambda: 1.0)

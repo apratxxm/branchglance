@@ -65,7 +65,7 @@ A new `codex exec` has no thread id on its command line, so ancestry can't ident
 
 Call it while the Codex process is alive. A receipt can't be added for a run that has already ended.
 
-> **Known issue (1.0.0):** from a Claude desktop app session, AppData is redirected into Claude's app package. The launcher handles `--link-codex` like a normal launch: it notices the redirection and relaunches itself through File Explorer, which drops `CLAUDE_CODE_SESSION_ID`. So the receipt is never written. Hooks are unaffected because `--claude-hook` has its own launch path. Until this is fixed, rely on ancestry: jobs resumed with `codex exec resume` from the session still link.
+The launcher handles `--link-codex` directly, preserving the Claude session environment instead of relaunching through Explorer. The running widget prepares the receipt inbox; the helper refuses an unsafe or redirected destination. The helper always exits with code 0, including when a receipt is not written, so its exit code is not confirmation of a link. Native Claude desktop verification is still required.
 
 ### Why a job shows up as its own parent
 
@@ -122,6 +122,6 @@ Get-Content brief.md -Raw | & $codex exec resume $Thread --json -
 
 Running list of things clients must do, or must avoid, that we found in practice. Add new findings here.
 
-- **2026-10-28.** Jobs launched by our orchestration scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Fix: write receipts from the launcher (see the worked example). Product fix pending for the MSIX receipt issue above.
+- **2026-10-28.** Jobs launched by our orchestration scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Write receipts from the launcher (see the worked example); the direct helper path avoids the Explorer relaunch.
 - **2026-10-28.** Brief titles like `# [Orchestrator] Terra · row layout` showed raw on the live view. Fixed in the product (tidying now applies on the live and indexed paths too). Clients should still put the task first in titles.
 - **2026-10-28.** `CLAUDE_CONFIG_DIR` changes after enabling collection leave hooks in the old folder. Enable collection again after switching, and check the old folder for leftover hooks. Since 942f13f, enabling records the exact settings file, and turning tracking off or uninstalling edits only that file.

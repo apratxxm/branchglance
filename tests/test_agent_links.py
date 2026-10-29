@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
 import ctypes
 from pathlib import Path
+import pytest
 
 from token_tracker import agent_links
+
+
+@pytest.fixture
+def receipt_inbox_creation(monkeypatch):
+    # Restricted Windows sandbox tokens cannot access objects protected solely
+    # for the user SID. Exercise receipt behavior without changing that DACL.
+    def create(directory, file):
+        directory.mkdir(exist_ok=True)
+        file.touch(exist_ok=True)
+    monkeypatch.setattr(agent_links, "_create_private_inbox", create)
 
 
 def _filetime(epoch):
@@ -187,9 +199,10 @@ def test_command_line_query_retries_reported_large_size_once():
     assert calls == [0, required]
 
 
-def test_receipts_are_bounded_validated_and_never_set_status(tmp_path):
+def test_receipts_are_bounded_validated_and_never_set_status(tmp_path, receipt_inbox_creation):
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert agent_links.initialize_receipt_inbox(tmp_path)
     assert agent_links.write_receipt(thread, 22, environ={"CLAUDE_CODE_SESSION_ID": sid},
                                      created=lambda _pid: 123, root=tmp_path,
                                      permission_check=lambda _policies: True,
@@ -203,6 +216,68 @@ def test_receipts_are_bounded_validated_and_never_set_status(tmp_path):
                                          created=lambda _pid: 123, root=tmp_path,
                                          permission_check=lambda _policies: True,
                                          pid_check=lambda _pid, _thread: True)
+
+
+def test_receipt_missing_file_is_not_created(tmp_path):
+    directory = tmp_path / agent_links.INBOX_NAME
+    directory.mkdir()
+    assert not _write_test_receipt(tmp_path)
+    assert not (directory / agent_links.RECEIPT_FILE).exists()
+
+
+def _write_test_receipt(root=None):
+    return agent_links.write_receipt(
+        "01234567-89ab-cdef-0123-456789abcdef", 22,
+        environ={"CLAUDE_CODE_SESSION_ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+        root=root, permission_check=lambda _: True, pid_check=lambda *_: 123)
+
+
+def test_receipt_frozen_uses_known_folder_not_environment(tmp_path, monkeypatch, receipt_inbox_creation):
+    from token_tracker import product
+    known = tmp_path / "known"
+    known.mkdir()
+    (known / "Branchglance").mkdir()
+    monkeypatch.setattr(product, "is_frozen", lambda: True)
+    monkeypatch.setattr(agent_links, "_known_local_app_data", lambda: known)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "elsewhere"))
+    assert agent_links.initialize_receipt_inbox()
+    assert _write_test_receipt()
+    assert (known / "Branchglance" / agent_links.INBOX_NAME / agent_links.RECEIPT_FILE).is_file()
+    assert not (tmp_path / "elsewhere").exists()
+
+
+def test_receipt_refuses_redirected_chain(tmp_path, monkeypatch, receipt_inbox_creation):
+    from types import SimpleNamespace
+    assert agent_links.initialize_receipt_inbox(tmp_path)
+    original = agent_links.os.lstat
+    inbox = tmp_path / agent_links.INBOX_NAME
+    def reparse(path):
+        if Path(path) == inbox:
+            info = original(path)
+            return SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
+        return original(path)
+    monkeypatch.setattr(agent_links.os, "lstat", reparse)
+    assert not _write_test_receipt(tmp_path)
+
+
+def test_receipt_refuses_identity_mismatch(tmp_path, monkeypatch, receipt_inbox_creation):
+    assert agent_links.initialize_receipt_inbox(tmp_path)
+    identities = iter([(1, 2, 3), (1, 2, 4)])
+    monkeypatch.setattr(agent_links, "_file_identity", lambda _: next(identities))
+    assert not _write_test_receipt(tmp_path)
+    assert (tmp_path / agent_links.INBOX_NAME / agent_links.RECEIPT_FILE).read_bytes() == b""
+
+
+def test_receipt_refuses_package_shadow(tmp_path, monkeypatch, caplog, receipt_inbox_creation):
+    from token_tracker import product
+    (tmp_path / "Branchglance").mkdir()
+    monkeypatch.setattr(product, "is_frozen", lambda: True)
+    monkeypatch.setattr(agent_links, "_known_local_app_data", lambda: tmp_path)
+    assert agent_links.initialize_receipt_inbox()
+    shadow = tmp_path / "Packages" / "Claude" / "LocalCache" / "Local" / "Branchglance" / agent_links.INBOX_NAME
+    shadow.mkdir(parents=True)
+    assert not _write_test_receipt()
+    assert "package-local shadow" in caplog.text
 
 
 def test_receipt_policy_denial_precedes_process_or_filesystem_access(tmp_path):
@@ -733,3 +808,34 @@ def test_disabled_collection_skips_process_hooks_and_receipt_readers(monkeypatch
             AssertionError(f"{name} must not be read when collection is disabled")))
     snapshot = providers.build_snapshot()
     assert snapshot["providers"] == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows known folders")
+def test_known_folder_lookup_disables_package_redirection(monkeypatch):
+    import ctypes
+    seen = []
+    buffer = ctypes.create_unicode_buffer(r"C:\Users\someone\AppData\Local")
+
+    class Fn:
+        def __init__(self, impl):
+            self.impl, self.argtypes, self.restype = impl, None, None
+
+        def __call__(self, *args):
+            return self.impl(*args)
+
+    def known_folder(_folder, flags, _token, out):
+        seen.append(flags)
+        out._obj.value = ctypes.addressof(buffer)
+        return 0
+
+    class Shell:
+        SHGetKnownFolderPath = Fn(known_folder)
+
+    class Ole:
+        CoTaskMemFree = Fn(lambda _ptr: None)
+
+    real = ctypes.WinDLL
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: Shell() if name == "shell32"
+                        else Ole() if name == "ole32" else real(name, **kw))
+    assert str(agent_links._known_local_app_data()) == r"C:\Users\someone\AppData\Local"
+    assert seen == [agent_links.KF_FLAG_NO_PACKAGE_REDIRECTION] and seen[0] == 0x10000
