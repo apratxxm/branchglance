@@ -41,6 +41,8 @@
     if(!reverse){let d="M"+pt(points[0]);for(let i=0;i<n-1;i++){const [c1,c2]=control(i);d+=" C"+pt(c1)+" "+pt(c2)+" "+pt(points[i+1]);}return d;}
     let d="M"+pt(points[n-1]);for(let i=n-2;i>=0;i--){const [c1,c2]=control(i);d+=" C"+pt(c2)+" "+pt(c1)+" "+pt(points[i]);}return d;
   }
+  // Round scale top for a chart axis: the smallest 1, 2, 4, 6, 8 or 10 times a power of ten at or above the value.
+  function niceCeil(value){if(!(value>0))return 0;const power=10**Math.floor(Math.log10(value));for(const step of [1,2,4,6,8,10])if(step*power>=value*(1-1e-9))return step*power;return value;}
   function insightsData(requestCost=state.metric==="cost"){
     const fallback=state.insights?.fallback===true,range=state.range,allProviders=availableProviders();
     let dates=[...new Set(allProviders.flatMap(p=>(p.series||[]).map(row=>row.date).filter(Boolean)))].sort(),end=dates.at(-1);
@@ -85,7 +87,7 @@
     if(!rows.length||!providers.length)return "";
     const W=668,H=113,L=42,R=4,T=9,B=20,PW=W-L-R,PH=H-T-B,step=PW/Math.max(rows.length-1,1);
     const totals=rows.map(row=>providers.reduce((sum,p)=>sum+(finite(row[p.name])||0),0));
-    const max=Math.max(...totals)*1.1||1;
+    const max=niceCeil(Math.max(...totals)*1.1)||1;
     const xAt=index=>L+index*step,yAt=value=>T+PH-value/max*PH;
     let cumulative=rows.map(()=>0),paths="";
     for(const p of providers){
@@ -95,13 +97,12 @@
       const edge=curvePath(top),back=curvePath(bottom,true).replace(/^M[^C]*/,"");
       paths+=`<path class="area-fill ${cls}" d="${edge} L${pt(bottom.at(-1))} ${back} Z"/><path class="area-glow ${cls}" d="${edge}"/><path class="area-edge ${cls}" d="${edge}"/>`;
     }
-    const ticks=[1,0].map(fraction=>{const y=yAt(max*fraction),label=fraction===0?(cost?"$0":"0"):format(max*fraction);return `<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/><text class="dash-axis-value" x="${L-8}" y="${(y+3).toFixed(1)}" text-anchor="end">${esc(label)}</text>`;}).join("");
+    const ticks=[1,.5,0].map(fraction=>{const y=yAt(max*fraction),label=fraction===0?(cost?"$0":"0"):format(max*fraction);return `<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"/><text class="dash-axis-value" x="${L-8}" y="${(y+3).toFixed(1)}" text-anchor="end">${esc(label)}</text>`;}).join("");
     const labelIndexes=[...new Set([0,rows.length-1])];
     const dates=labelIndexes.map(index=>{const anchor=index===0?"start":index===rows.length-1?"end":"middle";return `<text class="dash-date" x="${xAt(index).toFixed(1)}" y="${H-3}" text-anchor="${anchor}">${esc(dayLabel(rows[index].date))}</text>`;}).join("");
     const hover=rows.map((row,index)=>{const x=xAt(index),total=totals[index],tip=`<span class="tip-date">${esc(dayLabel(row.date))}</span><b class="tip-total">${esc(format(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(format(finite(row[p.name])||0))}</strong></span>`).join("")}`;
       return `<g class="dash-point" tabindex="0" data-tip-html="${esc(tip)}"><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/><circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/></g>`;}).join("");
-    const defs='<defs><linearGradient id="dash-codex-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#6675ff" stop-opacity=".25"/><stop offset="1" stop-color="#6675ff" stop-opacity="0"/></linearGradient><linearGradient id="dash-claude-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#e98953" stop-opacity=".26"/><stop offset="1" stop-color="#e98953" stop-opacity="0"/></linearGradient><filter id="dash-soft-glow" x="-30%" y="-100%" width="160%" height="300%"><feGaussianBlur stdDeviation="2.8"/></filter></defs>';
-    return `<svg class="dash-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${defs}${ticks}${paths}${hover}${dates}</svg>`;
+    return `<svg class="dash-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}${dates}</svg>`;
   }
   function splitHTML(data){
     const key=data.heroKey;if(!key)return "";
