@@ -9,7 +9,7 @@ Behaviour below matches release 1.0.0. Where Branchglance only reports what it h
 When work is spread across many chats and subagents, checking progress means opening each one. Branchglance keeps a small widget at the top of your screen and answers three questions at a glance:
 
 1. **What is running?** Every Codex chat and its subagents, as a tree.
-2. **What needs me?** Chats waiting for an answer are pulled to the top, with a shortcut to the exact chat.
+2. **What needs me?** Chats waiting for an answer are marked and counted, with a shortcut to the exact chat.
 3. **How much room do I have?** Five-hour and weekly limits and their reset times, for Codex and Claude side by side.
 
 It reads local data only. It never answers for you, and never starts or stops work on its own. The one exception is reset actions, which you have to switch on yourself (see [Reset actions](#reset-actions)).
@@ -22,7 +22,7 @@ It reads local data only. It never answers for you, and never starts or stops wo
 
 **Heads-down.** Leave the widget collapsed. When something new starts or a chat asks a question, the widget can expand to show it, so you notice without switching windows.
 
-**A chat needs you.** It shows in the **Needs you** strip at the top. For a Codex question, pick a choice: Branchglance opens that chat in Codex and tries to copy the choice. You answer in Codex.
+**A chat needs you.** Its row turns yellow and shows Waiting, and the yellow `!` count in the toolbar goes up. Click the count to jump to it. For a Codex question, pick a choice: Branchglance opens that chat in Codex and tries to copy the choice. You answer in Codex.
 
 **Limit check.** Glance at the 5-hour and weekly bands before starting something big. When you are close to a limit, open Insights to compare token use, models and cache reuse over time.
 
@@ -52,7 +52,7 @@ The toolbar runs left to right:
 | Sync age (`Now`) | Shows how fresh the data is. Click it to refresh |
 | Monitor | Moves the widget to the next display. The label shows Laptop or Monitor |
 | Insights | Opens the Insights and Settings panel |
-| Counts | Live chat counts |
+| Counts | Active chats, running agents and, in yellow, chats waiting on you. Click the waiting count to jump to them |
 | Search | Opens search. You can also press `/` or `Ctrl+K` |
 | Minimize, Fit, Maximize, Close | Window controls. Fit sizes the widget to the screen. Close hides it to the tray |
 
@@ -83,7 +83,7 @@ Each root chat is a row, with its subagents nested beneath it, ordered by recent
 
 ## Needs you
 
-Chats waiting on you collect in the **Needs you** strip above the tree. Click **more** to see them all. A Codex question with choices lists them:
+A chat waiting on you shows a yellow Waiting status in the tree, and the yellow `!` count in the toolbar shows how many there are. Click the count to jump to the next one. A Codex question with choices lists them:
 
 - **Open in Codex** opens that chat and tries to copy the choice. You select it in Codex's own prompt.
 - **Queue** sends the choice as a later message after the chat's current turn. It is not an answer to the prompt.

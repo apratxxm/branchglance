@@ -15,7 +15,7 @@ It is built for people who run several agent chats at once and keep losing track
 ## Features
 
 - **One tree for both providers.** Codex chats and their subagents, Claude Code sessions and their subagents, and Codex jobs started from a Claude chat nested under that chat.
-- **Needs you.** Chats waiting for input are pulled to the top, with a shortcut that opens the exact chat.
+- **Needs you.** Chats waiting for input are marked in the tree and counted in the toolbar; click the count to jump to them, and open the exact chat from there.
 - **Limits at a glance.** 5-hour and weekly usage for Codex and Claude side by side, with reset countdowns. A countdown reaching zero is never treated as a reset until a fresh reading confirms it.
 - **Insights.** Token and cost totals over 24 hours, 7 days, 30 days or all time, a model breakdown, cache hit rate and daily limit peaks. Models without a known price are listed, never guessed.
 - **Observed, not guessed.** A status is shown only when there is evidence for it. Missing data shows as unknown, and a parent link is shown only when it can be proven.
