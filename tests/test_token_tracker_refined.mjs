@@ -126,11 +126,10 @@ for (const [direction, label] of Object.entries(directionLabels)) {
   const nextChild = { ...child, latestMessageAt, latestMessageDirection: direction };
   const nextProvider = { ...provider, chats: [parent, nextChild] };
   T.render({ generatedAt: new Date(testNow).toISOString(), enabledProviders: ["Codex"], providers: [nextProvider] });
-  assert.equal(timers.get(T.notch.autoTimer)?.delay, 3000, `${direction} arrival gets a three-second peek`);
+  assert.equal(T.notch.autoTimer, null, `${direction} arrival does not pop the widget open`);
   const badgeHTML = T.runwayTelemetryHTML(nextChild, true);
   assert.equal((badgeHTML.match(/class="runway-message-indicator"/g) || []).length, 1);
   assert.ok(badgeHTML.includes(`Recent message · ${label} · visible for 10 seconds`));
-  fireTimer(T.notch.autoTimer);
 }
 testNow += 2000;
 const unsupportedMessage = { ...child, latestMessageAt: new Date(testNow - 500).toISOString(), latestMessageDirection: "assistant-analysis" };
@@ -306,7 +305,7 @@ assert.equal(T.notch.mode, "inspect", "keyboard focus inside the widget holds in
 T.notch.qualifiedHover = false; T.notch.hover = false; T.notch.autoExpanded = false; T.notch.inspecting = false;
 T.notch.keyboardInspecting = false; T.notch.manual = false; documentRef.activeElement = null; T.setNotch(false, true);
 T.notch.globalPointerX = 100; T.notch.globalPointerY = 20; T.notch.activeKeys = new Set(); T.notch.workStates.clear();
-T.syncNotch(1, [{ key: "Codex:stationary-pointer", active: true, runStartedAt: new Date(testNow).toISOString() }]);
+T.syncNotch(1, [{ key: "Codex:stationary-pointer", active: true, subagent: true, runStartedAt: new Date(testNow).toISOString() }]);
 const stationaryPeek = T.notch.autoTimer;
 assert.equal(timers.get(stationaryPeek)?.delay, 3000);
 widgetListeners.get("pointerenter")({ target: headerHover, clientX: 100, clientY: 20 });
@@ -318,7 +317,7 @@ widgetListeners.get("pointerleave")();
 const pointerExit = T.notch.exitTimer; if (pointerExit) fireTimer(pointerExit);
 T.notch.hover = false; T.notch.hoverSuppressed = false; T.notch.qualifiedHover = false;
 T.notch.globalPointerX = 95; T.notch.globalPointerY = 20; T.notch.activeKeys = new Set(); T.notch.workStates.clear();
-T.syncNotch(1, [{ key: "Codex:deliberate-entry", active: true, runStartedAt: new Date(testNow).toISOString() }]);
+T.syncNotch(1, [{ key: "Codex:deliberate-entry", active: true, subagent: true, runStartedAt: new Date(testNow).toISOString() }]);
 const deliberatePeek = T.notch.autoTimer;
 widgetListeners.get("pointerenter")({ target: headerHover, clientX: 102, clientY: 20 });
 const dwell = T.notch.inspectTimer;
@@ -546,10 +545,10 @@ assert.equal(rowClasses.has("runway-root-stuck"), false, "nonsticky tall roots c
 delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
 
 // Time, status, activity, workspace, and tokens have shared columns at every depth.
-assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,2fr\) 58px 64px minmax\(0,1fr\) 84px 80px/);
+assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,1fr\) 52px 112px 96px 80px/);
 assert.match(css, /\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/);
 assert.match(css, /\.runway-refined-timing\{grid-column:2/);assert.match(css,/\.runway-refined-status\{grid-column:3/);
-assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\.runway-refined-path\{grid-column:5/);assert.match(css,/\.runway-refined-tokens\{grid-column:6/);
+assert.match(css,/\.runway-refined-activity\{grid-column:3;grid-row:2/);assert.match(css,/\.runway-refined-path\{grid-column:4/);assert.match(css,/\.runway-refined-tokens\{grid-column:5/);
 
 // A Claude chat waiting on a permission prompt has no question text but still explains itself.
 {
@@ -560,7 +559,8 @@ assert.match(css,/\.runway-refined-activity\{grid-column:4/);assert.match(css,/\
   assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
 }
 // Each information column has its own centred track instead of sharing or shifting with content.
-assert.match(css, /grid-template-columns:minmax\(0,2fr\) 58px 64px minmax\(0,1fr\) 84px 80px/);
+assert.match(css, /grid-template-columns:minmax\(0,1fr\) 52px 112px 96px 80px/);
+assert.doesNotMatch(css, /\.runway-refined-(?:activity>\.runway-activity|path>\.runway-workspace|path \.runway-path-leaf|status \.runway-state-word)\{[^}]*white-space:normal/);
 // Timing (58px) holds the longest elapsed text ("12h 59m", "12d 23h"); 44px clipped "1h 06m".
 assert.doesNotMatch(css, /grid-template-columns:minmax\(0,2fr\) (44px 70px|60px 70px)/);
 
