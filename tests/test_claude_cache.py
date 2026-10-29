@@ -110,3 +110,21 @@ def test_bounded_decompression_and_block_addresses(tmp_path):
     block[8192+512:8192+515] = b"abc"
     (tmp_path / "data_1").write_bytes(block)
     assert _stream(tmp_path, 0xA0010002, 3) == b"abc"
+
+
+def test_macos_simple_cache_entry_is_read(tmp_path):
+    # Claude Desktop on macOS keeps one `<hash>_0` file per response (Chromium simple cache).
+    cache = tmp_path / "Cache" / "Cache_Data"
+    cache.mkdir(parents=True)
+    key = f"1/0/https://claude.ai/api/organizations/{ORG}/usage?skip_spend=1".encode()
+    body = json.dumps({"five_hour": {"utilization": 42, "resets_at": iso(NOW + 3600)},
+                       "seven_day": {"utilization": 5, "resets_at": iso(NOW + 86400)}}).encode()
+    headers = ("HTTP/1.1 200 OK\0date: " + format_datetime(datetime.fromtimestamp(NOW, timezone.utc), usegmt=True)
+               + "\0\0").encode()
+    eof = lambda size, flags=0: struct.pack("<QIIiI", 0xF4FA6F45970D41D8, flags, 0, size, 0)
+    data = (struct.pack("<QIIII", 0xFCFB6D1BA7725C30, 5, len(key), 0, 0) + key + body + eof(len(body))
+            + headers + b"\0" * 32 + eof(len(headers), 2))
+    (cache / "0123456789abcdef_0").write_bytes(data)
+    result = usage_info(tmp_path, [{"org": ORG, "t": NOW*1000, "u": {"fh": 42, "sd": 5}}], now=NOW + 10)
+    assert (result["fiveHourPercent"], result["weeklyPercent"]) == (42, 5)
+    assert (result["fiveHour"], result["weekly"]) == (NOW + 3600, NOW + 86400)

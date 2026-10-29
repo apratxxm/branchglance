@@ -110,6 +110,51 @@ def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+SIMPLE_MAGIC = 0xFCFB6D1BA7725C30
+SIMPLE_EOF_MAGIC = 0xF4FA6F45970D41D8
+
+
+def _simple_records(cache: Path, key_pattern: re.Pattern[bytes], now: float) -> list[tuple[float, dict[str, Any]]]:
+    """Responses from Chromium's simple cache (one ``<hash>_0`` file per entry), which
+    Claude Desktop uses on macOS instead of the Windows block files."""
+    try:
+        files = sorted((p for p in cache.glob("*_0") if p.stat().st_size <= MAX_BODY),
+                       key=lambda p: p.stat().st_mtime, reverse=True)[:256]
+    except OSError:
+        return []
+    records = []
+    for path in files:
+        data = _read(path, 0, MAX_BODY)
+        # Header: magic, version, key length, key hash, padding; then the key, the body
+        # (stream 1) and its EOF record, then the response headers (stream 0), an
+        # optional key SHA-256 and a final EOF record holding the headers' size.
+        if len(data) < 72 or struct.unpack_from("<Q", data)[0] != SIMPLE_MAGIC:
+            continue
+        key_len = struct.unpack_from("<I", data, 12)[0]
+        if not key_pattern.fullmatch(data[24:24 + key_len]):
+            continue
+        magic, flags, _, headers_len = struct.unpack_from("<QIIi", data, len(data) - 24)
+        if magic != SIMPLE_EOF_MAGIC or headers_len < 0:
+            continue
+        headers_end = len(data) - 24 - (32 if flags & 2 else 0)
+        body_end = headers_end - headers_len - 24
+        if body_end < 24 + key_len or struct.unpack_from("<Q", data, body_end)[0] != SIMPLE_EOF_MAGIC:
+            continue
+        headers, body = data[body_end + 24:headers_end], data[24 + key_len:body_end]
+        if not re.search(rb"HTTP/[\d.]+ 200(?: |\x00)", headers) or not body:
+            continue
+        date = re.search(rb"\x00date:\s*([^\x00]{10,50})\x00", headers, re.I)
+        encoding = re.search(rb"\x00content-encoding:\s*([^\x00]{1,20})\x00", headers, re.I)
+        try:
+            observed = parsedate_to_datetime(date.group(1).decode("ascii")).timestamp() if date else None
+        except (ValueError, UnicodeError, TypeError, OverflowError):
+            observed = None
+        value = _body(body, encoding.group(1).strip().lower() if encoding else b"")
+        if observed is not None and observed <= now + 90 and value is not None:
+            records.append((observed, value))
+    return records
+
+
 def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = None,
                max_usage_age: float = MAX_USAGE_AGE_SECONDS) -> dict[str, Any]:
     """Return usage and deadlines only from a recent authenticated Desktop response.
@@ -172,6 +217,8 @@ def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = No
                 break
         if budget <= 0:
             break
+    if not records:
+        records = _simple_records(cache, key_pattern, now)
     if not records:
         return result
     observed, value = max(records, key=lambda record: record[0])
