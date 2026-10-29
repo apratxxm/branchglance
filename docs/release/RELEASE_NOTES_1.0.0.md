@@ -5,9 +5,9 @@ Branchglance is a compact Windows widget for keeping Codex and Claude Code chats
 ## Highlights
 
 - Follow Codex chats and subagents in a live tree. Claude Code sessions can appear in the same view after you explicitly enable local hook collection.
-- Switch between Codex's blue theme and Claude's orange theme. Usage meters count up to 100% used.
-- Let the compact pop-up bring a provider with new work into view, or switch sources manually.
-- Search chats, including hidden ones with `is:hidden`.
+- Show Codex and Claude in one tree: Codex rows use blue-violet accents and Claude rows orange. Usage meters count up to 100% used.
+- Let the compact pop-up surface new work or a waiting question.
+- Search chats by title, agent, model, workspace or latest request, with filters such as `is:needs`, `is:running` and `is:failed`.
 - See five-hour and weekly usage limits and reset times when provider data is available.
 - Optionally request a short greeting after a verified limit reset.
 - Install per user with Start menu and Desktop shortcuts, optionally start at sign-in, uninstall, or roll back to the previous verified release. Shortcut locations come from Windows known folders, including redirected Desktop locations.
