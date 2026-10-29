@@ -2198,12 +2198,23 @@ def _chat_source(value: Any) -> str | None:
 _BRIEF_TITLE_PREFIX = re.compile(r"^(?:#+\s+)?(?:\[[^\]]{1,40}\]\s*)?")
 
 
+_BRIEF_SEPARATORS = (" · ", " ? ", " � ")  # "?" and U+FFFD are the lossy-encoded forms of "·"
+_BRIEF_GOAL_SEPARATORS = (" — ", " – ", " ? ", " � ")
+
+
 def _tidy_codex_title(title: str, model: Any) -> str:
     """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
     tidy = _BRIEF_TITLE_PREFIX.sub("", title, count=1)
-    head, sep, rest = tidy.partition(" · ")
-    if sep and rest.strip() and head.isalpha() and head.lower() in re.split(r"[^a-z]+", str(model or "").lower()):
-        tidy = rest
+    earliest = [(tidy.find(sep), sep) for sep in _BRIEF_SEPARATORS if sep in tidy]
+    if earliest:
+        index, sep = min(earliest)
+        head, rest = tidy[:index], tidy[index + len(sep):]
+        model_words = re.split(r"[^a-z]+", str(model or "").lower())
+        if rest.strip() and head.isalpha() and head.lower() in model_words:
+            # Brief-style title: the goal follows the first dash or separator; keep only the task part.
+            goals = [rest.find(goal) for goal in _BRIEF_GOAL_SEPARATORS if goal in rest]
+            task = rest[:min(goals)] if goals else rest
+            tidy = task.strip() or rest.strip()
     return tidy.strip() or title
 
 

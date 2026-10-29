@@ -17,3 +17,29 @@ def test_only_whole_model_words_and_real_headings_are_dropped():
     assert _tidy_codex_title("Ter · actual task", "gpt-6.1-terra") == "Ter · actual task"
     assert _tidy_codex_title("#123 crash", "gpt-6.1-terra") == "#123 crash"
     assert _tidy_codex_title("#include <vector>", "gpt-6.1-terra") == "#include <vector>"
+
+
+def test_lossy_question_mark_separator_is_read_as_brief_separator():
+    title = "Sol ? review packaging ? design review of installer, upgrade, uninstall and rollback"
+    assert _tidy_codex_title(title, "gpt-6.1-sol") == "review packaging"
+    assert _tidy_codex_title("Luna ? frozen-probe ? prove whether the venv survives", "gpt-6-luna") == "frozen-probe"
+
+
+def test_replacement_character_separator_is_read_as_brief_separator():
+    title = "Sol � review packaging � design review"
+    assert _tidy_codex_title(title, "gpt-6.1-sol") == "review packaging"
+
+
+def test_goal_after_dash_is_cut_from_brief_title():
+    assert _tidy_codex_title("Sol · task — goal", "gpt-6.1-sol") == "task"
+    assert _tidy_codex_title("Sol · task – goal", "gpt-6.1-sol") == "task"
+
+
+def test_goal_separator_with_empty_task_keeps_remainder():
+    assert _tidy_codex_title("Sol · — goal text", "gpt-6.1-sol") == "— goal text"
+
+
+def test_question_mark_titles_with_non_model_head_are_unchanged():
+    assert _tidy_codex_title("Why is it slow ? fix it", "gpt-6.1-sol") == "Why is it slow ? fix it"
+    assert _tidy_codex_title("Sol ? task", "gpt-6.1-terra") == "Sol ? task"
+    assert _tidy_codex_title("Sol � task", "gpt-6.1-terra") == "Sol � task"
