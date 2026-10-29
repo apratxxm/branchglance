@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Insights chart: hovering anywhere in a day's column shows that day's tooltip, not only the guide line or dot. The tooltip is tighter and translucent, and long provider names wrap.
+
 ## 0.1.0 (alpha)
 
 ### Added
