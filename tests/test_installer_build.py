@@ -32,7 +32,7 @@ def _signpath_finalize_module():
 
 def test_release_build_has_one_final_version_default():
     module = _build_module()
-    assert module.RELEASE_VERSION == "1.0.0"
+    assert module.RELEASE_VERSION == "0.1.0"
     assert 'parser.add_argument("--version", default=RELEASE_VERSION)' in (ROOT / "packaging" / "build.py").read_text()
 
 

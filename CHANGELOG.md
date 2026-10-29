@@ -1,6 +1,8 @@
 # Changelog
 
-## 1.0.0
+## Unreleased
+
+## 0.1.0 (alpha)
 
 ### Added
 
@@ -15,6 +17,7 @@
 - Insights view from the widget's Insights button: 24h, 7d, 30d and all ranges, a tokens or cost metric, daily limit peaks, and cost totals that name the unpriced models they leave out.
 - Settings tab in the Insights view, with a 12-hour or 24-hour clock for the compact widget.
 - Codex jobs started from a Claude Code chat nest under that chat in the unified tree.
+- `bg-codex`, a drop-in for `codex` that nests jobs started from a Claude Code chat under that chat.
 
 ### Changed
 
@@ -33,6 +36,9 @@
 - Limit countdowns drop seconds at one hour or more.
 - Names in the tree are 13px.
 - Chat titles are tidied on the live view too.
+- The widget opens by itself only when a subagent starts, finishes or comes back, and rows keep their place.
+- Status and activity share one column; every cell fits on one line.
+- Reused Codex chats show their current task as the title.
 
 ### Fixed
 
