@@ -1,103 +1,115 @@
 # Branchglance
 
-![Branchglance Live Stack](assets/brand/lockup-dark.svg)
+![Branchglance](assets/brand/lockup-dark.svg)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)
 
-Branchglance is a compact Windows widget for keeping Codex and Claude Code chats, subagents, usage limits and waiting work in view.
+A small always-on-top Windows widget that shows what your Codex and Claude Code agents are doing: every chat and subagent in one tree, which ones are waiting on you, and how much of your 5-hour and weekly limits is left.
 
-## What it does
+It is built for people who run several agent chats at once and keep losing track of which one finished, which one is stuck on a question, and how close they are to a limit.
 
-- Shows Codex and Claude Code chats as a parent/agent tree, with observed running, waiting, idle and terminal states. Codex jobs started from a Claude Code chat nest under that chat. A waiting question links back to its source chat; Branchglance does not submit structured answers.
-- Tracks five-hour and weekly usage limits, reset observations, and token, cache and cost insights over 24h, 7d, 30d or all time.
-- Shows Codex and Claude in one tree, lets you search chats, and configure one-shot reset actions. Greetings and Claude Code collection are opt-in; Claude collection installs Branchglance-owned hooks only after consent.
-- Includes a separate, explicitly started phone companion with pairing and optional Web Push alerts. The desktop widget does not start the phone service.
+![Expanded widget: a Claude chat with nested Codex jobs and a waiting question](docs/release/screenshots/tree-expanded.png)
 
-**New here? Read the [walkthrough](docs/GUIDE.md)**: every feature, what it does, and how it fits a day of parallel agent work.
+## Features
 
-Contributor and architecture references:
+- **One tree for both providers.** Codex chats and their subagents, Claude Code sessions and their subagents, and Codex jobs started from a Claude chat nested under that chat.
+- **Needs you.** Chats waiting for input are pulled to the top, with a shortcut that opens the exact chat.
+- **Limits at a glance.** 5-hour and weekly usage for Codex and Claude side by side, with reset countdowns. A countdown reaching zero is never treated as a reset until a fresh reading confirms it.
+- **Insights.** Token and cost totals over 24 hours, 7 days, 30 days or all time, a model breakdown, cache hit rate and daily limit peaks. Models without a known price are listed, never guessed.
+- **Observed, not guessed.** A status is shown only when there is evidence for it. Missing data shows as unknown, and a parent link is shown only when it can be proven.
+- **Out of the way.** Collapsed, it is a 328 px strip with the clock and both limit bands. Hover or press Ctrl+Shift+T to open the tree.
 
-- [Walkthrough](docs/GUIDE.md)
-- [Client integration](docs/INTEGRATION.md): what launchers and scripts must do for linking and signals
-- [Architecture](docs/ARCHITECTURE.md)
-- [Contributing](docs/CONTRIBUTING.md)
-- [Code signing policy](docs/CODE_SIGNING_POLICY.md)
-- [macOS port inventory](docs/MAC_PORT.md)
+![Collapsed widget with both limit bands](docs/release/screenshots/widget-collapsed.png)
 
-Codex rows use blue-violet accents; Claude rows use orange. Both providers' limits share the 5-hour and weekly bands, and the meters count upward to 100% used. In compact mode, a pop-up can surface new work or a waiting question.
+See the [walkthrough](docs/GUIDE.md) for every control and a typical day of use.
 
-Claude Code collection is off until you enable it in Reset Action Settings. It uses local hooks and Claude session data. Subagent rows reflect the hook events received; completeness across real sessions has not been established.
+## Requirements
 
-## Screenshots
-
-Rendered from synthetic sample data; no real chats or accounts.
-
-![Compact widget with Codex limits](docs/release/screenshots/widget-overview.png)
-
-![Codex chats: a running chat with its worker agent, and one waiting for input](docs/release/screenshots/codex-view.png)
-
-![Claude source with its orange theme](docs/release/screenshots/claude-view.png)
+- 64-bit Windows 10 (build 19041) or Windows 11
+- Microsoft Edge WebView2 Runtime and .NET Framework 4.8 (both ship with current Windows)
+- Codex (CLI or app) signed in, for Codex chats and limits
+- Optional: Claude Code, and Claude Desktop for Claude limits
 
 ## Install
 
-1. Download `BranchglanceSetup.exe` from the 1.0.0 release assets.
-2. Run Setup from File Explorer or the Start menu, not from another app's terminal. Run it as your standard Windows user; do not choose **Run as administrator**.
-3. Follow the prompts. Automatic sign-in startup is optional and off unless you choose it.
+1. Download `BranchglanceSetup.exe` from the [latest release](../../releases/latest).
+2. Run it from File Explorer as your normal user (not as administrator).
+3. Open Branchglance from the Start menu.
 
-Branchglance requires 64-bit Windows 10 build 19041 or newer, .NET Framework 4.8 or newer, and Microsoft Edge WebView2 Runtime. Setup checks these prerequisites and stops with an explanation when one is missing.
+Setup installs per user to `%LOCALAPPDATA%\Programs\Branchglance`, adds Start menu and Desktop shortcuts, and can start the widget at sign-in if you choose. It checks its prerequisites and stops with an explanation if one is missing.
 
-### Verify the download
-
-In PowerShell, compare the SHA-256 hash with the published `BranchglanceSetup.exe.sha256` asset and check the signature status is `Valid` and the signer is SignPath Foundation:
+To check a download, compare its SHA-256 hash with the `.sha256` file published next to it, and confirm the signature:
 
 ```powershell
 Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256
 Get-AuthenticodeSignature .\BranchglanceSetup.exe | Format-List Status, SignerCertificate
 ```
 
-The per-user install location is `%LOCALAPPDATA%\Programs\Branchglance`. Setup creates Start menu and Desktop shortcuts, plus an optional sign-in Startup shortcut. Setup resolves these locations through Windows known folders, including redirected Desktop locations such as OneDrive. All shortcuts use the Branchglance Live Stack icon; uninstall removes the shortcuts it owns.
+To uninstall, use **Settings → Apps → Installed apps → Branchglance**. Your settings and history in `%LOCALAPPDATA%\Branchglance` are kept.
 
-Setup checks whether `%LOCALAPPDATA%` is redirected into a packaged app's private storage. It refuses with a visible explanation when redirection is detected or the check is inconclusive. If the Branchglance launcher detects redirected storage, it reopens through File Explorer before starting the widget. Run Setup from File Explorer or the Start menu, not from another app's terminal.
+## Claude Code support
 
-## Open and use
+Claude Code collection is off by default. Turn it on in the widget under **Settings → Notifications → Claude tracking**. Branchglance then backs up your Claude Code `settings.json` and adds its own hooks, leaving your other hooks alone. Turning it off, or uninstalling, removes only those hooks.
 
-- Open Branchglance from the Start menu. The widget stays in the Windows desktop session. Collapsed, it is a 328 px strip with the clock, chat counts and limit bands; hover to show its controls (and, with active chats, the tree), or press Ctrl+Shift+T to open the tree directly (change or turn off the shortcut from the tray menu).
-- When you reopen the widget, it can show the last snapshot immediately with a stale marker while refreshing in the background. Stale snapshots do not show live statuses or current limits. A first-ever launch loads normally.
-- Limit meters show used percentage and stop at 100%. Reset times are observations; reaching zero on a countdown alone does not confirm a reset.
-- Press `/` or `Ctrl+K` to search. Filters: `is:needs`, `is:running`, `is:failed`, `is:hidden`.
-- Open Insights from the widget's Insights button. Choose a range, and switch between tokens and cost. Cost totals cover priced models only and name the models left out; unknown models are never given a guessed price. The Settings tab sets a 12-hour or 24-hour clock, lock and keep-open, the display monitor, and shows the installed version.
-- Open **Reset Action Settings** from the widget's quota status pop-up to configure an optional greeting after a verified limit reset or to enable Claude Code collection. Greetings are off by default. Enabling Claude collection backs up an existing Claude Code settings file, then adds Branchglance hooks. Disabling revokes consent and removes Branchglance-owned hooks, reporting any it had to leave.
+The hooks record event metadata only (ids, model and tool categories, state). They never record prompts, tool inputs or outputs, full paths or chat titles.
 
-## Uninstall and rollback
+If you start Codex jobs from your own scripts, [docs/INTEGRATION.md](docs/INTEGRATION.md) explains what they need to do so the jobs nest under the right chat.
 
-To remove the app, open **Settings → Apps → Installed apps**, select **Branchglance**, and choose **Uninstall**. The uninstaller removes the owned install, shortcuts and integrations. It revokes the Claude consent marker first, then backs up Claude settings before removing Branchglance-owned hooks. Other hooks are left in place. If settings are unreadable, they are left untouched and the cleanup result is reported. A simultaneous Claude Code settings write can race the uninstall edit because no lock serializes those writes. User settings and history under `%LOCALAPPDATA%\Branchglance` are kept.
+## Privacy
 
-The setup program has a rollback mode that restores the previous verified release. Release reviewers should test `BranchglanceSetup.exe --rollback` using a reviewed Windows shortcut or other release-approved launch method. Do not launch Setup from another application's terminal.
+Branchglance reads local files only: Codex session data, Claude Code transcripts and hook events, and Claude Desktop's usage cache. There is no account, server or telemetry, and nothing is uploaded.
 
-## Privacy and provider access
+The one exception is opt-in: if you enable a reset greeting, Branchglance runs the provider's own CLI to send a short message after a verified limit reset. It is off by default.
 
-Branchglance reads local Codex session/transcript and application-state data. For Claude, it reads local Claude Code session data and, only after explicit consent, allowlisted hook events. Hook records contain event and session identifiers, model/tool categories and limited state metadata; they do not contain prompt text, tool inputs or outputs, full paths or chat titles. Chat titles are read from local transcripts for display and are not stored in hook event files. Claude quota limits are read from Claude Desktop's local usage cache.
+## Building from source
 
-Branchglance has no Branchglance-hosted account or sync service, and monitoring does not upload chat transcripts to Branchglance. Provider usage is read through the local Codex integration and Claude Desktop cache. These integrations rely on the provider applications and their existing account connections.
+You need Python 3.10+ and Node.js (for the UI tests).
 
-The optional greeting is different: when explicitly enabled and a genuine reset is observed, Branchglance runs the installed Codex or Claude CLI with a short greeting request. That request goes to the selected provider through its CLI. Leave greetings off if you do not want that provider request. A greeting is not an allowance reset and does not prove work completed.
+```powershell
+git clone https://github.com/apratxxm/branchglance.git
+cd branchglance
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-token-tracker.txt
+.\.venv\Scripts\python.exe -m token_tracker.widget
+```
 
-Runtime settings, hook events and history remain in the per-user application data folder. Uninstall keeps that folder. Review it separately if you want to remove local history after uninstalling.
+Run the tests:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+Get-ChildItem tests -Filter *.mjs | ForEach-Object { node $_.FullName }
+```
+
+Build the installer (details in [CONTRIBUTING](docs/CONTRIBUTING.md)):
+
+```powershell
+py -3.10 -m venv .build-venv
+.\.build-venv\Scripts\python.exe -m pip install -r packaging/requirements-release.txt
+.\.venv\Scripts\python.exe packaging/build.py --output build --python .build-venv\Scripts\python.exe
+```
+
+## Documentation
+
+- [Walkthrough](docs/GUIDE.md): every feature and how it fits a working day
+- [Client integration](docs/INTEGRATION.md): hooks, link receipts and nesting rules for your own launchers
+- [Architecture](docs/ARCHITECTURE.md): how the pieces fit together
+- [Contributing](docs/CONTRIBUTING.md): development setup, tests and pull requests
+- [Code signing policy](docs/CODE_SIGNING_POLICY.md)
 
 ## Troubleshooting
 
-- **Setup says it cannot continue:** confirm 64-bit Windows 10 build 19041+, .NET Framework 4.8+, and WebView2 Runtime are installed. Run as a standard user, not as administrator.
-- **Setup reports redirected or inconclusive AppData:** launch Setup from File Explorer or the Start menu, not another app's terminal. Setup refuses if it cannot verify a safe per-user data location.
-- **Setup refuses an existing folder or shortcut:** it will not overwrite files it cannot identify as Branchglance-owned. Preserve the folder and contact the release maintainer; do not delete files to force an install.
-- **Setup ran but Branchglance is not in the Start menu:** check whether Windows or endpoint protection prevented Setup from running, then rerun Setup from File Explorer. Do not launch it from another app's terminal.
-- **Claude is unavailable:** open Reset Action Settings, enable Claude Code collection, and restart Branchglance if it asks. Check that Claude Code hooks are allowed by Claude Code settings. Only events Claude Code reports can appear; missing events do not prove a session is idle.
-- **A chat hidden in an earlier version is missing:** search for `is:hidden`. Hiding was a local display choice, not deletion.
-- **No greeting appeared at countdown zero:** the app waits for a verified reset sample; zero on the timer is not enough. Confirm the correct provider's greeting setting is enabled and that its CLI is signed in.
+- **Setup won't continue:** check the requirements above and run Setup from File Explorer, not from another app's terminal or as administrator.
+- **Setup refuses an existing folder:** it won't overwrite files it can't identify as its own. Move the folder aside rather than deleting files to force it.
+- **No Claude chats:** turn on Claude tracking in Settings. Only sessions that report hook events can appear.
+- **A Codex job shows as its own parent:** its link to a Claude chat couldn't be proven. See [why a job shows up as its own parent](docs/INTEGRATION.md#why-a-job-shows-up-as-its-own-parent).
+- **Limits show an age, like "13m ago":** the provider hasn't reported a fresh value yet. Claude's limits refresh when Claude Desktop does.
 
-## Brand assets
+## Contributing
 
-The [SVG master](assets/brand/mark-master.svg) comes from the Photoshop vector path, with straight edge segments and the original rounded corners. The app icon, web icons and colour/monochrome marks are generated from that same master. See the [source and reproduction notes](assets/brand/LOGO_MASTER.md). The concept was AI-generated and subsequently refined in Photoshop; no trademark clearance or exclusivity is claimed.
+Issues and pull requests are welcome. Please read [CONTRIBUTING](docs/CONTRIBUTING.md) first. In short: branch from `master`, keep changes focused, run both test suites, and never let a test touch your real `~/.claude` or `~/.codex`.
 
 ## License
 
-Branchglance's original source is licensed under the [MIT License](LICENSE). Third-party assets and dependencies retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT](LICENSE). Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The Branchglance name and logo are not licensed as trademarks.

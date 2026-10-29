@@ -1,6 +1,6 @@
 # Live Stack brand
 
-The approved mark is the Photoshop `Logo - matched corners Shape Path`, exported through **File → Export → Paths to Illustrator**. The original LiveStack04 concept was AI-generated in this Codex conversation, then refined as the Photoshop vector layer. Its exact native path is preserved in `source/photoshop-native-path.ai` and `mark-native.svg`; the approved `mark-master.svg` converts 17 designated straight spans to lines and retains 18 original rounded-corner cubic segments. It has four closed contours in native order: top, middle, diagonal, wedge.
+The approved mark is the Photoshop `Logo - matched corners Shape Path`, exported through **File → Export → Paths to Illustrator**. Its exact native path is preserved in `source/photoshop-native-path.ai` and `mark-native.svg`; the approved `mark-master.svg` converts 17 designated straight spans to lines and retains 18 original rounded-corner cubic segments. It has four closed contours in native order: top, middle, diagonal, wedge.
 
 Full colour assigns off-white to the top, diagonal, and wedge, with lavender on the stepped middle. Use it on charcoal. `mark-mono-dark.svg` is off-white for dark surfaces. `mark-mono-light.svg` is near-black on a light rounded tile; `mark-mono-light-transparent.svg` is the same mono mark on transparent canvas. Geometry remains the same at every size; no compact hand-drawn substitute is used.
 
