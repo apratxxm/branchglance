@@ -230,6 +230,21 @@ def test_receipt_missing_file_is_not_created(tmp_path):
     assert not (directory / agent_links.RECEIPT_FILE).exists()
 
 
+def test_receipt_expected_creation_rejects_reused_or_exited_process(tmp_path, receipt_inbox_creation):
+    assert agent_links.initialize_receipt_inbox(tmp_path)
+    kwargs = dict(environ={"CLAUDE_CODE_SESSION_ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+                  root=tmp_path, permission_check=lambda _: True,
+                  expected_created=123)
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    assert not agent_links.write_receipt(thread, 22, pid_check=lambda *_: 124,
+                                         created=lambda _: 124, **kwargs)
+    assert not agent_links.write_receipt(thread, 22, pid_check=lambda *_: 123,
+                                         created=lambda _: None, **kwargs)
+    assert (tmp_path / agent_links.INBOX_NAME / agent_links.RECEIPT_FILE).read_bytes() == b""
+    assert agent_links.write_receipt(thread, 22, pid_check=lambda *_: 123,
+                                     created=lambda _: 123, **kwargs)
+
+
 def _write_test_receipt(root=None):
     return agent_links.write_receipt(
         "01234567-89ab-cdef-0123-456789abcdef", 22,

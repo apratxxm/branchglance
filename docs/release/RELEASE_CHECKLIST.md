@@ -1,4 +1,4 @@
-# Branchglance 1.0.0 release checklist
+# Branchglance 0.1.0 release checklist
 
 Manual end-to-end plan for a disposable Windows x64 VM and synthetic/test accounts. Record Windows build, WebView2 and .NET versions, Setup file hash, account/provider versions, results and evidence. Never capture private chat titles, prompt text, tokens, account identifiers or full paths in screenshots or logs.
 
@@ -21,7 +21,7 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 
 - [ ] Install the approved RC in a separate snapshot. Add synthetic local settings/history and record current version and integrations.
 - [ ] Run 1.0 Setup from File Explorer over the Branchglance-owned RC install. Confirm it recognizes the owned location and preserves settings/history.
-- [ ] Confirm the active release changes to 1.0.0 only after staging/self-check succeeds; interrupt at each approved failure point if the build provides a documented test hook, then verify the previous release remains launchable.
+- [ ] Confirm the active release changes to 0.1.0 only after staging/self-check succeeds; interrupt at each approved failure point if the build provides a documented test hook, then verify the previous release remains launchable.
 - [ ] Verify Start menu and Desktop shortcuts, optional sign-in Startup shortcut and uninstall registration after upgrade. Confirm locations are resolved from Windows known folders and shortcuts use the Live Stack icon.
 
 ### Startup at sign-in

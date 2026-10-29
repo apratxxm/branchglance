@@ -686,6 +686,7 @@ def validate_receipt_process(receipt: dict[str, Any], *, table: dict[int, tuple[
 
 def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | None = None,
                   created: Callable[[int], int | None] = _process_created,
+                  expected_created: int | None = None,
                   root: Path | None = None, policies: Any = None,
                   permission_check: Callable[[Any], bool] = _cross_provider_collection_allowed,
                   pid_check: Callable[[int, str], int | bool | None] = validate_codex_pid) -> bool:
@@ -701,6 +702,8 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
         return False
     if not isinstance(codex_pid, int) or codex_pid <= 0:
         return False
+    if expected_created is not None and (type(expected_created) is not int or expected_created <= 0):
+        return False
     try:
         validated = pid_check(codex_pid, thread_id.lower())
     except Exception:
@@ -710,6 +713,8 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
     created_at = (validated if isinstance(validated, int) and not isinstance(validated, bool)
                   else created(codex_pid))
     if created_at is None:
+        return False
+    if expected_created is not None and created_at != expected_created:
         return False
     try:
         path = receipt_path(root) / RECEIPT_FILE
@@ -733,6 +738,8 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
                     return False
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode) or len(encoded) > MAX_RECEIPT_BYTES or info.st_size + len(encoded) > MAX_INBOX_BYTES:
+                    return False
+                if expected_created is not None and created(codex_pid) != expected_created:
                     return False
                 return os.write(fd, encoded) == len(encoded)
             finally:

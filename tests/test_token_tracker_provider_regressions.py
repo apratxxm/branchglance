@@ -36,6 +36,28 @@ def _rollout(path, rows):
     return path
 
 
+def test_exec_title_tracks_latest_rollout_message(tmp_path):
+    path = _rollout(tmp_path / "rollout.jsonl", [
+        _record("session_meta", payload={"source": "exec"}),
+        _record("event_msg", payload={"type": "user_message", "message": "Old task\nDetails"}),
+        _record("event_msg", payload={"type": "user_message", "message": "\n  New task\nMore details"}),
+    ])
+    row = {"id": "fixture", "path": str(path), "source": "exec", "name": "Old task"}
+    assert CodexProvider._thread(row)["title"] == "New task"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_record("response_item", payload={"type": "message", "role": "user", "content": [{"text": "Latest task\nBrief"}]})) + "\n")
+    assert CodexProvider._thread(row)["title"] == "Latest task"
+    with path.open("a", encoding="utf-8") as handle:
+        for text in ("# AGENTS.md instructions\n<INSTRUCTIONS>", "<environment_context>\n</environment_context>", "Latest task (continue 2)\nGoal: x"):
+            handle.write(json.dumps(_record("response_item", payload={"type": "message", "role": "user", "content": [{"text": text}]})) + "\n")
+    assert CodexProvider._thread(row)["title"] == "Latest task", "injected context and continuation suffixes are not titles"
+    app_path = _rollout(tmp_path / "app.jsonl", [
+        _record("session_meta", payload={"source": "app"}),
+        _record("event_msg", payload={"type": "user_message", "message": "Different task"}),
+    ])
+    assert CodexProvider._thread({**row, "path": str(app_path), "source": "app"})["title"] == "Old task"
+
+
 def _base_rows(now):
     at = _stamp(now - 10)
     return [

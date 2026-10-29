@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import os
 import queue
-import shutil
+import re
+import platform
 import subprocess
 import threading
 import time
@@ -12,6 +13,133 @@ from pathlib import Path
 from typing import Any
 
 from . import product
+
+
+@dataclass(frozen=True)
+class CodexExecutable:
+    path: str
+    package_root: str | None = None
+    package_manager: str = "NPM"
+
+    def environment(self) -> dict[str, str] | None:
+        if self.package_root is None:
+            return None
+        env = os.environ.copy()
+        for name in ("NPM", "BUN", "PNPM", "VITE_PLUS"):
+            env.pop("CODEX_MANAGED_BY_" + name, None)
+        env["CODEX_MANAGED_PACKAGE_ROOT"] = self.package_root
+        env["CODEX_MANAGED_BY_" + self.package_manager] = "1"
+        return env
+
+
+def _package_manager(root: Path, lexical_root: Path) -> str:
+    """Mirror the package ownership and environment hints in bin/codex.js."""
+    def matches(path: Path) -> bool:
+        try:
+            return path.resolve(strict=True) == root
+        except (OSError, RuntimeError):
+            return False
+
+    for start in (root, lexical_root / "bin"):
+        for current in (start, *start.parents):
+            if current.name == "packages":
+                try:
+                    metadata = json.loads((current / "@openai" / "codex.json").read_text(encoding="utf-8"))
+                    if metadata.get("name") == "@openai/codex":
+                        ident = metadata.get("installId") or ""
+                        install = current / "@openai" / ("codex" + ident) if ident.startswith("#") else current / "@openai" / "codex" / ident
+                        if any(matches(install / suffix / "@openai" / "codex") for suffix in ("lib/node_modules", "node_modules")):
+                            return "VITE_PLUS"
+                except (OSError, ValueError, TypeError, AttributeError):
+                    pass
+            modules = current / "node_modules"
+            if (modules / ".modules.yaml").is_file() and matches(modules / "@openai" / "codex"):
+                return "PNPM"
+    agent = os.environ.get("npm_config_user_agent", "")
+    if (re.search(r"\bbun/", agent) or "bun" in os.environ.get("npm_execpath", "")
+            or ".bun/install/global" in str(lexical_root).replace("\\", "/")):
+        return "BUN"
+    return "NPM"
+
+
+def resolve_codex() -> CodexExecutable | None:
+    """Resolve an absolute native Codex executable without searching cwd."""
+    cwd = Path.cwd().resolve()
+
+    def safe(path: Path) -> Path | None:
+        try:
+            if not path.is_absolute():
+                return None
+            resolved = path.resolve(strict=True)
+            if resolved == cwd or cwd in resolved.parents or not resolved.is_file():
+                return None
+            return resolved
+        except (OSError, RuntimeError):
+            return None
+
+    machine = platform.machine().lower()
+    targets = {"arm64": ("arm64", "aarch64-pc-windows-msvc"), "aarch64": ("arm64", "aarch64-pc-windows-msvc"),
+               "amd64": ("x64", "x86_64-pc-windows-msvc"), "x86_64": ("x64", "x86_64-pc-windows-msvc")}
+    target = targets.get(machine)
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or not Path(entry).is_absolute():
+            continue
+        directory = Path(entry)
+        try:
+            resolved_directory = directory.resolve(strict=True)
+            if resolved_directory == cwd or cwd in resolved_directory.parents:
+                continue
+        except (OSError, RuntimeError):
+            continue
+        found = safe(directory / "codex.exe")
+        if found:
+            return CodexExecutable(str(found))
+        # Only recognize the npm package layout beside an npm shim; never run it.
+        if not target:
+            continue
+        arch, triple = target
+        if not any(safe(directory / ("codex" + ext)) for ext in (".cmd", ".ps1")):
+            continue
+        modules = directory.parent if directory.name.lower() == ".bin" and directory.parent.name.lower() == "node_modules" else directory / "node_modules"
+        root = modules / "@openai" / "codex"
+        if not safe(root / "bin" / "codex.js"):
+            continue
+        try:
+            canonical_root = root.resolve(strict=True)
+            if canonical_root == cwd or cwd in canonical_root.parents:
+                continue
+        except (OSError, RuntimeError):
+            continue
+        # require.resolve starts at the real JS entrypoint and walks parent
+        # node_modules directories, selecting the first package.json it finds.
+        vendor = None
+        entry_dir = safe(root / "bin" / "codex.js").parent
+        for ancestor in (entry_dir, *entry_dir.parents):
+            candidate = ancestor / "node_modules" / "@openai" / ("codex-win32-" + arch)
+            metadata = candidate / "package.json"
+            if metadata.is_file():
+                if safe(metadata) is None:
+                    break
+                vendor = candidate / "vendor"
+                break
+        else:
+            vendor = canonical_root / "vendor"
+        if vendor is not None:
+            found = safe(vendor / triple / "bin" / "codex.exe")
+            if found:
+                return CodexExecutable(str(found), str(canonical_root), _package_manager(canonical_root, root))
+
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidates = []
+    if local and Path(local).is_absolute():
+        candidates.extend((Path(local) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
+                           Path(local) / "Programs" / "codex" / "bin" / "codex.exe"))
+    candidates.append(Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
+    for candidate in candidates:
+        found = safe(candidate)
+        if found:
+            return CodexExecutable(str(found))
+    return None
 
 
 class CodexUnavailable(RuntimeError):
@@ -36,22 +164,9 @@ class CodexAppServer:
     """Small JSON-RPC client for the signed-in local Codex app server."""
 
     def __init__(self, executable: str | None = None, timeout: int = 5) -> None:
-        if executable:
-            self.executable = executable
-        else:
-            found = shutil.which("codex")
-            if not found:
-                local_app_data = os.environ.get("LOCALAPPDATA", "")
-                candidates = [
-                    Path(local_app_data) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
-                    Path(local_app_data) / "Programs" / "codex" / "bin" / "codex.exe",
-                    Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
-                ]
-                for candidate in candidates:
-                    if candidate.is_file():
-                        found = str(candidate)
-                        break
-            self.executable = found
+        resolved = CodexExecutable(executable) if executable else resolve_codex()
+        self.executable = resolved.path if resolved else None
+        self._executable_env = resolved.environment() if resolved else None
         self.timeout = timeout
         self._persistent_lock = threading.Lock()
         self._persistent_proc: subprocess.Popen[str] | None = None
@@ -179,6 +294,7 @@ class CodexAppServer:
                 [self.executable, "app-server", "--stdio"], text=True,
                 encoding="utf-8", errors="replace", stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=flags,
+                env=self._executable_env,
             )
         except OSError as exc:
             raise CodexUnavailable(f"Could not query Codex: {exc}") from exc
@@ -296,6 +412,7 @@ class CodexAppServer:
                 encoding="utf-8",
                 errors="replace",
                 stdin=subprocess.PIPE,
+                env=self._executable_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 creationflags=flags,
