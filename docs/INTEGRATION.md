@@ -110,7 +110,7 @@ For a new job, `--json` lets Branchglance identify the Codex thread. Without it,
 
 Running list of things clients must do, or must avoid, that we found in practice. Add new findings here.
 
-- **2026-10-28.** Jobs launched by our orchestration scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Use bg-codex from the Claude Code session (see above). Since 1eb47e0 this also works from Claude desktop sessions.
+- **2026-10-28.** Codex jobs started from scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Use bg-codex from the Claude Code session (see above). Since 1eb47e0 this also works from Claude desktop sessions.
 - **2026-10-28.** Brief titles like `# [Orchestrator] Terra · row layout` showed raw on the live view. Fixed in the product (tidying now applies on the live and indexed paths too). Clients should still put the task first in titles.
 - **2026-10-28.** `CLAUDE_CONFIG_DIR` changes after enabling collection leave hooks in the old folder. Enable collection again after switching, and check the old folder for leftover hooks. Since 942f13f, enabling records the exact settings file, and turning tracking off or uninstalling edits only that file.
 - **2026-10-29.** Running Codex jobs started from Claude chats showed as separate parents even though they were linked: a cached Claude parent lost its provider tag. Fixed in the product (938aae6, 2192a77); nothing for clients to change.
