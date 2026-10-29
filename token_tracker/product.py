@@ -486,14 +486,6 @@ def control_nonce_path(*, frozen: bool | None = None, environ: Mapping[str, str]
     return state_root(frozen=frozen, environ=environ) / "control.nonce"
 
 
-def phone_state_path(*, frozen: bool | None = None, environ: Mapping[str, str] | None = None) -> Path:
-    env = _environ(environ)
-    if product_root(frozen=frozen, environ=env) is not None:
-        return state_root(frozen=frozen, environ=env) / "phone-state.json"
-    root = env.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-    return Path(root) / LEGACY_PRODUCT_DIR / "phone-state.json"
-
-
 def policy_file_path(*, frozen: bool | None = None, environ: Mapping[str, str] | None = None) -> Path | None:
     """Installer-written policy file. Development reads one only when explicitly pointed at it."""
     env = _environ(environ)

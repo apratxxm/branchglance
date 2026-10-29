@@ -8,8 +8,6 @@ const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.me
 const refinedCss=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const dashboardCss=fs.readFileSync(new URL("../token_tracker/static/dashboard.css",import.meta.url),"utf8");
 const dashboardScript=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8");
-const reviewPage=fs.readFileSync(new URL("../token_tracker/static/runway_review.html",import.meta.url),"utf8");
-const reviewScript=fs.readFileSync(new URL("../token_tracker/static/runway_review.js",import.meta.url),"utf8");
 const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector)?.[2]||"";
 assert.match(page,/window\.__TOKEN_TRACKER_RUNWAY__=true/);
 assert.doesNotMatch(page,/Active work|data-action="pin"/);
@@ -515,20 +513,6 @@ assert.match(longPathRow,/runway-path-leaf">\\long-leaf-x{120}<\/span>/);
 assert.ok(longPathRow.includes('title="Workspace · '+longPath+'"'));
 const unavailablePathRow=T.rowHTML({...root,workspace:null,root:{workspace:null}});
 assert.doesNotMatch(unavailablePathRow,/data-runway-slot="workspace"|Workspace unavailable|path unavailable/);
-assert.match(reviewPage,/option value="single-agent"/);
-assert.match(reviewPage,/option value="agents-23"/);
-const fixtureStart=reviewScript.indexOf("function fixtures(which){"),fixtureEnd=reviewScript.indexOf("\nrenderBoard();",fixtureStart);
-assert.ok(fixtureStart>=0&&fixtureEnd>fixtureStart,"review fixtures function must be present and isolated from browser startup");
-const reviewFixtures=vm.runInNewContext("("+reviewScript.slice(fixtureStart,fixtureEnd)+")");
-const singleAgents=reviewFixtures("single-agent").snapshot.providers[0].chats.filter(chat=>chat.id.startsWith("sim-agent-"));
-assert.equal(singleAgents.length,1);
-assert.ok(Date.parse(singleAgents[0].latestRequestAt)>Date.parse(singleAgents[0].latestUpdateAt));
-const manyAgents=reviewFixtures("agents-23").snapshot.providers[0].chats.filter(chat=>chat.id.startsWith("sim-agent-"));
-assert.equal(manyAgents.length,23);
-const pendingMessageAgents=manyAgents.filter(chat=>Date.parse(chat.latestRequestAt)>Date.parse(chat.latestUpdateAt));
-assert.ok(pendingMessageAgents.length,"fixture must include pending parent messages");
-assert.ok(manyAgents.some(chat=>Date.parse(chat.latestRequestAt)<Date.parse(chat.latestUpdateAt)),"fixture must include replies after parent messages");
-assert.deepEqual([...new Set(manyAgents.map(chat=>chat.status))].sort(),["compacting","needs input","running"]);
 assert.equal(T.runwayTitle({...root,title:'Sample app sol wake learning'},true),'wake learning');
 assert.equal(T.runwayTitle({...root,title:'Memoir sol wake learning'}),'Memoir sol wake learning');
 // Orchestration job briefs collapse to worker and task for root chats and agents alike.
@@ -655,8 +639,6 @@ assert.doesNotMatch(node('#chat-list').innerHTML,/Live parent|Status unavailable
 assert.equal(T.notch.active,0,"expired carry-forward rows no longer count as active");
 testNow=fixedNow;
 T.render(snapshot);
-assert.ok(Date.now()-Date.parse(singleAgents[0].latestRequestAt)<10000,"single-agent pending-message sample must be younger than ten seconds");
-assert.ok(pendingMessageAgents.every(chat=>Date.now()-Date.parse(chat.latestRequestAt)<10000),"pending-message samples must be younger than ten seconds");
 // Counts use unique active entities across the full forest, independent of search.
 const countChats=[root,child,grandchild,{...root,id:'finished-parent',status:'idle',stateDetail:'completed'},
   {...child,id:'parent-worker',parentId:'finished-parent'},
@@ -1140,7 +1122,7 @@ assert.equal(nativeLock.locked,false);assert.equal(T.widgetLock.locked,false,'re
 assert.equal(nativeLock.revision,revisionBeforePendingRecenter+2,'the native recenter revision supersedes an accepted queued lock write');
 releaseLockWrite();assert.equal(await lateLockAck,false);deferLockWrite=false;
 assert.equal(T.widgetLock.locked,false,'a late acknowledgement from before recenter cannot reinstate the lock');
-assert.match(page,/id="widget-lock"/);assert.match(css,/body\.phone\s+#widget-lock|body\.phone[^{}]*#widget-lock/,'the lock control is hidden in phone mode');
+assert.match(page,/id="widget-lock"/);
 
 // A failed first snapshot retries quickly while visible, without quota fetches until data exists.
 T.state.snapshot=null;T.state.loading=false;T.state.refreshPending=false;T.state.bootstrapRetryMs=2000;
@@ -1166,61 +1148,4 @@ assert.equal(bootstrapCalls.filter(call=>call==="/api/limit-reset").length,1);
 assert.equal(T.state.snapshot,snapshot);
 assert.equal(T.state.bootstrapRetryTimer,null);
 
-// Phone mode reuses Runway's current-only renderer without desktop notch/native actions.
-const phoneContext={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_PHONE__:true,pywebview:{api:{set_notch(){throw new Error("phone mode must not call native APIs");}}}},
-  document:{querySelector:node,querySelectorAll(){return [];},hidden:false,activeElement:null},localStorage:context.localStorage,Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,setTimeout:fakeSetTimeout,clearTimeout:fakeClearTimeout,setInterval(){return 0;},fetch:null};
-vm.createContext(phoneContext);vm.runInContext(app,phoneContext);
-const P=phoneContext.window.__tokenTrackerTest;
-assert.equal(P.phone,true);assert.equal(P.runway,true);
-assert.equal(P.resetView(provider,"fiveHour").countdown,"25m 00s");
-assert.equal(P.resetView(provider,"fiveHour").usedText,"92% used");
-P.renderResets([{name:"Codex",...provider}]);assert.equal(node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>92%</b><i>used</i></span>');
-assert.equal(P.resetView(provider,"weekly").countdown,"","phone mode keeps the weekly countdown slot blank");
-const phoneRoot={...root,id:"phone-root"},phoneChild={...child,id:"phone-child",parentId:"phone-root",activity:{kind:"reading",files:["A:\\src\\phone.js"],observedAt:ago(0)}},
-  phoneQuestionChild={...child,id:"phone-question-child",parentId:"phone-root",status:"needs-input",pendingQuestion:"Choose a safe action",pendingQuestionAt:ago(1),pendingOptions:["Read only","Wait"],activity:null};
-const phoneSnapshot={...snapshot,providers:[{...provider,chats:[phoneRoot,phoneChild,phoneQuestionChild]}]};
-const phoneLiveOnly={...snapshot,providers:[{...provider,chats:[phoneRoot]}]};
-P.applyLive(phoneLiveOnly,{generatedAt:ago(0),chats:[{key:'Codex:phone-new',id:'phone-new',provider:'Codex',parentId:'phone-root',title:'No phone upsert',status:'running'}]});
-assert.equal(phoneLiveOnly.providers[0].chats.some(chat=>chat.id==='phone-new'),false,'desktop live identity upserts stay disabled in phone mode');
-P.applyLive(phoneLiveOnly,{generatedAt:ago(0),chats:[{key:'Codex:phone-root',id:'phone-root',provider:'Codex',title:'Desktop-only rename',workspace:'A:\\changed',status:'running'}]});
-assert.notEqual(phoneLiveOnly.providers[0].chats[0].title,'Desktop-only rename','desktop live identity fields stay out of phone records');
-assert.match(P.rowHTML({...phoneRoot,stateSince:ago(3),activeRunStartedAt:ago(3)}),/data-runway-slot="elapsed" class="runway-state-elapsed" title="Elapsed in current state">3:00/,'phone state elapsed remains unchanged');
-P.state.hiddenChats.add("Codex:phone-root");P.render(phoneSnapshot);
-const phoneMarkup=node("#chat-list").innerHTML;
-assert.match(phoneMarkup,/data-key="Codex:phone-root"/,"phone mode shows an active root hidden in the desktop roster");
-assert.doesNotMatch(phoneMarkup,/runway-agent-secondary|runway-topline/,"phone row markup keeps its existing activity placement");
-assert.match(phoneMarkup,/Reading phone\.js/);
-assert.equal(node("#notch-counts").title,"1 chat group, 3 active, 1 waiting");
-assert.match(node("#notch-counts").innerHTML,/aria-label="3 active"/);
-assert.match(node("#notch-counts").innerHTML,/aria-label="1 waiting[",]/);
-assert.equal(P.notch.autoTimer,null);assert.equal(P.notch.expanded,false);
-P.setNotch(true);P.syncNotch(1,[{key:"Codex:phone-root",active:true}]);
-assert.equal(P.notch.expanded,false);assert.equal(P.notch.autoTimer,null);
-assert.equal(phoneContext.window.tokenTrackerInspect,undefined);
-const phoneQuestion=P.runwayQuestionPopover(P.state.forest.rows.find(chat=>chat.key==="Codex:phone-question-child"));
-assert.match(phoneQuestion,/<li>Read only<\/li>/);assert.match(phoneQuestion,/<li>Wait<\/li>/);
-assert.doesNotMatch(phoneQuestion,/data-action="(?:answer|queue-answer|open)"/);
-let phoneQuestionOpens=0;phoneContext.fetch=async()=>{phoneQuestionOpens++;throw new Error("phone question preview must not open Codex");};
-const phoneQuestionButton={dataset:{action:"runway-question",key:"Codex:phone-question-child"},getBoundingClientRect:()=>({left:12,bottom:36})};
-assert.match(P.rowHTML(P.state.forest.roots.find(chat=>chat.id==="phone-root")),/title="Show exact pending question"/);
-P.handleClick({target:{closest:selector=>selector==="[data-action]"?phoneQuestionButton:null}});
-assert.equal(P.state.popover,phoneQuestionButton);assert.match(node("#popover").innerHTML,/<li>Read only<\/li>/);
-assert.equal(phoneQuestionOpens,0);assert.equal(phoneQuestionButton.__questionText,"Choose a safe action");
-let phoneFetches=0;phoneContext.fetch=async()=>{phoneFetches++;throw new Error("unexpected remote action");};
-for(const action of ["answer","queue-answer","open","pin","hide-chat","show-hidden"]){
-  const button={dataset:{action,key:"Codex:phone-root",thread:"phone-root",answer:"Read only"}};
-  P.handleClick({target:{closest:()=>button}});
-}
-assert.equal(phoneFetches,0);assert.equal(P.state.hiddenChats.has("Codex:phone-root"),true);assert.equal(P.state.pins.has("Codex:phone-root"),false);
-const phoneRequests=[];phoneContext.fetch=async url=>{
-  phoneRequests.push(url);
-  if(url==="/api/stats")return {ok:true,json:async()=>phoneSnapshot};
-  if(url==="/api/live")return {ok:true,json:async()=>({generatedAt:phoneSnapshot.generatedAt,chats:[]})};
-  throw new Error("phone mode must not call desktop-only endpoints: "+url);
-};
-await P.handleVisibilityChange();
-assert.equal(phoneRequests.filter(url=>url==="/api/stats").length,1);
-assert.equal(phoneRequests.filter(url=>url==="/api/live").length,1);
-assert.equal(P.state.foregroundLivePending,false);
-assert.doesNotMatch(phoneRequests.join(" "),/limit-reset|today|avatars/);
 console.log("Token Tracker Runway telemetry contracts passed");

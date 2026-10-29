@@ -1,7 +1,6 @@
 const $ = (selector, root = document) => root.querySelector(selector);
-const PHONE = Boolean(window.__TOKEN_TRACKER_PHONE__);
-const RUNWAY = Boolean(window.__TOKEN_TRACKER_RUNWAY__||PHONE);
-const REFINED = RUNWAY&&!PHONE&&window.__TOKEN_TRACKER_REFINED__===true;
+const RUNWAY = Boolean(window.__TOKEN_TRACKER_RUNWAY__);
+const REFINED = RUNWAY&&window.__TOKEN_TRACKER_REFINED__===true;
 const COMPACT = REFINED&&window.__TOKEN_TRACKER_COMPACT__===true;
 const RUNWAY_REFRESH_ICON='<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4.8A4.5 4.5 0 1 0 10 7"/><path d="M7.7 2.2H10v2.3"/></svg>';
 function preferredClockCycle(){try{return localStorage.getItem('branchglanceClockFormat')==='24'?'h23':'h12';}catch{return 'h12';}}
@@ -33,7 +32,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   snapshotCache:null,snapshotCacheInvalid:false,watcherFetchError:null,watcherAcceptedSequence:new Map(),
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
-  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, graphlessBootstrapTimer:null, graphlessBootstrapSnapshot:null, graphlessBootstrapAttempts:0, graphlessBootstrapTimedOut:false, graphlessBootstrapFallback:false, refreshing:false, initialBootstrapPending:RUNWAY&&!PHONE&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
+  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, graphlessBootstrapTimer:null, graphlessBootstrapSnapshot:null, graphlessBootstrapAttempts:0, graphlessBootstrapTimedOut:false, graphlessBootstrapFallback:false, refreshing:false, initialBootstrapPending:RUNWAY&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
   source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, notchOpeningTimer:null, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
@@ -43,7 +42,7 @@ const quotaLoader={promise:null,sequence:0,retryAfter:0,retryMs:2000,unsupported
 const providerPolicyLoader={promise:null};
 const RUNWAY_EVIDENCE_MAX_AGE_MS=8000;
 function runwayCurrentEvidenceFresh(now=Date.now()) {
-  if(!RUNWAY||PHONE)return true;
+  if(!RUNWAY)return true;
   const anchor=state.liveSampleAccepted?state.liveAcceptedGeneratedAt:stamp(state.snapshot?.generatedAt);
   return Number.isFinite(anchor)&&anchor>0&&anchor<=now&&now-anchor<=RUNWAY_EVIDENCE_MAX_AGE_MS;
 }
@@ -159,7 +158,7 @@ function syncWidgetDragRegions(locked) {
   }
 }
 function applyWidgetLock(value) {
-  if(!RUNWAY||PHONE||!value||typeof value.locked!=='boolean'||typeof value.expanded!=='boolean'||!Number.isSafeInteger(value.revision)||value.revision<0||value.revision<widgetLock.revision)return false;
+  if(!RUNWAY||!value||typeof value.locked!=='boolean'||typeof value.expanded!=='boolean'||!Number.isSafeInteger(value.revision)||value.revision<0||value.revision<widgetLock.revision)return false;
   widgetLock.known=true;widgetLock.revision=value.revision;widgetLock.locked=value.locked;widgetLock.expanded=value.expanded;
   if(COMPACT&&typeof value.keepOpen==='boolean'&&Number.isSafeInteger(value.keepOpenRevision))applyKeepOpen({keepOpen:value.keepOpen,keepOpenRevision:value.keepOpenRevision});
   syncWidgetDragRegions(widgetLock.locked);updateWidgetLockButton();
@@ -204,7 +203,7 @@ async function recenterWidget(){
   }catch{return false;}
 }
 function openDashboard(){
-  if(!COMPACT||PHONE||dashboardState.open)return false;
+  if(!COMPACT||dashboardState.open)return false;
   dashboardState.returnMode=notch.mode||'controls';dashboardState.restoreMode=null;dashboardState.open=true;
   window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot)});
   setNotch(notch.expanded);return true;
@@ -242,7 +241,7 @@ function notchHeight() {
 }
 function scheduleNotchSize() {
   if(!RUNWAY||typeof requestAnimationFrame!=='function')return;
-  cancelAnimationFrame(notch.frame);notch.frame=requestAnimationFrame(()=>{const changed=!PHONE&&syncRunwayTreeConnectors();if(changed){scheduleNotchSize();return;}setNotch(notch.expanded,true);});
+  cancelAnimationFrame(notch.frame);notch.frame=requestAnimationFrame(()=>{const changed=syncRunwayTreeConnectors();if(changed){scheduleNotchSize();return;}setNotch(notch.expanded,true);});
 }
 function runwayTreePathGeometry(rootRect, entries, refined=false) {
   const byIdentity=new Map(entries.map(entry=>[entry.provider+':'+entry.id,entry])),paths=[],dots=new Map(),messagePositions=[];let bottom=0;
@@ -276,18 +275,18 @@ function scheduleRunwayTreeScrollSync(){
 }
 // Scrolling only changes which parent rows are stuck; connector geometry is measured from the unstuck position, so it never needs redrawing here.
 function syncRunwayRootStuck(){
-  const list=$('#chat-list');if(PHONE||!realDom(list))return;
+  const list=$('#chat-list');if(!realDom(list))return;
   const inspect=COMPACT&&notch.mode==='inspect',rows=[];
   for(const root of list.children){if(!root.classList?.contains('chat'))continue;const row=root.querySelector?.('.row');if(row)rows.push([row,inspect&&row.getBoundingClientRect().top-root.getBoundingClientRect().top>1]);}
   for(const [row,stuck] of rows)cls(row,'runway-root-stuck',stuck);
 }
 function setupRunwayTreeScrollSync(){
-  if(treeScrollListenerAttached||!RUNWAY||PHONE||!COMPACT)return;
+  if(treeScrollListenerAttached||!RUNWAY||!COMPACT)return;
   const layout=$('.layout');if(!layout?.addEventListener)return;
   layout.addEventListener('scroll',scheduleRunwayTreeScrollSync,{passive:true});treeScrollListenerAttached=true;
 }
 function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
-  const list=$('#chat-list');if(PHONE||!realDom(list)||typeof document.createElementNS!=='function')return;
+  const list=$('#chat-list');if(!realDom(list)||typeof document.createElementNS!=='function')return;
   const ns='http://www.w3.org/2000/svg',layoutHeight=updateTallRoot?($('.layout')?.clientHeight||0):0;let tallRootChanged=false;
   for(const root of [...list.children].filter(el=>el.classList?.contains('chat'))){
     let rootRect=root.getBoundingClientRect?.();const row=root.querySelector?.('.row');let rowRect=row?.getBoundingClientRect?.();
@@ -330,7 +329,7 @@ function put(el,key,value){if(el&&el[key]!==value)el[key]=value;}
 function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttribute?.(name,value);}
 function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
-  if(!RUNWAY||PHONE)return;
+  if(!RUNWAY)return;
   if(COMPACT){
     const mode=compactModeForState();
     if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
@@ -353,7 +352,7 @@ function setNotch(expanded, treeSynced=false) {
     cls(document.body,'notch-collapsed',!notch.expanded);
     cls(document.body,'notch-auto-open',notch.autoExpanded&&notch.expanded);
     cls(document.body,'notch-inspecting',mode==='inspect');
-    if(notch.expanded&&!PHONE&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
+    if(notch.expanded&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
     renderRunwayCounts(notch.counts);
     const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
     if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded||mode==='dashboard',height,reduced,mode],signature);}
@@ -377,7 +376,7 @@ function setNotch(expanded, treeSynced=false) {
   document.body?.classList?.toggle('notch-collapsed',!notch.expanded);
   document.body?.classList?.toggle('notch-auto-open',Boolean(notch.autoExpanded&&notch.expanded));
   document.body?.classList?.toggle('notch-inspecting',Boolean((notch.inspecting||notch.manual||state.popover)&&notch.expanded));
-  if(notch.expanded&&!PHONE&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
+  if(notch.expanded&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
   renderRunwayCounts(notch.counts);
   const api=window.pywebview?.api?.set_notch;
   const height=notchHeight(),reduced=reducedMotion(),signature=notch.expanded+':'+height+':'+reduced;
@@ -439,7 +438,7 @@ function syncCompactNotch(count,items) {
   if(newWork)expandForNewWork();else setNotch(false);
 }
 function syncNotch(count,items=[]) {
-  if(PHONE)return;
+
   if(COMPACT){syncCompactNotch(count,items);return;}
   const current=new Map(items.map(item=>typeof item==="string"?[item,{key:item,active:true}]:[item.key,item]));
   const activeKeys=new Set([...current.values()].filter(item=>item.active).map(item=>item.key));
@@ -485,7 +484,7 @@ function syncNotch(count,items=[]) {
   else setNotch((count||notch.keyboardInspecting||notch.inspecting||state.popover)&&(notch.expanded||notch.inspecting||notch.manual));
 }
 function setupNotch() {
-  if(!RUNWAY||PHONE)return;
+  if(!RUNWAY)return;
   setupRunwayTreeScrollSync();
   if(!widgetLock.known)syncWidgetDragRegions(true);
   const widget=$('.widget');
@@ -652,7 +651,7 @@ function applyMonitorResult(result,requestGeneration,selectionGeneration){
   return true;
 }
 function setupWindowDrag() {
-  if(!RUNWAY||PHONE)return;
+  if(!RUNWAY)return;
   if(COMPACT){
     let gesture=null,queue=Promise.resolve();
     document.addEventListener('mousedown',event=>{
@@ -838,7 +837,7 @@ function plainOptionsHTML(options) {
 function optionsHTML(options, thread) {
   const opts=Array.isArray(options)?options:[];
   const t=thread?' data-thread="'+esc(thread)+'"':'';
-  return '<div class="q-opts">'+(opts.length?'<span class="q-action-note">Open Codex to answer · queue is a later message</span>':'')+opts.map((text,i)=>'<div class="q-choice"><button class="q-opt" data-action="answer" data-answer="'+esc(text)+'"'+t+' aria-label="Open Codex to answer: '+esc(text)+'" title="Open this task in Codex and select the choice in its question prompt. The choice is also copied for reference."><b>'+(i+1)+'</b>'+(RUNWAY?'<span>Open in Codex</span> · ':'')+esc(text)+ICON.check+'</button><button class="q-open q-queue" data-action="queue-answer" data-answer="'+esc(text)+'"'+t+' title="Queue this as a message for the next turn. It will not answer the pending question."><span>Queue to chat</span></button></div>').join("")+ 
+  return '<div class="q-opts">'+(opts.length?'<span class="q-action-note">Open Codex to answer · queue is a later message</span>':'')+opts.map((text,i)=>'<div class="q-choice"><button class="q-opt" data-action="answer" data-answer="'+esc(text)+'"'+t+' aria-label="Open Codex to answer: '+esc(text)+'" title="Open this task in Codex and select the choice in its question prompt. The choice is also copied for reference."><b>'+(i+1)+'</b>'+(RUNWAY?'<span>Open in Codex</span> · ':'')+esc(text)+ICON.check+'</button><button class="q-open q-queue" data-action="queue-answer" data-answer="'+esc(text)+'"'+t+' title="Queue this as a message for the next turn. It will not answer the pending question."><span>Queue to chat</span></button></div>').join("")+
     (thread?'<button class="q-open" data-action="open"'+t+' title="Open this chat in Codex">'+ICON.open+'<span>'+(opts.length?"Open":"Answer in Codex")+'</span>'+ICON.check+'</button>':'')+'</div>';
 }
 const QUESTION_STALE_MS=24*60*60*1000;
@@ -867,7 +866,7 @@ const runwayEffectiveStatus = chat => {
 const runwayRunning = chat => !runwayTerminated(chat)&&!runwayWaiting(chat)&&(chat.executionStatus!==undefined?Boolean(runwayExecutionView(chat)):['running','compacting'].includes(chat.status));
 const runwayActive = chat => runwayRunning(chat)||runwayWaiting(chat);
 function runwayActivityEvidence(chat) {
-  if(!RUNWAY||PHONE||runwayTerminated(chat))return {status:'inactive',activity:null};
+  if(!RUNWAY||runwayTerminated(chat))return {status:'inactive',activity:null};
   if(!runwayCurrentEvidenceFresh())return {status:chat.telemetryUnavailable?'unavailable':'stale',activity:null};
   if(Object.prototype.hasOwnProperty.call(chat,'executionStatus')){
     const normalized=normalizeStatus(chat.executionStatus),status=normalized==='needs-input'?'waiting':normalized,source=chat.executionSource;
@@ -896,7 +895,7 @@ function runwayRecentlyUnavailable(chat) {
 }
 const runwayVisibleActive=chat=>runwayCurrentEvidenceFresh()&&(runwayActive(chat)||runwayRecentlyUnavailable(chat));
 function runwayCounts(forest) {
-  const roots=forest.roots.filter(chat=>PHONE||!state.hiddenChats.has(chat.key));
+  const roots=forest.roots.filter(chat=>!state.hiddenChats.has(chat.key));
   const unique=new Map(roots.flatMap(chat=>[chat,...chat.descendants]).map(chat=>[chat.key,chat]));
   const active=chat=>runwayCurrentEvidenceFresh()&&(runwayRunning(chat)||runwayWaiting(chat));
   return {roots:roots.filter(chat=>[chat,...chat.descendants].some(active)).length,total:[...unique.values()].filter(active).length,waiting:runwayCurrentEvidenceFresh()?[...unique.values()].filter(runwayWaiting).length:0};
@@ -913,7 +912,7 @@ function renderRunwayCounts(counts) {
   if(!counts){for(const node of nodes){if(node._runwayCountHTML!==''){node.innerHTML='';node._runwayCountHTML='';}if(node.title)node.title='';if(node.getAttribute?.('aria-label'))node.removeAttribute?.('aria-label');}return;}
   const chatsWord=counts.roots===1?'chat':'chats';
   const label=counts.roots+' chat group'+(counts.roots===1?'':'s')+', '+counts.total+' active, '+counts.waiting+' waiting';
-  const badge=(slot,value,unit,tone,path,meaning,visible=true)=>{if(unit==='chat'||unit==='chats')meaning='visible chat groups';const hidden=visible?'':' aria-hidden="true"';const jump=slot==='waiting'&&visible&&!PHONE?' data-action="jump-waiting" role="button" tabindex="0"':'';return '<span data-count-slot="'+slot+'" class="runway-count runway-count-'+slot+' t-'+tone+(visible?'':' is-empty')+'"'+hidden+jump+' aria-label="'+value+' '+meaning+(jump?', show the first':'')+'" title="'+value+' '+meaning+(jump?' · click to show':'')+'"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="'+path+'"/></svg><span class="count-value">'+(visible?value:'')+'</span><span class="count-unit">'+(visible?unit:'')+'</span></span>';};
+  const badge=(slot,value,unit,tone,path,meaning,visible=true)=>{if(unit==='chat'||unit==='chats')meaning='visible chat groups';const hidden=visible?'':' aria-hidden="true"';const jump=slot==='waiting'&&visible?' data-action="jump-waiting" role="button" tabindex="0"':'';return '<span data-count-slot="'+slot+'" class="runway-count runway-count-'+slot+' t-'+tone+(visible?'':' is-empty')+'"'+hidden+jump+' aria-label="'+value+' '+meaning+(jump?', show the first':'')+'" title="'+value+' '+meaning+(jump?' · click to show':'')+'"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="'+path+'"/></svg><span class="count-value">'+(visible?value:'')+'</span><span class="count-unit">'+(visible?unit:'')+'</span></span>';};
   const html=badge('groups',counts.roots,chatsWord,'live','M2 2h8v6H5l-3 2Z',chatsWord,!COMPACT||counts.roots>0)+badge('active',counts.total,'active','live','M3 1v8h6M3 4h6M9 2v4M9 7v4','active',!COMPACT||counts.total>0)+badge('waiting',counts.waiting,'waiting','attn','M6 2v5M6 9h.01','waiting',Boolean(counts.waiting));
   for(const node of nodes){
     if(node._runwayCountHTML!==html){node.innerHTML=html;node._runwayCountHTML=html;}
@@ -1074,7 +1073,7 @@ function syncProviderPolicyGeneration(snapshot) {
   }
 }
 function loadProviderPolicy() {
-  if(!RUNWAY||PHONE)return Promise.resolve(false);
+  if(!RUNWAY)return Promise.resolve(false);
   if(providerPolicyLoader.promise)return providerPolicyLoader.promise;
   const operation=(async()=>{
     let policy=null;
@@ -1098,7 +1097,7 @@ function loadProviderPolicy() {
 // Sources the switch can offer: visible chat providers under policy, in a fixed order.
 function sourceNames(snapshot) { const visible=visibleProviderNames(snapshot);return SOURCES.filter(name=>visible.has(name)); }
 function effectiveSource(snapshot) { const names=sourceNames(snapshot);return names.includes(state.source)?state.source:(names[0]||"Codex"); }
-const runwaySource = snapshot => RUNWAY&&!PHONE?sourceNames(snapshot):["Codex"];
+const runwaySource = snapshot => RUNWAY?sourceNames(snapshot):["Codex"];
 function providersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=(snapshot?.providers||[]);
   const names=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
@@ -1108,7 +1107,7 @@ function providersFor(snapshot) {
 function limitProvidersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=snapshot?.providers||[];
   const enabled=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
-  if(RUNWAY&&!PHONE){
+  if(RUNWAY){
     const names=sourceNames(snapshot);
     return names.flatMap(name=>{
       const provider=available.find(item=>item.name===name),bootstrap=quotaBootstrap.providers[name];
@@ -1214,7 +1213,7 @@ function visibleRoots(forest, days=state.windowDays) {
   if(RUNWAY)return byLatest.filter(chat=>{
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
-    return (PHONE||state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
+    return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
       (hiddenMatch||rows.some(runwayVisibleActive))&&matches;
   });
   const keep=chat=>query.active ? [chat,...chat.descendants].some(c=>matchesQuery(c,query)) : state.pins.has(chat.key)||(RUNWAY&&state.showHidden&&state.hiddenChats.has(chat.key))||inWindow(chat,days);
@@ -1406,7 +1405,7 @@ const realDom = node => Boolean(node&&node.children&&typeof document.createEleme
 function attrString(attrs) { return Object.entries(attrs||{}).filter(([,v])=>v!=null).map(([k,v])=>' '+k+'="'+esc(v)+'"').join(""); }
 function syncPatchedAttributes(current,next) {
   const oldEvent=current.getAttribute?.('data-model-change-at'),newEvent=next.getAttribute?.('data-model-change-at');
-  if(RUNWAY&&!PHONE&&oldEvent&&newEvent&&oldEvent!==newEvent&&current.matches?.('.runway-model-name.model-changed')&&next.matches?.('.runway-model-name.model-changed')){current.classList.remove('model-changed');void current.offsetWidth;}
+  if(RUNWAY&&oldEvent&&newEvent&&oldEvent!==newEvent&&current.matches?.('.runway-model-name.model-changed')&&next.matches?.('.runway-model-name.model-changed')){current.classList.remove('model-changed');void current.offsetWidth;}
   const message=current.matches?.('.runway-message-indicator')&&next.matches?.('.runway-message-indicator');
   const sameMessage=message&&current.getAttribute('data-message-at')===next.getAttribute('data-message-at');
   if(message&&!sameMessage&&state.runwaySnapshotPainted)runwayMotionOnce(current,'message-arrived','runway-message-dot-arrival','.runway-message-dots i:nth-child(3)');
@@ -1417,7 +1416,7 @@ function syncPatchedAttributes(current,next) {
   }
 }
 function animateInsertedMessageBadges(el) {
-  if(!RUNWAY||PHONE||!state.runwaySnapshotPainted||state.sourceSwitching)return;
+  if(!RUNWAY||!state.runwaySnapshotPainted||state.sourceSwitching)return;
   const messages=[...(el.matches?.('.runway-message-indicator')?[el]:[]),...(el.querySelectorAll?.('.runway-message-indicator')||[])];
   for(const message of messages)runwayMotionOnce(message,'message-arrived','runway-message-dot-arrival','.runway-message-dots i:nth-child(3)');
 }
@@ -1523,7 +1522,7 @@ function resetView(provider, key) {
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
   return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,
-    tone:shownUsed==null||lastKnown?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset&&(!PHONE||key==="fiveHour")?runwayCountdown:""):parts.countdown,due:parts.due,
+    tone:shownUsed==null||lastKnown?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
     // Keep the last-known age beside each independently rendered quota value.
     stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
     tip:RUNWAY?(lastKnown?"Last reported by "+(provider.name==="Claude"?"Claude Desktop":provider.name)+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014")};
@@ -1574,7 +1573,7 @@ function renderResets(providers) {
     const markup=key=>providers.map((p,i)=>{
       const id="r"+i+"-"+key,providerClass=p.name==="Claude"?"provider-claude":"provider-codex";
       return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
-        (key==="fiveHour"&&!PHONE&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
+        (key==="fiveHour"&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
         '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>\uFFFD</b><i>used</i></span>':'\uFFFD')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">\uFFFD:\uFFFD</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
@@ -1592,9 +1591,9 @@ function renderResets(providers) {
     const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}}
     const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
-    if(key==="fiveHour"&&!PHONE){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
+    if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
   }));
-  if(RUNWAY&&!PHONE)renderGreeterStatus(providers);
+  if(RUNWAY)renderGreeterStatus(providers);
 }
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;
@@ -1741,9 +1740,9 @@ function rowHTML(chat) {
   const stateText=RUNWAY?runwayStatus(chat,st):st.word;
   return glyphHTML(st)+
     '<span class="r-title">'+esc(chat.title||"Untitled")+'</span>'+subCountHTML(chat)+
-    '<span class="r-age" title="Latest activity">'+ageShort(chat.latest)+'</span>'+ 
-    '<span class="r-meta"><span class="r-model">'+esc(modelLabel(chat))+'</span>'+contextHTML(chat)+'</span>'+ 
-    '<span class="r-state t-'+(st.wordTone||st.tone)+'"'+(st.title?' title="'+esc(st.title)+'"':'')+'>'+esc(stateText)+(st.via&&stateText?ICON.branch:"")+'</span>'+ 
+    '<span class="r-age" title="Latest activity">'+ageShort(chat.latest)+'</span>'+
+    '<span class="r-meta"><span class="r-model">'+esc(modelLabel(chat))+'</span>'+contextHTML(chat)+'</span>'+
+    '<span class="r-state t-'+(st.wordTone||st.tone)+'"'+(st.title?' title="'+esc(st.title)+'"':'')+'>'+esc(stateText)+(st.via&&stateText?ICON.branch:"")+'</span>'+
     warmCellHTML(chat);
 }
 
@@ -1758,14 +1757,6 @@ function runwayStateElapsed(chat) {
 const runwayMessageDirection = chat => ({"parent-to-agent":"from parent","agent-to-parent":"to parent","agent-to-agent":"between agents"})[chat.latestMessageDirection]||'';
 const runwayMessageAge = chat => { const sent=stamp(chat.latestMessageAt),age=Date.now()-sent;return runwayMessageDirection(chat)&&sent&&age>=0&&age<10000?age:null; };
 const runwayAgentHasNewMessage = chat => runwayMessageAge(chat)!=null;
-function runwayQuestionButton(chat) {
-  const waiting=chat=>runwayWaiting(chat);
-  const source=PHONE?(waiting(chat)&&chat.pendingQuestion?chat:(!hasTreeParent(chat)?(chat.descendants||[]).find(item=>waiting(item)&&item.pendingQuestion):null)):
-    (waiting(chat)?chat:(!hasTreeParent(chat)?(chat.descendants||[]).find(item=>waiting(item)):null));
-  if(!source)return '';
-  if(PHONE)return '<button data-runway-slot="question" class="runway-question-trigger" data-action="runway-question" data-key="'+esc(source.key)+'" aria-label="Show exact question for '+esc(runwayTitle(source,hasTreeParent(source)))+'" title="Show exact pending question">?</button>';
-  return '';
-}
 function runwayWorkspacePath(workspace) {
   const normalized=String(workspace||'').trim().replace(/\//g,'\\');
   const path=/^[A-Za-z]:\\+$/.test(normalized)?normalized.slice(0,3):normalized.replace(/\\+$/,'');
@@ -1790,22 +1781,7 @@ function runwayActivityMarkup(label,fullText=label) {
   if(!label)return '';
   return '<span data-runway-slot="activity" class="runway-workspace runway-activity" title="'+esc(fullText)+'" aria-label="'+esc(label)+'">'+esc(label)+'</span>';
 }
-function runwayPhoneActivityHTML(chat) {
-  if(!runwayRunning(chat)||chat.activityUnavailable||chat.telemetryUnavailable)return '';
-  const activity=chat.activity&&typeof chat.activity==='object'?chat.activity:null;
-  if(!activity)return '';
-  const kind=activity.kind,labels={searching:'Searching files',reading:'Reading file',editing:'Editing file',testing:'Running checks',running_command:'Running command',running_code:'Running code',inspecting:'Inspecting page',coordinating:'Coordinating agents',checking_data:'Checking data',using_tool:'Using tool',waiting:'Waiting for result',reading_output:'Reading command output',searching_web:'Searching web',thinking:'Thinking'};
-  if(!labels[kind])return '';
-  let label=typeof activity.label==='string'&&activity.label===labels[kind]?activity.label:labels[kind],paths=[];
-  if((kind==='reading'||kind==='editing'||kind==='searching')&&Array.isArray(activity.files)){
-    paths=activity.files.filter(path=>typeof path==='string'&&path.trim());
-    const names=paths.map(path=>path.replace(/\\/g,'/').split('/').filter(Boolean).at(-1)).filter(Boolean);
-    if(names.length)label=(kind==='reading'?'Reading ':kind==='editing'?'Editing ':'Searching ')+names.join(', ');
-  }
-  return '<span data-runway-slot="workspace" class="runway-workspace runway-activity"'+(paths.length?' title="'+esc(paths.join('\n'))+'"':'')+' aria-label="'+esc(label)+'">'+esc(label)+'</span>';
-}
 function runwayActivityHTML(chat) {
-  if(PHONE)return runwayPhoneActivityHTML(chat);
   const evidence=runwayActivityEvidence(chat),labels={searching:'Searching files',reading:'Reading file',editing:'Editing file',testing:'Running checks',running_command:'Running command',running_code:'Running code',inspecting:'Inspecting page',coordinating:'Messaging agent',checking_data:'Checking data',using_tool:'Using tool',waiting:'Waiting for result',reading_output:'Checking output',searching_web:'Searching web',thinking:'Reasoning'};
   const activeChild=(chat.descendants||[]).some(child=>['running','compacting'].includes(runwayActivityEvidence(child).status));
   if(evidence.status==='running'&&evidence.activity){
@@ -1866,7 +1842,7 @@ function runwayTelemetryHTML(chat,agent=false) {
   const effectiveStatus=runwayEffectiveStatus(chat);
   const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
   const statusUnavailable=!currentEvidence||((chat.status==='unknown'||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
-  const status=statusUnavailable?'':runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?(PHONE?'Agent waiting':'Waiting'):!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
+  const status=statusUnavailable?'':runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
   const modelText=runwayModelLabel(chat);
   const modelChanged=runwayModelRecentlyChanged(chat);
   const modelEvent=state.modelVersions.get(chat.key||[chat.provider,chat.id].join(':'))?.highlightEventAt;
@@ -1877,13 +1853,12 @@ function runwayTelemetryHTML(chat,agent=false) {
   const messageCapable=Boolean(agent&&hasTreeParent(chat)),hasRecentMessage=currentEvidence&&messageCapable&&runwayAgentHasNewMessage(chat);
   const messageAge=hasRecentMessage?runwayMessageAge(chat):null,messageAt=hasRecentMessage?stamp(chat.latestMessageAt):0;
   const messageContents=hasRecentMessage?'<span data-runway-slot="message" class="runway-message-indicator" data-message-at="'+messageAt+'" style="--message-age:-'+Math.max(0,messageAge||0)+'ms" title="Recent message'+(directionText?' · '+directionText:'')+' · visible for 10 seconds" aria-label="Recent message'+(directionText?' · '+directionText:'')+'">'+ICON.message+'<span class="runway-message-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>':'';
-  const phoneMessageSlot=messageCapable?'<span class="runway-message-slot">'+messageContents+'</span>':'';
   const messageLane='<span data-runway-slot="message-lane" class="runway-message-slot">'+messageContents+'</span>';
   const childDotTone=runwayWaiting(chat)?'attn':runwayRunning(chat)?'live':tone;
-  const childNameStatus=agent&&!PHONE&&!REFINED?'<span data-runway-slot="name-status" class="runway-name-status'+(childDotTone?' t-'+childDotTone:'')+'"'+(!status?' aria-hidden="true"':'')+'>'+(status?runwayStatusDot(status,childDotTone):'')+'</span>':'';
-  const activityHTML=RUNWAY&&!PHONE?runwayActivityHTML(chat):'';
+  const childNameStatus=agent&&!REFINED?'<span data-runway-slot="name-status" class="runway-name-status'+(childDotTone?' t-'+childDotTone:'')+'"'+(!status?' aria-hidden="true"':'')+'>'+(status?runwayStatusDot(status,childDotTone):'')+'</span>':'';
+  const activityHTML=RUNWAY?runwayActivityHTML(chat):'';
   const displayTitle=runwayTitle(chat,agent);
-  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(displayTitle)+'">'+(PHONE?phoneMessageSlot:'')+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+(REFINED?messageLane:'')+childNameStatus+runwayQuestionButton(chat)+'</span>';
+  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+(REFINED?messageLane:'')+childNameStatus+'</span>';
   const context=contextHTML(chat);
   const elapsed=currentEvidence&&ownCurrent&&!statusUnavailable?runwayStateElapsed(chat):'—';
   const elapsedHTML=elapsed!=='—'?'<span data-runway-slot="elapsed" class="runway-state-elapsed" title="Elapsed in current state">'+esc(elapsed)+'</span>':'';
@@ -1891,13 +1866,12 @@ function runwayTelemetryHTML(chat,agent=false) {
   const modelTiming=(modelHTML||runTimeHTML)?'<span data-runway-slot="model-timing" class="runway-model-timing">'+modelHTML+runTimeHTML+'</span>':'';
   const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);
   const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
-  const stateContents=status==='Waiting'&&waitingTarget&&!PHONE?'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">Waiting</button>':!PHONE?((agent||!status?'':runwayStatusDot(status,tone))+activityHTML):(status?runwayStatusGlyph(statusCode)+'<span class="runway-state-word">'+esc(status)+'</span>':'');
-  const stateHTML=status||activityHTML?'<span data-runway-slot="state" class="runway-telemetry-state t-'+tone+(agent&&!PHONE||activityHTML?' runway-agent-state':'')+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'"'+(!PHONE&&status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+(!statusUnavailable||PHONE?stateContents:'')+(!PHONE&&(status==='Waiting'||statusUnavailable)?activityHTML:'')+'</span>':'';
+  const stateContents=status==='Waiting'&&waitingTarget?'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">Waiting</button>':((agent||!status?'':runwayStatusDot(status,tone))+activityHTML);
+  const stateHTML=status||activityHTML?'<span data-runway-slot="state" class="runway-telemetry-state t-'+tone+(agent||activityHTML?' runway-agent-state':'')+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'"'+(status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+(!statusUnavailable?stateContents:'')+((status==='Waiting'||statusUnavailable)?activityHTML:'')+'</span>':'';
   const primary='<span data-runway-slot="primary" class="runway-primary">'+titleHTML+
-    stateHTML+(PHONE?elapsedHTML:'')+'</span>'+ 
-    (agent?(PHONE?runwayActivityHTML(chat):''):runwayWorkspaceHTML(chat));
+    stateHTML+'</span>'+
+    (agent?'':runwayWorkspaceHTML(chat));
   const lower=modelHTML+(context?'<span data-runway-slot="context" class="runway-telemetry-context">'+context+'</span>':'');
-  if(PHONE)return primary+lower;
   const topline='<span class="runway-topline">'+primary+'</span>';
   const contextSlot=context?'<span data-runway-slot="context" class="runway-telemetry-context">'+context+'</span>':'';
   const objective=agent?runwayObjective(chat):'';
@@ -1928,13 +1902,13 @@ function runwayTelemetryHTML(chat,agent=false) {
 function runwayQuestionPopover(chat) {
   if(!runwayCurrentEvidenceFresh()||chat?.telemetryUnavailable)return '';
   if(!chat||!runwayWaiting(chat))return '';
-  if(!PHONE&&!isCodexChat(chat)&&!chat.pendingQuestion)return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close" title="Close">×</button><div class="runway-question-full">Waiting for your approval in Claude.</div></div>';
+  if(!isCodexChat(chat)&&!chat.pendingQuestion)return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close" title="Close">×</button><div class="runway-question-full">Waiting for your approval in Claude.</div></div>';
   if(!chat.pendingQuestion)return '';
-  if(!PHONE&&!isCodexChat(chat)){
+  if(!isCodexChat(chat)){
     const command=resumeCommand(chat);
     return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close question" title="Close question">×</button><div class="runway-question-full">'+richText(chat.pendingQuestion)+'</div>'+plainOptionsHTML(chat.pendingOptions)+(command?'<button class="q-open" data-action="copy" data-copy="'+esc(command)+'" title="'+esc(command)+'">'+ICON.copy+'<span>Copy resume command</span>'+ICON.check+'</button>':'')+'</div>';
   }
-  const choices=PHONE?((chat.pendingOptions||[]).length?'<ul class="phone-question-options">'+chat.pendingOptions.map(option=>'<li>'+esc(option)+'</li>').join('')+'</ul>':''):((chat.pendingOptions||[]).length?optionsHTML(chat.pendingOptions,chat.id):'<button class="q-open" data-action="open" data-thread="'+esc(chat.id)+'" title="Open this chat in Codex">'+ICON.open+'<span>Open in Codex to answer</span>'+ICON.check+'</button>');
+  const choices=(chat.pendingOptions||[]).length?optionsHTML(chat.pendingOptions,chat.id):'<button class="q-open" data-action="open" data-thread="'+esc(chat.id)+'" title="Open this chat in Codex">'+ICON.open+'<span>Open in Codex to answer</span>'+ICON.check+'</button>';
   return '<div class="runway-question-panel"><button class="runway-question-close" data-action="close-popover" aria-label="Close question" title="Close question">×</button><div class="runway-question-full">'+richText(chat.pendingQuestion)+'</div>'+choices+'</div>';
 }
 function statStripHTML(stats, {live, fin=false, lead=""}={}) {
@@ -2047,7 +2021,7 @@ function panelHTML(chat) {
     '<div title="'+esc(fmt(chat.contextTokens))+' prompt re-billed at full price instead of the 90%-off cached rate"><span class="f-l">If cold</span><span class="f-v">+'+fmt(coldPenalty(chat))+'</span></div></div>';
   const meta=[RUNWAY?runwayModelLabel(chat):modelLabel(chat),chat.reasoningEffort,chat.turns!=null?chat.turns+" turns":null,!RUNWAY&&chat.todayTokens?fmt(chat.todayTokens)+" today":null,chat.compactions?chat.compactions+" compaction"+(chat.compactions===1?"":"s"):null].filter(Boolean).join(" · ");
   const pinned=state.pins.has(chat.key);
-  return blockerHTML(chat)+lead+facts+(RUNWAY?"":'<div class="l2-strip">'+statStripHTML(stats,{live:stats.live})+'</div>')+ 
+  return blockerHTML(chat)+lead+facts+(RUNWAY?"":'<div class="l2-strip">'+statStripHTML(stats,{live:stats.live})+'</div>')+
     '<div class="meta">'+esc(meta)+'</div>'+
     '<div class="l2-foot"><span class="path" title="'+esc(chat.workspace||"")+'"><bdi>'+esc(chat.workspace||"")+'</bdi></span>'+
     '<button class="ghost" data-action="pin" data-key="'+esc(chat.key)+'" aria-pressed="'+pinned+'">'+(pinned?"Unpin":"Pin")+'</button>'+
@@ -2142,7 +2116,7 @@ function trackSourceAttention(name, items, selected, fresh) {
   else if(newWork)state.sourceAttention.add(name);
 }
 function updateSourceSwitch() {
-  if(!RUNWAY||PHONE)return;
+  if(!RUNWAY)return;
   const group=$('#source-switch');if(!group){window.TokenTrackerDashboard?.setSource?.(effectiveSource(state.snapshot));return;}
   const policyReady=validPublicProviderPolicy(state.snapshot?.providerPolicies)||state.providerPolicyReady,names=policyReady?sourceNames(state.snapshot):SOURCES,visible=names.length>=2;
   const current=state.snapshot?effectiveSource(state.snapshot):policyReady&&names.includes(state.source)?state.source:'Codex';
@@ -2161,11 +2135,11 @@ function updateSourceSwitch() {
     if(segment.getAttribute?.('aria-label')!==label)segment.setAttribute?.('aria-label',label);
     const dot=segment.querySelector?.('.source-dot');dot?.setAttribute?.('aria-hidden',String(!flagged&&!live));
   }
-  const body=document.body;if(!(RUNWAY&&!PHONE)&&body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
+  const body=document.body;if(!(RUNWAY)&&body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
   window.TokenTrackerDashboard?.setSource?.(current);
 }
 function setSource(name,{persist=true,manual=true}={}) {
-  if(!RUNWAY||PHONE||!SOURCES.includes(name)||!policyForSources(state.snapshot)||!sourceNames(state.snapshot).includes(name))return false;
+  if(!RUNWAY||!SOURCES.includes(name)||!policyForSources(state.snapshot)||!sourceNames(state.snapshot).includes(name))return false;
   if(manual){state.sourceManualAt=Date.now();if(persist)try{localStorage.setItem(SOURCE_KEY,name);localStorage.setItem(SOURCE_MANUAL_AT_KEY,String(state.sourceManualAt));}catch{}}
   state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();
   if(!state.snapshot)renderQuotaState();
@@ -2215,8 +2189,8 @@ function renderChats(providers) {
   }
   if(RUNWAY){
     const counts=runwayCounts(forest);
-    if(PHONE)renderRunwayCounts(counts);
-    else {
+
+    {
     notch.counts=counts;
     const activeRoots=forest.roots.filter(chat=>state.showHidden||!state.hiddenChats.has(chat.key));
     // Trigger reveals for active lifecycle transitions and new parent messages,
@@ -2257,12 +2231,12 @@ function renderChats(providers) {
   const list=$("#chat-list");if(!list)return;
   const searchCanShowEmpty=COMPACT&&state.searchOpen&&query.active;
   if(!realDom(list)) {
-    const html=roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!PHONE&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers);
+    const html=roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers);
     if(list.innerHTML!==html)list.innerHTML=html;
     return;
   }
   if(!roots.length){
-    const noActive=RUNWAY&&!PHONE&&!notch.active&&!searchCanShowEmpty,html=noActive?'':emptyHTML(forest,providers);
+    const noActive=RUNWAY&&!notch.active&&!searchCanShowEmpty,html=noActive?'':emptyHTML(forest,providers);
     if(list._empty!==html){
       for(const el of [...list.children])if(el.classList.contains('chat')){if(!el._leaving)runwayExit(el);}else el.remove();
       if(html)list.insertAdjacentHTML?.('beforeend',html);list._empty=html;
@@ -2290,7 +2264,7 @@ function renderChats(providers) {
     if(!el){el=document.createElement("div");el.className="chat";el.dataset.key=k;
       el.innerHTML=(RUNWAY?'<div class="row"></div>':'<button class="row" data-action="toggle-chat" data-key="'+esc(k)+'"></button>')+'<div class="l2"><div class="l2-in"></div></div><div class="tray"><div class="tray-sum"><div class="tray-clip"></div></div><div class="tray-full"><div class="tray-clip"></div></div></div>';}
     updateChatEl(el,byKey.get(k),query);
-    if(fresh&&RUNWAY&&!PHONE&&state.runwaySnapshotPainted&&!state.sourceSwitching)runwayArrivalEnter(el);
+    if(fresh&&RUNWAY&&state.runwaySnapshotPainted&&!state.sourceSwitching)runwayArrivalEnter(el);
     const next=prev?prev.nextSibling:list.firstChild;
     if(next!==el)list.insertBefore(el,next);
     prev=el;
@@ -2330,12 +2304,12 @@ function analyticsHTML(snapshot) {
     const requestShare=requests>0&&subRequests!=null?" · "+Math.round(subRequests*100/requests)+"% subagent requests":"";
     return '<div class="an-model"><span class="an-model-name" title="'+esc(model.model)+'">'+esc(shortModel(model.model))+'</span><span class="an-model-tokens">'+fmt(tokens)+' tok</span><span class="an-model-meta">'+(requests==null?"— requests observed":fmt(requests)+" requests observed")+' · '+share+requestShare+'</span></div>';
   }).join("")+ '</div><div class="an-note">'+esc(provider.modelUsageNote||"Model totals count local token-counter deltas; first-seen baselines may be incomplete.")+'</div>':'<div class="an-empty">Model and subagent totals unavailable. They appear after local token-counter events are recorded.</div>';
-  const html='<button class="an-head" data-action="analytics" aria-expanded="'+state.analyticsOpen+'" aria-controls="analytics-panel"><span class="an-title">Analytics</span><span class="an-range">local · 31d</span></button>'+ 
+  const html='<button class="an-head" data-action="analytics" aria-expanded="'+state.analyticsOpen+'" aria-controls="analytics-panel"><span class="an-title">Analytics</span><span class="an-range">local · 31d</span></button>'+
     '<div id="analytics-panel" class="an-panel"'+(state.analyticsOpen?"":" hidden")+'><div class="an-grid">'+
-    '<div class="an-card" title="Recorded local session token counters; may omit usage before a session first appeared"><span class="an-label">Tracked tokens</span><span class="an-value">'+fmt(total)+'</span></div>'+ 
-    '<div class="an-card" title="Highest current window usage among returned Codex chats; not a historical peak"><span class="an-label">Usage now · '+contexts.length+' sampled</span><span class="an-value">'+esc(contextValue)+'</span></div>'+ 
-    '<div class="an-card" title="Share of recorded input represented by cache reads"><span class="an-label">Cache reuse</span><span class="an-value">'+(cache&&safeNumber(cache.percent)!=null?Math.round(cache.percent)+"% · "+fmt(cache.read)+" tokens":"unavailable")+'</span></div>'+ 
-    '<div class="an-card" title="List-price estimate from observed cache counters; not billed cost"><span class="an-label">Estimated cache savings</span><span class="an-value">'+(cache&&safeNumber(cache.cacheSavings)!=null?money(cache.cacheSavings):"unavailable")+'</span></div></div>'+ 
+    '<div class="an-card" title="Recorded local session token counters; may omit usage before a session first appeared"><span class="an-label">Tracked tokens</span><span class="an-value">'+fmt(total)+'</span></div>'+
+    '<div class="an-card" title="Highest current window usage among returned Codex chats; not a historical peak"><span class="an-label">Usage now · '+contexts.length+' sampled</span><span class="an-value">'+esc(contextValue)+'</span></div>'+
+    '<div class="an-card" title="Share of recorded input represented by cache reads"><span class="an-label">Cache reuse</span><span class="an-value">'+(cache&&safeNumber(cache.percent)!=null?Math.round(cache.percent)+"% · "+fmt(cache.read)+" tokens":"unavailable")+'</span></div>'+
+    '<div class="an-card" title="List-price estimate from observed cache counters; not billed cost"><span class="an-label">Estimated cache savings</span><span class="an-value">'+(cache&&safeNumber(cache.cacheSavings)!=null?money(cache.cacheSavings):"unavailable")+'</span></div></div>'+
     '<div class="an-note">'+esc(coverage)+(provider?.source?" Source: "+esc(provider.source)+".":"")+'</div>'+advice+modelHTML+'</div>';
   return html;
 }
@@ -2379,11 +2353,11 @@ function refreshControlTitle(){
   return parts.join(' · ');
 }
 function renderTitle(providers) {
-  const name=$("#brand-name");if(name)name.textContent=RUNWAY&&!PHONE?"Branchglance":providers.map(p=>p.name).join(" · ")||"Codex";
+  const name=$("#brand-name");if(name)name.textContent=RUNWAY?"Branchglance":providers.map(p=>p.name).join(" · ")||"Codex";
   syncCompactClock();
   const age=$("#sync-age");if(!age)return;
   if(state.refreshing||state.loading||state.initialBootstrapPending){if(COMPACT){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();}else age.textContent="";age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
-  if(RUNWAY){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=REFINED&&!PHONE?refreshControlTitle():(state.lastOkAt?"Last successful refresh at "+clock(state.lastOkAt):"Refresh usage");age.className="sync-age";age.setAttribute?.("aria-busy","false");return;}
+  if(RUNWAY){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=REFINED?refreshControlTitle():(state.lastOkAt?"Last successful refresh at "+clock(state.lastOkAt):"Refresh usage");age.className="sync-age";age.setAttribute?.("aria-busy","false");return;}
   age.className="sync-age";age.setAttribute?.("aria-busy","false");
   if(!state.lastOkAt){age.textContent=state.failSince?"offline":"—";age.className="sync-age"+(state.failSince?" t-err":"");return;}
   const seconds=Math.floor((Date.now()-state.lastOkAt)/1000);
@@ -2416,8 +2390,8 @@ function watcherPopoverHTML(name) {
   const phase=!watcher.enabled?"off":!watcher.running?"stopped":PHASES[w.phase]||w.phase||(RUNWAY?"":"watching");
   const err=watcher.persistenceError||w.lastPollError||w.lastError;
   if(RUNWAY){const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';}
-  return '<dl class="pop-facts"><dt>phase</dt><dd>'+esc(phase)+'</dd><dt>next</dt><dd>'+(next?dayWord(next*1000)+" "+clock(next*1000):"—")+'</dd>'+ 
-    '<dt>last</dt><dd>'+(last?clock(last)+(verified?' <span class="t-live">✓ verified</span>':" unverified"):"—")+'</dd><dt>fails</dt><dd'+(w.failedAttempts?' class="t-err"':'')+'>'+(w.failedAttempts||0)+'</dd>'+ 
+  return '<dl class="pop-facts"><dt>phase</dt><dd>'+esc(phase)+'</dd><dt>next</dt><dd>'+(next?dayWord(next*1000)+" "+clock(next*1000):"—")+'</dd>'+
+    '<dt>last</dt><dd>'+(last?clock(last)+(verified?' <span class="t-live">✓ verified</span>':" unverified"):"—")+'</dd><dt>fails</dt><dd'+(w.failedAttempts?' class="t-err"':'')+'>'+(w.failedAttempts||0)+'</dd>'+
     (err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>'+
     (err&&watcher.logPath?'<button class="ghost" data-action="copy" data-copy="'+esc(watcher.logPath)+'">'+ICON.copy+ICON.check+'log</button>':'')+
     policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
@@ -2496,10 +2470,10 @@ function render(snapshot) {
   acceptSnapshotCache(snapshot);
   reconcileSnapshotQuotas(snapshot);
   state.snapshot=snapshot;
-  if(RUNWAY&&!PHONE)state.initialBootstrapPending=false;
+  if(RUNWAY)state.initialBootstrapPending=false;
   if(firstRunwayPaint){const activeSource=initialActiveSource(snapshot);if(activeSource)state.source=activeSource;}
   if(!state.lastOkAt)state.lastOkAt=Date.now();
-  if(RUNWAY&&!PHONE)state.runwaySnapshotPainted=true;
+  if(RUNWAY)state.runwaySnapshotPainted=true;
   const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot);
   const chatProviders=graphlessFallback?providers.map(provider=>({...provider,chats:(provider.chats||[]).map(chat=>({...chat,
     parentKey:null,parentId:null,status:'unknown',statusSource:'unavailable',telemetryUnavailable:true,
@@ -2517,9 +2491,9 @@ function render(snapshot) {
 function renderLoading() {
   syncCompactClock();
   const list=$("#chat-list");
-  if(list)list.innerHTML=RUNWAY&&!PHONE?'':Array.from({length:6},()=>'<div class="sk"><i></i><i></i></div>').join("");
-  if(RUNWAY&&!PHONE){const header=$('#chats-head'),search=$('#search-toggle');if(header)header.hidden=true;if(search)search.hidden=true;}
-  if(RUNWAY&&!PHONE)updateSourceSwitch();
+  if(list)list.innerHTML=RUNWAY?'':Array.from({length:6},()=>'<div class="sk"><i></i><i></i></div>').join("");
+  if(RUNWAY){const header=$('#chats-head'),search=$('#search-toggle');if(header)header.hidden=true;if(search)search.hidden=true;}
+  if(RUNWAY)updateSourceSwitch();
   renderQuotaState();
   if(RUNWAY){const greeter=$("#runway-greeter-status");if(greeter)greeter.textContent="";}
 }
@@ -2652,7 +2626,7 @@ function quotaBootstrapTargets(){
   return [...providers,...sourceNames(state.snapshot).filter(name=>!present.has(name)).map(name=>quotaBootstrap.providers[name]).filter(Boolean)];
 }
 function loadQuota(){
-  if(!RUNWAY||PHONE||document.hidden||quotaLoader.unsupported||Date.now()<quotaLoader.retryAfter)return Promise.resolve(false);
+  if(!RUNWAY||document.hidden||quotaLoader.unsupported||Date.now()<quotaLoader.retryAfter)return Promise.resolve(false);
   if(quotaLoader.promise)return quotaLoader.promise;
   const sequence=++quotaLoader.sequence;
   const request=(async()=>{
@@ -2675,7 +2649,7 @@ function loadQuota(){
   let shared;shared=request.finally(()=>{if(quotaLoader.promise===shared)quotaLoader.promise=null;});quotaLoader.promise=shared;return shared;
 }
 function loadWatcher(){
-  if(PHONE||!state.snapshot)return Promise.resolve(false);
+  if(!state.snapshot)return Promise.resolve(false);
   if(watcherLoader.promise){watcherLoader.pending=true;return watcherLoader.promise;}
   const drain=async()=>{let result=false;do{watcherLoader.pending=false;result=await fetchWatcherOnce();}while(watcherLoader.pending);return result;};
   const operation=drain();let shared;
@@ -2734,31 +2708,31 @@ async function refresh(force=false) {
   finally{clearTimeout(timeout);state.loading=false;}
   state.refreshing=false;
   renderTitle(providersFor(state.snapshot||{providers:[]}));
-  if(state.snapshot&&!PHONE)await loadWatcher();
+  if(state.snapshot)await loadWatcher();
   if(state.snapshot)tick();
   if(state.refreshPending){const queuedForce=state.refreshPendingForce;state.refreshPending=false;state.refreshPendingForce=false;refresh(queuedForce);return;}
   if(!state.snapshot||state.graphlessBootstrapFallback)scheduleBootstrapRetry();
-  if(PHONE&&state.foregroundLivePending&&state.snapshot){state.foregroundLivePending=false;await pollLive();}
+
 }
 function statsUrl(force) {
   // Runway needs every active root, including an older chat waiting for a reply.
   // Any server-side trimming can erase passive counts or their parent anchors.
-  if(RUNWAY&&!PHONE)return "/api/stats?background=1"+(force?"&refresh=1":"");
+  if(RUNWAY)return "/api/stats?background=1"+(force?"&refresh=1":"");
   if(RUNWAY)return "/api/stats"+(force?"?refresh=1":"");
   const visible=visibleProviderNames(state.snapshot),pins=[...new Set([...state.pins,...(RUNWAY&&state.showHidden?state.hiddenChats:[])])]
     .filter(key=>{const split=String(key).indexOf(":");return split>0&&visible.has(String(key).slice(0,split));}).join(",");
   const query=parseQuery(state.query);
   const status=query.flags.has("running")?"running":query.flags.size?"attention":"";
-  return "/api/stats?limit="+CHAT_LIMIT+(RUNWAY?"&range="+state.windowDays+"d":"")+(pins?"&pins="+encodeURIComponent(pins):"")+ 
+  return "/api/stats?limit="+CHAT_LIMIT+(RUNWAY?"&range="+state.windowDays+"d":"")+(pins?"&pins="+encodeURIComponent(pins):"")+
     (query.text?"&q="+encodeURIComponent(query.text):"")+(status?"&status="+status:"")+(force?"&refresh=1":"");
 }
 function handleVisibilityChange() {
   if(document.hidden)return;
-  if(RUNWAY&&!PHONE)void loadQuota();
-  if(PHONE)state.foregroundLivePending=true;
+  if(RUNWAY)void loadQuota();
+
   return refresh();
 }
-const LIVE_FIELDS=["contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY&&!PHONE?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
+const LIVE_FIELDS=["contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
 // A live row is qualified as "<Provider>:<id>"; ids may themselves contain ":" (Claude subagents).
 function liveIdentity(item) {
   if(!item||typeof item.id!=='string'||!item.id||typeof item.key!=='string')return null;
@@ -2770,17 +2744,17 @@ function applyLive(snapshot, live) {
   if(!snapshot||!live||stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
   restrictSnapshotProviders(snapshot);
   let graphChanged=false;
-  if(RUNWAY&&!PHONE&&live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
+  if(RUNWAY&&live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
     const incoming=Number(live.graph.revision),current=Number(snapshot.graph?.revision);
     if(!snapshot.graph||Number.isFinite(incoming)&&(!Number.isFinite(current)||incoming>current)){snapshot.graph=live.graph;graphChanged=true;}
   }
-  const validKnown=item=>!RUNWAY||PHONE||liveIdentity(item)!==null;
+  const validKnown=item=>!RUNWAY||liveIdentity(item)!==null;
   const byKey=new Map((live.chats||[]).filter(validKnown).map(item=>[item.key,item]));
   let changed=graphChanged,oldestShown=Infinity;
   const initiallyLoaded=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
   // Unseen rows are inserted per provider; providers hidden by policy are already absent from the snapshot.
   const liveTargets=new Map();
-  if(RUNWAY&&!PHONE)for(const name of SOURCES){const target=(snapshot.providers||[]).find(provider=>provider.name===name);if(target&&Array.isArray(target.chats))liveTargets.set(name,{target,known:new Set(target.chats.map(chat=>name+':'+chat.id))});}
+  if(RUNWAY)for(const name of SOURCES){const target=(snapshot.providers||[]).find(provider=>provider.name===name);if(target&&Array.isArray(target.chats))liveTargets.set(name,{target,known:new Set(target.chats.map(chat=>name+':'+chat.id))});}
   if(liveTargets.size){
     for(const item of live.chats||[]){
       const owner=liveIdentity(item),entry=owner&&liveTargets.get(owner);
@@ -2812,13 +2786,13 @@ function applyLive(snapshot, live) {
   }
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
   const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!snapshotParentKey(p,c,snapshot.graph?.edges||null)).length,0);
-  const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(!RUNWAY||PHONE||(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})())&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
+  const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(!RUNWAY||(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})())&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
   return {changed,outside};
 }
 async function pollLive() {
   if(document.hidden)return;
-  if(RUNWAY&&!PHONE)void loadQuota();
-  if(state.liveBusy||(state.loading&&(PHONE||!state.snapshot)))return;
+  if(RUNWAY)void loadQuota();
+  if(state.liveBusy||(state.loading&&(!state.snapshot)))return;
   state.liveBusy=true;
   try{
     const response=await fetch("/api/live",{cache:"no-store",signal:AbortSignal.timeout(5000)});
@@ -2832,7 +2806,7 @@ async function pollLive() {
     markOk();
     const result=applyLive(state.snapshot,state.live);
     if(state.snapshot&&(result.changed||state.loading))tick();
-    if(!PHONE&&Date.now()-state.lastWatcherFetchAt>10000)void loadWatcher();
+    if(Date.now()-state.lastWatcherFetchAt>10000)void loadWatcher();
     const structural=Boolean(state.live.structureStamp&&state.snapshot?.structureStamp&&state.live.structureStamp!==state.snapshot.structureStamp);
     const fresh=result.outside.filter(([key,at])=>state.outsideSeen.get(key)!==at);
     fresh.forEach(([key,at])=>state.pendingOutside.set(key,at));
@@ -2841,12 +2815,12 @@ async function pollLive() {
       if(state.loading){state.refreshPending=true;state.refreshPendingForce=true;}
       else void refresh(true);
     }
-  }catch{markFail();}finally{state.liveBusy=false;if(PHONE&&state.foregroundLivePending&&!state.loading&&!document.hidden){state.foregroundLivePending=false;pollLive();}}
+  }catch{markFail();}finally{state.liveBusy=false;}
 }
 function handleVisibilityChange() {
   if(document.hidden)return;
-  if(RUNWAY&&!PHONE)void loadQuota();
-  if(PHONE)state.foregroundLivePending=true;
+  if(RUNWAY)void loadQuota();
+
   return refresh();
 }
 function setupResize() {
@@ -2961,12 +2935,12 @@ function handleClick(event) {
   if(pop&&!pop.hidden&&!(pop.contains?.(event.target))&&button?.dataset.action!=="watcher")closePopover();
   if(!button)return;
   const {action,key}=button.dataset;
-  if(RUNWAY&&!PHONE&&action==='widget-lock'){void toggleWidgetLock();return;}
-  if(RUNWAY&&!PHONE&&action==='jump-waiting'){jumpToWaiting();return;}
-  if(RUNWAY&&!PHONE&&action==='source'){setSource(button.dataset.source);return;}
-  if(RUNWAY&&!PHONE&&action==='dashboard'){openDashboard();return;}
+  if(RUNWAY&&action==='widget-lock'){void toggleWidgetLock();return;}
+  if(RUNWAY&&action==='jump-waiting'){jumpToWaiting();return;}
+  if(RUNWAY&&action==='source'){setSource(button.dataset.source);return;}
+  if(RUNWAY&&action==='dashboard'){openDashboard();return;}
   if(COMPACT&&action==='keep-open'){void toggleKeepOpen();return;}
-  if(PHONE&&["answer","queue-answer","open","pin","hide-chat","show-hidden"].includes(action))return;
+
   if(action==="toggle-chat"){const was=state.open.has(key);if(RUNWAY)closeRunwayDetails();was?state.open.delete(key):state.open.add(key);if(RUNWAY)renderStripNow();}
   else if(action==="pin"){togglePin(key);closePopover();queueSelectionRefresh();}
   else if(action==="copy"){copyText(button.dataset.copy,button);closePopover();return;}
@@ -2975,10 +2949,6 @@ function handleClick(event) {
   else if(action==="queue-answer"){queueAnswer(button.dataset.thread,button.dataset.answer,button);return;}
   else if(action==="open"){openInCodex(button.dataset.thread,button);return;}
   else if(RUNWAY&&action==="runway-question"){
-    if(PHONE){
-      const chat=state.forest?.rows.find(item=>item.key===key);if(!chat)return;
-      notch.manual=true;setNotch(true);openPopover(runwayQuestionPopover(chat),button);button.__questionId=chat.pendingQuestionId??chat.questionId??null;button.__questionAt=chat.pendingQuestionAt||null;button.__questionText=chat.pendingQuestion;button.__questionOptions=JSON.stringify(chat.pendingOptions||[]);return;
-    }
     const chat=state.forest?.rows.find(item=>item.key===key);if(!chat||!runwayWaiting(chat))return;
     if(!isCodexChat(chat)){
       notch.manual=true;setNotch(true);openPopover(runwayQuestionPopover(chat),button);button.__questionId=chat.pendingQuestionId??chat.questionId??null;button.__questionAt=chat.pendingQuestionAt||null;button.__questionText=chat.pendingQuestion;button.__questionOptions=JSON.stringify(chat.pendingOptions||[]);return;
@@ -3025,29 +2995,29 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,phone:PHONE,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
-  if(!PHONE)loadAvatars();
+  loadAvatars();
   document.addEventListener("click",handleClick);
   document.addEventListener("contextmenu",handleContextMenu);
   document.addEventListener("keydown",handleKey);
-  if(RUNWAY&&!PHONE)window.addEventListener?.('resize',()=>{if(COMPACT){noteInspectViewportResize();refreshInspectCssScale();}scheduleNotchSize();},{passive:true});
+  if(RUNWAY)window.addEventListener?.('resize',()=>{if(COMPACT){noteInspectViewportResize();refreshInspectCssScale();}scheduleNotchSize();},{passive:true});
   if(COMPACT)window.visualViewport?.addEventListener?.('resize',()=>{if(refreshInspectCssScale()&&notch.mode==='inspect'){noteInspectViewportResize();scheduleNotchSize();}},{passive:true});
   $("#chat-search")?.addEventListener("input",event=>{state.query=event.target.value;if(state.snapshot)renderChats(providersFor(state.snapshot));queueSelectionRefresh();});
   $("#chat-list")?.addEventListener("pointerenter",()=>{state.pointerInList=true;});
   $("#chat-list")?.addEventListener("pointerleave",()=>{state.pointerInList=false;if(state.snapshot)renderChats(providersFor(state.snapshot));});
-  if(!PHONE){
+  {
     $("#window-minimize")?.addEventListener("click",()=>window.pywebview?.api?.minimize?.());
     $("#window-fit")?.addEventListener("click",()=>window.pywebview?.api?.fit?.());
     $("#window-maximize")?.addEventListener("click",()=>window.pywebview?.api?.toggle_maximize?.());
     $("#window-close")?.addEventListener("click",()=>window.pywebview?.api?.close?.());
   }
   $(".widget").classList.add("loading");
-  if(RUNWAY&&!PHONE){setupNotch();setupWindowDrag();}else if(!PHONE)setupResize();renderLoading();if(RUNWAY&&!PHONE){void loadProviderPolicy();void loadQuota();}refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);if(!PHONE)setInterval(pollToday,TODAY_REFRESH_MS);
+  if(RUNWAY){setupNotch();setupWindowDrag();}else setupResize();renderLoading();if(RUNWAY){void loadProviderPolicy();void loadQuota();}refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);setInterval(pollToday,TODAY_REFRESH_MS);
   document.addEventListener("visibilitychange",handleVisibilityChange);
 }

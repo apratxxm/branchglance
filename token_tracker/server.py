@@ -1075,7 +1075,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
             return
         if parsed.path == "/":
-            self.path = "/index.html"
+            self.path = "/runway.html"
         super().do_GET()
 
     def do_POST(self):

@@ -9,6 +9,11 @@ import pytest
 from token_tracker import agent_links
 
 
+@pytest.fixture(autouse=True)
+def isolate_relative_registry(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def receipt_inbox_creation(monkeypatch):
     # Restricted Windows sandbox tokens cannot access objects protected solely

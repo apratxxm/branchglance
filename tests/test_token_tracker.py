@@ -5234,7 +5234,7 @@ def test_open_endpoint_checks_host_and_supplied_browser_origin_without_launching
         response.read()
         assert launched == ["codex://threads/01a0cad8-0000-7000-8000-000000000001"]
 
-        connection.request("GET", route, headers={"Referer": origin + "/index.html", "Sec-Fetch-Site": "same-site"})
+        connection.request("GET", route, headers={"Referer": origin + "/runway.html", "Sec-Fetch-Site": "same-site"})
         response = connection.getresponse()
         assert response.status == 200
         response.read()
