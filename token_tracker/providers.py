@@ -2198,13 +2198,63 @@ def _chat_source(value: Any) -> str | None:
 _BRIEF_TITLE_PREFIX = re.compile(r"^(?:#+\s+)?(?:\[[^\]]{1,40}\]\s*)?")
 
 
+# Codex stored "·" as "?" or U+FFFD in lossy-encoded titles; a run of 1-3 "?" counts as a separator too.
+_BRIEF_HEAD_SEP = re.compile(r" (?:·|\?{1,3}|�+) ")
+_BRIEF_GOAL_SEP = re.compile(r" (?:—|–|\?{1,3}|�+) ")
+_REPLACEMENT_CUT = re.compile(r" �+ ")
+_STANDALONE_REPLACEMENT = re.compile(r"(?<!\S)�+(?!\S)\s*")
+
+
+_MOJIBAKE_MARKERS = ("Â", "â€")  # "Â" and "â€": UTF-8 read back as cp1252
+_CODEX_MODEL_FAMILIES = frozenset({"astra", "sol", "terra", "luna"})
+
+
+def _repair_mojibake(title: str) -> str:
+    """Repair UTF-8 text that was read back as cp1252, one non-ASCII run at a time."""
+    if not any(marker in title for marker in _MOJIBAKE_MARKERS):
+        return title
+
+    def fix(match: re.Match[str]) -> str:
+        run = match.group(0)
+        try:
+            repaired = run.encode("cp1252").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return run
+        return run if any(marker in repaired for marker in _MOJIBAKE_MARKERS) else repaired
+
+    return re.sub(r"[^\x00-\x7f]+", fix, title)
+
+
 def _tidy_codex_title(title: str, model: Any) -> str:
     """Drop brief-style prefixes ("# [Project] Terra · task"); the row already shows model and workspace."""
-    tidy = _BRIEF_TITLE_PREFIX.sub("", title, count=1)
-    head, sep, rest = tidy.partition(" · ")
-    if sep and rest.strip() and head.isalpha() and head.lower() in re.split(r"[^a-z]+", str(model or "").lower()):
-        tidy = rest
-    return tidy.strip() or title
+    title = _repair_mojibake(title)
+    first = next((line for line in title.splitlines() if line.strip()), title)
+    if first.startswith("/root/"):
+        # Spawned agents are named by task path; show a readable task label.
+        first = first.rsplit("/", 1)[-1].replace("_", " ").replace("-", " ").capitalize() or first
+    tidy = _BRIEF_TITLE_PREFIX.sub("", first, count=1)
+    head_sep = _BRIEF_HEAD_SEP.search(tidy)
+    if head_sep:
+        head, rest = tidy[:head_sep.start()], tidy[head_sep.end():]
+        model_id = str(model or "").strip().lower()
+        # Threads keep their brief's worker name after being resumed on another model,
+        # so the Codex family names always count alongside the model id's own words.
+        model_words = set(re.split(r"[^a-z]+", model_id)) | _CODEX_MODEL_FAMILIES
+        if rest.strip() and head.isalpha() and head.lower() in model_words:
+            # Brief-style title: the goal follows the first dash or separator; keep only the task part.
+            goal = _BRIEF_GOAL_SEP.search(rest)
+            task = rest[:goal.start()] if goal else rest
+            tidy = task.strip() or rest.strip()
+    # "task — a long goal sentence" (or "·"): keep the task. Short tails ("Fix bug — urgent") stay.
+    dash = re.search(r" [—–·] ", tidy)
+    if dash and len(tidy[dash.end():].strip()) > 25 and tidy[:dash.start()].strip():
+        tidy = tidy[:dash.start()].strip()
+    # U+FFFD is never typed on purpose: anything after a replacement run is the goal, not the title.
+    kept = _REPLACEMENT_CUT.split(tidy, maxsplit=1)[0].strip()
+    if kept:
+        tidy = kept
+    tidy = _STANDALONE_REPLACEMENT.sub("", tidy).strip()
+    return tidy or first
 
 
 def _workspace_kind(workspace: str | None) -> str | None:

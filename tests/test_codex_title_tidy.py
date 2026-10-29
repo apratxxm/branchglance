@@ -17,3 +17,108 @@ def test_only_whole_model_words_and_real_headings_are_dropped():
     assert _tidy_codex_title("Ter · actual task", "gpt-6.1-terra") == "Ter · actual task"
     assert _tidy_codex_title("#123 crash", "gpt-6.1-terra") == "#123 crash"
     assert _tidy_codex_title("#include <vector>", "gpt-6.1-terra") == "#include <vector>"
+
+
+def test_lossy_question_mark_separator_is_read_as_brief_separator():
+    title = "Sol ? review packaging ? design review of installer, upgrade, uninstall and rollback"
+    assert _tidy_codex_title(title, "gpt-6.1-sol") == "review packaging"
+    assert _tidy_codex_title("Luna ? frozen-probe ? prove whether the venv survives", "gpt-6-luna") == "frozen-probe"
+
+
+def test_replacement_character_separator_is_read_as_brief_separator():
+    title = "Sol � review packaging � design review"
+    assert _tidy_codex_title(title, "gpt-6.1-sol") == "review packaging"
+
+
+def test_goal_after_dash_is_cut_from_brief_title():
+    assert _tidy_codex_title("Sol · task — goal", "gpt-6.1-sol") == "task"
+    assert _tidy_codex_title("Sol · task – goal", "gpt-6.1-sol") == "task"
+
+
+def test_goal_separator_with_empty_task_keeps_remainder():
+    assert _tidy_codex_title("Sol · — goal text", "gpt-6.1-sol") == "— goal text"
+
+
+def test_question_mark_titles_with_non_model_head_are_unchanged():
+    assert _tidy_codex_title("Why is it slow ? fix it", "gpt-6.1-sol") == "Why is it slow ? fix it"
+    assert _tidy_codex_title("Plan ? task", "gpt-6.1-terra") == "Plan ? task"
+    assert _tidy_codex_title("Why is it slow ?? fix it", "gpt-6.1-sol") == "Why is it slow ?? fix it"
+
+
+def test_run_of_question_marks_is_a_separator_in_brief_titles():
+    assert _tidy_codex_title("Luna ?? state-audit ??? establish ground", "gpt-6-luna") == "state-audit"
+    assert _tidy_codex_title("Luna ? state-audit ?? establish ground", "gpt-6-luna") == "state-audit"
+
+
+def test_replacement_run_cuts_title_without_model_head():
+    assert _tidy_codex_title("review claude-support � design review of", "gpt-6.1-sol") == "review claude-support"
+    assert _tidy_codex_title("review claude-support �� design review of", "gpt-6.1-sol") == "review claude-support"
+
+
+def test_standalone_replacement_characters_are_stripped():
+    assert _tidy_codex_title("� task name", "gpt-6.1-sol") == "task name"
+    assert _tidy_codex_title("task name �", "gpt-6.1-sol") == "task name"
+
+
+def test_mojibake_is_repaired_before_tidying():
+    mojibake = "Sol · pytorch-b — author exercise families".encode("utf-8").decode("cp1252")
+    assert _tidy_codex_title(mojibake, "gpt-6.1-sol") == "pytorch-b"
+
+
+def test_undecodable_mojibake_marker_keeps_original_title():
+    title = "Caf\u00c2"
+    assert _tidy_codex_title(title, "gpt-6.1-terra") == title
+
+
+def test_only_first_non_empty_line_is_kept():
+    assert _tidy_codex_title("row layout\nGoal: make parent and subagent chat rows", "gpt-6.1-sol") == "row layout"
+    assert _tidy_codex_title("Kept-module test fixes\nGoal: restore fixtures", "gpt-6.1-sol") == "Kept-module test fixes"
+    assert _tidy_codex_title("\n\nPerf attribution\nGoal: x", "gpt-6.1-terra") == "Perf attribution"
+
+
+def test_single_line_title_is_unchanged():
+    assert _tidy_codex_title("Perf attribution", "gpt-6.1-terra") == "Perf attribution"
+
+
+def test_model_family_names_are_head_words_without_model_id():
+    assert _tidy_codex_title("Luna · core loop", None) == "core loop"
+    assert _tidy_codex_title("Terra · fix runtime F4 F5 F7\nGoal: make the runtime pass", None) == "fix runtime F4 F5 F7"
+    assert _tidy_codex_title("astra ? plan lanes", "") == "plan lanes"
+
+
+def test_model_family_names_count_even_when_the_thread_moved_to_another_model():
+    assert _tidy_codex_title("Sol ? task", "gpt-6.1-terra") == "task"
+    assert _tidy_codex_title("Luna · core loop", "gpt-6.1-terra") == "core loop"
+    assert _tidy_codex_title("Solar · panel app", "gpt-6.1-terra") == "Solar · panel app"
+
+
+def test_non_model_heads_keep_their_name_with_or_without_model_id():
+    # The head isn't a model word, so it stays; only the long description is cut.
+    assert _tidy_codex_title("Track Route Review · review user-approved track URI change", "gpt-6.1-sol") == (
+        "Track Route Review")
+    assert _tidy_codex_title("Track Route Review · review user-approved track URI change", None) == (
+        "Track Route Review")
+    assert _tidy_codex_title("Why is it slow ? fix it", None) == "Why is it slow ? fix it"
+
+
+def test_family_head_drops_even_when_thread_moved_to_another_model():
+    assert _tidy_codex_title("Luna · core loop", "gpt-6.1-terra") == "core loop"
+
+
+def test_long_goal_after_dash_is_cut_but_short_tail_stays():
+    assert _tidy_codex_title("state-audit — establish ground-truth source/test state after", "gpt-6.1-terra") == "state-audit"
+    assert _tidy_codex_title("Fix bug — urgent", "gpt-6.1-terra") == "Fix bug — urgent"
+
+
+def test_mojibake_is_repaired_even_next_to_a_real_ellipsis():
+    garbled = "Sol Â· api â€” implement the HTTP/WS API and learning…"
+    assert _tidy_codex_title(garbled, "gpt-6.1-sol") == "api"
+
+
+def test_agent_task_paths_become_readable_labels():
+    assert _tidy_codex_title("/root/audit_widget_footprint", "gpt-6.1-terra") == "Audit widget footprint"
+
+
+def test_long_description_after_a_middle_dot_is_cut():
+    assert _tidy_codex_title("Album Exact Ranking · implement exact-title preference and regression tests", "gpt-6.1-terra") == "Album Exact Ranking"
+    assert _tidy_codex_title("Quota Cache Review · timestamp safety", "gpt-6.1-terra") == "Quota Cache Review · timestamp safety"
