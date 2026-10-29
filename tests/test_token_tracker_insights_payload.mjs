@@ -41,6 +41,7 @@ assert.doesNotMatch(html,/not available|dash-hero-currency/);
 assert.match(html,/class="dash-chart"/);
 assert.match(html,/area-fill claude/);assert.match(html,/area-fill codex/);
 assert.equal((html.match(/class="dash-point"/g)||[]).length,30,"one hover point per series day");
+assert.equal((html.match(/class="dash-hit"/g)||[]).length,30,"one full-height hover column per series day");
 assert.match(html,/Daily · tokens/);
 
 // (3) Zero figures next to non-zero tokens are treated as missing, not shown as 0.
