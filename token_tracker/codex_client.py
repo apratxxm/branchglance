@@ -77,17 +77,6 @@ def resolve_codex() -> CodexExecutable | None:
         except (OSError, RuntimeError):
             return None
 
-    local = os.environ.get("LOCALAPPDATA", "")
-    candidates = []
-    if local and Path(local).is_absolute():
-        candidates.extend((Path(local) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
-                           Path(local) / "Programs" / "codex" / "bin" / "codex.exe"))
-    candidates.append(Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
-    for candidate in candidates:
-        found = safe(candidate)
-        if found:
-            return CodexExecutable(str(found))
-
     machine = platform.machine().lower()
     targets = {"arm64": ("arm64", "aarch64-pc-windows-msvc"), "aarch64": ("arm64", "aarch64-pc-windows-msvc"),
                "amd64": ("x64", "x86_64-pc-windows-msvc"), "x86_64": ("x64", "x86_64-pc-windows-msvc")}
@@ -111,7 +100,8 @@ def resolve_codex() -> CodexExecutable | None:
         arch, triple = target
         if not any(safe(directory / ("codex" + ext)) for ext in (".cmd", ".ps1")):
             continue
-        root = directory / "node_modules" / "@openai" / "codex"
+        modules = directory.parent if directory.name.lower() == ".bin" and directory.parent.name.lower() == "node_modules" else directory / "node_modules"
+        root = modules / "@openai" / "codex"
         if not safe(root / "bin" / "codex.js"):
             continue
         try:
@@ -139,6 +129,16 @@ def resolve_codex() -> CodexExecutable | None:
             if found:
                 return CodexExecutable(str(found), str(canonical_root), _package_manager(canonical_root, root))
 
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidates = []
+    if local and Path(local).is_absolute():
+        candidates.extend((Path(local) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe",
+                           Path(local) / "Programs" / "codex" / "bin" / "codex.exe"))
+    candidates.append(Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
+    for candidate in candidates:
+        found = safe(candidate)
+        if found:
+            return CodexExecutable(str(found))
     return None
 
 

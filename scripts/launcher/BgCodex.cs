@@ -13,6 +13,8 @@ public static class BgCodex
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetFinalPathNameByHandleW(IntPtr handle, StringBuilder path, uint size, uint flags);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr GetStdHandle(int kind);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool WriteFile(IntPtr handle, byte[] buffer, int count, out int written, IntPtr overlapped);
     const int MaxLine = 65536;
     static string Quote(string value) {
         var b = new StringBuilder("\""); int slashes = 0;
@@ -37,14 +39,16 @@ public static class BgCodex
         var candidates = new List<string>();
         if (Absolute(local)) { candidates.Add(Path.Combine(local, @"Programs\OpenAI\Codex\bin\codex.exe")); candidates.Add(Path.Combine(local, @"Programs\codex\bin\codex.exe")); }
         if (Absolute(home)) candidates.Add(Path.Combine(home, @"AppData\Local\Programs\OpenAI\Codex\bin\codex.exe"));
-        foreach (string candidate in candidates) if (File.Exists(candidate) && Safe(candidate, cwd)) return new Target { Executable = Path.GetFullPath(candidate) };
         foreach (string entry0 in (path ?? "").Split(';')) {
             string entry = entry0.Trim().Trim('"');
             if (!Absolute(entry) || !Directory.Exists(entry) || !Safe(entry, cwd)) continue;
             string exe = Path.Combine(entry, "codex.exe");
             if (File.Exists(exe) && Safe(exe, cwd)) return new Target { Executable = Path.GetFullPath(exe) };
             if (!Array.Exists(new[] { "codex.cmd", "codex.ps1" }, name => File.Exists(Path.Combine(entry, name)) && Safe(Path.Combine(entry, name), cwd))) continue;
-            string root = Path.Combine(entry, @"node_modules\@openai\codex");
+            var entryDir = new DirectoryInfo(entry);
+            string root = entryDir.Name.Equals(".bin", StringComparison.OrdinalIgnoreCase) && entryDir.Parent != null && entryDir.Parent.Name.Equals("node_modules", StringComparison.OrdinalIgnoreCase)
+                ? Path.Combine(entryDir.Parent.FullName, "@openai", "codex")
+                : Path.Combine(entry, @"node_modules\@openai\codex");
             string js = Path.Combine(root, @"bin\codex.js");
             if (!File.Exists(js) || !Safe(js, cwd) || !Safe(root, cwd)) continue;
             string arch = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE") ?? "";
@@ -64,6 +68,7 @@ public static class BgCodex
             if (vendor == null) continue;
             if (File.Exists(vendor) && Safe(vendor, cwd)) return new Target { Executable = Path.GetFullPath(vendor), PackageRoot = Canonical(root), PackageEntry = root };
         }
+        foreach (string candidate in candidates) if (File.Exists(candidate) && Safe(candidate, cwd)) return new Target { Executable = Path.GetFullPath(candidate) };
         return null;
     }
     static string Uuid(string value) { Guid id; return value != null && Guid.TryParseExact(value, "D", out id) ? id.ToString() : null; }
@@ -142,10 +147,17 @@ public static class BgCodex
                 Action<string> enqueue = delegate(string id) { lock(sync) { if (receipt != null || !hasTime || id == null) return; attempt = new ReceiptAttempt(); int pid = child.Id; receipt = new Thread(() => attempt.Run(pid, id, created)); receipt.IsBackground = true; receipt.Start(); } };
                 enqueue(Resume(args));
                 if (observe) {
-                    var source = child.StandardOutput.BaseStream; var dest = Console.OpenStandardOutput(); byte[] chunk = new byte[8192]; var line = new MemoryStream(); bool discard = false; int n;
-                    bool outputOpen = true;
+                    var source = child.StandardOutput.BaseStream; var output = GetStdHandle(-11); byte[] chunk = new byte[8192]; var line = new MemoryStream(); bool discard = false; int n;
                     while ((n = source.Read(chunk, 0, chunk.Length)) > 0) {
-                        if (outputOpen) { try { dest.Write(chunk, 0, n); dest.Flush(); } catch (IOException) { outputOpen = false; } }
+                        int forwarded = 0;
+                        while (forwarded < n) {
+                            int remaining = n - forwarded, written;
+                            byte[] segment = chunk;
+                            if (forwarded != 0) { segment = new byte[remaining]; Buffer.BlockCopy(chunk, forwarded, segment, 0, remaining); }
+                            if (!WriteFile(output, segment, remaining, out written, IntPtr.Zero) || written <= 0) break;
+                            forwarded += written;
+                        }
+                        if (forwarded != n) { source.Close(); break; }
                         for (int i = 0; i < n; i++) { byte b = chunk[i]; if (b == 10) { if (!discard && line.Length > 0) { try { var json = new JavaScriptSerializer().DeserializeObject(new UTF8Encoding(false, true).GetString(line.ToArray())) as Dictionary<string, object>; object type, id; if (json != null && json.TryGetValue("type", out type) && (type as string) == "thread.started" && json.TryGetValue("thread_id", out id)) enqueue(Uuid(id as string)); } catch {} } line.SetLength(0); discard = false; } else if (!discard) { if (line.Length >= MaxLine) { discard = true; line.SetLength(0); } else line.WriteByte(b); } }
                     }
                 }

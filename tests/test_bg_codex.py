@@ -122,3 +122,53 @@ def test_slow_receipt_is_cancelled_without_changing_exit(executables, tmp_path, 
     assert result.returncode == 37 and result.stdout == b"output"
     assert elapsed < 3.5
     assert not (tmp_path / "receipt").exists()
+
+
+def test_native_resolver_prefers_path_and_supports_local_npm_bin(tmp_path):
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    local = tmp_path / "local"
+    fallback = local / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
+    fallback.parent.mkdir(parents=True)
+    fallback.touch()
+    modules = tmp_path / "npm" / "node_modules"
+    bin_dir = modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "codex.cmd").write_text("do not execute", encoding="utf-8")
+    package = modules / "@openai" / "codex"
+    (package / "bin").mkdir(parents=True)
+    (package / "bin" / "codex.js").touch()
+    vendor = modules / "@openai" / "codex-win32-x64"
+    exe = vendor / "vendor" / "x86_64-pc-windows-msvc" / "bin" / "codex.exe"
+    exe.parent.mkdir(parents=True)
+    exe.touch()
+    (vendor / "package.json").write_text('{}', encoding="utf-8")
+    harness = tmp_path / "resolve.cs"
+    harness.write_text('using System; class Harness { static int Main(string[] a) { var t=BgCodex.Resolve(a[0], a[1], a[2], ""); Console.Write(t == null ? "none" : t.Executable); return 0; } }', encoding="utf-8")
+    resolver = tmp_path / "resolver.exe"
+    compile_cs(ROOT / "scripts/launcher/BgCodex.cs", resolver, "/reference:System.Web.Extensions.dll", "/main:Harness", str(harness))
+    env = os.environ.copy()
+    env["PROCESSOR_ARCHITECTURE"] = "AMD64"
+    selected = subprocess.check_output([str(resolver), str(cwd), str(bin_dir), str(local)], env=env, text=True)
+    assert Path(selected) == exe
+    selected = subprocess.check_output([str(resolver), str(cwd), "", str(local)], env=env, text=True)
+    assert Path(selected) == fallback
+
+
+def test_closed_consumer_closes_codex_stdout_and_preserves_exit(executables, tmp_path):
+    wrapper, bin_dir, cwd = executables
+    fake = tmp_path / "broken_pipe.cs"
+    fake.write_text('using System; using System.Runtime.InteropServices; class Fake { [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] static extern bool WriteFile(IntPtr h, byte[] b, int n, out int written, IntPtr o); static int Main() { var h=GetStdHandle(-11); var b=new byte[8192]; int n; while (WriteFile(h,b,b.Length,out n,IntPtr.Zero)) {} return 42; } }', encoding="utf-8")
+    compile_cs(fake, bin_dir / "codex.exe")
+    env = os.environ.copy()
+    env["FAKE_CODEX"] = str(bin_dir / "codex.exe")
+    process = subprocess.Popen([str(wrapper), "exec", "--json"], cwd=cwd, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process.stdout.close()
+    try:
+        assert process.wait(timeout=8) == 42
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stderr.close()

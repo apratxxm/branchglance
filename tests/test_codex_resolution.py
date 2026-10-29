@@ -1,6 +1,66 @@
 from pathlib import Path
 
+import pytest
+
 from token_tracker import codex_client
+
+
+def test_path_install_takes_priority_over_known_install(tmp_path, monkeypatch):
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    path_executable = tmp_path / "path-bin" / "codex.exe"
+    path_executable.parent.mkdir()
+    path_executable.touch()
+    local = tmp_path / "local"
+    old_executable = local / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
+    old_executable.parent.mkdir(parents=True)
+    old_executable.touch()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", str(path_executable.parent))
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "absent"))
+    assert codex_client.resolve_codex().path == str(path_executable.resolve())
+
+
+def test_known_install_is_used_when_path_has_no_codex(tmp_path, monkeypatch):
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    local = tmp_path / "local"
+    executable = local / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "absent"))
+    assert codex_client.resolve_codex().path == str(executable.resolve())
+
+
+@pytest.mark.parametrize("shim", ["codex.cmd", "codex.ps1"])
+def test_resolver_finds_npm_dot_bin_native(tmp_path, monkeypatch, shim):
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    modules = tmp_path / "tools" / "node_modules"
+    bin_dir = modules / ".bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / shim).write_text("not executable", encoding="utf-8")
+    package = modules / "@openai" / "codex"
+    (package / "bin").mkdir(parents=True)
+    (package / "bin" / "codex.js").touch()
+    vendor = modules / "@openai" / "codex-win32-x64"
+    vendor.mkdir(parents=True)
+    (vendor / "package.json").write_text('{}', encoding="utf-8")
+    native = vendor / "vendor" / "x86_64-pc-windows-msvc" / "bin" / "codex.exe"
+    native.parent.mkdir(parents=True)
+    native.touch()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("LOCALAPPDATA", "")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "absent"))
+    monkeypatch.setattr(codex_client.platform, "machine", lambda: "AMD64")
+    found = codex_client.resolve_codex()
+    assert found.path == str(native.resolve())
+    assert found.package_root == str(package.resolve())
 
 
 def test_resolver_rejects_cwd_and_relative_path_entries(tmp_path, monkeypatch):
