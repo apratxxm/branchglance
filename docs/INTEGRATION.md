@@ -91,38 +91,26 @@ Branchglance shows the Codex thread name, or the first prompt line when there's 
 
 **Best practice:** make the first line of a brief the task itself in a few words (`Perf attribution`). Put the goal on the next line. Don't repeat the project or model name, since the row already shows workspace and model.
 
-## Worked example: a resume script
+## Use bg-codex
 
-A PowerShell launcher that resumes a Codex thread from inside a Claude Code session:
+Branchglance installs `bg-codex.exe` in `%LOCALAPPDATA%\Programs\Branchglance` beside the app. Add that folder to your user PATH, or call the executable by its full path. Setup does not change PATH.
+
+For the current PowerShell session, add it with `$env:Path += ";$env:LOCALAPPDATA\Programs\Branchglance"`. To make that available in new sessions, add the same folder to your user PATH in Windows Environment Variables.
+
+From a Claude Code session, use `bg-codex` in place of `codex`:
 
 ```powershell
-param([string]$Thread)
-$codex = "$HOME\.claude\tools\codex\node_modules\.bin\codex.cmd"
-$link  = "$env:LOCALAPPDATA\Programs\Branchglance\Branchglance.exe"
-
-# Ancestry already links a resume. A receipt is a backup in case the chain is
-# broken. Write it once codex.exe is running.
-Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile', '-Command', @"
-for (`$i = 0; `$i -lt 60; `$i++) {
-  `$p = Get-CimInstance Win32_Process -Filter "Name='codex.exe'" |
-       Where-Object { `$_.CommandLine -match 'exec resume $Thread' } | Select-Object -First 1
-  if (`$p) { & '$link' --link-codex $Thread --codex-pid `$p.ProcessId; break }
-  Start-Sleep -Seconds 2
-}
-"@
-
-Get-Content brief.md -Raw | & $codex exec resume $Thread --json -
+bg-codex exec --json "Your task"
+bg-codex exec resume <thread-uuid> --json "Continue the task"
 ```
 
-- The background helper inherits `CLAUDE_CODE_SESSION_ID`, because it's started from the same session.
-- The example takes the first `codex.exe` whose command line names the thread. If you can run the same thread twice at once, capture the pid of the process you started instead.
-- For a new `codex exec`, read the thread id from the first `thread.started` line of the `--json` output instead, then make the same call.
+For a new job, `--json` lets Branchglance identify the Codex thread. Without it, a new job remains separate. A resume with a thread UUID can link without `--json`; resumes using `--last` or a name link only if the UUID appears in the JSON output. Keep Branchglance running and allow collection for both Claude and Codex. The commands and their output are otherwise passed through to Codex.
 
 ## Client-side requirements log
 
 Running list of things clients must do, or must avoid, that we found in practice. Add new findings here.
 
-- **2026-10-28.** Jobs launched by our orchestration scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Write receipts from the launcher (see the worked example). Since 1eb47e0 this also works from Claude desktop sessions.
+- **2026-10-28.** Jobs launched by our orchestration scripts showed as separate parents. New `codex exec` runs had no receipt. Resumed runs linked only when the ancestry held. Use bg-codex from the Claude Code session (see above). Since 1eb47e0 this also works from Claude desktop sessions.
 - **2026-10-28.** Brief titles like `# [Orchestrator] Terra · row layout` showed raw on the live view. Fixed in the product (tidying now applies on the live and indexed paths too). Clients should still put the task first in titles.
 - **2026-10-28.** `CLAUDE_CONFIG_DIR` changes after enabling collection leave hooks in the old folder. Enable collection again after switching, and check the old folder for leftover hooks. Since 942f13f, enabling records the exact settings file, and turning tracking off or uninstalling edits only that file.
 - **2026-10-29.** Running Codex jobs started from Claude chats showed as separate parents even though they were linked: a cached Claude parent lost its provider tag. Fixed in the product (938aae6, 2192a77); nothing for clients to change.

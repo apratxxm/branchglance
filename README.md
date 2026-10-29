@@ -55,7 +55,7 @@ Claude Code collection is off by default. Turn it on in the widget under **Setti
 
 The hooks record event metadata only (ids, model and tool categories, state). They never record prompts, tool inputs or outputs, full paths or chat titles.
 
-If you start Codex jobs from your own scripts, [docs/INTEGRATION.md](docs/INTEGRATION.md) explains what they need to do so the jobs nest under the right chat.
+Use `bg-codex` to nest Codex jobs under the Claude Code chat that starts them; see [the integration guide](docs/INTEGRATION.md).
 
 ## Privacy
 

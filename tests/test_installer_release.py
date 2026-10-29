@@ -118,6 +118,7 @@ def _setup_payload(tmp_path, *, version, build_id, body):
     write_manifest(payload / "release", version, build_id)
     (payload / "Branchglance.exe").write_bytes(b"launcher")
     (payload / "BranchglanceUninstall.exe").write_bytes(b"uninstaller")
+    (payload / "bg-codex.exe").write_bytes(b"wrapper")
     return payload
 
 
@@ -1691,3 +1692,232 @@ def test_resumed_trash_intent_refuses_before_external_changes(tmp_path, monkeypa
     assert (paths.product_root / "claude-consent.json").read_bytes() == consent
     assert native.integration_adapter.links == before_links
     assert native.integration_adapter.registry == before_registry
+
+
+def test_bg_codex_owned_install_upgrade_and_uninstall(tmp_path):
+    from branchglance_installer.core import read_owned_ledger
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ops = ReleaseOps(root, tools={"bg-codex.exe": source})
+    ops.install(_release(tmp_path, "first-wrapper-release"), "1.0.0", "a")
+    assert (root / "bg-codex.exe").read_bytes() == b"first wrapper"
+    assert "bg-codex.exe" in read_owned_ledger(root)["tools"]
+    source.write_bytes(b"second wrapper")
+    ops.install(_release(tmp_path, "second-wrapper-release", version="1.0.1", build_id="b"), "1.0.1", "b")
+    assert (root / "bg-codex.exe").read_bytes() == b"second wrapper"
+    uninstall_owned_root(root)
+    assert not root.exists()
+
+
+def test_bg_codex_foreign_collision_is_not_adopted_or_deleted(tmp_path):
+    root = _root(tmp_path)
+    foreign = root / "bg-codex.exe"
+    foreign.write_bytes(b"foreign")
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ops = ReleaseOps(root, tools={"bg-codex.exe": source})
+    with pytest.raises(SafetyError, match="unowned install file"):
+        ops.install(_release(tmp_path, "foreign-wrapper-release"), "1.0.0", "a")
+    ops.recover()
+    with pytest.raises(SafetyError, match="kept unowned items"):
+        uninstall_owned_root(root)
+    assert foreign.read_bytes() == b"foreign"
+
+
+def test_bg_codex_failed_upgrade_restores_old_owned_tool(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "first-release"), "1.0.0", "a")
+    source.write_bytes(b"second wrapper")
+    def interrupt(name):
+        if name == "tool-backed-up":
+            raise RuntimeError("power loss")
+    ops = ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=interrupt)
+    with pytest.raises(RuntimeError, match="power loss"):
+        ops.install(_release(tmp_path, "second-release", version="1.0.1", build_id="b"), "1.0.1", "b")
+    ReleaseOps(root).recover()
+    assert (root / "bg-codex.exe").read_bytes() == b"first wrapper"
+
+
+def test_bg_codex_replacement_is_refused_before_uninstall_integration(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release"), "1.0.0", "a")
+    wrapper = root / "bg-codex.exe"
+    wrapper.unlink()
+    wrapper.write_bytes(b"foreign")
+    called = []
+    with pytest.raises(SafetyError, match="ownership cannot be verified"):
+        uninstall_owned_root(root, integration_remove=lambda: called.append(True))
+    assert called == []
+    assert wrapper.read_bytes() == b"foreign"
+
+
+@pytest.mark.parametrize("point,changed", [("tool-staged", "staged"), ("tool-backed-up", "backup"), ("tool-replaced", "live")])
+def test_bg_codex_tampering_refuses_recovery_before_integration(tmp_path, point, changed):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"original")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release-a"), "1.0.0", "a")
+    source.write_bytes(b"replacement")
+    def crash(name):
+        if name == point:
+            raise RuntimeError("power loss")
+    with pytest.raises(RuntimeError, match="power loss"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash).install(
+            _release(tmp_path, "release-b", version="1.0.1", build_id="b"), "1.0.1", "b")
+    journal = read_json(root / "install-journal.json")
+    entry = journal["tools"]["bg-codex.exe"]
+    target = root / ({"staged": entry["staged"], "backup": entry["backup"], "live": "bg-codex.exe"}[changed])
+    target.unlink()
+    target.write_bytes(b"foreign")
+    calls = []
+    with pytest.raises(SafetyError):
+        ReleaseOps(root, integration_restore=lambda state: calls.append(state)).recover()
+    assert calls == []
+    assert target.read_bytes() == b"foreign"
+
+
+def test_bg_codex_missing_provenance_refuses_uninstall(tmp_path):
+    from branchglance_installer.core import read_owned_ledger, write_owned_ledger
+    root = _root(tmp_path)
+    wrapper = root / "bg-codex.exe"
+    wrapper.write_bytes(b"foreign")
+    ledger = read_owned_ledger(root)
+    ledger["tools"].append("bg-codex.exe")
+    write_owned_ledger(root, ledger)
+    with pytest.raises(SafetyError, match="ownership is missing"):
+        uninstall_owned_root(root)
+    assert wrapper.read_bytes() == b"foreign"
+
+
+def test_bg_codex_unrecorded_stage_is_retained_before_recovery(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"source")
+    def crash(name):
+        if name == "tool-staged":
+            raise RuntimeError("power loss")
+    with pytest.raises(RuntimeError):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash).install(
+            _release(tmp_path, "release"), "1.0.0", "a")
+    journal_path = root / "install-journal.json"
+    journal = read_json(journal_path)
+    entry = journal["tools"]["bg-codex.exe"]
+    staged = root / entry["staged"]
+    entry["newProvenance"] = None
+    journal_path.write_text(json.dumps(journal), encoding="utf-8")
+    calls = []
+    with pytest.raises(SafetyError):
+        ReleaseOps(root, integration_restore=lambda state: calls.append(state)).recover()
+    assert calls == []
+    assert staged.read_bytes() == b"source"
+
+
+def test_bg_codex_same_bytes_foreign_replacement_refuses_upgrade(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release-a"), "1.0.0", "a")
+    wrapper = root / "bg-codex.exe"
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"owned")
+    os.replace(replacement, wrapper)
+    with pytest.raises(SafetyError, match="ownership cannot be verified"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+            _release(tmp_path, "release-b", version="1.0.1", build_id="b"), "1.0.1", "b")
+    assert wrapper.read_bytes() == b"owned"
+
+
+def test_bg_codex_destination_race_is_not_overwritten(tmp_path, monkeypatch):
+    from branchglance_installer import core
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    rename = core._rename_wrapper
+    def race(path, target, expected):
+        if target.name == "bg-codex.exe":
+            target.write_bytes(b"foreign")
+        return rename(path, target, expected)
+    monkeypatch.setattr(core, "_rename_wrapper", race)
+    with pytest.raises(SafetyError, match="Cannot rename verified wrapper"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release"), "1.0.0", "a")
+    assert (root / "bg-codex.exe").read_bytes() == b"foreign"
+
+
+def test_bg_codex_source_swap_before_handle_open_is_not_deleted(tmp_path, monkeypatch):
+    from branchglance_installer import core
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release"), "1.0.0", "a")
+    delete = core._delete_wrapper
+    def race(path, expected):
+        path.unlink()
+        path.write_bytes(b"foreign")
+        return delete(path, expected)
+    monkeypatch.setattr(core, "_delete_wrapper", race)
+    with pytest.raises(SafetyError, match="ownership cannot be verified"):
+        uninstall_owned_root(root)
+    assert (root / "bg-codex.exe").read_bytes() == b"foreign"
+
+
+def test_bg_codex_crash_after_new_removed_can_restore_old(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"old")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "first"), "1.0.0", "a")
+    source.write_bytes(b"new")
+    def crash_install(name):
+        if name == "tool-replaced": raise RuntimeError("install crash")
+    with pytest.raises(RuntimeError, match="install crash"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash_install).install(
+            _release(tmp_path, "second", version="1.0.1", build_id="b"), "1.0.1", "b")
+    def crash_restore(name):
+        if name == "wrapper-new-removed": raise RuntimeError("recovery crash")
+    with pytest.raises(RuntimeError, match="recovery crash"):
+        ReleaseOps(root, after_mutation=crash_restore).recover()
+    ReleaseOps(root).recover()
+    assert (root / "bg-codex.exe").read_bytes() == b"old"
+
+
+def test_bg_codex_locked_handle_denies_write_and_rename(tmp_path):
+    from branchglance_installer.core import _LockedWrapper
+    target = tmp_path / "target"
+    target.write_bytes(b"original")
+    with _LockedWrapper(target) as held:
+        expected = held.provenance()
+        with pytest.raises(OSError):
+            target.write_bytes(b"foreign")
+        with pytest.raises(OSError):
+            os.replace(target, tmp_path / "moved")
+        held.verify(expected)
+    assert target.read_bytes() == b"original"
+
+
+def test_bg_codex_restore_destination_race_keeps_foreign_and_backup(tmp_path, monkeypatch):
+    from branchglance_installer import core
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"old")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "first"), "1.0.0", "a")
+    source.write_bytes(b"new")
+    def crash(name):
+        if name == "tool-replaced": raise RuntimeError("power loss")
+    with pytest.raises(RuntimeError, match="power loss"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash).install(
+            _release(tmp_path, "second", version="1.0.1", build_id="b"), "1.0.1", "b")
+    entry = read_json(root / "install-journal.json")["tools"]["bg-codex.exe"]
+    rename = core._rename_wrapper
+    def race(path, target, expected):
+        if path.name == entry["backup"]:
+            target.write_bytes(b"foreign")
+        return rename(path, target, expected)
+    monkeypatch.setattr(core, "_rename_wrapper", race)
+    with pytest.raises(SafetyError, match="Cannot rename verified wrapper"):
+        ReleaseOps(root).recover()
+    assert (root / "bg-codex.exe").read_bytes() == b"foreign"
+    assert (root / entry["backup"]).read_bytes() == b"old"
