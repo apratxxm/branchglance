@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from token_tracker import limit_reset, phone_server, product, provider_policy, widget
+from token_tracker import limit_reset, product, provider_policy, widget
 from token_tracker.provider_policy import (
     ProviderPolicyError,
     load_policies,
@@ -27,6 +27,19 @@ def _no_real_snapshot_warmup(monkeypatch):
     monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: True)
 
 
+def test_server_root_serves_runway(monkeypatch):
+    from token_tracker import server
+
+    handler = object.__new__(server.Handler)
+    handler.path = "/"
+    monkeypatch.setattr(server.Handler, "_valid_local_host", lambda self: True)
+    served = []
+    monkeypatch.setattr(server.SimpleHTTPRequestHandler, "do_GET", lambda self: served.append(self.path))
+    handler.do_GET()
+    assert served == ["/runway.html"]
+    assert (server.STATIC / "runway.html").is_file()
+
+
 # --- product roots ---------------------------------------------------------------------------
 
 def test_frozen_roots_are_constants_and_ignore_env_override(tmp_path):
@@ -34,7 +47,6 @@ def test_frozen_roots_are_constants_and_ignore_env_override(tmp_path):
     assert product.state_root(frozen=True, environ=env) == tmp_path / "Branchglance" / "state"
     assert product.webview_storage_path(frozen=True, environ=env) == tmp_path / "Branchglance" / "webview"
     assert product.policy_file_path(frozen=True, environ=env) == tmp_path / "Branchglance" / "policy.json"
-    assert product.phone_state_path(frozen=True, environ=env) == tmp_path / "Branchglance" / "state" / "phone-state.json"
 
 
 def test_dev_roots_keep_legacy_dir_unless_overridden(tmp_path):
@@ -65,7 +77,6 @@ def test_frozen_mode_never_writes_under_legacy_tokentracker_dir(tmp_path, monkey
     service = limit_reset.LimitResetService(sources={}, senders={}, enabled=False)
     assert service.state_path.parent == root and service.cwd == root
     assert widget._window_state_path().parent == root
-    assert phone_server._state_path().parent == root
     app = widget.WidgetApp()
     try:
         app.start_control()

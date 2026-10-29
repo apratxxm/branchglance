@@ -45,7 +45,6 @@ vm.createContext(context);
 vm.runInContext(app, context);
 const T = context.window.__tokenTrackerTest, stamp = minutes => new Date(now - minutes * 60000).toISOString();
 assert.equal(T.runway, true);
-assert.equal(T.phone, false);
 assert.equal(T.compact, true);
 
 const parent = { id: "exact-thread-id", title: "Parent title", model: "gpt-6.1-sol", contextModel: "gpt-6.1-sol",

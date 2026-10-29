@@ -3,8 +3,5 @@ pystray==0.19.5
 Pillow==12.3.0
 zstandard==0.25.0
 
-# Phone Web Push
-pywebpush==2.5.0
-
 # Development and source-test dependency
 pytest==8.4.2

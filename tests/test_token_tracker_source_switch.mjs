@@ -6,7 +6,6 @@ const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.u
 const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
 const refined=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
-const mainCss=fs.readFileSync(new URL("../token_tracker/static/styles.css",import.meta.url),"utf8");
 const fixedNow=new Date("2026-10-06T12:00:00Z").getTime();
 const ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
 
@@ -28,7 +27,7 @@ assert.match(refined,/radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(-
 assert.match(refined,/\.runway-refined-row::after\{[^}]*border-radius:0;[^}]*radial-gradient\([^}]*transparent 100%/);
 assert.doesNotMatch(refined,/linear-gradient\(to bottom,var\(--tree-(?:claude|codex)-surface\)/);
 assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
-assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);assert.match(mainCss,/\.meter i\{[^}]*background:var\(--source-accent\)/);
+assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
 assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
 assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 150ms/);

@@ -1,6 +1,6 @@
 @import url('fonts/localfonts.css');
 
-/* Refined desktop only. Classic fallback and phone retain runway.css. */
+/* Refined desktop styling. */
 body.runway-refined:not(.phone){
   --paper:#0b0d12;--card:#11141c;--ink:#f3f4fa;--muted:#bcc4dc;--quiet:var(--source-muted);
   --line:#282d39;--blue:var(--source-accent);--orange:#f4ce38;--red:#f33442;--green:#35e596;
@@ -202,7 +202,6 @@ body.runway-refined:not(.phone) :focus-visible{outline:2px solid var(--focus);ou
 body.runway-refined.runway-compact:not(.phone){--paper:#020305;--card:#05070b;--compact-toolbar-height:30px;--motion-info:110ms;--motion-panel:140ms;--motion-reveal:220ms;--motion-source:240ms;--notch-open-delay:143ms;--notch-open-suppression:383ms;}
 body:not(.runway-compact) #compact-counts,body:not(.runway-compact) #compact-summary,
 body:not(.runway-compact) .compact-clock,body:not(.runway-compact) .compact-keep-open,
-body.phone #compact-counts,body.phone #compact-summary,body.phone .compact-clock,body.phone .compact-keep-open{display:none;}
 body.runway-refined.runway-compact:not(.phone) .widget{position:relative;isolation:isolate;gap:4px;padding:2px;overflow:hidden;border:0;border-radius:0;background:transparent;box-shadow:none;}
 body.runway-refined.runway-compact:not(.phone) .rr{position:relative;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 9%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 9%,transparent),transparent 52%),linear-gradient(105deg,#080a10,#030407 65%,#080a10);box-shadow:inset 0 0 0 1px var(--source-edge),inset 0 0 16px color-mix(in srgb,var(--source-glow-primary) 7%,transparent),inset 0 0 24px color-mix(in srgb,var(--source-glow-secondary) 6%,transparent);}
 body.runway-refined.runway-compact:not(.phone) .rr::after,
