@@ -1,5 +1,6 @@
 """Render fictional Branchglance screenshots with a local fixture server and Edge."""
 
+import argparse
 import datetime as dt
 import functools
 import json
@@ -9,7 +10,7 @@ import subprocess
 import tempfile
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -99,7 +100,20 @@ class Handler(SimpleHTTPRequestHandler):
             if path not in self.responses:
                 self.send_error(404)
                 return
-            data = json.dumps(self.responses[path]).encode()
+            response = self.responses[path]
+            if path == "/api/insights" and parse_qs(urlsplit(self.path).query).get("range") == ["24h"]:
+                providers = []
+                for provider in response["providers"]:
+                    current, previous = provider["series"][-1], provider["series"][-2]
+                    totals = {**provider["totals"], "tokens": current["tokens"],
+                              "apiEquivalentCost": current["apiEquivalentCost"], "sessions": 12,
+                              "subagentsActive": 8, "activeHours": 7}
+                    models = [{**model, "tokens": current["tokens"], "apiEquivalentCost": current["apiEquivalentCost"]}
+                              for model in provider["models"]]
+                    providers.append({**provider, "totals": totals, "models": models,
+                                      "series": [current], "previous": previous})
+                response = {"range": "24h", "providers": providers}
+            data = json.dumps(response).encode()
             content_type = "application/json"
         elif path == "/screenshot-fixture.js":
             data = (HERE / "fixture.js").read_bytes()
@@ -136,23 +150,31 @@ def edge_path():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--insights-only", action="store_true")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT)
+    parser.add_argument("--prefix", default="")
+    args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, responses=fixtures()))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    OUTPUT.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="branchglance-screenshots-") as profile:
-            for mode, filename, width, height in (("collapsed", "widget-collapsed.png", 328, 110),
-                                                   ("tree", "tree-expanded.png", 560, 420),
-                                                   ("insights", "insights.png", 720, 608)):
+            captures = [("insights-24h", "insights-24h.png", 720, 608),
+                        ("insights-30d", "insights-30d.png", 720, 608)] if args.insights_only else [
+                        ("collapsed", "widget-collapsed.png", 328, 110),
+                        ("tree", "tree-expanded.png", 560, 420),
+                        ("insights", "insights.png", 720, 608)]
+            for mode, filename, width, height in captures:
                 page = "capture.html" if mode == "collapsed" else f"runway.html?review=1&capture={mode}"
                 url = f"http://127.0.0.1:{server.server_port}/{page}"
                 subprocess.run([str(edge_path()), "--headless", "--disable-gpu", "--hide-scrollbars",
                                 "--force-device-scale-factor=2", "--force-prefers-reduced-motion",
                                 "--no-first-run", "--no-default-browser-check", f"--user-data-dir={profile}",
                                 f"--window-size={width},{height}", "--virtual-time-budget=4000",
-                                f"--screenshot={OUTPUT / filename}", url], check=True, timeout=60)
-                print(OUTPUT / filename)
+                                f"--screenshot={args.output_dir / (args.prefix + filename)}", url], check=True, timeout=60)
+                print(args.output_dir / (args.prefix + filename))
     finally:
         server.shutdown()
         server.server_close()

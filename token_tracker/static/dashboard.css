@@ -181,3 +181,37 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 
 /* Toolbar clock: width follows the time text so it never runs under the window buttons (all compact notch modes). Later in the cascade than the per-mode widths in runway_refined.css. */
 body.runway-refined.runway-compact:not(.phone)[data-notch-mode] .compact-toolbar #toolbar-clock{flex:0 0 auto;width:auto;min-width:max-content;max-width:none;padding:0 6px;white-space:nowrap;overflow:visible;}
+
+#dashboard-view[data-tab="insights"]{font-variant-numeric:tabular-nums;}
+#dashboard-view[data-tab="insights"] .dashboard-tab{font-size:13px;}
+#dashboard-view[data-tab="insights"] .dash-segment button{font-size:13px;}
+#dashboard-insights{padding:0 20px 20px;color:#f3f4f6;font-size:13px;}
+#dashboard-insights .dash-hero{min-height:0;padding:16px 0 16px;border-bottom:1px solid #30333c;}
+#dashboard-insights .dash-eyebrow,#dashboard-insights .dash-section-title,#dashboard-insights .dash-section-label{color:#b7bcc8;font-size:13px;font-weight:550;letter-spacing:0;text-transform:none;}
+#dashboard-insights .dash-delta,#dashboard-insights .dash-delta .muted,#dashboard-insights .dash-hero-unit,#dashboard-insights .dash-cost-note,#dashboard-insights .dash-split-legend,#dashboard-insights .dash-summary{font-size:13px;}
+#dashboard-insights .dash-hero-unit,#dashboard-insights .dash-cost-note,#dashboard-insights .dash-split-legend,#dashboard-insights .dash-summary{color:#b7bcc8;}
+#dashboard-insights .dash-hero-number{font-size:42px;}
+#dashboard-insights .dash-hero-currency{font-size:17px;}
+#dashboard-insights .dash-split{margin-top:8px;}
+#dashboard-insights .dash-split-legend{margin-top:6px;}
+#dashboard-insights .dash-legend-item b{color:#f3f4f6;}
+#dashboard-insights .dash-summary{margin:9px 0 0;line-height:18px;}
+#dashboard-insights .dash-lower{grid-template-columns:minmax(0,1fr) minmax(220px,.65fr);gap:20px;padding:20px 0 0;}
+#dashboard-insights .dash-lower.is-single{grid-template-columns:minmax(0,1fr);}
+#dashboard-insights .dash-section-label{height:18px;margin-bottom:5px;}
+#dashboard-insights .dash-section-label small{color:#b7bcc8;font-size:13px;}
+#dashboard-insights .dash-model-row{grid-template-columns:minmax(0,1fr) 68px 65px;gap:8px;height:30px;border:0;font-size:13px;}
+#dashboard-insights .dash-model-row>b{color:#f3f4f6;font-size:15px;}
+#dashboard-insights .dash-model-name{font-size:13px;}
+#dashboard-insights .dash-model-more{height:auto;padding-top:3px;border:0;color:#b7bcc8;font-size:13px;}
+#dashboard-insights .dash-limit-group{padding:0;}
+#dashboard-insights .dash-limit-period{margin:7px 0 2px;color:#b7bcc8;font-size:13px;letter-spacing:0;text-transform:none;}
+#dashboard-insights .dash-limit-row{grid-template-columns:54px minmax(0,1fr) 40px;gap:8px;margin:3px 0;}
+#dashboard-insights .dash-limit-row>span{color:#b7bcc8;font-size:13px;}
+#dashboard-insights .dash-limit-row>b{color:#f3f4f6;font-size:15px;}
+#dashboard-insights .dash-chart-section{min-height:0;padding:20px 0 0;border:0;}
+#dashboard-insights .dash-section-note{color:#b7bcc8;font-size:13px;}
+#dashboard-insights .dash-chart{height:100px;}
+#dashboard-insights .dash-chart text{fill:#b7bcc8;font-size:15px;}
+#dashboard-insights .dash-empty-state{color:#b7bcc8;font-size:13px;}
+#dashboard-view[data-tab="insights"] .dash-tooltip,#dashboard-view[data-tab="insights"] .dash-tooltip .tip-date,#dashboard-view[data-tab="insights"] .dash-tooltip .tip-total,#dashboard-view[data-tab="insights"] .dash-tooltip .tip-row{font-size:13px;}
