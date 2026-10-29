@@ -1,5 +1,3 @@
-# Branchglance
-
 ![Branchglance](assets/brand/lockup-dark.svg)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
