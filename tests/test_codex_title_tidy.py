@@ -92,11 +92,12 @@ def test_model_family_names_count_even_when_the_thread_moved_to_another_model():
     assert _tidy_codex_title("Solar · panel app", "gpt-6.1-terra") == "Solar · panel app"
 
 
-def test_non_model_heads_are_unchanged_with_or_without_model_id():
+def test_non_model_heads_keep_their_name_with_or_without_model_id():
+    # The head isn't a model word, so it stays; only the long description is cut.
     assert _tidy_codex_title("Track Route Review · review user-approved track URI change", "gpt-6.1-sol") == (
-        "Track Route Review · review user-approved track URI change")
+        "Track Route Review")
     assert _tidy_codex_title("Track Route Review · review user-approved track URI change", None) == (
-        "Track Route Review · review user-approved track URI change")
+        "Track Route Review")
     assert _tidy_codex_title("Why is it slow ? fix it", None) == "Why is it slow ? fix it"
 
 
@@ -116,3 +117,8 @@ def test_mojibake_is_repaired_even_next_to_a_real_ellipsis():
 
 def test_agent_task_paths_become_readable_labels():
     assert _tidy_codex_title("/root/audit_widget_footprint", "gpt-6.1-terra") == "Audit widget footprint"
+
+
+def test_long_description_after_a_middle_dot_is_cut():
+    assert _tidy_codex_title("Album Exact Ranking · implement exact-title preference and regression tests", "gpt-6.1-terra") == "Album Exact Ranking"
+    assert _tidy_codex_title("Quota Cache Review · timestamp safety", "gpt-6.1-terra") == "Quota Cache Review · timestamp safety"

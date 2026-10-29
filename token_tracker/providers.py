@@ -2245,8 +2245,8 @@ def _tidy_codex_title(title: str, model: Any) -> str:
             goal = _BRIEF_GOAL_SEP.search(rest)
             task = rest[:goal.start()] if goal else rest
             tidy = task.strip() or rest.strip()
-    # "task — a long goal sentence": keep the task. Short tails ("Fix bug — urgent") stay.
-    dash = re.search(r" [—–] ", tidy)
+    # "task — a long goal sentence" (or "·"): keep the task. Short tails ("Fix bug — urgent") stay.
+    dash = re.search(r" [—–·] ", tidy)
     if dash and len(tidy[dash.end():].strip()) > 25 and tidy[:dash.start()].strip():
         tidy = tidy[:dash.start()].strip()
     # U+FFFD is never typed on purpose: anything after a replacement run is the goal, not the title.
