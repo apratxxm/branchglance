@@ -499,7 +499,9 @@ body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left{color
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left{color:#f0a06e;}
 body.runway-refined.runway-compact:not(.phone) .rr-left b{min-width:0;width:auto;color:inherit;font-size:13px;line-height:18px;font-weight:650;}
 body.runway-refined.runway-compact:not(.phone) .rr-left i{display:none;}
-body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{display:inline;margin-left:3px;font-size:9px;}
+/* The strip has no room for the age: it lives in the tooltip, and a grey value matches the grey meter. */
+body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{display:none;}
+body.runway-refined.runway-compact:not(.phone) .rr .rr-left.last-known b{color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-attn,
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-err{color:#f0a06e;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-attn,

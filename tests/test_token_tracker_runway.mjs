@@ -42,6 +42,8 @@ assert.doesNotMatch(css,/^\.t-live,\.t-attn,\.t-err/m); // telemetry overrides c
 assert.match(css,/\.rr-left\.last-known[^{}]*\{[^}]*opacity:\.62/);
 assert.match(css,/\.meter\.last-known i\{background:var\(--muted\)\}/);
 assert.match(refinedCss,/\.meter\.last-known i\{background:var\(--muted\);\}/);
+assert.match(refinedCss,/\.rr-left\.last-known i\{display:none;\}/,"the strip keeps the age in the tooltip so it cannot push into the countdown");
+assert.match(refinedCss,/\.rr \.rr-left\.last-known b\{color:var\(--muted\);\}/,"a last-known value is grey like its meter");
 assert.match(cssRule('.runway-count.t-live'),/color:var\(--green\)/);
 assert.match(cssRule('.runway-count.t-attn'),/color:var\(--orange\)/);
 assert.match(css,/\.row:has\(\[data-own-waiting=true\]\) \.r-title/);
