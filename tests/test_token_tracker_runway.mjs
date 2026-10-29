@@ -750,6 +750,9 @@ assert.equal(T.notch.autoTimer,burstTimer,"a burst of new children shares the fi
 T.setNotch(false);T.notch.activeKeys=null;T.notch.workStates.clear();
 const quotas=T.resetView(provider,"fiveHour");
 assert.equal(quotas.usedText,"92% used");assert.equal(quotas.countdown,"25m 00s");assert.equal(quotas.tone,"err");
+for(const [seconds,expected] of [[4659,"1h 17m"],[3600,"1h 00m"],[3599,"59m 59s"],[59,"59s"]]){
+  assert.equal(T.resetView({...provider,fiveHour:{percent:92,resetAt:fixedNow/1000+seconds}},"fiveHour").countdown,expected);
+}
 assert.equal(T.resetView(provider,"weekly").countdown,"22h 13m","weekly countdowns show hours/minutes while the target is within a day");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000+3*86400+7260}},"weekly").countdown,"3d 2h","weekly countdowns show day/hour remaining for distant targets");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000-1}},"weekly").countdown,"due");

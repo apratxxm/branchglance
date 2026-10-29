@@ -5,9 +5,8 @@
 ### Added
 
 - Compact Windows widget for Codex and opt-in Claude Code chats and hook-reported subagents.
-- Codex blue and Claude orange source themes, with usage meters that count up to 100% used.
-- Provider source switch and compact pop-up behavior that can bring the active provider into view.
-- `is:hidden` search for chats hidden from the regular list.
+- Codex blue-violet and Claude orange accents in one shared tree, with usage meters that count up to 100% used.
+- Compact pop-up that can surface new work or a waiting question.
 - Optional greeting after a verified five-hour limit reset.
 - Consent-gated Claude Code hooks, local session activity, and usage summaries.
 - Per-user installer, Start menu and Desktop shortcuts, optional sign-in Startup shortcut, uninstaller and previous-release rollback.
@@ -25,16 +24,24 @@
 - The app icon has more margin around the mark.
 - Claude Code settings follow `CLAUDE_HOME` or `CLAUDE_CONFIG_DIR` when set, for hooks, transcripts and uninstall.
 - Upgrades keep the existing start-at-sign-in choice.
-- Tree rows use shared column tracks. Titles, actions, workspace and status text wrap instead of truncating.
+- Tree rows use shared column tracks. Long titles wrap in the expanded tree.
 - `/api/live` is gzip-compressed (about 387 KB to about 82 KB).
 - Cold builds are faster: snapshot about 35 s to 25 s, live about 19.7 s to 14 s (measured on copied data).
 - Widget idle CPU is lower (about 29% to about 2% of a core): identical DOM writes are skipped and the edge sheen animates only on hover.
 - Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 are priced from exact model ids. Models without a known price are never given a guessed price.
 - Live tree polls send the full link map on every poll instead of a delta.
+- Limit countdowns drop seconds at one hour or more.
+- Names in the tree are 13px.
+- Chat titles are tidied on the live view too.
 
 ### Fixed
 
 - A finished earlier run of a resumed Codex thread no longer blocks the thread's current link.
+- Running Codex jobs started from a Claude chat nest under that chat. A cached Claude parent without its provider tag is revalidated first.
+- Tree lines stay visible under resting parent rows, and stuck parents get a shadow.
+- Claude uninstall edits only the recorded settings file. Older valid records fall back to `~/.claude` without overrides; invalid records keep the hooks.
+- Uninstall verifies resumed trash intents and remaining releases before any external edit.
+- Choosing "No" for Startup removes legacy-owned shortcuts.
 - A first paint without a chat graph is held for a bounded time before the tree is drawn without it.
 - Limit peak journal writes are limited to the running widget instance. Journal dates are validated strictly.
 - The 24h Insights range no longer falls back to day totals. Quota peaks use fresh observations only.

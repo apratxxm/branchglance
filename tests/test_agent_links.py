@@ -593,6 +593,19 @@ def test_untagged_parent_that_is_not_a_claude_session_stays_native():
     assert row["parentId"] == "native-parent" and row.get("parentProvider") is None
 
 
+def test_untagged_parent_matching_both_a_codex_and_a_claude_id_stays_native():
+    sid, _thread, grouped, run = _link_fixture()
+    grouped[1]["chats"].append({"id": sid, "source": "exec", "executionStatus": "idle"})
+    row = grouped[1]["chats"][0]
+    row.update(parentId=sid, parentProvider=None)
+    agent_links.apply_exact_links(
+        grouped, now=105, registry_path=Path("unused"), permission_check=_allow_collection,
+        registry_reader=lambda _path: [dict(run)],
+        scan=lambda **_kwargs: [],
+    )
+    assert row["parentId"] == sid and row.get("parentProvider") is None
+
+
 def test_idle_parent_is_invalidated_by_newer_plain_terminal_turn():
     sid, _thread, providers, run = _link_fixture()
     providers[1]["chats"][0].update(source="exec", executionStatus="idle",
