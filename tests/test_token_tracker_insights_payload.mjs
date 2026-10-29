@@ -44,12 +44,12 @@ assert.equal((html.match(/class="dash-point"/g)||[]).length,30,"one hover point 
 assert.match(html,/Daily · tokens/);
 
 // (3) Zero figures next to non-zero tokens are treated as missing, not shown as 0.
-assert.match(html,/dash-stat-label">Tokens</);
-assert.match(html,/dash-stat-value">3\.57B</);
-assert.doesNotMatch(html,/Sessions|Subagents active|Active hours|Cache hit rate/);
+assert.doesNotMatch(html,/dash-summary|sessions|subagents|active|cache hits/);
 
 // (4) Model table shows when rows exist; limit panel hidden when peaks are null; no empty lower band.
-assert.match(html,/Model breakdown/);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);
+assert.match(html,/>Models</);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);
+assert.doesNotMatch(html,/dash-model-head|dash-share/);
+assert.ok(html.indexOf('dash-hero')<html.indexOf('dash-lower')&&html.indexOf('dash-lower')<html.indexOf('dash-chart-section'));
 assert.doesNotMatch(html,/Limit peaks/);
 assert.match(html,/class="dash-lower is-single"/);
 
@@ -57,7 +57,7 @@ assert.match(html,/class="dash-lower is-single"/);
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,models:[]}))})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
-assert.doesNotMatch(html,/Model breakdown/);
+assert.doesNotMatch(html,/>Models</);
 assert.doesNotMatch(html,/dash-lower/,"no lower section when there are no models or peaks");
 assert.match(html,/class="dash-chart"/);
 
@@ -71,7 +71,7 @@ assert.match(html,/Limit peaks/);assert.match(html,/dash-lower is-single/);asser
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>i===0?{...p,totals:{...p.totals,sessions:46,subagentsActive:18,activeHours:62}}:p)})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
-assert.match(html,/dash-stat-label">Sessions</);assert.match(html,/Subagents active/);assert.match(html,/dash-stat-value">62h</);
+assert.match(html,/46 sessions · 18 subagents · 62h active/);
 
 // Priced payload keeps cost as the hero and chart metric; the toggle is not forced to Tokens.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,totals:{...p.totals,apiEquivalentCost:12.5},series:p.series.map(r=>({...r,apiEquivalentCost:1}))}))})}];
@@ -79,7 +79,7 @@ dashboard.state.metric="cost";dashboard.state.metricExplicit=true;
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost");
 html=dashboard.insightsHTML();
-assert.match(html,/dash-hero-currency/);assert.match(html,/Daily · API-equivalent cost/);
+assert.match(html,/dash-hero-currency/);assert.match(html,/Daily · API-equivalent cost estimate/);
 
 // Stats-only fallback with a cost-free window still shows tokens and no fake cost.
 responseQueue=[{ok:false,status:404,json:async()=>({})},{ok:true,json:async()=>({generatedAt:today.toISOString(),providers:[{name:"Claude",tracked31Days:1200,cache:{percent:null},activity:[{date:dateOffset(0),value:1200}],modelUsage:[]}]})}];
@@ -88,6 +88,7 @@ await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/dash-hero-currency/);
 assert.match(html,/dash-hero-number">1\.2<\/strong><span class="dash-hero-unit">K tokens/);
+assert.doesNotMatch(html,/dash-chart-section/,"24h hides the chart");
 
 // Partial cost: the cost hero stays, with a muted note naming the unpriced models (formatted names).
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>({...p,totals:{...p.totals,apiEquivalentCost:i===0?9.25:null,costPartial:i===0,unpricedModels:i===0?["claude-haiku-5.5"]:[]},series:p.series.map((r,j)=>({...r,apiEquivalentCost:i===0&&j===0?1:null}))}))})}];
