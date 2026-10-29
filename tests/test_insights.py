@@ -150,23 +150,23 @@ def test_mixed_priced_and_unpriced_claude_models_sum_priced_and_flag_partial(tmp
 def test_mixed_priced_and_unpriced_codex_models_in_range(tmp_path):
     snapshot, now = _fixture()
     codex = snapshot["providers"][1]
-    codex["_insightsData"]["dailyModels"][now.date().isoformat()]["gpt-6.1-sol"] = _unpriced_row(10)
+    codex["_insightsData"]["dailyModels"][now.date().isoformat()]["gpt-6.1-terra-preview"] = _unpriced_row(10)
     provider = insights.build_insights(snapshot, "7d", now=now, peak_store=_quiet_store(tmp_path))["providers"][1]
     assert provider["totals"]["apiEquivalentCost"] == 0.0005
     assert provider["totals"]["costPartial"] is True
-    assert provider["totals"]["unpricedModels"] == ["gpt-6.1-sol"]
+    assert provider["totals"]["unpricedModels"] == ["gpt-6.1-terra-preview"]
     models = {row["name"]: row["apiEquivalentCost"] for row in provider["models"]}
-    assert models["gpt-6.1-sol"] is None and models["gpt-5.6-sol"] is not None
+    assert models["gpt-6.1-terra-preview"] is None and models["gpt-5.6-sol"] is not None
 
 
 def test_all_unpriced_models_leave_cost_null_and_flag_partial(tmp_path):
     snapshot, now = _fixture()
     codex = snapshot["providers"][1]
-    codex["_insightsData"]["dailyModels"] = {now.date().isoformat(): {"gpt-6.1-sol": _unpriced_row(10)}}
+    codex["_insightsData"]["dailyModels"] = {now.date().isoformat(): {"gpt-6.1-terra-preview": _unpriced_row(10)}}
     provider = insights.build_insights(snapshot, "7d", now=now, peak_store=_quiet_store(tmp_path))["providers"][1]
     assert provider["totals"]["apiEquivalentCost"] is None
     assert provider["totals"]["costPartial"] is True
-    assert provider["totals"]["unpricedModels"] == ["gpt-6.1-sol"]
+    assert provider["totals"]["unpricedModels"] == ["gpt-6.1-terra-preview"]
     today_row = next(row for row in provider["series"] if row["date"] == now.date().isoformat())
     assert today_row["apiEquivalentCost"] is None and today_row["costPartial"] is True
 
