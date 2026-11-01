@@ -902,7 +902,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 from .claude_collection import status as claude_collection_status
                 self._send_json({"ok": True, **claude_collection_status()})
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).error("Claude Code collection status failed (%s)", type(exc).__name__)
                 self._send_json({"ok": False, "error": "Claude Code collection status is unavailable."}, 503)
             return
         if parsed.path == "/api/provider-policy":
@@ -1134,7 +1135,8 @@ class Handler(SimpleHTTPRequestHandler):
                 with _CLAUDE_COLLECTION_LOCK:
                     try:
                         result = operation()
-                    except Exception:
+                    except Exception as exc:
+                        logging.getLogger(__name__).error("Claude Code collection change failed (%s)", type(exc).__name__)
                         self._send_json({"ok": False, "error": "Claude Code collection could not be changed."}, 503)
                         return
             self._send_json(result, 200 if result.get("ok") else 409)

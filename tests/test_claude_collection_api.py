@@ -108,6 +108,16 @@ def test_status_origin_guard(api):
     assert status == 403
 
 
+def test_status_programming_error_is_logged_and_returns_safe_failure(api, monkeypatch, caplog):
+    def broken_status():
+        raise TypeError("broken policy stub")
+    monkeypatch.setattr(claude_collection, "status", broken_status)
+    status, data = request(api)
+    assert status == 503
+    assert data == {"ok": False, "error": "Claude Code collection status is unavailable."}
+    assert "Claude Code collection status failed (TypeError)" in caplog.text
+
+
 def _rejection_handler(headers, chunks):
     handler = server.Handler.__new__(server.Handler)
     handler.headers = Message()
