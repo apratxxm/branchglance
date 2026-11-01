@@ -246,48 +246,58 @@ def _walk(value: Any) -> Iterable[tuple[str, Any]]:
 
 
 CLAUDE_PRICING = {
-    "fable-5": (10, 1, 12.5, 20, 50),
-    "opus-5": (5, .5, 6.25, 10, 25), "opus-4.8": (5, .5, 6.25, 10, 25),
-    "sonnet-5": (2, .2, 2.5, 4, 10), "haiku-4.5": (1, .1, 1.25, 2, 5),
-    # Published 2026-10 rates; cache writes use the standard 1.25x/2x input multipliers.
-    # Haiku 5.5 doubles beyond 100K-token prompts, which per-response rows can't see.
-    "fable-5.1": (10, .25, 12.5, 20, 50), "opus-5.5": (4, .2, 5, 8, 20),
-    "sonnet-5.5": (2, .2, 2.5, 4, 10), "haiku-5.5": (.1, .01, .125, .2, .5),
+    # USD per 1M tokens: (input, cache hit/refresh, 5m cache write, 1h cache write, output).
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-11-02).
+    # Cache hits are 0.1x input except: Fable 5.1/Mythos 5.1 0.025x, Opus 5.5/Sonnet 5.5 0.05x.
+    # 1M context is standard price on 4.6+ except Haiku 5.5 (see HAIKU_5_5_LONG_PROMPT below).
+    "fable-5": (10, 1, 12.5, 20, 50),        # Claude Fable 5 (Mythos 5 shares this row)
+    "fable-5.1": (10, .25, 12.5, 20, 50),    # Claude Fable 5.1 (Mythos 5.1 shares this row)
+    "opus-5": (5, .5, 6.25, 10, 25),         # Claude Opus 5
+    "opus-5.5": (4, .2, 5, 8, 20),           # Claude Opus 5.5
+    "opus-4.8": (5, .5, 6.25, 10, 25),       # Claude Opus 4.8
+    "opus-4.7": (5, .5, 6.25, 10, 25),       # Claude Opus 4.7
+    "opus-4.6": (5, .5, 6.25, 10, 25),       # Claude Opus 4.6
+    "opus-4.5": (5, .5, 6.25, 10, 25),       # Claude Opus 4.5
+    "sonnet-5": (2, .2, 2.5, 4, 10),         # Claude Sonnet 5 ($2/$10 is the standard price since 2026-09-01)
+    "sonnet-5.5": (2, .1, 2.5, 4, 10),       # Claude Sonnet 5.5
+    "sonnet-4.6": (3, .3, 3.75, 6, 15),      # Claude Sonnet 4.6
+    "sonnet-4.5": (3, .3, 3.75, 6, 15),      # Claude Sonnet 4.5
+    "haiku-5.5": (.1, .01, .125, .2, .5),    # Claude Haiku 5.5, prompts up to 100K tokens
+    "haiku-4.5": (1, .1, 1.25, 2, 5),        # Claude Haiku 4.5
 }
+# Claude Haiku 5.5 prompts over 100K tokens (per request, all input tokens incl. cache).
+HAIKU_5_5_LONG_PROMPT = (.5, .05, .625, 1, 2.5)
 CODEX_PRICING = {
-    "gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20),
-    "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2),
-    # Standard API rates, read 2026-10-29: https://developers.openai.com/api/docs/pricing
+    # USD per 1M tokens: (input, cached input, output).
+    # Source: https://developers.openai.com/api/docs/pricing (checked 2026-11-02, official OpenAI page).
+    "gpt-6-astra": (10, 1, 50),
     "gpt-6.1-sol": (2, .1, 10), "gpt-6.1-terra": (1, .05, 5), "gpt-6-luna": (.1, .01, .5),
-    # https://developers.openai.com/api/docs/models/gpt-6-sol (read 2026-10-29)
     "gpt-6-sol": (2, .2, 10),
+    "gpt-5.6-sol": (4, .4, 20), "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2),
+    "gpt-5.5": (5, .5, 30), "gpt-5.4": (2.5, .25, 15), "gpt-5.4-mini": (.75, .075, 4.5),
+    "gpt-5.3-codex": (1.75, .175, 14),
 }
-# Standard-tier long-prompt rule (OpenAI model page): a request whose input exceeds the
-# threshold is priced at the input/cache multiplier and output multiplier for the whole request.
-# Read 2026-10-29: https://developers.openai.com/api/docs/models/gpt-6.1-sol
-# https://developers.openai.com/api/docs/models/gpt-6.1-terra
-# https://developers.openai.com/api/docs/models/gpt-6-luna
-# https://developers.openai.com/api/docs/pricing?r44b=no (GPT-5.6 Sol)
+# Standard-tier long-prompt rule (official OpenAI pricing page, checked 2026-11-02): a request whose
+# input exceeds 272K tokens is priced at the input/cache multiplier and output multiplier for the
+# whole request. Rows with no long-context tier listed on that page are absent here.
 CODEX_LONG_CONTEXT = {name: (272_000, 2.0, 1.5) for name in
-                      ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol")}
+                      ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol",
+                       "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")}
 LONG_CONTEXT_SUFFIX = "|long-context"
-PRICE_BASIS = "Standard-tier list prices; Batch, Flex and Fast billing are not recorded locally"
+PRICE_BASIS = "Standard-tier list prices; Batch, Flex, Fast and data-residency billing are not recorded locally"
 
-# Exact provider model IDs that intentionally share the listed price rows. Keep this
-# explicit: substring matching makes unknown derived names look priced.
+# Explicit canonical ids (after _normalise_model_id strips provider prefixes, "[1m]", and dated
+# snapshot suffixes) that share a listed price row. Keep this explicit: substring matching makes
+# unknown derived names look priced.
 PRICE_MODEL_ALIASES = {
-    "claude-fable-5": "fable-5",
-    "claude-mythos-5": "fable-5",
-    "claude-opus-5": "opus-5",
-    "claude-opus-4-8": "opus-4.8",
-    "claude-sonnet-5": "sonnet-5",
-    "claude-haiku-4-5": "haiku-4.5",
-    "claude-haiku-4-5-20251001": "haiku-4.5",
-    "claude-fable-5-1": "fable-5.1",
-    "claude-mythos-5-1": "fable-5.1",
-    "claude-opus-5-5": "opus-5.5",
-    "claude-sonnet-5-5": "sonnet-5.5",
-    "claude-haiku-5-5": "haiku-5.5",
+    "gpt-5.6": "gpt-5.6-sol",  # OpenAI routes the bare alias to Sol (developers.openai.com/api/docs/models/gpt-5.6-sol, checked 2026-11-02)
+    "claude-fable-5": "fable-5", "claude-mythos-5": "fable-5",
+    "claude-fable-5-1": "fable-5.1", "claude-mythos-5-1": "fable-5.1",
+    "claude-opus-5": "opus-5", "claude-opus-5-5": "opus-5.5", "claude-opus-4-8": "opus-4.8",
+    "claude-opus-4-7": "opus-4.7", "claude-opus-4-6": "opus-4.6", "claude-opus-4-5": "opus-4.5",
+    "claude-sonnet-5": "sonnet-5", "claude-sonnet-5-5": "sonnet-5.5",
+    "claude-sonnet-4-6": "sonnet-4.6", "claude-sonnet-4-5": "sonnet-4.5",
+    "claude-haiku-5-5": "haiku-5.5", "claude-haiku-4-5": "haiku-4.5",
 }
 
 
@@ -2763,18 +2773,82 @@ def _activity_age(updated: Any, now: datetime | None = None) -> str:
     return f"{local_date.strftime('%b')} {local_date.day}"
 
 
-def _price_for(model: str | None, table: dict[str, tuple[float, ...]]) -> tuple[float, ...] | None:
+def _normalise_model_id(model: str | None) -> str:
+    """Canonical lower-case id: drops the long-context marker, "[1m]", provider prefixes and dated snapshots."""
     value = (model or "").strip().lower()
     if value.endswith(LONG_CONTEXT_SUFFIX):
         value = value[:-len(LONG_CONTEXT_SUFFIX)]
-    price_key = PRICE_MODEL_ALIASES.get(value, value)
+    if value.endswith("[1m]"):
+        value = value[:-len("[1m]")]
+    value = value.rsplit("/", 1)[-1]
+    value = re.sub(r"-\d{8}$", "", value)              # Claude snapshot, e.g. -20251001
+    value = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", value)  # OpenAI snapshot, e.g. -2026-03-05
+    return value
+
+
+def _price_for(model: str | None, table: dict[str, tuple[float, ...]]) -> tuple[float, ...] | None:
+    canonical = _normalise_model_id(model)
+    price_key = PRICE_MODEL_ALIASES.get(canonical, canonical)
     return next((rates for key, rates in table.items() if key.lower() == price_key), None)
 
 
+def _model_unpriced(model: str | None, table: dict[str, tuple[float, ...]]) -> bool:
+    """True when the id has no row in the table; the UI shows "no price" rather than a dash."""
+    return _price_for(model, table) is None
+
+
+# Rows whose listed base rate under-states some requests (see HAIKU_5_5_LONG_PROMPT).
+PRICE_ESTIMATE_LOW = {"haiku-5.5"}
+
+
+def _price_estimate(model: str | None, usage: dict[str, int] | None = None) -> str | None:
+    """"low" when the price row is an under-estimate for part of that model's usage, else None."""
+    canonical = _normalise_model_id(model)
+    price_key = PRICE_MODEL_ALIASES.get(canonical, canonical)
+    if price_key not in PRICE_ESTIMATE_LOW:
+        return None
+    if usage is not None and usage.get("sized_total_tokens", 0) >= usage.get("total_tokens", 0):
+        return None
+    return "low"
+
+
+def _claude_request_size_known(usage: dict[str, Any]) -> bool:
+    """Missing or malformed prompt counters cannot establish the pricing tier."""
+    def valid(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    if not all(valid(usage.get(key)) for key in ("input_tokens", "cache_read_input_tokens")):
+        return False
+    creation = usage.get("cache_creation")
+    if isinstance(creation, dict) and creation:
+        return all(valid(creation.get(key)) for key in
+                   ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"))
+    return valid(usage.get("cache_creation_input_tokens"))
+
+
+def _claude_request_pricing_fields(model: str, usage: dict[str, int], *, size_known: bool = True) -> dict[str, int]:
+    """Retain additive tier totals, so day/hour aggregates preserve request pricing."""
+    if _price_estimate(model) != "low" or not size_known:
+        return {}
+    fields = ("input_tokens", "cached_tokens", "cache_5m_tokens", "cache_1h_tokens", "output_tokens")
+    result = {"sized_total_tokens": usage["total_tokens"]}
+    if sum(usage[name] for name in fields[:-1]) > 100_000:
+        result.update({"long_prompt_" + name: usage[name] for name in fields})
+    return result
+
+
 def _claude_context_window(model: str | None) -> int | None:
-    value = "".join(char for char in (model or "").lower() if char.isalnum())
-    if any(key in value for key in ("fable5", "opus5", "opus48", "sonnet5")): return 1_000_000
-    if "haiku45" in value: return 200_000
+    """Context window for Claude models. Codex reports its own window per sample, so no table is needed there.
+
+    Every priced Claude family must resolve here (see tests/test_claude_widget_names.py).
+    """
+    # Exact provider IDs that share a priced row (e.g. mythos-5 -> fable-5) share its window.
+    canonical = _normalise_model_id(model)
+    aliased = PRICE_MODEL_ALIASES.get(canonical, canonical)
+    value = "".join(char for char in (aliased or "").lower() if char.isalnum())
+    # https://platform.claude.com/docs/en/build-with-claude/context-windows (checked 2026-11-02).
+    if any(key in value for key in ("fable5", "opus5", "opus48", "opus47", "opus46", "sonnet5", "sonnet46", "haiku5")): return 1_000_000
+    if any(key in value for key in ("opus45", "sonnet45", "haiku45")): return 200_000
     return None
 
 
@@ -2811,6 +2885,13 @@ def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], tabl
             write_5m = int(usage.get("cache_5m_tokens") or 0); write_1h = int(usage.get("cache_1h_tokens") or 0)
             cost += (input_tokens * rates[0] + cached * rates[1] + write_5m * rates[2] + write_1h * rates[3] + output * rates[4]) / 1_000_000
             savings += (cached * (rates[0] - rates[1]) - write_5m * (rates[2] - rates[0]) - write_1h * (rates[3] - rates[0])) / 1_000_000
+            if _price_estimate(model) == "low":
+                long = [int(usage.get("long_prompt_" + key) or 0) for key in
+                        ("input_tokens", "cached_tokens", "cache_5m_tokens", "cache_1h_tokens", "output_tokens")]
+                diff = [high - base for high, base in zip(HAIKU_5_5_LONG_PROMPT, rates)]
+                cost += sum(value * rate for value, rate in zip(long, diff)) / 1_000_000
+                savings += (long[1] * (diff[0] - diff[1]) - long[2] * (diff[2] - diff[0])
+                            - long[3] * (diff[3] - diff[0])) / 1_000_000
         else:
             cost += ((input_tokens - cached) * rates[0] + cached * rates[1] + output * rates[2]) / 1_000_000
             savings += cached * (rates[0] - rates[1]) / 1_000_000
@@ -2970,6 +3051,7 @@ class ClaudeDesktopProvider:
                 amount = input_tokens + output + read + write_5m + write_1h
                 values = {"input_tokens": input_tokens, "output_tokens": output, "cached_tokens": read, "cache_5m_tokens": write_5m, "cache_1h_tokens": write_1h, "total_tokens": amount}
                 for key, value in values.items(): totals[key] += value; models[model][key] += value
+                for key, value in _claude_request_pricing_fields(model, values, size_known=_claude_request_size_known(usage)).items(): models[model][key] += value
                 daily[local_date] += amount
                 session = sessions[row["session"]]; session["tokens"] += amount; session["turns"] += 1
                 session["dailyTokens"][local_date] += amount

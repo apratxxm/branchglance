@@ -462,11 +462,16 @@ def build_insights(snapshot: dict[str, Any], range_name: str, *,
         sessions, subagents = _sessions_in_window(data, window, window["grain"])
         selected_hours = _active_hours(data, window)
         daily_models = _models_in_window(data, window["grain"], window["keys"])
+        from . import providers
         models_out = []
         for model, usage in sorted(daily_models.items(), key=lambda item: -item[1].get("total_tokens", 0)):
             cost, _unpriced = _cost_for(name, {model: usage})
-            models_out.append({"name": model, "tokens": int(usage.get("total_tokens") or 0),
-                               "apiEquivalentCost": cost})
+            table = providers.CLAUDE_PRICING if name == "Claude" else providers.CODEX_PRICING
+            row = {"name": model, "tokens": int(usage.get("total_tokens") or 0),
+                   "apiEquivalentCost": cost, "unpriced": providers._model_unpriced(model, table)}
+            if providers._price_estimate(model, usage):
+                row["estimate"] = providers._price_estimate(model, usage)
+            models_out.append(row)
         previous = None
         if range_name in {"24h", "7d"}:
             previous_models = _models_in_window(data, window["grain"], window["previousKeys"])
