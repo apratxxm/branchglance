@@ -1083,28 +1083,28 @@ class Handler(SimpleHTTPRequestHandler):
         settings_mutation = parsed.path == "/api/claude-collection"
         if not self._valid_local_host():
             if settings_mutation:
-                self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
-            self._send_json({"ok": False, "error": "local Host required"}, 403)
+            self._reject_post(parsed.path, {"ok": False, "error": "local Host required"}, 403)
             return
         if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection"}:
-            self._send_json({"ok": False, "error": "not found"}, 404)
+            self._reject_post(parsed.path, {"ok": False, "error": "not found"}, 404)
             return
         if not self._same_origin_request():
             if settings_mutation:
-                self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
-            self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+            self._reject_post(parsed.path, {"ok": False, "error": "same-origin request required"}, 403)
             return
         if settings_mutation and (parsed.query or not _settings_token_matches(
                 self.headers.get("X-Branchglance-Settings-Token"))):
-            self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+            self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
             return
         if self.headers.get_content_type() != "application/json":
             if settings_mutation:
-                self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
-            self._send_json({"ok": False, "error": "application/json required"}, 415)
+            self._reject_post(parsed.path, {"ok": False, "error": "application/json required"}, 415)
             return
         try:
             length = int(self.headers.get("Content-Length", "-1"))
@@ -1112,7 +1112,7 @@ class Handler(SimpleHTTPRequestHandler):
             length = -1
         size_limit = QUEUE_MESSAGE_LIMIT + 512 if parsed.path == "/api/queue" else 4096
         if length < 0 or length > size_limit:
-            self._send_json({"ok": False, "error": "invalid request size"}, 413)
+            self._reject_post(parsed.path, {"ok": False, "error": "invalid request size"}, 413)
             return
         try:
             body = json.loads(self.rfile.read(length))
@@ -1275,6 +1275,41 @@ class Handler(SimpleHTTPRequestHandler):
         if encoding:
             self.send_header("Content-Encoding", encoding)
         self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _reject_post(self, path: str, value, status: int) -> None:
+        self.close_connection = True
+        lengths = self.headers.get_all("Content-Length", [])
+        limit = QUEUE_MESSAGE_LIMIT + 512 if path == "/api/queue" else 4096
+        digits = lengths[0].lstrip("0") or "0" if len(lengths) == 1 else ""
+        if (path in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/quota"}
+                and not self.headers.get_all("Transfer-Encoding", []) and len(lengths) == 1
+                and re.fullmatch(r"[0-9]+", lengths[0]) and len(digits) <= len(str(limit))
+                and int(digits) <= limit):
+            remaining = int(digits)
+            deadline = time.monotonic() + 0.25
+            original_timeout = self.connection.gettimeout()
+            try:
+                while remaining:
+                    timeout = deadline - time.monotonic()
+                    if timeout <= 0:
+                        break
+                    self.connection.settimeout(timeout)
+                    chunk = self.rfile.read1(remaining)
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                pass
+            finally:
+                self.connection.settimeout(original_timeout)
+        payload = json.dumps(value).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(payload)
 

@@ -213,3 +213,21 @@ def test_quota_endpoint_is_origin_guarded_and_never_runs_watcher_actions(tmp_pat
         connection.close()
         httpd.shutdown(); httpd.server_close(); worker.join(2)
     assert actions == [] and client.calls == 1
+
+
+def test_rejected_quota_post_with_body_gets_full_response():
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+    worker.start()
+    origin = f"http://127.0.0.1:{httpd.server_port}"
+    body = json.dumps({"padding": "x" * 2000})
+    connection = HTTPConnection("127.0.0.1", httpd.server_port, timeout=2)
+    try:
+        connection.request("POST", "/api/quota", body=body, headers={
+            "Origin": origin, "Content-Type": "application/json", "Content-Length": str(len(body))})
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 404 and payload == {"ok": False, "error": "not found"}
+    finally:
+        connection.close()
+        httpd.shutdown(); httpd.server_close(); worker.join(2)
