@@ -244,6 +244,7 @@ COMPACT_NOTCH_SIZES = {"idle": (328, 100), "rest": (328, 100),
                        "controls": (328, 110), "inspect": (560, 114),
                        "dashboard": (720, 608)}
 COMPACT_INSPECT_MAX_HEIGHT = 420
+COMPACT_DASHBOARD_MIN_HEIGHT = 478
 COMPACT_DRAG_LEASE_SECONDS = 60
 COMPACT_DRAG_WATCHDOG_SECONDS = 0.10
 # Keep the open movement proportional to the chat-list fade delay (midpoint).
@@ -670,6 +671,9 @@ def _compact_notch_dimensions(mode, height=None):
     if mode == "inspect":
         return width, round(min(COMPACT_INSPECT_MAX_HEIGHT,
                                 max(default_height, height if height is not None else default_height)))
+    if mode == "dashboard" and height is not None:
+        # The 24h panel is shorter; every other dashboard view keeps the full 608px.
+        return width, round(min(default_height, max(COMPACT_DASHBOARD_MIN_HEIGHT, height)))
     return width, default_height
 
 

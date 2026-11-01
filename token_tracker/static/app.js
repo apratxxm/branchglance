@@ -217,12 +217,19 @@ function closeDashboard(){
   setNotch(notch.expanded);return true;
 }
 window.tokenTrackerCloseDashboard=closeDashboard;
+// The dashboard sizes the window (720 wide, 608 tall, or the shorter 24h panel). The window may not shrink below that while it is open.
+window.addEventListener?.('dashboard-size',()=>{if(dashboardState.open)setNotch(notch.expanded);});
+window.addEventListener?.('resize',()=>{
+  if(!dashboardState.open)return;
+  const height=window.TokenTrackerDashboard?.windowHeight?.()||608;
+  if(window.innerWidth<720||window.innerHeight<height){const api=window.pywebview?.api?.set_notch;if(api)Promise.resolve(api(true,height,reducedMotion(),'dashboard')).catch(()=>{});}
+});
 window.tokenTrackerOpenDashboard=()=>openDashboard();
 window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
 function notchHeight() {
   if(COMPACT){
-    if(notch.mode==='dashboard')return 608;
+    if(notch.mode==='dashboard')return window.TokenTrackerDashboard?.windowHeight?.()||608;
     if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
     if(notch.mode==='idle')return 100;
     if(notch.mode==='rest')return 100;
@@ -362,7 +369,8 @@ function setNotch(expanded, treeSynced=false) {
   const wasExpanded=notch.expanded;
   const restoreLockedOpen=Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded&&!state.runwaySnapshotPainted);
   if(widgetLock.known&&widgetLock.locked)expanded=widgetLock.expanded;
-  const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)));
+  // A routing alert reveal (auto-expanded only, same timer as a new question) can open an idle widget.
+  const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)||(notch.autoExpanded&&routingAlert)));
   if(!canOpen)expanded=false;
   if(!expanded){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;notch.autoClosePending=false;if(!state.popover){notch.inspecting=false;if(!notch.keyboardInspecting)notch.manual=false;}}
   const closingQuestion=!expanded&&state.popover?.dataset?.action==='runway-question';
@@ -853,7 +861,7 @@ function optionsHTML(options, thread) {
     (thread?'<button class="q-open" data-action="open"'+t+' title="Open this chat in Codex">'+ICON.open+'<span>'+(opts.length?"Open":"Answer in Codex")+'</span>'+ICON.check+'</button>':'')+'</div>';
 }
 const QUESTION_STALE_MS=24*60*60*1000;
-const isAsking = chat => (!RUNWAY||(!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS)))&&(Boolean(chat.pendingQuestion)||chat.status==="needs-input");
+const isAsking = chat => (!RUNWAY||(!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS)))&&(Boolean(chat.pendingQuestion)||normalizeStatus(chat.status)==="needs-input");
 // A failure is only actionable while it is recent (30 min).
 const recentFail = chat => chat.status==="failed"&&Date.now()-stamp(chat.updatedAt)<FAIL_WINDOW_MS;
 const needsAttention = chat => isAsking(chat)||recentFail(chat);
@@ -997,6 +1005,8 @@ function runwayModelRecentlyChanged(chat) {
 }
 function agentLabel(chat) {
   if(isAutoReview(chat))return "Auto-review";
+  // Claude subagents carry the Agent tool's description as their title; the type is the fallback.
+  if(chat.recordSource==="hook"&&chat.parentId&&chat.title){const described=String(chat.title).trim();if(described)return described.charAt(0).toUpperCase()+described.slice(1);}
   const name=String(chat.agentName||"").replace(/^\/?root\//,"").split(/[\\/]/).filter(Boolean).pop();
   // Same display as the Codex app: "terra_foundations" -> "Terra foundations"; nicknames stay as is.
   const label=String(name||chat.title||"agent").replace(/[_-]+/g," ").trim();
@@ -1550,7 +1560,7 @@ function resetView(provider, key) {
   const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
-  return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,
+  return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,resetTarget:hasReset&&parts.target!=null?Number(parts.target):null,
     tone:shownUsed==null||lastKnown?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
     // Keep the last-known age beside each independently rendered quota value.
     stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
@@ -1622,7 +1632,7 @@ function renderResets(providers) {
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
   }));
-  if(RUNWAY)renderGreeterStatus(providers);
+  if(RUNWAY){renderGreeterStatus(providers);evaluateRoutingAlerts(providers);}
 }
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;
@@ -1639,6 +1649,110 @@ function renderGreeterStatus(providers) {
   node.textContent=label;node.className="greeter-status"+(w.needsLogin||error?" error":"");
   node.title=(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
 }
+/* ---------- routing alerts ---------- */
+// Each rule fires once per low-quota crossing and re-arms after recovery or a reset.
+// Wording uses the bars' framing (percent USED) and names the window and its reset, so the alert and the bars agree.
+// A rule never suggests a lane that is out of quota: the lane it points at must have enough left.
+const ROUTING_REARM_POINTS=5;
+// A 5-hour window that resets within this many seconds is about to refill, so it does not count as low.
+const ROUTING_SOON_SECONDS=15*60;
+const ROUTING_WINDOW_LABEL={fiveHour:"5-hour",weekly:"weekly"};
+function routingDescribe(name,reading) {
+  const item=reading?.binding;if(!item)return name;
+  return name+" "+ROUTING_WINDOW_LABEL[item.key]+" "+Math.round(item.used)+"% used"+(item.countdown?" · resets "+item.countdown:"");
+}
+function routingBothMessage(readings) {
+  const order=["Codex","Claude"].map(name=>({name,item:readings[name]?.binding})).filter(row=>row.item?.countdown);
+  order.sort((a,b)=>(a.item.seconds??Infinity)-(b.item.seconds??Infinity));
+  if(order.length<2)return "Both low — hold big jobs until a window resets";
+  return "Both low — hold big jobs · "+order[0].name+" frees up in "+order[0].item.countdown+", "+order[1].name+" in "+order[1].item.countdown;
+}
+const ROUTING_RULES=[
+  // Claude low while Codex has plenty: Codex lanes take the work.
+  {id:"Claude",provider:"Claude",threshold:40,minimums:{Codex:50},message:(left,reading)=>routingDescribe("Claude",reading)+" — Terra builders, Sol reviews"},
+  // Codex low while Claude still has room: Claude workers take the work, Sol only reviews.
+  {id:"Codex",provider:"Codex",threshold:40,minimums:{Claude:40},message:(left,reading)=>routingDescribe("Codex",reading)+" — Haiku workers, Sol reviews only"},
+  // Both low: neither lane is a safe suggestion, so hold large jobs and say when each frees up.
+  {id:"Both",provider:"Codex",threshold:40,maximums:{Claude:40},also:["Claude"],message:(left,reading,readings)=>routingBothMessage(readings)}
+];
+const routingStates=new Map();
+let routingAlert=null;
+// "57m 00s" reads as "57m"; the alert is a sentence, not a stopwatch.
+function routingCountdown(text) {
+  const value=String(text||"");
+  if(/^\d+s$/.test(value))return "<1m";
+  return value.replace(/^(\d+m) \d+s$/,"$1");
+}
+function routingReading(provider) {
+  const windows={};
+  for(const key of ["fiveHour","weekly"]){
+    const view=resetView(provider,key);
+    // Stale or last-known values never trigger an alert.
+    if(view.measured&&view.hasValue&&!view.lastKnown&&!view.expired){
+      const seconds=view.resetTarget!=null?(view.resetTarget-Date.now())/1000:null;
+      windows[key]={key,used:view.usedPercent,left:100-view.usedPercent,resetTarget:view.resetTarget,countdown:routingCountdown(view.countdown),seconds,soon:key==="fiveHour"&&seconds!=null&&seconds<=ROUTING_SOON_SECONDS};
+    }
+  }
+  const all=Object.values(windows);
+  if(!all.length)return null;
+  // The window that matters: the lowest one that is not about to reset. If every window is refilling, nothing is low.
+  const counted=all.filter(item=>!item.soon);
+  const binding=counted.length?counted.reduce((lowest,item)=>item.left<lowest.left?item:lowest):null;
+  return {left:binding?binding.left:100,binding,windows};
+}
+function evaluateRoutingAlerts(providers, rules=ROUTING_RULES) {
+  if(!RUNWAY)return;
+  const readings=Object.fromEntries(providers.map(provider=>[provider.name,routingReading(provider)]));
+  let candidate=null;
+  for(const rule of rules){
+    const reading=readings[rule.provider];
+    if(!reading)continue;
+    const minimums=Object.entries(rule.minimums||{}),maximums=Object.entries(rule.maximums||{});
+    // Missing or stale supporting measurements cannot establish a match.
+    if(minimums.concat(maximums).some(([name])=>!readings[name]))continue;
+    const targets=Object.fromEntries(Object.entries(reading.windows).filter(([,item])=>item.resetTarget!=null).map(([key,item])=>[key,item.resetTarget]));
+    const below=reading.left<rule.threshold,previous=routingStates.get(rule.id);
+    const matches=below&&minimums.every(([name,minimum])=>readings[name].left>=minimum)&&maximums.every(([name,maximum])=>readings[name].left<maximum);
+    if(!previous){
+      // First reading is a baseline: an already matching rule does not reveal the widget.
+      routingStates.set(rule.id,{fired:matches,targets});
+      continue;
+    }
+    const resetChanged=Object.entries(targets).some(([key,target])=>previous.targets[key]!=null&&previous.targets[key]!==target);
+    if(previous.fired&&(reading.left>rule.threshold+ROUTING_REARM_POINTS||resetChanged))previous.fired=false;
+    previous.targets={...previous.targets,...targets};
+    if(!previous.fired&&matches){
+      previous.fired=true;
+      const shown=[rule.provider,...(rule.also||[])];
+      const suggestion={provider:rule.provider,providers:shown,message:rule.message(Math.max(0,Math.floor(reading.left)),reading,readings)};
+      const specificity=minimums.length+maximums.length;
+      if(!candidate||specificity>candidate.specificity)candidate={...suggestion,specificity};
+    }
+  }
+  if(candidate){
+    routingAlert={provider:candidate.provider,providers:candidate.providers,message:candidate.message};
+    expandForNewWork();
+  }
+  renderRoutingAlert();
+}
+function routingAlertInner(alert) {
+  const dots=alert.providers.map(name=>'<i class="routing-dot '+(/claude/i.test(name)?"claude":"codex")+'" aria-hidden="true"></i>').join("");
+  return '<span class="routing-alert-dots">'+dots+'</span><span class="routing-alert-text" title="'+esc(alert.message)+'">'+esc(alert.message)+'</span><button type="button" class="routing-alert-dismiss" data-action="routing-dismiss" aria-label="Dismiss routing alert" title="Dismiss"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button>';
+}
+// The alert lives in the toolbar band (#routing-alert, after the clock). While it shows, the toolbar's icon row is hidden,
+// so it covers no chat row and nothing below it moves; dismissing restores the icons.
+function renderRoutingAlert() {
+  const node=$("#routing-alert"),toolbar=$(".compact-toolbar");
+  if(!node)return;
+  if(toolbar?.classList?.toggle)toolbar.classList.toggle("has-routing-alert",Boolean(routingAlert));
+  if(!routingAlert){node.hidden=true;return;}
+  node.hidden=false;
+  const html=routingAlertInner(routingAlert);
+  if(node.innerHTML!==html)node.innerHTML=html;
+}
+function dismissRoutingAlert() {
+  routingAlert=null;renderRoutingAlert();
+}
 
 /* ---------- chat rows (layer 1) ---------- */
 function ringHTML(fraction, cls="ring") {
@@ -1648,7 +1762,8 @@ function ringHTML(fraction, cls="ring") {
 function glyphHTML(st) { return '<i class="g g-'+st.glyph+' t-'+st.tone+(st.key==="running"?" breathe":"")+'"></i>'; }
 function runwayContextPair(chat) {
   const tokens=safeNumber(chat.contextTokens),windowSize=safeNumber(chat.contextWindow),observed=stamp(chat.contextObservedAt),compacted=stamp(chat.compactionStartedAt);
-  const valid=Boolean(runwayCurrentEvidenceFresh()&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&chat.model&&chat.contextModel===chat.model&&observed&&observed<=Date.now()&&windowSize>0&&tokens!=null&&(!compacted||observed>=compacted));
+  // A known window must be positive; an unknown window keeps the recorded tokens (shown as "tokens / —").
+  const valid=Boolean(runwayCurrentEvidenceFresh()&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&chat.model&&chat.contextModel===chat.model&&observed&&observed<=Date.now()&&(windowSize==null||windowSize>0)&&tokens!=null&&(!compacted||observed>=compacted));
   return {tokens:valid?tokens:null,windowSize:valid?windowSize:null,observed:valid?observed:null};
 }
 function runwayContextDelta(chat,pair=runwayContextPair(chat)) {
@@ -1658,12 +1773,12 @@ function runwayContextDelta(chat,pair=runwayContextPair(chat)) {
 function contextHTML(chat) {
   if(RUNWAY) {
     const pair=runwayContextPair(chat),tokens=pair.tokens,windowSize=pair.windowSize;
-    if(tokens==null||windowSize==null)return '';
-    const pct=windowSize>0&&tokens!=null?tokens*100/windowSize:null;
+    if(tokens==null)return '';
+    const pct=windowSize>0?tokens*100/windowSize:null;
     const tone=pct==null?'':pct>75?'err':pct>50?'attn':'';
     const delta=runwayContextDelta(chat,pair),deltaText=delta==null?'':'; change since previous sample '+(delta>0?'+':'')+fmt(delta)+' tokens';
-    const title=String(tokens)+' / '+String(windowSize)+deltaText;
-    return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+fmt(windowSize)+'</span></span></span>';
+    const title=String(tokens)+' / '+(windowSize==null?'window size unknown':String(windowSize))+deltaText;
+    return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+(windowSize==null?'—':fmt(windowSize))+'</span></span></span>';
   }
   const pct=safeNumber(chat.contextPercent);
   const title='';
@@ -1919,12 +2034,17 @@ function runwayTelemetryHTML(chat,agent=false) {
     const inherited=!chat.workspace&&Boolean(chat.root?.workspace);
     const workspaceTitle=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+workspacePath;
     const workspaceLabel=(inherited?'Inherited workspace: ':'Workspace: ')+workspacePath;
-    const cleanPath=workspacePath&&workspaceLeaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(workspaceLeaf)+'</span></span>':'';
+    // Drive first, one line: the leaf keeps the drive as its start and truncates at the end.
+    const drive=workspacePath?workspacePath.slice(0,2):'';
+    const cleanPath=workspacePath&&workspaceLeaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(drive)+' '+esc(workspaceLeaf)+'</span></span>':'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
     const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
     // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
     const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
-     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+'</span></div>';
+    // Never a silent blank: an active run without a usable sample shows a quiet dash.
+    const awaitingSample=!contextValue&&!cacheValue&&ownCurrent&&currentEvidence&&!chat.telemetryUnavailable;
+    const tokenPlaceholder=awaitingSample?'<span class="runway-refined-context t-mute" title="No usable context sample yet for this run">—</span>':'';
+     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+tokenPlaceholder+'</span></div>';
   }
   return agent?messageLane+topline+'<span class="runway-agent-secondary">'+modelTiming+'</span>'+contextSlot+objectiveSlot:messageLane+topline+modelTiming+contextSlot;
 }
@@ -2068,7 +2188,8 @@ function chatBlockHTML(chat, query) {
     (open?'<div class="l2 open"><div class="l2-in">'+panelHTML(chat)+'</div></div>':'')+tray+'</div>';
 }
 function emptyHTML(forest, providers) {
-  if(COMPACT)return parseQuery(state.query).active?'<div class="empty">No matches</div>':'';
+  const searching=parseQuery(state.query).active;
+  if(COMPACT){if(searching)return '<div class="empty">No matches</div>';if(forest.rows.length)return '';}
   if(!forest.rows.length) {
     const down=providers.filter(p=>p.connected===false);
     // Visible provider(s) with no chats: one quiet line, no icon or button. A disconnected provider keeps its "No data" text.
@@ -2259,7 +2380,8 @@ function renderChats(providers) {
   const seg=$("#window-seg");if(seg?.style)seg.style.setProperty("--i",String(WINDOWS.indexOf(state.windowDays)));
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
-  const searchCanShowEmpty=COMPACT&&state.searchOpen&&query.active;
+  // A manually opened tree with nothing active says so instead of showing a blank panel.
+  const searchCanShowEmpty=COMPACT&&((state.searchOpen&&query.active)||notch.manual||notch.inspecting);
   if(!realDom(list)) {
     const html=roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers);
     if(list.innerHTML!==html)list.innerHTML=html;
@@ -2966,6 +3088,7 @@ function handleClick(event) {
   if(!button)return;
   const {action,key}=button.dataset;
   if(RUNWAY&&action==='widget-lock'){void toggleWidgetLock();return;}
+  if(RUNWAY&&action==='routing-dismiss'){dismissRoutingAlert();return;}
   if(RUNWAY&&action==='jump-waiting'){jumpToWaiting();return;}
   if(RUNWAY&&action==='source'){setSource(button.dataset.source);return;}
   if(RUNWAY&&action==='dashboard'){openDashboard();return;}
@@ -3030,7 +3153,7 @@ window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCou
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.evaluateRoutingAlerts=evaluateRoutingAlerts;window.__tokenTrackerTest.routingStates=routingStates;window.__tokenTrackerTest.getRoutingAlert=()=>routingAlert;window.__tokenTrackerTest.getRoutingNotch=()=>notch;window.__tokenTrackerTest.dismissRoutingAlert=dismissRoutingAlert;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   loadAvatars();
   document.addEventListener("click",handleClick);

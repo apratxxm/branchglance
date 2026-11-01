@@ -465,6 +465,9 @@ assert.doesNotMatch(T.rowHTML(globallyFreshIdleParent),/Subagents running/);
 testNow=fixedNow;
 assert.equal(T.isAsking({...root,status:"needs-input",pendingQuestion:"Stale?",pendingQuestionAt:ago(24*60+1)}),false);
 assert.equal(T.isAsking({...root,status:"needs-input",pendingQuestion:"Recent?",pendingQuestionAt:ago(23*60)}),true);
+// Python rows carry Claude permission waits as "needs input" with no question text; they must reveal as Needs you.
+assert.equal(T.isAsking({...root,status:"needs input",pendingQuestion:null}),true);
+assert.equal(T.isAsking({...root,status:"running",pendingQuestion:null}),false);
 assert.doesNotMatch(T.rowHTML({...T.state.forest.roots[0],lastRequest:{input:100,cached:0}}),/Cache|cached|runway-cache/);
 assert.doesNotMatch(T.rowHTML({...T.state.forest.roots[0],lastRequest:null}),/Cache|cached|runway-cache/);
 assert.match(T.rowHTML({...T.state.forest.roots[0],contextPercent:92,contextTokens:92,contextWindow:100}),/runway-context-used t-err/);

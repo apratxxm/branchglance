@@ -102,7 +102,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   for(const [index,markup] of rendered.entries()){
     const activity=markup.match(/data-runway-slot="activity-column"[^>]*>([\s\S]*?)<\/span><span data-runway-slot="path-column"/)?.[1]||'';
     const tokens=markup.match(/data-runway-slot="tokens"[^>]*>([\s\S]*?)<\/span><\/div>/)?.[1]||'';
-    const leaves=['orchestrator','keyboard','tests'];
+    const leaves=['A: orchestrator','A: keyboard','A: tests'];
     assert.doesNotMatch(activity,/Cache \d+%/,`row ${index} keeps cache out of activity`);
     assert.equal((activity.match(/class="[^"]*\brunway-activity\b[^"]*"/g)||[]).length,1,`row ${index} activity markup: ${activity}`);
     assert.match(tokens,/ctx-tokens/);

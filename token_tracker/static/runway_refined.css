@@ -281,7 +281,7 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .layou
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-counts,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-counts{display:none;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{position:relative;z-index:1;order:1;flex:none;width:100%;height:30px;min-height:30px;display:flex;align-items:center;justify-content:flex-start;gap:1px;padding:0 4px;overflow:visible;background:#05070b;border-radius:5px 5px 0 0;box-shadow:inset 0 1px #292d3a,inset 1px 0 #292d3a,inset -1px 0 #292d3a,0 4px 0 #05070b;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{position:relative;z-index:1;order:1;flex:none;width:100%;height:30px;min-height:30px;display:flex;align-items:center;justify-content:flex-start;gap:1px;padding:0 4px;overflow:visible;background:#05070b;border-radius:5px 5px 0 0;box-shadow:0 4px 0 #05070b;}
 body.runway-refined.runway-compact:not(.phone) .compact-toolbar button{transition:transform var(--motion-fast) var(--ease-standard),opacity var(--motion-fast) var(--ease-standard),background-color var(--motion-source) var(--ease-standard),color var(--motion-source) var(--ease-standard);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{display:flex;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;height:30px;align-items:center;line-height:30px;margin:0;text-align:center;}
@@ -327,11 +327,11 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar{gap:1px;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;border-radius:5px;box-shadow:inset 0 0 0 1px var(--source-edge),inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;box-shadow:inset 0 1px var(--source-edge-strong),inset 1px 0 var(--source-edge),inset -1px 0 var(--source-edge-end),0 4px 0 #05070b,inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;margin-left:auto;pointer-events:none;color:var(--green);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;margin-left:auto;pointer-events:none;color:var(--muted);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .window-controls,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .window-controls{order:2;}
 body.runway-refined.runway-compact:not(.phone) .compact-clock,
-body.runway-refined.runway-compact:not(.phone) #compact-clock{color:var(--green);}
+body.runway-refined.runway-compact:not(.phone) #compact-clock{color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) #search-toggle{display:none!important;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{gap:1px;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) #widget-lock[aria-pressed="true"],
@@ -528,7 +528,23 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 /* Titles and actions determine row height rather than losing text. */
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.r-title,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{height:auto;overflow:visible;white-space:normal;text-overflow:clip;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{overflow:visible;white-space:normal;overflow-wrap:anywhere;text-wrap:balance;text-overflow:clip;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere;text-wrap:balance;text-overflow:ellipsis;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row:not(:has(.runway-activity)) .runway-refined-status{grid-row:1/3;align-self:center;}
 /* Single quiet line when the visible provider(s) have no chats: centred in the tree area, no icon or button. */
 .chat-list .empty.tree-empty{display:flex;align-items:center;justify-content:center;min-height:160px;padding:0 var(--gutter);margin:0;font-size:13px;font-weight:400;color:#8d93a8;}
+
+/* Routing alert: lives in the toolbar band after the clock and replaces the icon row while active,
+   so it covers no chat row and nothing below it moves. A provider dot (or two) plus one line of text; no box. */
+.routing-alert{display:none;flex:1 1 auto;min-width:0;align-items:center;gap:8px;height:30px;padding:0 2px 0 4px;color:var(--ink);font:500 12px/1 var(--sans);}
+.routing-alert[hidden]{display:none!important;}
+.routing-alert:not([hidden]){display:flex;}
+.compact-toolbar.has-routing-alert>*:not(#toolbar-clock):not(#routing-alert){display:none!important;}
+.routing-alert-dots{display:flex;flex:none;align-items:center;gap:4px;}
+.routing-dot{width:6px;height:6px;border-radius:50%;}
+.routing-dot.codex{background:#6c72ff;box-shadow:0 0 6px #7040ffcc;}
+.routing-dot.claude{background:var(--claude-accent,#e8813f);box-shadow:0 0 6px #e8813fbb;}
+.routing-alert-text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.routing-alert-dismiss{flex:none;display:inline-grid;place-items:center;width:20px;height:22px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;}
+.routing-alert-dismiss:hover{color:var(--ink);background:#ffffff0b;}
+.routing-alert-dismiss:focus-visible{outline:2px solid var(--focus);outline-offset:1px;}
+.routing-alert-dismiss .ic{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.2;stroke-linecap:round;}
