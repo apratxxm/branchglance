@@ -3,10 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)
+![Status: alpha 0.1.0](https://img.shields.io/badge/status-alpha%200.1.0-orange)
 
 A small always-on-top Windows widget that shows what your Codex and Claude Code agents are doing: every chat and subagent in one tree, which ones are waiting on you, and how much of your 5-hour and weekly limits is left.
 
 It is built for people who run several agent chats at once and keep losing track of which one finished, which one is stuck on a question, and how close they are to a limit.
+
+> **Alpha.** Branchglance is at 0.1.0 and changes quickly. Expect rough edges, and please report them. A macOS notch app is in progress in [pull request #2](https://github.com/apratxxm/branchglance/pull/2); the shipped app is Windows only.
 
 ![Expanded widget: a Claude chat with nested Codex jobs and a waiting question](docs/release/screenshots/tree-expanded-aligned.png)
 
@@ -32,13 +35,13 @@ See the [walkthrough](docs/GUIDE.md) for every control and a typical day of use.
 
 ## Install
 
-1. Download `BranchglanceSetup.exe` from the [latest release](../../releases/latest).
+1. Download `BranchglanceSetup.exe` from the [releases page](../../releases). Alpha builds are published as pre-releases; until the first one is out, build from source (below).
 2. Run it from File Explorer as your normal user (not as administrator).
 3. Open Branchglance from the Start menu.
 
 Setup installs per user to `%LOCALAPPDATA%\Programs\Branchglance`, adds Start menu and Desktop shortcuts, and can start the widget at sign-in if you choose. It checks its prerequisites and stops with an explanation if one is missing.
 
-To check a download, compare its SHA-256 hash with the `.sha256` file published next to it, and confirm the signature:
+To check a download, compare its SHA-256 hash with the `.sha256` file published next to it. Alpha builds are not code-signed yet, so Windows SmartScreen may warn on first run; once signing is in place (see the [code signing policy](docs/CODE_SIGNING_POLICY.md)), also confirm the signature:
 
 ```powershell
 Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256
