@@ -3,6 +3,29 @@ import Cocoa
 import ServiceManagement
 import SwiftUI
 import WebKit
+import CryptoKit
+import Security
+
+private final class ProofSession: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate {
+    var data = Data()
+    var response: HTTPURLResponse?
+    var completion: ((Data?, HTTPURLResponse?) -> Void)?
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        self.response = response as? HTTPURLResponse
+        completionHandler(response.expectedContentLength > 1024 ? .cancel : .allow)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard data.count <= 1024 - self.data.count else { dataTask.cancel(); return }
+        self.data.append(data)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        completion?(error == nil && data.count <= 1024 ? data : nil, response)
+        session.finishTasksAndInvalidate()
+    }
+}
 
 final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithReply, WKNavigationDelegate, WKUIDelegate {
     let panel = NotchPanel()
@@ -22,6 +45,11 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     var isOpen = false
     let settingsToken = UUID().uuidString + UUID().uuidString
     var settingsWindow: NSWindow?
+    var settingsView: WKWebView?
+    private var hostKey: Data?
+    private var trusted = false
+    private var generation = 0
+    private var retryWork: DispatchWorkItem?
 
     let media = NowPlaying()
     let monitor = SystemMonitor()
@@ -84,25 +112,59 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         }
     }
 
-    func applicationWillTerminate(_ note: Notification) { server?.terminate() }
+    func applicationWillTerminate(_ note: Notification) { if server?.isRunning == true { server?.terminate() } }
 
     // MARK: Python backend
 
-    func serverIsUp() -> Bool {
-        var request = URLRequest(url: pageURL, timeoutInterval: 0.5)
-        request.httpMethod = "HEAD"
-        let done = DispatchSemaphore(value: 0)
-        var ok = false
-        URLSession.shared.dataTask(with: request) { _, response, _ in
-            ok = (response as? HTTPURLResponse)?.statusCode == 200
-            done.signal()
-        }.resume()
-        _ = done.wait(timeout: .now() + 1)
-        return ok
+    private func randomBytes() -> Data? {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { return nil }
+        return Data(bytes)
+    }
+    private func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+    private func mac(_ label: String, _ challenge: Data, _ key: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: Data(label.utf8) + challenge, using: SymmetricKey(data: key)))
+    }
+    private func verifyServer(_ completion: @escaping (Bool) -> Void) {
+        guard let child = server, child.isRunning, let key = hostKey, let challenge = randomBytes() else { completion(false); return }
+        let current = generation
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(serverPort)/api/macos-host-proof")!,
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 1)
+        request.setValue(hex(challenge), forHTTPHeaderField: "X-Branchglance-Challenge")
+        request.setValue(hex(mac("branchglance-macos-proof-v1/request:", challenge, key)), forHTTPHeaderField: "X-Branchglance-Auth")
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil; config.httpCookieStorage = nil; config.httpShouldSetCookies = false
+        config.connectionProxyDictionary = [:]; config.timeoutIntervalForRequest = 1; config.timeoutIntervalForResource = 2
+        let delegate = ProofSession()
+        delegate.completion = { [weak self, weak child] data, response in
+            let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+            let proof = json?["proof"] as? String
+            let bytes: Data? = proof.flatMap { value in
+                guard value.count == 64, value.allSatisfy({ "0123456789abcdef".contains($0) }) else { return nil }
+                var result = Data(); var index = value.startIndex
+                while index < value.endIndex {
+                    let end = value.index(index, offsetBy: 2)
+                    guard let byte = UInt8(value[index..<end], radix: 16) else { return nil }
+                    result.append(byte); index = end
+                }
+                return result
+            }
+            let version = json?["version"] as? NSNumber
+            let valid = response?.statusCode == 200 && json?.count == 2 && version?.intValue == 1
+                && version.map { CFGetTypeID($0) != CFBooleanGetTypeID() } == true
+                && bytes.map { HMAC<SHA256>.isValidAuthenticationCode($0, authenticating: Data("branchglance-macos-proof-v1/response:".utf8) + challenge, using: SymmetricKey(data: key)) } == true
+            DispatchQueue.main.async {
+                guard let self, let child, self.generation == current, self.server === child, child.isRunning else { completion(false); return }
+                completion(valid)
+            }
+        }
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        session.dataTask(with: request).resume()
     }
 
     func startServerIfNeeded() {
-        if serverIsUp() { return }
+        guard let key = randomBytes() else { return }
+        hostKey = key
         // Repo root: BRANCHGLANCE_ROOT, else the checkout build.sh recorded in Info.plist.
         guard let rootPath = ProcessInfo.processInfo.environment["BRANCHGLANCE_ROOT"]
                 ?? Bundle.main.object(forInfoDictionaryKey: "BranchglanceRoot") as? String else {
@@ -121,10 +183,12 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         // so the server finds the codex and claude CLIs the way a terminal does.
         if let path = loginShellPath() { env["PATH"] = path }
         env["BRANCHGLANCE_SETTINGS_TOKEN"] = settingsToken
+        env["BRANCHGLANCE_MACOS_HOST_SECRET"] = hex(key)
         env["BRANCHGLANCE_POLICY_FILE"] = env["BRANCHGLANCE_POLICY_FILE"] ?? NSHomeDirectory()
             + "/Library/Application Support/Branchglance/policy.json"
         process.environment = env
-        do { try process.run(); server = process } catch { NSLog("Branchglance: server start failed: \(error)") }
+        process.terminationHandler = { [weak self] _ in DispatchQueue.main.async { self?.revokeServer() } }
+        do { try process.run(); server = process } catch { hostKey = nil; NSLog("Branchglance: server start failed: \(error)") }
     }
 
     func loginShellPath() -> String? {
@@ -149,13 +213,39 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     }
 
     func loadWhenReady(attempt: Int) {
-        DispatchQueue.global().async {
-            let up = self.serverIsUp()
-            DispatchQueue.main.async {
-                if up || attempt >= 40 { self.webView.load(URLRequest(url: pageURL)) }
-                else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.loadWhenReady(attempt: attempt + 1) } }
+        guard server?.isRunning == true else { return }
+        guard attempt < 40 else { if server?.isRunning == true { server?.terminate() }; revokeServer(); return }
+        let current = generation
+        verifyServer { [weak self] ok in
+            guard let self, self.generation == current, self.server?.isRunning == true else { return }
+            if ok { self.trusted = true; self.webView.load(URLRequest(url: pageURL)) }
+            else {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, self.generation == current else { return }
+                    self.loadWhenReady(attempt: attempt + 1)
+                }
+                self.retryWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
             }
         }
+    }
+
+    private func revokeServer() {
+        generation += 1; trusted = false; hostKey = nil
+        retryWork?.cancel(); retryWork = nil
+        if let old = webView {
+            old.stopLoading(); old.navigationDelegate = nil
+            old.configuration.userContentController.removeScriptMessageHandler(forName: "bg", contentWorld: .page)
+            old.configuration.userContentController.removeAllUserScripts()
+            let placeholder = WKWebView(frame: .zero)
+            placeholder.isHidden = true
+            webView = placeholder
+            if container?.content === old { container.content = placeholder }
+            old.removeFromSuperview()
+        }
+        settingsView?.stopLoading(); settingsView?.navigationDelegate = nil
+        settingsWindow?.contentView = nil
+        settingsWindow?.close(); settingsWindow = nil; settingsView = nil
     }
 
     // MARK: Hover
@@ -393,11 +483,23 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
                                replyHandler: @escaping (Any?, String?) -> Void) {
-        guard let body = message.body as? [String: Any], let name = body["name"] as? String else {
+        let origin = message.frameInfo.securityOrigin
+        guard trusted, server?.isRunning == true, message.webView === webView, message.frameInfo.isMainFrame,
+              origin.protocol == "http", origin.host == "127.0.0.1", origin.port == serverPort,
+              let body = message.body as? [String: Any], let name = body["name"] as? String else {
             return replyHandler(nil, nil)
         }
         let args = body["args"] as? [Any] ?? []
         replyHandler(handle(name, args), nil)
+    }
+
+    private func allowedURL(_ url: URL?) -> Bool {
+        guard let url, let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return parts.scheme == "http" && parts.host == "127.0.0.1" && parts.port == serverPort && parts.user == nil && parts.password == nil
+    }
+    func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        decisionHandler(trusted && server?.isRunning == true && allowedURL(response.response.url) ? .allow : .cancel)
     }
 
     func lockState() -> [String: Any] {
@@ -569,11 +671,13 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     // MARK: Web view policy
 
-    /// Only the local tracker page loads in the notch; any other link opens in the default browser.
+    /// Only the verified local server's pages load (the main page, or a frame such as the Settings
+    /// embed); any other link opens in the default browser.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url else { return decisionHandler(.cancel) }
-        if isLocalTracker(url) || url.absoluteString == "about:blank" { return decisionHandler(.allow) }
+        if allowedURL(url) { return decisionHandler(trusted && server?.isRunning == true ? .allow : .cancel) }
+        if url.absoluteString == "about:blank", action.targetFrame?.isMainFrame == false { return decisionHandler(.allow) }
         if action.navigationType == .linkActivated || action.targetFrame == nil,
            ["http", "https", "codex", "mailto"].contains(url.scheme?.lowercased() ?? "") {
             NSWorkspace.shared.open(url)
@@ -671,6 +775,14 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
 
     /// Reset action settings, including the Claude Code collection switch.
     @objc func openSettings() {
+        guard trusted, server?.isRunning == true else { return }
+        verifyServer { [weak self] ok in
+            guard let self else { return }
+            guard ok, self.trusted, self.server?.isRunning == true else { self.revokeServer(); return }
+            self.showSettings()
+        }
+    }
+    private func showSettings() {
         if settingsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 540),
                                   styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -680,6 +792,7 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
             let view = WKWebView(frame: .zero)
             view.navigationDelegate = self
             view.uiDelegate = self
+            settingsView = view
             window.contentView = view
             view.load(URLRequest(url: URL(string: "http://127.0.0.1:\(serverPort)/reset_actions.html#t=\(settingsToken)")!))
             window.center()
@@ -714,11 +827,26 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        webView.reload()
+        if webView === self.webView { reload() }
+        else if webView === settingsView { settingsWindow?.close(); settingsWindow = nil; settingsView = nil; openSettings() }
     }
 
-    @objc func reload() { webView.load(URLRequest(url: pageURL)) }
-    @objc func openInBrowser() { NSWorkspace.shared.open(pageURL) }
+    @objc func reload() {
+        guard trusted, server?.isRunning == true else { return }
+        verifyServer { [weak self] ok in
+            guard let self else { return }
+            guard ok, self.trusted, self.server?.isRunning == true else { self.revokeServer(); return }
+            self.webView.load(URLRequest(url: pageURL))
+        }
+    }
+    @objc func openInBrowser() {
+        guard trusted, server?.isRunning == true else { return }
+        verifyServer { [weak self] ok in
+            guard let self else { return }
+            guard ok, self.trusted, self.server?.isRunning == true else { self.revokeServer(); return }
+            NSWorkspace.shared.open(pageURL)
+        }
+    }
 }
 
 
@@ -762,4 +890,3 @@ struct TabHeader: View {
         .foregroundStyle(.white)
     }
 }
-
