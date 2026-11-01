@@ -10,7 +10,7 @@ let responseQueue=[];
 const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))};
 const document={querySelector(){return null;},querySelectorAll(){return [];},addEventListener(){}};
 const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
-const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://127.0.0.1:8765"},requestAnimationFrame:f=>f(),setTimeout:f=>f(),fetch:async()=>responseQueue.shift()||{ok:false,status:404,json:async()=>({})}};
+const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://127.0.0.1:8765"},requestAnimationFrame:f=>f(),setTimeout:f=>f(),clearTimeout(){},setInterval:()=>1,clearInterval(){},fetch:async()=>responseQueue.shift()||{ok:false,status:404,json:async()=>({})}};
 vm.createContext(context);vm.runInContext(source,context);
 const dashboard=window.__tokenTrackerDashboardTest;
 
@@ -68,7 +68,7 @@ await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost","an explicit Cost choice survives later loads");
 const partial=dashboard.insightsHTML();
 assert.match(partial,/dash-hero-currency/);
-assert.match(partial,/<p class="dash-cost-note">Excludes GPT-6 Luna and GPT-6\.1 Sol \(no published price\)<\/p>/);
+assert.match(partial,/<p class="dash-cost-note">Recorded subtotal \/ estimate · Excludes GPT-6 Luna and GPT-6\.1 Sol \(no published price\)<\/p>/);
 
 // A reopen with the stored explicit Cost choice keeps Cost.
 values.set("branchglanceInsightsMetric","cost");

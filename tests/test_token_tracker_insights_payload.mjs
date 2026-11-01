@@ -41,6 +41,21 @@ assert.doesNotMatch(html,/not available|dash-hero-currency/);
 assert.match(html,/class="dash-chart"/);
 assert.match(html,/area-fill claude/);assert.match(html,/area-fill codex/);
 assert.equal((html.match(/class="dash-point"/g)||[]).length,30,"one hover point per series day");
+const hitRects=markup=>[...markup.matchAll(/class="dash-hit" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)].map(m=>m.slice(1).map(Number));
+function checkHits(markup,count){
+  const hits=hitRects(markup);assert.equal(hits.length,count);
+  if(!count)return;
+  assert.equal(hits[0][0],0);assert.ok(Math.abs(hits.at(-1)[0]+hits.at(-1)[2]-668)<0.2);
+  for(const [,y,,height] of hits){assert.equal(y,6);assert.equal(height,92);}
+  for(let i=1;i<hits.length;i++)assert.ok(Math.abs(hits[i-1][0]+hits[i-1][2]-hits[i][0])<0.2);
+  if(count>1){const step=668/(count-1);for(let i=1;i<count;i++)assert.ok(Math.abs(hits[i][0]-(i-0.5)*step)<0.11);}
+}
+checkHits(html,30);
+for(const count of [1,2,0]){
+  const payload=livePayload({providers:livePayload().providers.map(p=>({...p,series:p.series.slice(0,count)}))});
+  dashboard.state.insights=payload;checkHits(dashboard.insightsHTML(),count);
+}
+dashboard.state.insights=livePayload();
 assert.match(html,/Daily · tokens/);
 
 // (3) Zero figures next to non-zero tokens are treated as missing, not shown as 0.
@@ -48,9 +63,15 @@ assert.doesNotMatch(html,/dash-summary|sessions|subagents|active|cache hits/);
 
 // (4) Model table shows when rows exist; limit panel hidden when peaks are null; no empty lower band.
 assert.match(html,/>Models</);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);
-assert.doesNotMatch(html,/dash-model-head|dash-share/);
+assert.match(html,/dash-model-head[^]*?<small>Tokens<\/small><small title="API-equivalent estimate">Est. cost<\/small>/);
+assert.equal((html.match(/class="dash-none" role="img" aria-label="No published price">—/g)||[]).length,2,"each unpriced model has a cost placeholder");
+assert.doesNotMatch(html,/dash-share/);
+assert.equal((html.match(/class="dash-axis-value"/g)||[]).length,3);
+assert.doesNotMatch(html,/<text class="dash-(axis-value|date)"/,"chart labels remain undistorted HTML");
+assert.match(html,/dash-legend-name">Claude<\/span><b>3\.2B<\/b>/);
+assert.match(html,/dash-legend-name">Codex<\/span><b>370M<\/b>/);
 assert.ok(html.indexOf('dash-hero')<html.indexOf('dash-lower')&&html.indexOf('dash-lower')<html.indexOf('dash-chart-section'));
-assert.doesNotMatch(html,/Limit peaks/);
+assert.doesNotMatch(html,/Highest usage/);
 assert.match(html,/class="dash-lower is-single"/);
 
 // Models absent: the model table and empty panels are not rendered at all.
@@ -65,17 +86,17 @@ assert.match(html,/class="dash-chart"/);
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>({...p,models:[],limitPeaks:i===0?{fiveHour:76,weekly:58}:{fiveHour:null,weekly:null}}))})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
-assert.match(html,/Limit peaks/);assert.match(html,/dash-lower is-single/);assert.match(html,/5-hour/);assert.match(html,/76%/);
+assert.match(html,/Highest usage/);assert.match(html,/dash-lower is-single/);assert.match(html,/>5h</);assert.match(html,/76%/);
 
 // Non-zero sessions are shown.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>i===0?{...p,totals:{...p.totals,sessions:46,subagentsActive:18,activeHours:62}}:p)})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
-assert.match(html,/46 sessions · 18 subagents · 62h active/);
+assert.match(html,/<dt>Sessions<\/dt><dd>46<\/dd>.*<dt>Subagents<\/dt><dd>18<\/dd>.*<dt>Active<\/dt><dd>62h<\/dd>/);
 
 // Priced payload keeps cost as the hero and chart metric; the toggle is not forced to Tokens.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,totals:{...p.totals,apiEquivalentCost:12.5},series:p.series.map(r=>({...r,apiEquivalentCost:1}))}))})}];
-dashboard.state.metric="cost";dashboard.state.metricExplicit=true;
+dashboard.state.metric="cost";dashboard.state.metricExplicit=true;dashboard.state.range="30d";
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost");
 html=dashboard.insightsHTML();
@@ -83,21 +104,37 @@ assert.match(html,/dash-hero-currency/);assert.match(html,/Daily · API-equivale
 
 // Stats-only fallback with a cost-free window still shows tokens and no fake cost.
 responseQueue=[{ok:false,status:404,json:async()=>({})},{ok:true,json:async()=>({generatedAt:today.toISOString(),providers:[{name:"Claude",tracked31Days:1200,cache:{percent:null},activity:[{date:dateOffset(0),value:1200}],modelUsage:[]}]})}];
-dashboard.state.metric="cost";dashboard.state.range="24h";
+dashboard.state.metric="cost";dashboard.state.range="24h";dashboard.state.insights=null;
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/dash-hero-currency/);
 assert.match(html,/dash-hero-number">1\.2<\/strong><span class="dash-hero-unit">K tokens/);
-assert.doesNotMatch(html,/dash-chart-section/,"24h hides the chart");
+assert.match(html,/latest recorded date/,"fallback describes daily coverage rather than rolling 24 hours");
+assert.match(html,/Insights unavailable · Daily fallback/,"stats fallback reports Insights unavailable, not a failed refresh");
+assert.doesNotMatch(html,/Update failed/);
+assert.match(html,/dash-chart-section/,"one recorded day remains inspectable");
+// Snapshot-only fallback (both endpoints fail) reports the same way; with no snapshot the real failure remains.
+responseQueue=[{ok:false,status:404,json:async()=>({})},{ok:false,status:404,json:async()=>({})}];
+dashboard.state.insights=null;dashboard.state.snapshot={generatedAt:today.toISOString(),providers:[{name:"Claude",tracked31Days:900,cache:{percent:null},activity:[{date:dateOffset(0),value:900}],modelUsage:[]}]};
+await dashboard.loadInsights();
+html=dashboard.insightsHTML();
+assert.match(html,/Insights unavailable · Daily fallback/,"snapshot fallback reports Insights unavailable");
+assert.doesNotMatch(html,/Update failed/);
+responseQueue=[{ok:false,status:404,json:async()=>({})},{ok:false,status:404,json:async()=>({})}];
+dashboard.state.insights=null;dashboard.state.snapshot=null;
+await dashboard.loadInsights();
+assert.match(dashboard.insightsHTML(),/Usage could not be loaded\./,"no snapshot keeps the real failure");
+assert.match(dashboard.insightsHTML(),/dash-status-line error/,"real failure keeps the error class");
 
 // Partial cost: the cost hero stays, with a muted note naming the unpriced models (formatted names).
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>({...p,totals:{...p.totals,apiEquivalentCost:i===0?9.25:null,costPartial:i===0,unpricedModels:i===0?["claude-haiku-5.5"]:[]},series:p.series.map((r,j)=>({...r,apiEquivalentCost:i===0&&j===0?1:null}))}))})}];
-dashboard.state.metric="cost";dashboard.state.metricExplicit=true;
+dashboard.state.metric="cost";dashboard.state.metricExplicit=true;dashboard.state.range="30d";
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.match(html,/dash-hero-currency/);
-assert.match(html,/<p class="dash-cost-note">Excludes Haiku 5\.5 \(no published price\)<\/p>/);
-assert.doesNotMatch(html,/Excludes .*Excludes/);
+assert.match(html,/<p class="dash-cost-note">Recorded subtotal \/ estimate · Excludes Haiku 5\.5 \(no published price\)<\/p>/);
+assert.equal(html.match(/<p class="dash-cost-note">Recorded subtotal/g)?.length,1,"hero cost note appears exactly once");
+assert.match(html,/Daily estimate excludes Codex/,"chart explains provider exclusions separately");
 // Complete pricing: no note.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,totals:{...p.totals,apiEquivalentCost:4,costPartial:false,unpricedModels:[]},series:p.series.map(r=>({...r,apiEquivalentCost:0.1}))}))})}];
 await dashboard.loadInsights();
