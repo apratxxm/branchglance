@@ -397,6 +397,7 @@ def test_app_launches_during_setup_do_not_stack_dialogs(monkeypatch):
 
 def test_cutover_handoff_skips_install_wait_only_while_install_owner_holds_gate(monkeypatch):
     calls, messages = [], []
+    monkeypatch.setattr(widget, "_INSTANCE_HANDLE", None)
     monkeypatch.setattr(product, "consume_install_handoff", lambda token: token == "valid")
     monkeypatch.setattr(widget, "claim_install_mutex",
                         lambda timeout=20.0: (calls.append(timeout) or (None, "busy")))
