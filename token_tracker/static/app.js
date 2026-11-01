@@ -968,6 +968,9 @@ const agentModelLabel = chat => /^gpt-/i.test(chat.model||"") ? "GPT-"+modelLabe
 function runwayModelLabel(chat) {
   if(isAutoReview(chat))return "Auto-review";
   const model=String(chat.model||"").trim().replace(/-20\d{6}$/,'');if(!model||model.toLowerCase()==='codex')return "";
+  // long-context is a pricing tier (server key suffix "|long-context"), not a model family: label the base model plus a tier note.
+  const tier=model.match(/^(.*?)(?:\|long-context|-long-context)$/i);
+  if(tier){const base=runwayModelLabel({model:tier[1]});return base?base+" · long context":"";}
   let match=model.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
   if(match){const family=(match[2]||"").split("-").filter(Boolean).at(-1)||"";return "GPT-"+match[1]+(family?" "+family[0].toUpperCase()+family.slice(1).toLowerCase():"");}
   match=model.match(/^claude-(?:(opus|sonnet|haiku)-(\d+)[.-](\d+)|(\d+)[.-](\d+)-(opus|sonnet|haiku))(?:-.+)?$/i);
@@ -2068,7 +2071,8 @@ function emptyHTML(forest, providers) {
   if(COMPACT)return parseQuery(state.query).active?'<div class="empty">No matches</div>':'';
   if(!forest.rows.length) {
     const down=providers.filter(p=>p.connected===false);
-    return '<div class="empty">'+(down.length?"No data":"No "+esc(providers.map(p=>p.name).join(" or "))+" chats")+'</div>';
+    // Visible provider(s) with no chats: one quiet line, no icon or button. A disconnected provider keeps its "No data" text.
+    return down.length?'<div class="empty">No data</div>':'<div class="empty tree-empty">No active chats</div>';
   }
   if(parseQuery(state.query).active)return '<div class="empty">No matches</div>';
   const next=nextWindowWithChats(forest);

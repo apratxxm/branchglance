@@ -530,3 +530,5 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{height:auto;overflow:visible;white-space:normal;text-overflow:clip;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{overflow:visible;white-space:normal;overflow-wrap:anywhere;text-wrap:balance;text-overflow:clip;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row:not(:has(.runway-activity)) .runway-refined-status{grid-row:1/3;align-self:center;}
+/* Single quiet line when the visible provider(s) have no chats: centred in the tree area, no icon or button. */
+.chat-list .empty.tree-empty{display:flex;align-items:center;justify-content:center;min-height:160px;padding:0 var(--gutter);margin:0;font-size:13px;font-weight:400;color:#8d93a8;}

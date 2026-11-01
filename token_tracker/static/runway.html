@@ -54,8 +54,8 @@
         </nav>
         <div class="dashboard-controls" id="dashboard-insights-controls">
           <span class="dash-context">Preferences</span>
-          <div class="dash-segment" aria-label="Date range"><button data-dashboard-range="24h">24h</button><button data-dashboard-range="7d">7d</button><button data-dashboard-range="30d" class="is-active">30d</button><button data-dashboard-range="all">All</button></div>
-          <div class="dash-segment" aria-label="Metric"><button data-dashboard-metric="tokens">Tokens</button><button data-dashboard-metric="cost" class="is-active">Cost</button></div>
+          <div class="dash-segment" role="group" aria-label="Date range"><button data-dashboard-range="24h" aria-label="24 hours">24h</button><button data-dashboard-range="7d" aria-label="7 days">7d</button><button data-dashboard-range="30d" class="is-active" aria-label="30 days">30d</button><button data-dashboard-range="all" aria-label="31 days">31d</button></div>
+          <div class="dash-segment" role="group" aria-label="Metric"><button data-dashboard-metric="tokens">Tokens</button><button data-dashboard-metric="cost" class="is-active">Cost</button></div>
         </div>
         <button id="dashboard-close" class="dashboard-close" data-dashboard-action="close" aria-label="Close dashboard and return to widget" title="Close dashboard"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button>
       </header>

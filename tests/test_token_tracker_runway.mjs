@@ -20,7 +20,7 @@ assert.match(page,/id="dashboard-open"[^>]*data-action="dashboard"[^>]*aria-labe
 assert.match(page,/id="dashboard-view"[^>]*aria-label="Insights and Settings dashboard"/);
 assert.match(page,/src="dashboard.js"><\/script>\s*<script src="app.js"/);
 assert.match(dashboardCss,/data-notch-mode="dashboard"/);assert.match(dashboardCss,/prefers-reduced-motion/);
-assert.match(dashboardScript,/Last 31 days/);assert.match(dashboardScript,/Provider permissions/);
+assert.match(dashboardScript,/31-day totals/,"fallback totals disclose their actual 31-day coverage");assert.match(dashboardScript,/Provider permissions/);
 assert.match(page,/id="widget-lock"[^>]*data-action="widget-lock"[^>]*aria-pressed="false"[^>]*aria-label="Lock widget"[^>]*title="Lock widget"/);
 assert.match(page,/id="widget-lock"[^>]*><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2\.5" y="5" width="7" height="5\.5" rx="1"\/><path d="M4 5V3\.8a2 2 0 0 1 3\.6-1\.2"\/><\/svg>/,"the initial lock button shows the unlocked icon");
 assert.doesNotMatch(page,/<header class="titlebar pywebview-drag-region"/);
