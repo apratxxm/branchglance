@@ -11,6 +11,11 @@ assert.match(html,/Enabling adds Branchglance hooks to Claude Code settings \(wi
 assert.match(html,/Open settings from the Branchglance widget to change this\./);
 assert.match(html,/one-shot action for the next genuine quota reset/i);
 assert.match(html,/queued chat has not necessarily started/i);
+// The embedded frame never scrolls: its chat list pages instead (Previous and Next), and the frame styles carry no inner scroll.
+assert.match(html,/id="pager"[^>]*hidden/);assert.match(html,/id="page-prev"/);assert.match(html,/id="page-next"/);
+assert.match(source,/PAGE_SIZE = 3/);assert.match(source,/embedded\?available\.slice\(state\.page\*PAGE_SIZE/);
+const frameCss=fs.readFileSync(new URL("../token_tracker/static/reset_actions.css",import.meta.url),"utf8");
+assert.match(frameCss,/\.settings-embedded #threads\{[^}]*overflow:visible/);assert.doesNotMatch(frameCss.slice(frameCss.indexOf("Round 3")),/overflow:auto/);
 assert.match(app,/data-action="reset-settings"/);
 assert.match(app,/api\?\.open_reset_actions/);
 assert.match(app,/window\.open\?\.\("\/reset_actions\.html","_blank","noopener"\)/);

@@ -12,6 +12,7 @@
   <main class="widget">
     <header class="titlebar compact-toolbar pywebview-drag-region">
       <time id="toolbar-clock" class="compact-clock" aria-label="Local time"></time>
+      <div id="routing-alert" class="routing-alert pywebview-drag-region" role="status" aria-live="polite" hidden></div>
       <span id="brand" class="brand pywebview-drag-region"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x=".75" y=".75" width="10.5" height="10.5" rx="2.5"/><path d="M3.4 4.3 5.1 6 3.4 7.7M6.4 7.9h2.2"/></svg><span id="brand-name">Branchglance</span></span>
       <button id="widget-lock" class="icon-btn" data-action="widget-lock" aria-pressed="false" aria-label="Lock widget" title="Lock widget"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 3.6-1.2"/></svg></button>
       <button id="widget-keep-open" class="icon-btn compact-keep-open" data-action="keep-open" aria-pressed="false" aria-label="Keep widget open" title="Keep widget open"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2.2 9.8 8l-1.6 1.6L2.4 3.8zM3.6 6.4 1.5 8.5l2 2 2.1-2.1M6.2 4.4l1.4-1.4"/></svg></button>
@@ -53,8 +54,7 @@
           <button id="dashboard-tab-settings" class="dashboard-tab" role="tab" aria-selected="false" aria-controls="dashboard-settings" data-dashboard-tab="settings">Settings</button>
         </nav>
         <div class="dashboard-controls" id="dashboard-insights-controls">
-          <span class="dash-context">Preferences</span>
-          <div class="dash-segment" role="group" aria-label="Date range"><button data-dashboard-range="24h" aria-label="24 hours">24h</button><button data-dashboard-range="7d" aria-label="7 days">7d</button><button data-dashboard-range="30d" class="is-active" aria-label="30 days">30d</button><button data-dashboard-range="all" aria-label="31 days">31d</button></div>
+          <div class="dash-segment" role="group" aria-label="Date range"><button data-dashboard-range="24h" aria-label="24 hours">24h</button><button data-dashboard-range="7d" aria-label="7 days">7d</button><button data-dashboard-range="30d" class="is-active" aria-label="30 days">30d</button><button data-dashboard-range="all" aria-label="All, 31 days">All</button></div>
           <div class="dash-segment" role="group" aria-label="Metric"><button data-dashboard-metric="tokens">Tokens</button><button data-dashboard-metric="cost" class="is-active">Cost</button></div>
         </div>
         <button id="dashboard-close" class="dashboard-close" data-dashboard-action="close" aria-label="Close dashboard and return to widget" title="Close dashboard"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button>

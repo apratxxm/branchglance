@@ -4,7 +4,7 @@
 
 .settings-embedded{scrollbar-width:none;background:transparent}.settings-embedded::-webkit-scrollbar,.settings-embedded *::-webkit-scrollbar{display:none;width:0;height:0}.settings-embedded *{scrollbar-width:none}.settings-embedded .settings{width:100%;min-height:0;margin:0;padding:2px 0 8px;gap:10px}.settings-embedded .settings>header,.settings-embedded .intro,.settings-embedded .settings>.note:last-of-type{display:none}.settings-embedded .claude-collection{margin-top:0}.settings-embedded .settings>footer{position:sticky;bottom:0;padding-top:8px;background:linear-gradient(180deg,transparent,var(--bg) 34%)}
 
-html.settings-embedded,body.settings-embedded{height:100%;min-height:100%;overflow:auto;scrollbar-width:none;background:#0b0e15;color:#e8edf7;--bg:#0b0e15;--panel:#10151e;--line:#252d3b;--text:#e8edf7;--muted:#8994a8;--accent:#425df6;--error:#f08d88}
+html.settings-embedded,body.settings-embedded{height:100%;min-height:100%;overflow:auto;scrollbar-width:none;background:transparent;color:#e8edf7;--bg:#0b0e15;--panel:#10151e;--line:#252d3b;--text:#e8edf7;--muted:#8994a8;--accent:#425df6;--error:#f08d88}
 html.settings-embedded[data-source="Claude"],body.settings-embedded[data-source="Claude"]{--accent:#e8813f}
 html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scrollbar,body.settings-embedded *::-webkit-scrollbar{display:none;width:0;height:0}
 .settings-embedded *{scrollbar-width:none}
@@ -33,3 +33,69 @@ html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scroll
 .settings-embedded .last-run h2{font-size:13px}
 .settings-embedded .settings>footer{position:relative;bottom:auto;gap:6px;margin-top:auto;padding-top:4px;background:transparent}
 .settings-embedded button:focus-visible,.settings-embedded input:focus-visible{outline-color:var(--accent)}
+
+/* Compact embedded frame: every control stays, sized so the whole panel fits its frame without scrolling. */
+.settings-embedded .settings{padding:6px 8px 8px;gap:6px;}
+.settings-embedded legend,.settings-embedded .search-label{margin:0 0 2px;font-size:11px;}
+.settings-embedded .mode{padding:5px 8px;gap:7px;}
+.settings-embedded .mode b{font-size:13px;}
+.settings-embedded .mode small,.settings-embedded .note,.settings-embedded .message{font-size:12px;line-height:1.3;}
+.settings-embedded .message:empty{display:none;}
+.settings-embedded .claude-collection{grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;padding:6px 8px;align-items:start;}
+.settings-embedded .claude-collection h2{font-size:13px;}
+.settings-embedded .claude-collection #claude-status{margin-top:0;min-height:0;}
+.settings-embedded .claude-collection>div{grid-column:1;}
+.settings-embedded .claude-collection #claude-toggle{grid-column:2;grid-row:1 / span 2;padding:5px 8px;font-size:12px;white-space:nowrap;}
+.settings-embedded .claude-collection .note{grid-column:1 / -1;margin:0;}
+.settings-embedded .quiet,.settings-embedded .primary{padding:5px 8px;font-size:12px;}
+.settings-embedded .settings>footer{gap:6px;padding-top:0;}
+.settings-embedded .settings{gap:4px;}
+.settings-embedded .mode{padding:4px 8px;}
+.settings-embedded .mode small{font-size:11.5px;}
+.settings-embedded .claude-collection .note,.settings-embedded .note{font-size:11px;line-height:1.25;}
+.settings-embedded .claude-collection{gap:1px 8px;}
+#picker[hidden],#last-run[hidden]{display:none!important;}
+
+/* Round 3: the embedded frame is part of the Settings surface. No boxes, no scrolling, one 13px/600 heading style. */
+.settings-embedded .settings{padding:0;gap:4px;}
+.settings-embedded fieldset{gap:0;}
+.settings-embedded legend{margin:0 0 1px;padding:0;color:#8d929c;font-size:12px;font-weight:600;letter-spacing:0;}
+.settings-embedded .mode{padding:4px 0;border:0;border-radius:0;background:transparent;gap:10px;align-items:flex-start;}
+.settings-embedded .mode input{margin:2px 0 0;}
+.settings-embedded .mode b{color:#f3f4f6;font-size:13px;font-weight:550;}
+.settings-embedded .mode small{color:#a9afbb;font-size:12px;line-height:1.35;}
+.settings-embedded .mode:has(input:disabled) b{color:#8d929c;}
+.settings-embedded .claude-collection{display:block;padding:2px 0;border:0;border-radius:0;background:transparent;}
+.settings-embedded .claude-collection>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
+.settings-embedded .claude-collection h2{flex:none;font-size:13px;font-weight:550;color:#f3f4f6;margin:0;}
+.settings-embedded .claude-collection #claude-status{min-width:0;margin:0;overflow:hidden;color:#a9afbb;font-size:12px;text-overflow:ellipsis;white-space:nowrap;}
+.settings-embedded .claude-collection #claude-toggle,.settings-embedded .claude-collection .note{display:none;}
+.settings-embedded #picker{grid-template-columns:minmax(0,1fr) auto;gap:6px 8px;align-items:center;}
+.settings-embedded .search-label{grid-column:1;margin:0;color:#8d929c;font-size:12px;font-weight:600;letter-spacing:0;}
+.settings-embedded .search-label #selected-count{margin-left:8px;color:#8d929c;font-size:12px;font-weight:450;}
+.settings-embedded .pager{grid-column:2;grid-row:1;display:flex;align-items:center;gap:6px;color:#a9afbb;font-size:12px;}
+.settings-embedded .pager[hidden]{display:none;}
+.settings-embedded .pager .quiet{width:24px;height:22px;padding:0;border-radius:6px;font-size:15px;line-height:1;}
+.settings-embedded .pager .quiet:disabled{opacity:.35;cursor:default;}
+.settings-embedded #picker>input[type=search]{grid-column:1 / -1;padding:5px 9px;}
+.settings-embedded #threads{grid-column:1 / -1;max-height:none;overflow:visible;border:0;background:transparent;}
+.settings-embedded .thread{padding:3px 0;border:0;font-size:13px;}
+.settings-embedded .status{color:#8d929c;}
+.settings-embedded .last-run h2{display:inline;margin:0 8px 0 0;color:#8d929c;font-size:12px;font-weight:600;}
+.settings-embedded .last-run{max-height:none;overflow:visible;padding:0;border:0;border-radius:0;background:transparent;color:#a9afbb;}
+.settings-embedded .last-run ul{padding-left:16px;}
+.settings-embedded .note{color:#8d929c;}
+.settings-embedded .settings>footer{margin-top:auto;padding-top:2px;}
+.settings-embedded .quiet,.settings-embedded .primary{padding:4px 10px;}
+html.settings-embedded,body.settings-embedded{overflow:hidden;background:transparent;}
+
+/* Round 4: Inter and the dashboard's tokens; Claude status lives in the parent row; Save sits right under its form. */
+html.settings-embedded,body.settings-embedded{--d-ink:#f3f4f6;--d-sub:#b7bcc8;--d-mute:#8d929c;--d-edge:#1d2130;--d-well:#080a10;--d-link:#9bb0ff;font-family:Inter,"Segoe UI Variable","Segoe UI",system-ui,sans-serif;}
+.settings-embedded button,.settings-embedded input{font-family:inherit;}
+.settings-embedded .claude-collection{display:none;}
+.settings-embedded #permission:empty{display:none;}
+.settings-embedded .settings>footer{margin-top:6px;}
+.settings-embedded .mode small{color:var(--d-sub);}
+.settings-embedded .note,.settings-embedded .status,.settings-embedded .search-label,.settings-embedded legend{color:var(--d-mute);}
+.settings-embedded input[type=search]{border-color:var(--d-edge);background:var(--d-well);}
+.settings-embedded .quiet,.settings-embedded .primary{border-color:var(--d-edge);}

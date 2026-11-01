@@ -3,7 +3,7 @@
   const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:31};
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
   const RANGE_PREVIOUS={"24h":"previous 24 hours","7d":"previous 7 days","30d":"previous 30 days",all:"previous period"};
-  const state={open:false,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0};
+  const state={open:false,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
@@ -70,7 +70,7 @@
     const chartKey=costHero&&seriesByKey.apiEquivalentCost.some(row=>allProviders.some(p=>finite(row[p.name])!=null))?"apiEquivalentCost":"tokens";
     const heroKey=costHero?"apiEquivalentCost":totals.tokens!=null?"tokens":totals.apiEquivalentCost!=null?"apiEquivalentCost":null;
     const modelMap=new Map();
-    if(!windowed)for(const p of allProviders)for(const row of p.models||[]){const raw=String(row?.name||"");if(!raw)continue;const name=modelName(raw)||raw,item=modelMap.get(name)||{name,raw,tokens:null,apiEquivalentCost:null};for(const k of ["tokens","apiEquivalentCost"]){const value=finite(row[k]);if(value!=null)item[k]=(item[k]??0)+value;}modelMap.set(name,item);}
+    if(!windowed)for(const p of allProviders)for(const row of p.models||[]){const raw=String(row?.name||"");if(!raw)continue;const label=modelName(raw)||raw,longContext=/\s*·\s*long context$/i.test(label),name=label.replace(/\s*·\s*long context$/i,""),item=modelMap.get(name)||{name,raw,tokens:null,apiEquivalentCost:null,longContext:false};item.longContext=item.longContext||longContext;for(const k of ["tokens","apiEquivalentCost"]){const value=finite(row[k]);if(value!=null)item[k]=(item[k]??0)+value;}modelMap.set(name,item);}
     const sortKey=heroKey||"tokens";
     const models=[...modelMap.values()].filter(row=>row.tokens!=null||row.apiEquivalentCost!=null).sort((a,b)=>(b[sortKey]||0)-(a[sortKey]||0));
     const costPartial=allProviders.some(p=>p.totals?.costPartial===true||finite(p.totals?.apiEquivalentCost)==null);
@@ -83,18 +83,54 @@
   }
   const joinNames=names=>names.length<=2?names.join(" and "):`${names.slice(0,-1).join(", ")} and ${names.at(-1)}`;
   const tokenHero=value=>{const [figure,unit]=value>=1e9?[(value/1e9).toFixed(2),"B tokens"]:value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
+  // Provider series hidden from the chart by clicking its legend name; the split and the Models list are unaffected.
+  const hiddenProviders=new Set();
+  // At least one provider stays on; the last one cannot be hidden.
+  function toggleProvider(name){
+    if(!name)return;
+    if(hiddenProviders.has(name))hiddenProviders.delete(name);
+    else if(availableProviders().some(p=>p.name!==name&&!hiddenProviders.has(p.name)))hiddenProviders.add(name);
+    else return;
+    state.renderKey="";render();
+  }
+  // Chart style: "stacked" (default) or "lines". Chosen with the small control in the chart header and remembered in localStorage.
+  const chartStyle=()=>readPref("branchglanceChartStyle","stacked")==="lines"?"lines":"stacked";
+  function setChartStyle(value){
+    if(value!=="stacked"&&value!=="lines")return;
+    if(value===chartStyle())return;
+    dismissTooltip();writePref("branchglanceChartStyle",value);state.renderKey="";render();
+  }
+  const chartStyleHTML=()=>{const current=chartStyle();return `<div class="dash-chart-style" role="group" aria-label="Chart style">${[["lines","Lines"],["stacked","Stacked"]].map(([key,label])=>`<button type="button" data-dashboard-chart-style="${key}" aria-pressed="${current===key}">${label}</button>`).join("")}</div>`;};
+  // Explicit provider filter chips beside the chart heading: a dot, the name and a checked state.
+  const chipsHTML=data=>{
+    if(data.providers.length<2)return "";
+    return `<div class="dash-chips" role="group" aria-label="Providers shown in the chart">${data.providers.map(p=>{const on=!hiddenProviders.has(p.name);return `<button type="button" class="dash-chip ${providerKey(p.name)}-color" data-dashboard-provider="${esc(p.name)}" aria-pressed="${on}" title="${on?"Hide":"Show"} ${esc(p.name)} in the chart"><i class="dash-dot ${providerKey(p.name)}" aria-hidden="true"></i>${esc(p.name)}<span class="dash-chip-check" aria-hidden="true">${on?"\u2713":""}</span></button>`;}).join("")}</div>`;
+  };
   function seriesChart(data){
-    const key=data.chartKey,rows=data.seriesByKey[key],cost=key==="apiEquivalentCost",format=value=>cost?money(value):number(value);
-    const providers=cost?data.providers.filter(p=>rows.some(row=>finite(row[p.name])!=null)):data.providers;
-    const excluded=cost?data.providers.filter(p=>!providers.includes(p)):[];
-    if(!rows.length||!providers.length||!rows.some(row=>providers.some(p=>finite(row[p.name])!=null)))return "";
-    const W=668,H=100,L=0,R=0,T=6,B=2,PW=W-L-R,PH=H-T-B,step=PW/Math.max(rows.length-1,1);
+    const key=data.chartKey,cost=key==="apiEquivalentCost",format=value=>cost?money(value):number(value);
+    // The chart starts at the first day with usage (never fewer than two points when the range has them).
+    const allRows=data.seriesByKey[key],firstUsed=allRows.findIndex(row=>data.providers.some(p=>(finite(row[p.name])||0)>0));
+    const rows=firstUsed>0?allRows.slice(Math.min(firstUsed,Math.max(allRows.length-2,0))):allRows;
+    const candidates=cost?data.providers.filter(p=>rows.some(row=>finite(row[p.name])!=null)):data.providers;
+    const excluded=cost?data.providers.filter(p=>!candidates.includes(p)):[];
+    if(!rows.length||!candidates.length||!rows.some(row=>candidates.some(p=>finite(row[p.name])!=null)))return "";
+    const providers=candidates.filter(p=>!hiddenProviders.has(p.name));
+    const lines=chartStyle()==="lines";
+    if(!providers.length)return `<p class="dash-cost-note">Every provider is hidden. Click a provider in the split to show it.</p>`;
+    const W=668,H=100,L=0,R=0,T=1,B=1,PW=W-L-R,PH=H-T-B,step=PW/Math.max(rows.length-1,1);
     const complete=row=>providers.every(p=>finite(row[p.name])!=null);
     const totals=rows.map(row=>complete(row)?providers.reduce((sum,p)=>sum+row[p.name],0):null);
-    const max=niceCeil(Math.max(0,...totals.filter(v=>v!=null))*1.1)||1;
+    const peak=lines?Math.max(0,...rows.flatMap(row=>providers.map(p=>finite(row[p.name])??0))):Math.max(0,...totals.filter(v=>v!=null));
+    const max=niceCeil(peak*1.1)||1;
     const xAt=index=>rows.length===1?W/2:L+index*step,yAt=value=>T+PH-value/max*PH;
     let paths="";
-    for(let n=0;n<providers.length;n++){
+    if(lines){
+      for(const p of providers){
+        const cls=providerKey(p.name);let run=[];
+        const flush=()=>{if(run.length>1)paths+=`<path class="area-glow ${cls}" d="${curvePath(run)}"/><path class="area-edge ${cls}" d="${curvePath(run)}"/>`;else if(run.length===1)paths+=`<circle class="area-edge ${cls}" cx="${run[0][0]}" cy="${run[0][1]}" r="2.5"/>`;run=[];};
+        rows.forEach((row,i)=>{const value=finite(row[p.name]);if(value!=null)run.push([xAt(i),yAt(value)]);else flush();});flush();
+      }
+    }else for(let n=0;n<providers.length;n++){
       const p=providers[n],cls=providerKey(p.name);let segment=[];
       const flush=()=>{
         if(!segment.length)return;
@@ -109,7 +145,9 @@
     const ticks=[1,.5,0].map(fraction=>`<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${yAt(max*fraction).toFixed(1)}" y2="${yAt(max*fraction).toFixed(1)}"/>`).join("");
     const axisFormat=value=>cost&&max>=10?"$"+Math.round(value).toLocaleString("en-US"):format(value);
     const axis=[1,.5,0].map(fraction=>`<span class="dash-axis-value" style="top:${(yAt(max*fraction)/H*100).toFixed(2)}%">${esc(fraction===0?(cost?"$0":"0"):axisFormat(max*fraction))}</span>`).join("");
-    const dates=`<div class="dash-dates"><span class="dash-date">${esc(dayLabel(rows[0].date))}</span>${rows.length>1?`<span class="dash-date">${esc(dayLabel(rows.at(-1).date))}</span>`:""}</div>`;
+    // Date ticks: the first and last day, plus two evenly spaced days between them once the range is long enough to read them.
+    const tickIndexes=rows.length>=8?[0,Math.round((rows.length-1)/3),Math.round((rows.length-1)*2/3),rows.length-1]:rows.length>1?[0,rows.length-1]:[0];
+    const dates=`<div class="dash-dates">${tickIndexes.map((i,n)=>`<span class="dash-date${n===0?" is-first":n===tickIndexes.length-1&&n>0?" is-last":""}" style="left:${(rows.length>1?i/(rows.length-1)*100:0).toFixed(2)}%">${esc(dayLabel(rows[i].date))}</span>`).join("")}</div>`;
     const hover=rows.map((row,index)=>{
       const x=xAt(index),total=totals[index],partial=cost&&(excluded.length>0||providers.some(p=>row[p.name+"__partial"])),unknown=total==null;
       const totalLabel=unknown?"Total unavailable":(partial?"Recorded subtotal: ":"Total: ")+format(total);
@@ -120,23 +158,35 @@
       const left=index===0?L:(xAt(index-1)+x)/2,right=index===rows.length-1?W-R:(x+xAt(index+1))/2;
       return `<g class="dash-point" tabindex="0" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/>${total==null?"":`<circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/>`}</g>`;
     }).join("");
-    return `${excluded.length?`<p class="dash-cost-note">Daily estimate excludes ${esc(joinNames(excluded.map(p=>p.name)))} (no recorded price)</p>`:""}<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg></div>${dates}`;
+    return `${excluded.length?`<p class="dash-cost-note">Daily estimate excludes ${esc(joinNames(excluded.map(p=>p.name)))} (no recorded price)</p>`:""}<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg></div>${dates}`;
   }
-  function splitHTML(data){
-    const key=data.heroKey;if(!key)return "";
-    const rows=data.providers.map(p=>({name:p.name,value:finite(p.scoped[key])})).filter(row=>row.value>0),sum=rows.reduce((total,row)=>total+row.value,0);
-    if(!sum)return "";
-    const missing=data.providers.filter(p=>finite(p.scoped[key])==null);
-    if(data.providers.length<2)return "";
-    return `<div class="dash-split" aria-hidden="true">${rows.map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div><div class="dash-split-legend">${rows.map(row=>`<span class="dash-legend-item ${providerKey(row.name)}-color"><span class="dash-legend-name">${esc(row.name)}</span><b>${esc(key==="apiEquivalentCost"?money(row.value):number(row.value))}</b><span class="dash-legend-share">${Math.round(100*row.value/sum)}%</span></span>`).join("")}${missing.map(row=>`<span class="dash-legend-item ${providerKey(row.name)}-color"><span class="dash-legend-name">${esc(row.name)}</span><b aria-label="Unavailable">—</b></span>`).join("")}</div>`;
+  // The split bar sits under the figure it divides; the legend is a four-column table (provider, value, share, plan multiple) so every column aligns.
+  function splitParts(data){
+    const key=data.heroKey;if(!key)return null;
+    const all=data.providers.map(p=>({name:p.name,value:finite(p.scoped[key])}));
+    const sum=all.reduce((total,row)=>total+(row.value>0?row.value:0),0);
+    if(!sum)return null;
+    const bar=data.providers.length>1?`<div class="dash-split" aria-hidden="true">${all.filter(row=>row.value>0).map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div>`:"";
+    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span><span class="dash-legend-head">Share</span><span class="dash-legend-head dash-plan-head" title="Rolling 30-day API-equivalent cost divided by the monthly plan price (default $20). It does not change with the range.">30d / plan</span>`;
+    let unpriced=false;
+    const items=all.map(row=>{
+      const cls=`${providerKey(row.name)}-color`;
+      const value=row.value==null?`<b aria-label="Unavailable">—</b><span class="dash-legend-share"></span>`:`<b>${esc(key==="apiEquivalentCost"?money(row.value):number(row.value))}</b><span class="dash-legend-share">${Math.round(100*row.value/sum)}%</span>`;
+      const plan=planCellsHTML(row.name);
+      if(plan.includes("some unpriced"))unpriced=true;
+      return `<span class="dash-legend-item ${cls}"><span class="dash-legend-name">${esc(row.name)}</span>${value}${plan}</span>`;
+    }).join("");
+    return {bar,legend:`<div class="dash-split-legend">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">≥ excludes unpriced usage</p>':""}`};
   }
+  // One provider has no split to compare against, so its plan multiple gets one line of its own.
+  function singlePlanHTML(data){const p=data.providers[0];if(!p)return "";return `<div class="dash-plan-single ${providerKey(p.name)}-color"><span class="dash-legend-name">${esc(p.name)}</span>${planCellsHTML(p.name)}</div>`;}
   function emptyHTML(){return `<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded usage in this range</p></section>`;}
   // Status text for the Insights status line; background refreshes update only this element.
   function statusText(){
     if(!state.insights)return state.loading?"Loading usage…":state.loadError?"Usage could not be loaded.":"";
-    const data=insightsData(false),stamp=state.insights.generatedAt?new Date(state.insights.generatedAt):null;
+    const data=insightsData(false);
     const fallbackLabel=data.fallback?(state.insightsUnavailable?"Insights unavailable · Daily fallback":"Daily fallback"):"";
-    return [state.loading?"Updating…":state.loadError?"Update failed":"",fallbackLabel,stamp&&!Number.isNaN(stamp.getTime())?"Updated "+stamp.toLocaleString():""].filter(Boolean).join(" · ");
+    return [state.loading?"Updating…":state.loadError?"Update failed":"",fallbackLabel].filter(Boolean).join(" · ");
   }
   // Failures and fallbacks are notices shown above the content; a plain freshness stamp sits at the end.
   const isNotice=()=>Boolean(state.loadError||state.insightsUnavailable||(state.insights&&insightsData(false).fallback));
@@ -157,48 +207,108 @@
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">estimated</span>`:tokenHero(value);
-    const chart=data.range==="24h"&&!data.fallback?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">Daily · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost estimate":"tokens"}</span></div>${chart}</section>`:"";
+    const chart=data.range==="24h"&&!data.fallback?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">Daily · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost estimate":"tokens"}</span>${chipsHTML(data)}${chartStyleHTML()}</div>${chart}</section>`:"";
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
     const tokensPresent=finite(data.totals.tokens)>0;
     const missing=v=>finite(v)==null||(v===0&&tokensPresent);
     const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hits"],[data.totals.activeHours,v=>`${number(v)}h`,"Active"]].filter(([v])=>!missing(v));
     const statsHTML=stats.length?`<dl class="dash-summary">${stats.map(([v,format,label])=>`<div><dt>${label}</dt><dd>${esc(format(v))}</dd></div>`).join("")}</dl>`:"";
     const coverage=data.fallback?(data.range==="30d"||data.range==="all"?"31-day totals":data.dates.length?`Daily coverage: ${dayLabel(data.dates[0])}${data.dates.length>1?" – "+dayLabel(data.dates.at(-1)):""}${data.range==="24h"?" (latest recorded date)":" (recorded daily values)"}`: "31-day totals"):RANGE_NAME[data.range];
-    const hero=`<section class="dash-hero"><div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`API-equivalent cost estimate · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${cost&&data.costPartial?`<p class="dash-cost-note">Recorded subtotal / estimate${data.unpricedModels.length?` · Excludes ${esc(joinNames(data.unpricedModels))} (no published price)`:" · Some provider costs are unavailable"}</p>`:""}${(split=>split?`<div class="dash-hero-providers">${split}</div>`:"")(splitHTML(data))}</section>`;
+    const hero=`<section class="dash-hero"><div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`API-equivalent cost estimate · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
     const models=data.models;
-    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head"><span>Models</span><small>Tokens</small><small title="API-equivalent estimate">Est. cost</small></div>${models.slice(0,5).map(row=>{const family=modelKey(row.raw);return `<div class="dash-model-row"><span class="dash-model-name ${family}"><i></i>${esc(row.name)}</span><b>${esc(number(row.tokens))}</b><b title="Estimated API-equivalent cost">${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">—</span>':esc(money(row.apiEquivalentCost))}</b></div>`;}).join("")}${models.length>5?`<div class="dash-model-more">+${models.length-5} more</div>`:""}</div>`:"";
+    // One row per model (long-context variants are merged into it). Seven rows fit beside the chart; beyond that the top six show and the rest sum into one Other row.
+    const modelRows=(()=>{if(models.length<=7)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,6).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(6);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other · ${rest.length} models`,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true}];})();
+    // Bars follow the active metric on a square-root scale relative to the largest row, so small models stay visible.
+    // In Cost view a model with no published price gets an empty bar, not a zero-length one that reads as "free".
+    const barKey=data.heroKey==="apiEquivalentCost"?"apiEquivalentCost":"tokens";
+    const barMax=Math.max(0,...modelRows.map(row=>finite(row[barKey])||0));
+    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head"><span>Models</span><small aria-hidden="true"></small><small>Tokens</small><small title="API-equivalent estimate">Est. cost</small></div>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<div class="dash-model-row"><span class="dash-model-name ${row.family}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag" title="Includes long-context usage">long ctx</small>':'<small class="dash-model-tag is-empty" aria-hidden="true"></small>'}<i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i><b>${esc(number(row.tokens))}</b><b title="Estimated API-equivalent cost">${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">—</span>':esc(money(row.apiEquivalentCost))}</b></div>`;}).join("")}</div>`:"";
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
     const peakCell=value=>value==null?'<span aria-label="Not recorded">—</span>':`${Math.round(value)}%`;
-    const limits=peaks.length?`<div class="dash-limits"><div class="dash-section-label"><span>Highest usage</span></div><p class="dash-peaks-note">Recorded in this period</p><table class="dash-peaks-table"><caption>Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col">Provider</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(p=>`<tr><th scope="row" class="${providerKey(p.name)}-color">${esc(p.name)}</th><td>${peakCell(p.fiveHour)}</td><td>${peakCell(p.weekly)}</td></tr>`).join("")}</tbody></table></div>`:"";
+    const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value==null||value>=99.5))&&peaks.some(p=>p.fiveHour!=null||p.weekly!=null);
+    const limits=allMaxed?`<div class="dash-limits is-collapsed"><div class="dash-section-label"><span>Highest usage</span><small title="Highest recorded quota usage in this period, not current allowance">Every window reached 100%</small></div></div>`:peaks.length?`<div class="dash-limits"><table class="dash-peaks-table"><caption>Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col" title="Recorded in this period, not the current allowance">Highest usage</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(p=>`<tr><th scope="row" class="${providerKey(p.name)}-color">${esc(p.name)}</th><td>${peakCell(p.fiveHour)}</td><td>${peakCell(p.weekly)}</td></tr>`).join("")}</tbody></table></div>`:"";
     const activity=statsHTML?`<div class="dash-activity"><div class="dash-section-label"><span>Activity</span></div>${statsHTML}</div>`:"";
     const side=limits||activity?`<div class="dash-side">${limits}${activity}</div>`:"";
-    const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}">${modelHTML}${side}</section>`:"";
-    return hero+lower+chartHTML+statusHTML;
+    // Models and the side column share one row; the chart runs the full width under both. Without a chart (24h has no hourly series) the row stretches to the panel body.
+    const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}${chartHTML?"":" is-day"}">${modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:""}${side}${chartHTML}</section>`:chartHTML;
+    return hero+lower+statusHTML;
+  }
+  // Plan multiple: rolling 30-day API-equivalent cost over the plan price, per provider. It reads the 30-day window whatever range is selected, so the multiple means the same on every tab.
+  const PLAN_PROVIDERS=["Claude","Codex"];
+  const planPrice=name=>{const raw=Number(readPref(`branchglancePlanPrice.${name}`,""));return Number.isFinite(raw)&&raw>0?raw:20;};
+  // A lower bound (unpriced models present) that rounds to zero reads "0.0", never "<0.1", which would claim an upper bound.
+  const planMultiple=(value,lowerBound)=>value<.1?(lowerBound?"0.0":"<0.1"):value>=10?Math.round(value).toLocaleString("en-US"):value.toFixed(1);
+  function rollingRows(){
+    const sum=values=>{const present=values.map(finite).filter(value=>value!==null);return present.length?present.reduce((total,value)=>total+value,0):null;};
+    return state.month.providers.map(p=>{
+      const series=Array.isArray(p.series)?p.series:[];
+      const unpriced=p.totals?.costPartial===true||(Array.isArray(p.totals?.unpricedModels)&&p.totals.unpricedModels.length>0)
+        ||(Array.isArray(p.models)&&p.models.some(model=>model?.unpriced===true))
+        ||series.some(row=>row.costPartial===true||(finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null));
+      return {name:String(p.name||""),tokens:sum(series.map(row=>row.tokens)),cost:sum(series.map(row=>row.apiEquivalentCost)),unpriced};
+    });
+  }
+  // The two plan cells of one provider's legend row: the multiple, and a tiny marker. Every state fills both cells, so the columns line up.
+  const planCells=(multiple,note="")=>`<span class="dash-plan-cell">${multiple}</span><span class="dash-plan-note-cell">${note}</span>`;
+  function planCellsHTML(name){
+    if(state.month==null&&!state.monthError)return planCells(`<span class="dash-plan-text">Loading</span>`);
+    if(state.monthError||!Array.isArray(state.month?.providers))return planCells(`<span class="dash-plan-text">Unavailable</span>`);
+    const row=rollingRows().find(item=>item.name===name);
+    if(!row)return planCells(`<span class="dash-plan-text">Unavailable</span>`);
+    if(!(row.tokens>0))return planCells(`<span class="dash-plan-text">No usage</span>`);
+    if(row.cost==null)return planCells(`<span class="dash-plan-text" title="No published price for these models">Unpriced</span>`);
+    const price=planPrice(name),multiple=row.cost/price,prefix=row.unpriced?"≥":"";
+    return planCells(`<span title="${esc(`${row.unpriced?"≥ excludes usage with no published price. ":""}Rolling 30-day API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
+  }
+  async function loadMonth(){
+    const token=++state.monthToken;
+    const content=value=>JSON.stringify({...value,generatedAt:undefined});
+    try{
+      const response=await fetch("/api/insights?range=30d",{cache:"no-store"});
+      if(!response.ok)throw new Error("Rolling 30-day totals unavailable");
+      const value=await response.json();
+      if(token!==state.monthToken)return;
+      if(!Array.isArray(value?.providers))throw new Error("Rolling 30-day totals unavailable");
+      const changed=state.monthError||state.month==null||content(state.month)!==content(value);
+      state.month=value;state.monthError=false;
+      if(changed){state.renderKey="";render();}
+    }catch{
+      if(token!==state.monthToken)return;
+      if(!state.monthError){state.monthError=true;state.renderKey="";render();}
+    }
+  }
+  function setPlanPrice(name,value){
+    if(!PLAN_PROVIDERS.includes(name))return;
+    const number=Number(value);
+    if(!Number.isFinite(number)||number<=0){state.settingsError=true;state.settingsStatus=`${name} plan price must be a number above 0.`;state.settingsRenderKey="";render();return;}
+    writePref(`branchglancePlanPrice.${name}`,String(number));state.settingsError=false;state.settingsStatus="";state.settingsRenderKey="";state.renderKey="";render();
   }
   const toggleRow=(label,description,action,value)=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control"><button class="dash-toggle${value?" is-on":""}" role="switch" aria-checked="${Boolean(value)}" aria-label="${label}" data-dashboard-action="${action}"></button></div></div>`;
   const rowHTML=(label,description,control="")=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control">${control}</div></div>`;
   function settingsHTML(){
     const clock=readPref("branchglanceClockFormat","12")==="24"?"24":"12",policies=Array.isArray(state.policy?.providers)?state.policy.providers:[];
-    const providers=policies.length?`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers <span class="count">Policy controlled</span></h2>${policies.map(row=>rowHTML(esc(row.name),"Current provider policy",`<span class="dash-policy-flags">${["show","collect","send"].map(key=>`<span><small>${key}</small><b>${row[key]===true?"On":row[key]===false?"Off":"—"}</b></span>`).join("")}</span>`)).join("")}${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<p class="dash-setting-note">Show, collect and send flags are set in the policy file.${state.policy?.policyFile&&state.policy.policyFile!=="absent"?` <code>${esc(state.policy.policyFile)}</code>`:""}</p></section>`:"";
+    const providers=policies.length?`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers <span class="count">Policy controlled</span></h2>${policies.map(row=>rowHTML(esc(row.name),"",`<span class="dash-policy-flags">${["show","collect","send"].map(key=>`<span><small>${key}</small><b>${row[key]===true?"On":row[key]===false?"Off":"—"}</b></span>`).join("")}</span>`)).join("")}${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<p class="dash-setting-note">Show, collect and send flags are set in the policy file.${/[\\/]/.test(String(state.policy?.policyFile||""))?` <code>${esc(state.policy.policyFile)}</code>`:""}</p></section>`:"";
     // Reset actions stays isolated in its existing frame; the dashboard never receives a settings token.
     const reset=state.settingsLoaded?`<iframe class="reset-embed" title="Auto-greet, continue and Claude tracking settings" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status">${esc(state.settingsStatus||"Loading reset settings…")}</p>`;
-    const notifications=`<section class="dash-settings-group"><h2>Notifications</h2>${rowHTML("Reset actions","Auto-greet and continue preferences")}${reset}${rowHTML("Claude tracking","Manage Claude Desktop collection",`<button class="dash-action" data-dashboard-action="claude-settings">Change Claude tracking…</button>`)}</section>`;
+    const notifications=`<section class="dash-settings-group"><h2>Notifications</h2>${reset}${rowHTML("Claude tracking",`<span id="dash-claude-status">${esc(state.claudeStatus||"")}</span>`,`<button class="dash-action" data-dashboard-action="claude-settings">Change Claude tracking…</button>`)}</section>`;
     const general=`<section class="dash-settings-group"><h2>General</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","Use a 12 or 24-hour clock",`<button class="dash-picker" data-dashboard-action="clock">${clock}-hour <i class="chevron" aria-hidden="true"></i></button>`)}</section>`;
+    const plan=`<section class="dash-settings-group"><h2>Plan</h2><div class="dash-plan-group"><span class="dash-setting-label">Monthly plan price</span><span class="dash-setting-description">Used for the 30-day multiple</span><div class="dash-plan-fields">${PLAN_PROVIDERS.map(name=>`<label class="dash-plan-field"><span class="dash-plan-field-name">${esc(name)}</span><span aria-hidden="true">$</span><input type="number" min="1" step="any" inputmode="decimal" value="${esc(planPrice(name))}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label>`).join("")}</div></div></section>`;
     const monitorOptions=state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("");
     const display=`<section class="dash-settings-group"><h2>Display</h2>${state.monitors.length?rowHTML("Monitor","Choose where the widget opens",`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor">${monitorOptions}</select>`):""}${rowHTML("Recenter widget","Return to the selected display",`<button class="dash-action" data-dashboard-action="recenter">Recenter</button>`)}</section>`;
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
     const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:"";
-    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${providers}${notifications}</div><div class="dash-settings-column">${display}${status}${version}</div></div>`;
+    // Both columns fit the fixed panel body: the reset frame keeps the second column, the rest share the first.
+    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${plan}${providers}${display}</div><div class="dash-settings-column">${notifications}${status}${version}</div></div>`;
   }
   let activePoint=null,activeMode=null,tooltipBound=false,tooltipGeneration=0;
   function dismissTooltip(){
-    tooltipGeneration++;activePoint=null;activeMode=null;const tip=$("#dash-tooltip");
+    tooltipGeneration++;activePoint=null;activeMode=null;document.querySelectorAll(".dash-point.is-hover").forEach(el=>el.classList.remove("is-hover"));const tip=$("#dash-tooltip");
     if(tip){tip.classList.remove("is-visible");tip.setAttribute("aria-hidden","true");}
   }
   function bindTooltips(){
     const root=$("#dashboard-view"),tip=$("#dash-tooltip");if(!root||!tip)return;
     const place=(x,y)=>{const margin=8,box=tip.getBoundingClientRect();tip.style.left=Math.max(margin,Math.min(x+12,window.innerWidth-margin-box.width))+"px";tip.style.top=Math.max(margin,Math.min(y+12,window.innerHeight-margin-box.height))+"px";};
-    const show=(target,x,y,mode)=>{activePoint=target;activeMode=mode;tip.innerHTML=target.getAttribute("data-tip-html")||"";tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");place(x,y);};
+    const show=(target,x,y,mode)=>{activePoint=target;activeMode=mode;document.querySelectorAll(".dash-point.is-hover").forEach(el=>el.classList.remove("is-hover"));target.classList?.add("is-hover");tip.innerHTML=target.getAttribute("data-tip-html")||"";tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");place(x,y);};
     root.addEventListener("pointerover",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target&&activeMode!=="focus")show(target,event.clientX,event.clientY,"pointer");});
     root.addEventListener("focusin",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target){const box=target.getBoundingClientRect();show(target,box.right,box.bottom,"focus");}});
     root.addEventListener("pointerout",event=>{if(activeMode==="pointer"&&event.target?.closest?.("[data-tip-html]")===activePoint&&event.relatedTarget?.closest?.("[data-tip-html]")!==activePoint)dismissTooltip();});
@@ -220,8 +330,16 @@
     content.classList.add("is-switching");
     state.fadeTimer=setTimeout(()=>{state.fadeTimer=null;if(generation!==state.fadeVersion||!state.open)return;change();requestAnimationFrame(()=>{if(generation===state.fadeVersion&&state.open)content.classList.remove("is-switching");});},90);
   }
+  // The 24h view has no hourly chart, so its panel is shorter. The widget window follows (see windowHeight).
+  const compactPanel=()=>state.tab==="insights"&&state.range==="24h";
+  const DASHBOARD_HEIGHT=608,COMPACT_DASHBOARD_HEIGHT=478;
+  const windowHeight=()=>compactPanel()?COMPACT_DASHBOARD_HEIGHT:DASHBOARD_HEIGHT;
+  function syncSize(){
+    const root=$("#dashboard-view");if(root)root.dataset.size=compactPanel()?"compact":"full";
+    if(typeof Event==="function")window.dispatchEvent?.(new Event("dashboard-size"));
+  }
   function syncTabs(){
-    const root=$("#dashboard-view");if(root)root.dataset.tab=state.tab;
+    const root=$("#dashboard-view");if(root)root.dataset.tab=state.tab;syncSize();
     for(const key of ["insights","settings"]){const button=$("#dashboard-tab-"+key),panel=$("#dashboard-"+key);if(button){button.classList.toggle("is-active",key===state.tab);button.setAttribute("aria-selected",String(key===state.tab));}if(panel)panel.hidden=key!==state.tab;}
   }
   function syncSegments(){
@@ -237,7 +355,7 @@
   function setRange(range){
     if(!isRange(range))return;
     cancelFade();if(range===state.range)return;
-    crossFade(()=>{state.range=range;writePref("branchglanceInsightsRange",range);syncSegments();state.renderKey="";void loadInsights();render();});
+    crossFade(()=>{state.range=range;writePref("branchglanceInsightsRange",range);syncSegments();syncSize();state.renderKey="";void loadInsights();render();});
   }
   function setMetric(metric){
     if(!["tokens","cost"].includes(metric)||metric===state.metric)return;
@@ -269,7 +387,7 @@
   function toggleClock(){setClockFormat(readPref("branchglanceClockFormat","12")==="12"?"24":"12");}
   function render(){
     if(!state.open)return;
-    const insightsKey=[state.version,state.source,state.range,state.metric,state.tab].join("|");
+    const insightsKey=[state.version,state.source,state.range,state.metric,state.tab,chartStyle()].join("|");
     if(insightsKey!==state.renderKey){dismissTooltip();state.renderKey=insightsKey;const insights=$("#dashboard-insights");if(insights)insights.innerHTML=insightsHTML();}
     const settings=$("#dashboard-settings");
     if(settings&&state.tab==="settings"){
@@ -283,9 +401,9 @@
     state.range=readPref("branchglanceInsightsRange","30d");if(!isRange(state.range))state.range="30d";
     state.metricExplicit=readPref("branchglanceInsightsMetric",null)!==null;state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
-    syncTabs();syncSegments();render();void loadInsights();
+    syncTabs();syncSegments();render();void loadInsights();void loadMonth();
     if(state.refreshTimer!=null)clearInterval(state.refreshTimer);
-    state.refreshTimer=setInterval(()=>{if(state.open&&!state.loading)void loadInsights();},120000);
+    state.refreshTimer=setInterval(()=>{if(state.open&&!state.loading)void loadInsights();void loadMonth();},120000);
   }
   function close(){
     state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
@@ -340,8 +458,10 @@
   function setSource(source){if(typeof source==="string"&&source!==state.source){state.source=source;state.renderKey="";render();}}
   document.addEventListener("click",event=>{
     const tab=event.target?.closest?.("[data-dashboard-tab]");if(tab){selectTab(tab.dataset.dashboardTab);return;}
+    const provider=event.target?.closest?.("[data-dashboard-provider]");if(provider){toggleProvider(provider.dataset.dashboardProvider);return;}
     const range=event.target?.closest?.("[data-dashboard-range]");if(range){setRange(range.dataset.dashboardRange);return;}
     const metric=event.target?.closest?.("[data-dashboard-metric]");if(metric){setMetric(metric.dataset.dashboardMetric);return;}
+    const style=event.target?.closest?.("[data-dashboard-chart-style]");if(style){setChartStyle(style.dataset.dashboardChartStyle);return;}
     const action=event.target?.closest?.("[data-dashboard-action]");if(!action)return;
     const name=action.dataset.dashboardAction;
     if(name==="close")window.tokenTrackerCloseDashboard?.();
@@ -350,9 +470,14 @@
     else if(name==="recenter")void window.tokenTrackerRecenter?.();
     else if(name==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
   });
-  document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);});
-  window.addEventListener("message",event=>{if(event.origin===location.origin&&event.source===state.frame?.contentWindow&&event.data?.type==="dashboard-reset-cancel")window.tokenTrackerCloseDashboard?.();});
+  document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);if(target?.dataset?.dashboardPlan)setPlanPrice(target.dataset.dashboardPlan,target.value);});
+  window.addEventListener("message",event=>{
+    if(event.origin!==location.origin||event.source!==state.frame?.contentWindow)return;
+    if(event.data?.type==="dashboard-reset-cancel")window.tokenTrackerCloseDashboard?.();
+    // The frame reports the Claude Code status; it shows in the "Claude tracking" row, not inside the frame.
+    if(event.data?.type==="dashboard-claude-status"){state.claudeStatus=String(event.data.text||"").slice(0,120);const node=$("#dash-claude-status");if(node)node.textContent=state.claudeStatus;}
+  });
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
-  window.TokenTrackerDashboard={open,close,setSource,setSnapshot,selectTab,render,loadSettings,state};
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,setSnapshot,setSource,setRange,setMetric,setClockFormat,loadInsights,state};
+  window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,state};
 })();

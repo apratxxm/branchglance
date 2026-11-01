@@ -46,7 +46,7 @@ function checkHits(markup,count){
   const hits=hitRects(markup);assert.equal(hits.length,count);
   if(!count)return;
   assert.equal(hits[0][0],0);assert.ok(Math.abs(hits.at(-1)[0]+hits.at(-1)[2]-668)<0.2);
-  for(const [,y,,height] of hits){assert.equal(y,6);assert.equal(height,92);}
+  for(const [,y,,height] of hits){assert.equal(y,1);assert.equal(height,98);}
   for(let i=1;i<hits.length;i++)assert.ok(Math.abs(hits[i-1][0]+hits[i-1][2]-hits[i][0])<0.2);
   if(count>1){const step=668/(count-1);for(let i=1;i<count;i++)assert.ok(Math.abs(hits[i][0]-(i-0.5)*step)<0.11);}
 }
@@ -68,8 +68,11 @@ assert.equal((html.match(/class="dash-none" role="img" aria-label="No published 
 assert.doesNotMatch(html,/dash-share/);
 assert.equal((html.match(/class="dash-axis-value"/g)||[]).length,3);
 assert.doesNotMatch(html,/<text class="dash-(axis-value|date)"/,"chart labels remain undistorted HTML");
-assert.match(html,/dash-legend-name">Claude<\/span><b>3\.2B<\/b>/);
-assert.match(html,/dash-legend-name">Codex<\/span><b>370M<\/b>/);
+assert.match(html,/class="dash-legend-name">Claude<\/span><b>3\.2B<\/b>/);
+assert.match(html,/class="dash-legend-name">Codex<\/span><b>370M<\/b>/);
+// Provider filtering lives in explicit chips beside the chart heading, not in the split table.
+assert.match(html,/class="dash-chip claude-color" data-dashboard-provider="Claude" aria-pressed="true"/);assert.doesNotMatch(html,/dash-legend-toggle/);
+assert.match(html,/30d \/ plan/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
 assert.ok(html.indexOf('dash-hero')<html.indexOf('dash-lower')&&html.indexOf('dash-lower')<html.indexOf('dash-chart-section'));
 assert.doesNotMatch(html,/Highest usage/);
 assert.match(html,/class="dash-lower is-single"/);
@@ -132,8 +135,7 @@ dashboard.state.metric="cost";dashboard.state.metricExplicit=true;dashboard.stat
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.match(html,/dash-hero-currency/);
-assert.match(html,/<p class="dash-cost-note">Recorded subtotal \/ estimate · Excludes Haiku 5\.5 \(no published price\)<\/p>/);
-assert.equal(html.match(/<p class="dash-cost-note">Recorded subtotal/g)?.length,1,"hero cost note appears exactly once");
+assert.doesNotMatch(html,/Recorded subtotal \/ estimate/,"the line under the hero figure is removed");
 assert.match(html,/Daily estimate excludes Codex/,"chart explains provider exclusions separately");
 // Complete pricing: no note.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,totals:{...p.totals,apiEquivalentCost:4,costPartial:false,unpricedModels:[]},series:p.series.map(r=>({...r,apiEquivalentCost:0.1}))}))})}];

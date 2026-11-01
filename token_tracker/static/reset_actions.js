@@ -1,13 +1,15 @@
 (() => {
   const $ = (s) => document.querySelector(s);
   const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
-  if(embedded){const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Change this with “Change Claude tracking…” below.";document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
+  if(embedded){const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Change this with “Change Claude tracking…” below.";const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="One-shot for the next genuine quota reset. Saving only arms it; nothing is sent now.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
   let settingsToken="";
   try {
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
     window.history?.replaceState?.(null,"",`${window.location.pathname}${window.location.search}`);
   } catch {}
-  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false };
+  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0 };
+  // The embedded frame never scrolls: the chat list shows a few rows at a time with Previous and Next.
+  const PAGE_SIZE = 3;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const message = (text, error=false) => { const el=$("#message"); el.textContent=text||""; el.classList.toggle("error",error); };
   const canChangeClaude = () => Boolean(settingsToken);
@@ -15,7 +17,7 @@
     const value=state.claude,status=$("#claude-status"),button=$("#claude-toggle"),explanation=$("#claude-explanation"),readOnly=$("#claude-readonly-note");
     if(!value){status.textContent="Unavailable";button.textContent="Turn on Claude Code";button.disabled=true;explanation.hidden=true;readOnly.hidden=canChangeClaude();return;}
     const labels={off:"Off",on:"On",partial:"Partially enabled",blocked:"Blocked",unavailable:"Unavailable",vetoed:"Turned off by an environment setting",checking:"Checking?"};
-    status.textContent=value.state==="checking"?"Checking… · Status is not confirmed.":[labels[value.state]||"Unavailable",value.reason,value.restartRequired?"Restart Branchglance to apply changes.":""].filter(Boolean).join(" · ");
+    status.textContent=value.state==="checking"?"Checking… · Status is not confirmed.":[labels[value.state]||"Unavailable",value.reason,value.restartRequired?"Restart Branchglance to apply changes.":""].filter(Boolean).join(" · ");status.title=status.textContent;if(embedded)window.parent.postMessage({type:"dashboard-claude-status",text:status.textContent},window.location.origin);
     const cleanup=(value.state==="blocked"||value.state==="vetoed")&&Boolean(value.consent||(value.hooks?.installed||0)>0);
     const turningOff=["on","partial"].includes(value.state)||cleanup;
     button.textContent=turningOff?"Turn off":"Turn on Claude Code";
@@ -67,7 +69,7 @@
     const greet=$("#greet-help"),continuation=$("#continue-help"),note=$("#permission");
     if(greet)greet.textContent=state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.";
     if(continuation)continuation.textContent=state.canContinue?"Queue the exact message “continue” for the next genuine reset.":"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.";
-    if(note)note.textContent=!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy.show||!state.policy.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue?"Chat continuation requires explicit Codex send permission.":"";
+    if(note)note.textContent=!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy.show||!state.policy.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue&&!embedded?"Chat continuation requires explicit Codex send permission.":"";
   }
   function render() {
     const cont=mode()==="continue"; $("#picker").hidden=!cont;
@@ -80,15 +82,22 @@
     updatePermissionCopy();
     const query=$("#search").value.trim().toLocaleLowerCase();
     const available=state.threads.filter(t=>t.status!=="archived"&&String(t.title||"").toLocaleLowerCase().includes(query));
-    $("#threads").innerHTML=available.length?available.map(t=>`<label class="thread"><input type="checkbox" data-id="${esc(t.id)}" ${state.selected.has(t.id)?"checked":""}><span class="thread-title" title="${esc(t.title)}">${esc(t.title||"Untitled chat")}</span><span class="status">${esc(t.status||"unknown")}</span></label>`).join(""):'<div class="empty">No matching chats.</div>';
+    const pages=embedded?Math.max(1,Math.ceil(available.length/PAGE_SIZE)):1;
+    state.page=Math.min(Math.max(0,state.page),pages-1);
+    const visible=embedded?available.slice(state.page*PAGE_SIZE,(state.page+1)*PAGE_SIZE):available;
+    $("#threads").innerHTML=visible.length?visible.map(t=>`<label class="thread"><input type="checkbox" data-id="${esc(t.id)}" ${state.selected.has(t.id)?"checked":""}><span class="thread-title" title="${esc(t.title)}">${esc(t.title||"Untitled chat")}</span><span class="status">${esc(t.status||"unknown")}</span></label>`).join(""):'<div class="empty">No matching chats.</div>';
+    const pager=$("#pager");
+    if(pager){pager.hidden=!embedded||available.length<=PAGE_SIZE;$("#page-info").textContent=available.length?`${state.page*PAGE_SIZE+1}–${state.page*PAGE_SIZE+visible.length} of ${available.length}`:"";$("#page-prev").disabled=state.page<=0;$("#page-next").disabled=state.page>=pages-1;}
     $("#selected-count").textContent=`${state.selected.size} selected`;
     $("#save").disabled=state.busy||!state.policyReady||!state.canGreet&&!state.canContinue;
     renderLastRun(state.action?.lastRun);
   }
   function renderLastRun(run) {
     const box=$("#last-run"); if(!run){box.hidden=true;box.textContent="";return;}
-    const rows=Array.isArray(run.targets)?run.targets:[];
-    box.hidden=false; box.innerHTML=`<h2>Last reset action</h2><div>${esc(run.at||"Time unavailable")}</div>${rows.length?`<ul>${rows.map(t=>`<li>${esc(titleFor(t.threadId))}: ${esc(t.status||"unknown")}${t.reason?` — ${esc(t.reason)}`:""}</li>`).join("")}</ul>`:"<div>No target details recorded.</div>"}`;
+    const all=Array.isArray(run.targets)?run.targets:[],rows=embedded?all.slice(0,2):all,more=all.length-rows.length;
+    if(embedded){const when=new Date(run.at||""),stamp=Number.isNaN(when.getTime())?String(run.at||"Time unavailable"):when.toLocaleString([],{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}),skipped=all.filter(t=>t.status==="skipped").length;
+      box.hidden=false;box.innerHTML=`<h2>Last reset action</h2><span>${esc(stamp)} · ${all.length} ${all.length===1?"chat":"chats"}${skipped?`, ${skipped} skipped`:""}</span>`;box.title=all.map(t=>`${titleFor(t.threadId)}: ${t.status||"unknown"}${t.reason?` — ${t.reason}`:""}`).join(String.fromCharCode(10));return;}
+    box.hidden=false; box.innerHTML=`<h2>Last reset action</h2><div>${esc(run.at||"Time unavailable")}</div>${rows.length?`<ul>${rows.map(t=>`<li>${esc(titleFor(t.threadId))}: ${esc(t.status||"unknown")}${t.reason?` — ${esc(t.reason)}`:""}</li>`).join("")}</ul>${more>0?`<div>+${more} more</div>`:""}`:"<div>No target details recorded.</div>"}`;
   }
   function titleFor(id) { return state.threads.find(t=>t.id===id)?.title || id || "Unknown chat"; }
   async function load() {
@@ -131,8 +140,8 @@
   }
   document.addEventListener("change",e=>{if(e.target.matches('input[name="mode"]')){state.dirty=true;render();}if(e.target.matches('#threads input[type="checkbox"]')){state.dirty=true;e.target.checked?state.selected.add(e.target.dataset.id):state.selected.delete(e.target.dataset.id);render();}});
   document.addEventListener("keydown",event=>{if(embedded&&event.key==="Escape"){event.preventDefault();window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);}});
-  $("#search").addEventListener("input",render); $("#refresh").addEventListener("click",load); $("#save").addEventListener("click",save);
+  $("#search").addEventListener("input",()=>{state.page=0;render();}); $("#page-prev")?.addEventListener("click",()=>{state.page--;render();}); $("#page-next")?.addEventListener("click",()=>{state.page++;render();}); $("#refresh").addEventListener("click",load); $("#save").addEventListener("click",save);
   $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();});
   load();loadClaude();
-  if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};
+  if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};
 })();

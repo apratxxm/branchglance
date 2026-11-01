@@ -107,7 +107,7 @@ assert.match(dashboard.settingsHTML(),/Version &lt;script&gt;\+&amp;/,"identity 
 dashboard.state.identity=null;
 assert.doesNotMatch(dashboard.settingsHTML(),/Version /,"missing identity is not fabricated");
 assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget open/);
-assert.match(settings,/Current provider policy/);assert.match(settings,/Monitor/);assert.match(settings,/Recenter/);
+assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/<small>send<\/small><b>Off<\/b>/,"provider rows state their flags inline");assert.match(settings,/Monitor/);assert.match(settings,/Recenter/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
 assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Change Claude tracking/);
 assert.match(source,/open_reset_actions/);

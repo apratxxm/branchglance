@@ -68,7 +68,7 @@ await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost","an explicit Cost choice survives later loads");
 const partial=dashboard.insightsHTML();
 assert.match(partial,/dash-hero-currency/);
-assert.match(partial,/<p class="dash-cost-note">Recorded subtotal \/ estimate · Excludes GPT-6 Luna and GPT-6\.1 Sol \(no published price\)<\/p>/);
+assert.doesNotMatch(partial,/Recorded subtotal \/ estimate/,"the subtotal line under the figure is removed");
 
 // A reopen with the stored explicit Cost choice keeps Cost.
 values.set("branchglanceInsightsMetric","cost");
@@ -85,24 +85,69 @@ dashboard.state.metric="cost";dashboard.state.metricExplicit=false;
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost","unpriced share is under half, so Cost stays the default");
 
-// (3) Model table shows the top five with a "+N more" line; fewer than six rows show no line.
-const many=Array.from({length:7},(_,index)=>({name:`claude-opus-${index}.5`,tokens:(7-index)*1e8,apiEquivalentCost:(7-index)}));
+// (3) Model table shows up to seven rows, which fit the fixed panel, with a "+N more" line beyond that; fewer rows show no line.
+const many=Array.from({length:8},(_,index)=>({name:`claude-opus-${index}.5`,tokens:(8-index)*1e8,apiEquivalentCost:(8-index)}));
 dashboard.state.insights=payload([{name:"Claude",totals:{tokens:2.8e9,apiEquivalentCost:28,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(2.8e9),models:many,limitPeaks:{fiveHour:null,weekly:null}}]);
 dashboard.state.metric="cost";
 let html=dashboard.insightsHTML();
-assert.equal((html.match(/class="dash-model-row"/g)||[]).length,5);
-assert.match(html,/<div class="dash-model-more">\+2 more<\/div>/);
+assert.equal((html.match(/class="dash-model-row"/g)||[]).length,7,"top six models plus one Other row");
+assert.match(html,/Other · 2 models/,"the models beyond the top six sum into one Other row");
 const few=many.slice(0,5);
 dashboard.state.insights=payload([{name:"Claude",totals:{tokens:2.8e9,apiEquivalentCost:28,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(2.8e9),models:few,limitPeaks:{fiveHour:null,weekly:null}}]);
 html=dashboard.insightsHTML();
 assert.equal((html.match(/class="dash-model-row"/g)||[]).length,5);
-assert.doesNotMatch(html,/dash-model-more/);
+assert.doesNotMatch(html,/Other ·/,"no Other row when every model fits");
 
-// (4) Insights body scrolls inside the window with a thin, subtle scrollbar; the old hidden-scrollbar rules no longer apply to it.
-assert.match(css,/\.dashboard-content\{[^}]*overflow:auto[^}]*scrollbar-width:thin/);
-assert.match(css,/\.dashboard-content::-webkit-scrollbar-thumb\{background:#2b2f38/);
-assert.doesNotMatch(css,/\.dashboard-content::-webkit-scrollbar\{display:none/);
+// (4) Insights and Settings never scroll: the shared body is clipped to the fixed panel at every range and on both tabs.
+assert.match(css,/\.dashboard-content\{[^}]*overflow:hidden/);
+assert.doesNotMatch(css,/\.dashboard-content\{[^}]*overflow:auto/);
+assert.doesNotMatch(css,/data-tab="settings"\] \.dashboard-content\{[^}]*overflow:auto/);
 assert.match(css,/\.dashboard-view :not\(\.dashboard-content\)\{scrollbar-width:none;\}/);
 assert.match(css,/\.dash-model-more\{/);
+
+// (5) Plan multiple: rolling 30-day API-equivalent cost over the plan price (default $20), shown per provider in the legend. Unpriced models give a lower bound, and unpriced providers are named, never a silent dash.
+dashboard.state.month={providers:[
+  {name:"Claude",totals:{costPartial:false},models:[],series:[{date:"2026-10-05",tokens:1e6,apiEquivalentCost:68}]},
+  {name:"Codex",totals:{costPartial:true,unpricedModels:["gpt-6.1-terra"]},models:[],series:[{date:"2026-10-05",tokens:5e5,apiEquivalentCost:null}]}
+]};
+dashboard.state.monthError=false;
+values.delete("branchglancePlanPrice.Claude");
+let planCells=dashboard.planCellsHTML("Claude");
+assert.match(planCells,/>3\.4×</,"priced provider shows its multiple against the $20 default");
+assert.doesNotMatch(planCells,/≥|some unpriced/,"fully priced provider has no lower-bound marker");
+assert.equal((planCells.match(/class="dash-plan-(cell|note-cell)"/g)||[]).length,2,"one multiple cell and one marker cell per row");
+assert.match(dashboard.planCellsHTML("Codex"),/>Unpriced</,"a provider with no priced cost is named, not dashed");
+dashboard.state.month.providers[0].totals.unpricedModels=["claude-haiku-5-5"];
+planCells=dashboard.planCellsHTML("Claude");
+assert.match(planCells,/≥3\.4×/,"unpriced models make the multiple a lower bound");
+assert.match(planCells,/some unpriced/);
+dashboard.state.month.providers[0].totals.unpricedModels=[];
+values.set("branchglancePlanPrice.Claude","40");
+assert.match(dashboard.planCellsHTML("Claude"),/>1\.7×</,"the editable plan price is used");
+dashboard.setPlanPrice("Claude","0");
+assert.equal(dashboard.state.settingsError,true,"a plan price of zero is refused");
+assert.equal(values.get("branchglancePlanPrice.Claude"),"40","the stored price is kept when the input is refused");
+dashboard.state.monthError=true;
+assert.match(dashboard.planCellsHTML("Claude"),/Unavailable/,"a failed rolling-30-day load says so");
+dashboard.state.monthError=false;
+
+// (6) Chart style switch: stacked by default, lines on request, remembered, and rendered as a two-button group in the chart header.
+values.delete("branchglanceChartStyle");
+let styled=dashboard.insightsHTML();
+assert.match(styled,/data-dashboard-chart-style="stacked" aria-pressed="true"/);assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="false"/);
+assert.doesNotMatch(styled,/class="dash-chart is-lines"/);
+dashboard.setChartStyle("lines");
+assert.equal(values.get("branchglanceChartStyle"),"lines","the chart style is remembered");
+styled=dashboard.insightsHTML();
+assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="true"/);assert.match(styled,/class="dash-chart is-lines"/);
+dashboard.setChartStyle("area");assert.equal(values.get("branchglanceChartStyle"),"lines","unknown styles are ignored");
+dashboard.setChartStyle("stacked");
+
+// (7) Review round: "30d / plan" header, square-root bars that follow the metric, provider chips, collapsed Highest usage.
+styled=dashboard.insightsHTML();
+assert.match(styled,/<i class="dash-model-bar[^"]*" aria-hidden="true"><em class="[a-z]+" style="width:100\.0%"/,"the largest row fills its bar; others follow a square-root scale");
+for(const p of dashboard.state.insights.providers)p.limitPeaks={fiveHour:100,weekly:100};
+styled=dashboard.insightsHTML();
+assert.match(styled,/dash-limits is-collapsed/);assert.doesNotMatch(styled,/dash-peaks-table/,"everything at 100% collapses Highest usage to one line");
 
 console.log("Insights polish contracts passed");
