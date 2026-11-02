@@ -2741,8 +2741,12 @@ def _insights_hour_from_timestamp(value: Any, fallback_epoch: float | None = Non
     epoch = _timestamp_epoch(value) if value else fallback_epoch
     if epoch is None:
         return None
-    return datetime.fromtimestamp(epoch, _local_timezone()).replace(
-        minute=0, second=0, microsecond=0).isoformat()
+    return _local_hour_at(epoch).replace(minute=0, second=0, microsecond=0).isoformat()
+
+
+def _local_hour_at(epoch: float) -> datetime:
+    """Local time at an instant, including the system offset at that instant."""
+    return datetime.fromtimestamp(epoch).astimezone()
 
 
 def _insights_add_model(bucket: dict[str, Any], model: str, usage: dict[str, int]) -> None:
