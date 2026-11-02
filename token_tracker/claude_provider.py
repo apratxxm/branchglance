@@ -671,7 +671,8 @@ def _local_hour_key(epoch: int, tz: Any, cache: dict[int, str]) -> str:
     minute = epoch // 60
     key = cache.get(minute)
     if key is None:
-        key = datetime.fromtimestamp(epoch, tz).replace(minute=0, second=0, microsecond=0).isoformat()
+        from .providers import _local_hour_at
+        key = _local_hour_at(epoch).replace(minute=0, second=0, microsecond=0).isoformat()
         cache[minute] = key
     return key
 
