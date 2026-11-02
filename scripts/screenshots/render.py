@@ -17,6 +17,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
@@ -159,15 +160,59 @@ def live_get(base, raw_path):
         return response.read()
 
 
+def capture_payload(base, attempts=6):
+    """Fetch a compatible stats/live pair before starting the browser.
+
+    The app caches each endpoint separately, so a live snapshot can briefly trail the stats one;
+    retry until they line up instead of failing the capture.
+    """
+    for attempt in range(attempts):
+        try:
+            return _capture_payload_once(base)
+        except ValueError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
+
+
+def _capture_payload_once(base):
+    data = []
+    for path in ("/api/stats", "/api/live"):
+        started = time.monotonic()
+        payload = json.loads(live_get(base, path))
+        print(f"prefetch {path}: {(time.monotonic() - started)*1000:.0f} ms", flush=True)
+        data.append(payload)
+    stats, live = data
+    try:
+        stats_at = dt.datetime.fromisoformat(stats["generatedAt"].replace("Z", "+00:00"))
+        live_at = dt.datetime.fromisoformat(live["generatedAt"].replace("Z", "+00:00"))
+        if not isinstance(stats["providers"], list) or not isinstance(live["chats"], list):
+            raise ValueError("invalid lists")
+        if live_at < stats_at or live_at > dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=60):
+            raise ValueError("live timestamp is older than stats or in the future")
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Cannot capture live snapshot: {error}") from error
+    return {"stats": stats, "live": live}
+
+
 class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, responses=None, live=None, **kwargs):
+    def __init__(self, *args, responses=None, live=None, capture=None, **kwargs):
         self.responses = responses or {}
         self.live = live
+        self.capture = capture
         super().__init__(*args, directory=str(STATIC), **kwargs)
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        if path.startswith("/api/"):
+        print(f"page request {self.path} at {time.monotonic():.3f}", flush=True)
+        if path == "/capture-ready":
+            if self.capture is None or self.capture.get("payload") is None:
+                self.send_error(400)
+                return
+            self.capture["ready"] = True
+            print(f"live snapshot applied and rendered at {time.monotonic():.3f}", flush=True)
+            data, content_type = b"ok", "text/plain"
+        elif path.startswith("/api/"):
             if self.live is not None:
                 data = live_get(self.live, self.path)
                 if data is None:
@@ -220,7 +265,9 @@ class Handler(SimpleHTTPRequestHandler):
             content_type = "text/html; charset=utf-8"
         elif path == "/runway.html":
             html = (STATIC / "runway.html").read_text(encoding="utf-8")
-            data = html.replace("</body>", '<script src="/screenshot-fixture.js"></script></body>').encode()
+            payload = self.capture.get("payload") if self.capture else None
+            inline = ("<script>window.__captureLive=" + json.dumps(payload).replace("<", "\\u003c") + ";</script>") if payload else ""
+            data = html.replace("</body>", inline + '<script src="/screenshot-fixture.js"></script></body>').encode()
             content_type = "text/html; charset=utf-8"
         else:
             return super().do_GET()
@@ -271,8 +318,9 @@ def main():
         raise SystemExit("--reset-continue uses fixtures; drop --live")
     live = live_base(args.live_port) if args.live else None
     ranges = [item.strip() for item in args.insights_ranges.split(",") if item.strip()]
+    capture = {"payload": None, "ready": False}
     server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(
-        Handler, responses=None if live else fixtures(args.models, args.reset_continue), live=live))
+        Handler, responses=None if live else fixtures(args.models, args.reset_continue), live=live, capture=capture))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -291,6 +339,9 @@ def main():
                             ("tree", "tree-expanded.png", 560, 420),
                             ("insights-24h", "insights.png", 720, 608)]
             for mode, filename, width, height in captures:
+                live_tree = bool(live and (mode == "collapsed" or mode.startswith("tree")))
+                capture["payload"] = capture_payload(live) if live_tree else None
+                capture["ready"] = False
                 page = {"collapsed": "capture.html", "reset-frame": "reset-frame.html"}.get(mode, f"runway.html?review=1&capture={mode}" + ("&live=1" if live else ""))
                 url = f"http://127.0.0.1:{server.server_port}/{page}"
                 command = [str(edge_path()), "--headless", "--disable-gpu", "--hide-scrollbars",
@@ -301,7 +352,10 @@ def main():
                 for attempt in range(2):
                     # Headless Edge occasionally hangs on a page that polls the live app; one retry is enough.
                     try:
+                        capture["ready"] = False
                         subprocess.run(command, check=True, timeout=60)
+                        if live_tree and not capture["ready"]:
+                            raise RuntimeError("Live capture did not apply and render its snapshot")
                         break
                     except subprocess.TimeoutExpired:
                         if attempt:

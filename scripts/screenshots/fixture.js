@@ -7,21 +7,23 @@
     get_monitors: () => Promise.resolve([])
   }};
   window.addEventListener("load", async () => {
-    const snapshot = await (await fetch("/api/stats")).json();
+    const liveCapture = (mode === "tree" || mode === "collapsed") && new URLSearchParams(location.search).get("live") === "1";
+    const prefetched = window.__captureLive;
+    if (liveCapture && !prefetched) throw new Error("Missing prefetched live snapshot");
+    const snapshot = liveCapture ? prefetched.stats : await (await fetch("/api/stats")).json();
     const tracker = window.__tokenTrackerTest;
     tracker.state.providerPolicy = snapshot.providerPolicies;
     tracker.state.providerPolicyReady = true;
+    if (liveCapture) {
+      const sample = prefetched.live, sampleAt = Date.parse(sample.generatedAt);
+      if (!Array.isArray(sample.chats) || !Number.isFinite(sampleAt) || sampleAt <= 0 || sampleAt > Date.now() || sampleAt < Date.parse(snapshot.generatedAt)) throw new Error("Invalid live capture snapshot");
+      tracker.state.live = sample;
+      tracker.state.liveAcceptedGeneratedAt = sampleAt;
+      tracker.state.liveSampleAccepted = true;
+      tracker.applyLive(snapshot, sample);
+    }
     tracker.render(snapshot);
     tracker.setupNotch();
-    // Live mode: poll /api/live exactly as the app does (GET only), so running chats arrive with the evidence the tree needs.
-    if ((mode === "tree" || mode === "collapsed") && new URLSearchParams(location.search).get("live") === "1") {
-      tracker.state.snapshot = tracker.state.snapshot || snapshot;
-      // The app's own start-up load can hold pollLive back; retry until a live sample has been accepted.
-      for (let attempt = 0; attempt < 12 && !tracker.state.live && tracker.pollLive; attempt++) {
-        await tracker.pollLive();
-        if (!tracker.state.live) await new Promise(resolve => setTimeout(resolve, 150));
-      }
-    }
     // routing=codex|claude|both: a healthy first reading, then a crossing, so the routing alert fires as it does live.
     const routing = new URLSearchParams(location.search).get("routing");
     if (routing) {
@@ -81,6 +83,13 @@
       }
     } else {
       tracker.setNotch(false);
+    }
+    if (liveCapture) {
+      // A synchronous acknowledgement makes a missing or failed application visible to the harness.
+      const ready = new XMLHttpRequest();
+      ready.open("GET", "/capture-ready", false);
+      ready.send();
+      if (ready.status !== 200) throw new Error("Live capture readiness acknowledgement failed");
     }
   });
 })();
