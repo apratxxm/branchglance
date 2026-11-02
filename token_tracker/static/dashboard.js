@@ -234,7 +234,9 @@
     // In Cost view a model with no published price gets an empty bar, not a zero-length one that reads as "free".
     const barKey=data.heroKey==="apiEquivalentCost"?"apiEquivalentCost":"tokens";
     const barMax=Math.max(0,...modelRows.map(row=>finite(row[barKey])||0));
-    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head"><span>Models</span><small aria-hidden="true"></small><small>Tokens</small><small title="API-equivalent estimate">Est. cost</small></div>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<div class="dash-model-row"><span class="dash-model-name ${row.family}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag" title="Includes long-context usage">long ctx</small>':'<small class="dash-model-tag is-empty" aria-hidden="true"></small>'}<i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i><b>${esc(number(row.tokens))}</b><b title="Estimated API-equivalent cost">${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">—</span>':esc(money(row.apiEquivalentCost))}</b></div>`;}).join("")}</div>`:"";
+    const work=workData(),workView=work!=null&&modelsView()==="work";
+    if(workView)return hero+`<section class="dash-lower is-single${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${chartHTML}</section>`+statusHTML;
+    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head">${work?breakdownToggle("models"):"<span>Models</span>"}<small aria-hidden="true"></small><small>Tokens</small><small title="API-equivalent estimate">Est. cost</small></div>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<div class="dash-model-row"><span class="dash-model-name ${row.family}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag" title="Includes long-context usage">long ctx</small>':'<small class="dash-model-tag is-empty" aria-hidden="true"></small>'}<i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i><b>${esc(number(row.tokens))}</b><b title="Estimated API-equivalent cost">${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">—</span>':esc(money(row.apiEquivalentCost))}</b></div>`;}).join("")}</div>`:"";
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
     const peakCell=value=>value==null?'<span aria-label="Not recorded">—</span>':`${Math.round(value)}%`;
     const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value!=null&&value>=99.5));
@@ -244,6 +246,90 @@
     // Models and the side column share one row; the chart runs the full width under both. Without a chart (24h has no hourly series) the row stretches to the panel body.
     const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}${chartHTML?"":" is-day"}">${modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:""}${side}${chartHTML}</section>`:chartHTML;
     return hero+lower+statusHTML;
+  }
+  // By work: ledger tokens per model and kind of work. It takes the place of the Models list and the side column, so the panel never grows.
+  // Kinds outside the classifier's list fold into Other, so every cell, row and column adds up to the ledger's totals.
+  const WORK_KINDS=["build","review","check","research","chore","design","explore","lead","other"];
+  const compact=new Intl.NumberFormat("en-US",{notation:"compact",maximumFractionDigits:1});
+  const modelsView=()=>readPref("branchglanceModelsView","models")==="work"?"work":"models";
+  const workCell=()=>({tokens:0,known:0,priced:false,unpriced:false});
+  const addCell=(into,cell)=>{into.tokens+=cell.tokens;into.known+=cell.known;into.priced=into.priced||cell.priced;into.unpriced=into.unpriced||cell.unpriced;return into;};
+  function workData(){
+    const ledger=state.ledger;
+    if(!ledger||state.ledgerRange!==state.range||!Array.isArray(ledger.rows)||!ledger.rows.length)return null;
+    const byModel=new Map();
+    for(const row of ledger.rows){
+      const tokens=finite(row.totalTokens)||0;if(tokens<=0)continue;
+      const kind=WORK_KINDS.includes(row.kind)?row.kind:"other",id=`${row.provider}\u0000${row.modelId}`;
+      let model=byModel.get(id);
+      if(!model)byModel.set(id,model={provider:String(row.provider||""),name:modelName(row.modelId)||String(row.displayName||"unknown"),raw:row.modelId,total:0,cells:{}});
+      const cost=finite(row.knownCostUsd);
+      addCell(model.cells[kind]||(model.cells[kind]=workCell()),{tokens,known:cost||0,priced:cost!=null,unpriced:row.costComplete===false||finite(row.unpricedTokens)>0||cost==null});
+      model.total+=tokens;
+    }
+    const ranked=[...byModel.values()].sort((a,b)=>b.total-a.total);
+    if(!ranked.length)return null;
+    // Four rows fit in the Models list's height; past that the top three show and the rest sum into one Other row.
+    let rows=ranked;
+    if(ranked.length>4){
+      const rest=ranked.slice(3),other={provider:"",name:`Other · ${rest.length} models`,other:true,total:0,cells:{}};
+      for(const model of rest){other.total+=model.total;for(const [kind,cell] of Object.entries(model.cells))addCell(other.cells[kind]||(other.cells[kind]=workCell()),cell);}
+      rows=[...ranked.slice(0,3),other];
+    }
+    // The same model name under two providers (unknown, say) gets its provider appended.
+    const names=rows.map(row=>row.name);
+    rows.forEach(row=>{if(!row.other&&names.filter(name=>name===row.name).length>1)row.name+=` · ${row.provider}`;});
+    const kinds=WORK_KINDS.filter(kind=>rows.some(row=>row.cells[kind]?.tokens>0));
+    const totals={cells:{},all:workCell()};
+    for(const row of rows){row.sum=workCell();for(const kind of kinds){const cell=row.cells[kind];if(cell){addCell(totals.cells[kind]||(totals.cells[kind]=workCell()),cell);addCell(row.sum,cell);addCell(totals.all,cell);}}}
+    return {rows,kinds,totals,coverage:ledger.coverage||{},service:ledger.service||{}};
+  }
+  function workCost(cell){
+    if(!cell.priced)return "No published price";
+    return `${cell.unpriced?"≥ ":""}${money(cell.known)} API-equivalent${cell.unpriced?" (some usage has no published price)":""}`;
+  }
+  // Coverage stays visible: anything short of complete says so, with its causes.
+  function workNote(work){
+    const coverage=work.coverage;
+    if(work.service.state==="error")return {text:"Ledger paused",title:"The ledger hit an error and is retrying; figures are from its last pass."};
+    if(coverage.status==="catching-up")return {text:"Catching up",title:"Still reading older transcripts; totals will grow."};
+    if(coverage.status==="verifying")return {text:"Verifying",title:"Some recent usage is waiting for its file to be re-checked."};
+    if(coverage.status!=="partial")return null;
+    const causes=[[coverage.gapCount,"gap","gaps"],[coverage.unknownUsageRecords,"turn without usage","turns without usage"],[coverage.readFailures,"read failure","read failures"]]
+      .filter(([count])=>finite(count)>0).map(([count,one,many])=>`${number(count)} ${count===1?one:many}`);
+    const missing=Array.isArray(coverage.providersNotCollected)&&coverage.providersNotCollected.length?[`${coverage.providersNotCollected.join(", ")} not collected`]:[];
+    const all=[...causes,...missing];
+    return {text:`Partial${all.length?` · ${all[0]}`:""}`,title:`Some usage could not be counted exactly: ${all.join(", ")||"see coverage"}.`};
+  }
+  const breakdownToggle=active=>`<span class="dash-breakdown" role="group" aria-label="Breakdown">${[["models","Models"],["work","By work"]].map(([value,label])=>`<button type="button" data-dashboard-models="${value}" aria-pressed="${active===value}" class="${active===value?"is-active":""}"${value==="work"?' title="Tokens by kind of work. Kind is inferred from job titles and kind: tags."':""}>${label}</button>`).join("")}</span>`;
+  function workHTML(work){
+    const note=workNote(work),label=kind=>kind[0].toUpperCase()+kind.slice(1);
+    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero" aria-label="None">·</span>'
+      :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(compact.format(cell.tokens))}</span>`;
+    const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span></span>${work.kinds.map(kind=>`<span role="columnheader">${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
+    const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}"${row.other?"":` title="${esc(`${row.provider} · ${row.name}`)}"`}><i></i>${esc(row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
+    const foot=`<div role="row" class="dash-work-row is-foot"><span role="rowheader">Total</span>${work.kinds.map(kind=>cellHTML(work.totals.cells[kind],"All models",label(kind),true)).join("")}${cellHTML(work.totals.all,"All models","all work",true)}</div>`;
+    return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}"><div class="dash-section-label dash-work-head">${breakdownToggle("work")}${note?`<small class="dash-work-note is-qualified" title="${esc(note.title)}">${esc(note.text)}</small>`:"<small>Tokens</small>"}</div><div class="dash-work-grid" role="table" aria-label="Tokens by model and kind of work">${head}${body}${foot}</div></div>`;
+  }
+  async function loadLedger(range){
+    const token=state.ledgerToken=(state.ledgerToken||0)+1;
+    const drop=()=>{if(state.ledger!=null){state.ledger=null;state.ledgerKey="";state.renderKey="";render();}};
+    try{
+      const response=await fetch("/api/ledger?range="+encodeURIComponent(range),{cache:"no-store"});
+      if(token!==state.ledgerToken)return;
+      if(!response.ok){drop();return;}
+      const value=await response.json();if(token!==state.ledgerToken)return;
+      if(!Array.isArray(value?.rows)){drop();return;}
+      // Compare what the view shows, not just the revision: hours age out of a rolling range without any new ingestion.
+      const key=JSON.stringify([range,value.range,value.rows,value.coverage,value.pricingVersion,value.service?.state]);
+      if(key===state.ledgerKey&&state.ledgerRange===range)return;
+      state.ledger=value;state.ledgerRange=range;state.ledgerKey=key;state.renderKey="";render();
+    }catch{if(token===state.ledgerToken)drop();}
+  }
+  function setModelsView(value){
+    if(value!=="models"&&value!=="work")return;
+    dismissTooltip();writePref("branchglanceModelsView",value);state.renderKey="";render();
+    document.querySelector(`[data-dashboard-models="${value}"]`)?.focus();
   }
   // Plan multiple: 30-calendar-day (incl. today) API-equivalent cost over the plan price, per provider. It reads the 30-day window whatever range is selected, so the multiple means the same on every tab.
   const PLAN_PROVIDERS=["Claude","Codex"];
@@ -435,6 +521,10 @@
   }
   async function loadInsights(){
     const token=++state.loadToken,requestRange=state.range;
+    // The ledger loads after Insights settles, so it never delays or reorders the main request.
+    try{return await loadInsightsOnce(token,requestRange);}finally{if(token===state.loadToken)void loadLedger(requestRange);}
+  }
+  async function loadInsightsOnce(token,requestRange){
     state.loading=true;state.loadError=false;updateStatusLine();
     const current=()=>token===state.loadToken;
     const accept=(value,failed=false,unavailable=false)=>{
@@ -479,6 +569,7 @@
     const provider=event.target?.closest?.("[data-dashboard-provider]");if(provider){toggleProvider(provider.dataset.dashboardProvider);return;}
     const range=event.target?.closest?.("[data-dashboard-range]");if(range){setRange(range.dataset.dashboardRange);return;}
     const metric=event.target?.closest?.("[data-dashboard-metric]");if(metric){setMetric(metric.dataset.dashboardMetric);return;}
+    const breakdown=event.target?.closest?.("[data-dashboard-models]");if(breakdown){setModelsView(breakdown.dataset.dashboardModels);return;}
     const style=event.target?.closest?.("[data-dashboard-chart-style]");if(style){setChartStyle(style.dataset.dashboardChartStyle);return;}
     const action=event.target?.closest?.("[data-dashboard-action]");if(!action)return;
     const name=action.dataset.dashboardAction;
@@ -497,5 +588,5 @@
   });
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,state};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,workData,workHTML,workNote,loadLedger,state};
 })();

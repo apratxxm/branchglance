@@ -183,12 +183,24 @@ class Ledger:
             self._rebuild(conn)
 
     def purge(self, provider: str) -> None:
-        """Delete everything stored for one provider (facts, rollups, cursors, gaps, overrides)."""
+        """Delete everything stored for one provider, in one transaction.
+
+        Facts, rollups, cursors, gaps, overrides, provider-scoped coverage metadata and the in-memory
+        partial verification for that provider go together. Other providers' rows are untouched.
+        Quarantined database copies are removed after the commit: they are whole-database snapshots of
+        corrupt files, and recovery rebuilds from the retained transcripts.
+        """
         if provider not in ledger_model.PROVIDERS:
             raise ValueError(f"unknown provider: {provider}")
         with store.transaction(self.conn) as conn:
             store.purge_provider(conn, provider)
             store.meta_set(conn, "revision", int(store.meta_value(conn, "revision") or 0) + 1)
+        self._ingestor.forget_provider(provider)
+        self._remove_quarantined_copies()
+
+    def _remove_quarantined_copies(self) -> None:
+        for path in self.data_dir.glob(self.db_path.name + ".corrupt-*"):
+            path.unlink(missing_ok=True)
 
     def _rebuild(self, conn: sqlite3.Connection) -> None:
         store.rebuild_rollups(conn, store.load_overrides(conn))
