@@ -1,0 +1,33 @@
+name: Bug report
+description: Something in Branchglance is wrong, missing or confusing.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open the widget\n2. ..."
+  - type: input
+    id: version
+    attributes:
+      label: Branchglance version
+      description: Shown at the bottom of Settings, e.g. 0.1.0.
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider involved
+      options: [Codex, Claude Code, Both, Not sure]
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs
+      description: Please remove prompts, paths and anything private first.

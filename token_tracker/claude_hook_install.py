@@ -67,9 +67,14 @@ class _SettingsSnapshot:
                 and self.device == other.device and self.inode == other.inode and self.size == other.size)
 
 
+def claude_config_dir(home: Path | None = None) -> Path:
+    """Resolve Claude's user configuration, retaining the legacy override priority."""
+    configured = os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(configured) if configured else (home or Path.home()) / ".claude"
+
+
 def default_settings_path() -> Path:
-    home = os.environ.get("CLAUDE_HOME")
-    return (Path(home) if home else Path.home() / ".claude") / "settings.json"
+    return claude_config_dir() / "settings.json"
 
 
 def _bash_quote(value: str | os.PathLike[str]) -> str:
@@ -475,13 +480,39 @@ def _consent_file(data_directory: str | os.PathLike[str] | None) -> Path:
     return (Path(data_directory) if data_directory is not None else Path(claude_hook.data_dir())) / claude_hook.CONSENT_NAME
 
 
-def _write_consent(data_directory: str | os.PathLike[str] | None, now: float, command: str) -> None:
+def _write_consent(data_directory: str | os.PathLike[str] | None, now: float, command: str,
+                   settings_path: Path) -> None:
     marker = _consent_file(data_directory)
     marker.parent.mkdir(parents=True, exist_ok=True)
     # The installed executable is recorded so a later uninstall/status can
     # recognise our groups even when the configured launcher path changed.
     marker.write_text(json.dumps({"version": 1, "enabled": True, "createdAt": round(now, 3),
-                                  "executable": _executable_of(command)}), encoding="utf-8")
+                                  "executable": _executable_of(command),
+                                  "settingsPath": str(settings_path)}), encoding="utf-8")
+
+
+def _recorded_settings_path(data_directory: str | os.PathLike[str] | None) -> tuple[str, Path | None]:
+    """("recorded", path) | ("legacy", None) for a valid record written before
+    targets were recorded | ("invalid", None) for anything unreadable or malformed."""
+    try:
+        record = json.loads(_consent_file(data_directory).read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            return "invalid", None
+        if "settingsPath" not in record:
+            # The only format written before targets were recorded.
+            executable = record.get("executable")
+            legacy = (record.get("version") == 1 and record.get("enabled") is True
+                      and isinstance(executable, str) and bool(executable.strip()))
+            return ("legacy", None) if legacy else ("invalid", None)
+        value = record["settingsPath"]
+        if not isinstance(value, str) or not value:
+            return "invalid", None
+        path = Path(value)
+        if not path.is_absolute() or path.resolve() != path:
+            return "invalid", None
+        return "recorded", path
+    except (OSError, ValueError, AttributeError, RuntimeError):
+        return "invalid", None
 
 
 def _recorded_executable(data_directory: str | os.PathLike[str] | None) -> str | None:
@@ -528,6 +559,7 @@ def install(settings_path: str | os.PathLike[str] | None = None, command: str | 
     now = time.time() if now is None else now
     _preflight()
     path = Path(settings_path) if settings_path is not None else default_settings_path()
+    canonical_path = path.resolve()
     command = command or default_command()
     if not _is_branchglance_command(command):
         raise HookInstallError("hook command must be a Branchglance invocation with a standalone marker argument")
@@ -550,7 +582,7 @@ def install(settings_path: str | os.PathLike[str] | None = None, command: str | 
 
     backup = _write_transform_checked(path, ensure_hooks, now)
     try:
-        _write_consent(data_directory, now, command)
+        _write_consent(data_directory, now, command, canonical_path)
     except OSError as exc:
         raise HookInstallError(f"hooks installed but the consent marker could not be written "
                                f"({exc.__class__.__name__}); the hook stays a no-op") from None
@@ -575,11 +607,26 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
     """Consent goes first and unconditionally, so the hook is inert even if
     the settings edit then fails; any hooks left behind are reported."""
     now = time.time() if now is None else now
-    path = Path(settings_path) if settings_path is not None else default_settings_path()
+    marker_present = _consent_file(data_directory).exists()
+    provenance, path = _recorded_settings_path(data_directory) if marker_present else ("absent", None)
+    if provenance == "legacy" and not (os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")):
+        # Consent written before the target was recorded: those installs used
+        # ~/.claude unless CLAUDE_HOME was set, so with no override now that is
+        # the only file they can have edited.
+        path = Path(settings_path) if settings_path is not None else default_settings_path()
     known = _known_executables(data_directory, command)  # read before the marker is removed
     consent_removed = _remove_consent(data_directory)
     result: dict[str, Any] = {"ok": True, "changed": False, "backup": None, "consentRemoved": consent_removed,
                               "hooksLeft": [], "mixedGroupsLeft": [], "error": None, "writeSafety": WRITE_SAFETY}
+    if path is None:
+        if not marker_present:
+            current = Path(settings_path) if settings_path is not None else default_settings_path()
+            left = _hooks_left(current, known)
+            if left == []:
+                return result
+        result.update(ok=False, hooksLeft="unknown",
+                      error="hooks retained: the installed settings target has no verifiable provenance")
+        return result
     try:
         changed = False
         left_mixed: list[str] = []

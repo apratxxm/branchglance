@@ -32,8 +32,53 @@ def _signpath_finalize_module():
 
 def test_release_build_has_one_final_version_default():
     module = _build_module()
-    assert module.RELEASE_VERSION == "1.0.0"
+    assert module.RELEASE_VERSION == "0.1.0"
     assert 'parser.add_argument("--version", default=RELEASE_VERSION)' in (ROOT / "packaging" / "build.py").read_text()
+
+
+@pytest.mark.parametrize("setup_only", [False, True])
+def test_build_rejects_missing_python_before_creating_output(tmp_path, setup_only):
+    module = _build_module()
+    output = tmp_path / "output"
+    with pytest.raises(FileNotFoundError, match="Python interpreter is not a file"):
+        if setup_only:
+            module.build_setup_from_components(output, tmp_path / "components", "1.0.0", "abc", python=tmp_path / "missing")
+        else:
+            module.build(output, "1.0.0", "abc", python=tmp_path / "missing")
+    assert not output.exists()
+
+
+def test_build_python_checks_pyinstaller_with_resolved_interpreter(tmp_path, monkeypatch):
+    module = _build_module()
+    python = tmp_path / "python.exe"
+    python.touch()
+    calls = []
+    monkeypatch.setattr(module.subprocess, "run", lambda args, **kwargs: calls.append((args, kwargs)))
+    assert module._resolve_build_python(python) == python.resolve()
+    assert calls[0][0] == [str(python.resolve()), "-c", "import PyInstaller"]
+    assert calls[0][1]["check"] is True
+
+
+def test_build_python_reports_missing_pyinstaller(tmp_path, monkeypatch):
+    module = _build_module()
+    python = tmp_path / "python.exe"
+    python.touch()
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, args[0])
+    monkeypatch.setattr(module.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="cannot import PyInstaller"):
+        module._resolve_build_python(python)
+
+
+def test_release_workflow_uses_frozen_notes_and_matching_checksum_assets():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert 'RELEASE_NOTES_$env:VERSION.md' in workflow
+    assert 'releases/generate-notes' in workflow
+    assert 'blob/$env:SOURCE_SHA/docs/CODE_SIGNING_POLICY.md' in workflow
+    assert 'Branchglance-$env:VERSION-windows-components.zip.sha256' in workflow
+    assert 'Branchglance-components.zip.sha256' not in workflow
+    assert 'packaging/build.py RELEASE_VERSION' in workflow
+    assert 'top CHANGELOG.md version heading' in workflow
 
 
 def test_all_executable_builds_get_branchglance_version_resources():
@@ -59,6 +104,7 @@ def _signpath_component_fixture(tmp_path, *, inventory_path=None):
     release = components / "releases" / "1.2.3+abc123"
     release.mkdir(parents=True)
     (components / "Branchglance.exe").write_bytes(_unsigned_pe(b"launcher archive"))
+    (components / "bg-codex.exe").write_bytes(_unsigned_pe(b"wrapper archive"))
     (components / "BranchglanceUninstall.exe").write_bytes(_unsigned_pe(b"uninstaller archive"))
     (release / "BranchglanceApp.exe").write_bytes(_unsigned_pe(b"app archive"))
     (release / "BranchglanceHook.exe").write_bytes(_unsigned_pe(b"hook archive"))
@@ -151,7 +197,7 @@ def test_signpath_finalizer_rehashes_signed_release_binaries(tmp_path):
     finalize_signed_components = _signpath_finalize_module().finalize_signed_components
     components, release, inventory_hash = _signpath_component_fixture(tmp_path)
     unsigned_app = (release / "BranchglanceApp.exe").read_bytes()
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe"):
         path = components / name
         path.write_bytes(_signed_pe_with_embedded_digest(path.read_bytes()))
     for name in ("BranchglanceApp.exe", "BranchglanceHook.exe"):
@@ -185,7 +231,7 @@ def test_signpath_rejects_overlay_change_after_signing(tmp_path):
     from scripts.branchglance_installer.core import SafetyError
     finalizer = _signpath_finalize_module()
     components, release, inventory_hash = _signpath_component_fixture(tmp_path)
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe"):
         path = components / name
         path.write_bytes(_signed_pe_with_embedded_digest(path.read_bytes()))
     for name in ("BranchglanceApp.exe", "BranchglanceHook.exe"):
@@ -209,7 +255,7 @@ def test_signpath_rejects_spc_digest_mismatch(tmp_path):
     from scripts.branchglance_installer.core import SafetyError
     finalizer = _signpath_finalize_module()
     components, release, inventory_hash = _signpath_component_fixture(tmp_path)
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe"):
         path = components / name
         path.write_bytes(_signed_pe_with_embedded_digest(path.read_bytes()))
     for name in ("BranchglanceApp.exe", "BranchglanceHook.exe"):
@@ -231,7 +277,7 @@ def test_signpath_rejects_validly_signed_same_version_substitution(tmp_path):
     from scripts.branchglance_installer.core import SafetyError
     finalize_signed_components = _signpath_finalize_module().finalize_signed_components
     components, release, inventory_hash = _signpath_component_fixture(tmp_path)
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe"):
         path = components / name
         path.write_bytes(_signed_pe_with_embedded_digest(path.read_bytes()))
     for name in ("BranchglanceApp.exe", "BranchglanceHook.exe"):
@@ -250,7 +296,7 @@ def test_signpath_finalizer_accepts_inventory_sidecar_outside_signed_archive(tmp
     sidecar = tmp_path / "inventory-artifact" / "signpath-inventory.json"
     components, release, inventory_hash = _signpath_component_fixture(tmp_path, inventory_path=sidecar)
     assert not (components / "signpath-inventory.json").exists()
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe"):
         path = components / name
         path.write_bytes(_signed_pe_with_embedded_digest(path.read_bytes()))
     for name in ("BranchglanceApp.exe", "BranchglanceHook.exe"):
@@ -283,7 +329,7 @@ def test_signpath_rejects_changed_untargeted_dll(tmp_path):
     from scripts.branchglance_installer.core import SafetyError
     finalize_signed_components = _signpath_finalize_module().finalize_signed_components
     components, release, inventory_hash = _signpath_component_fixture(tmp_path)
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe"):
         path = components / name
         path.write_bytes(_signed_pe_with_embedded_digest(path.read_bytes()))
     for name in ("BranchglanceApp.exe", "BranchglanceHook.exe"):
@@ -356,7 +402,7 @@ def test_signpath_configuration_only_signs_named_branchglance_executables():
     namespace = "{http://signpath.io/artifact-configuration/v1}"
     executable_rules = config.findall(f".//{namespace}pe-file")
     paths = {rule.attrib["path"] for rule in executable_rules}
-    assert paths == {"Branchglance.exe", "BranchglanceUninstall.exe",
+    assert paths == {"Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe",
                      "releases/*/BranchglanceApp.exe", "releases/*/BranchglanceHook.exe"}
     assert all(rule.attrib["product-name"] == "Branchglance" for rule in executable_rules)
     assert all(rule.attrib["product-version"] == "${version}" for rule in executable_rules)
@@ -366,6 +412,38 @@ def test_signpath_configuration_only_signs_named_branchglance_executables():
     setup_rules = setup.findall(f".//{namespace}pe-file")
     assert len(setup_rules) == 1 and setup_rules[0].attrib["path"] == "BranchglanceSetup.exe"
     assert "min-matches" not in setup_rules[0].attrib
+
+
+def test_setup_requires_and_embeds_codex_wrapper(tmp_path, monkeypatch):
+    module = _build_module()
+    components = tmp_path / "components"
+    release = components / "releases" / "1.2.3+abc123"
+    release.mkdir(parents=True)
+    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+        (components / name).write_bytes(name.encode())
+    monkeypatch.setattr(module, "_resolve_build_python", lambda _python: Path(sys.executable))
+    monkeypatch.setattr(module, "verify_manifest", lambda *_args, **_kwargs: {})
+    with pytest.raises(RuntimeError, match="Signed component is missing: bg-codex.exe"):
+        module.build_setup_from_components(tmp_path / "missing-output", components, "1.2.3", "abc123")
+    (components / "bg-codex.exe").write_bytes(b"signed wrapper")
+    def fake_pyinstaller(_py, _spec, work, _name, env):
+        assert (Path(env["BRANCHGLANCE_PAYLOAD"]) / "bg-codex.exe").read_bytes() == b"signed wrapper"
+        dist = work / "fake-dist"
+        dist.mkdir()
+        (dist / "BranchglanceSetup.exe").write_bytes(b"setup")
+        return dist
+    monkeypatch.setattr(module, "_pyinstaller", fake_pyinstaller)
+    module.build_setup_from_components(tmp_path / "output", components, "1.2.3", "abc123")
+
+
+def test_signpath_rejects_missing_codex_wrapper(tmp_path):
+    from scripts.branchglance_installer.core import SafetyError
+    finalizer = _signpath_finalize_module()
+    components, _release, digest = _signpath_component_fixture(tmp_path)
+    (components / "bg-codex.exe").unlink()
+    with pytest.raises(SafetyError, match="inventory changed.*bg-codex.exe"):
+        finalizer.finalize_signed_components(components, digest, expected_version="1.2.3+abc123",
+                                            signature_inspector=_valid_signature)
 
 
 def test_build_entry_dispatches_claude_hook_by_module_name_to_stub(tmp_path):
@@ -418,8 +496,8 @@ def test_build_entry_dispatches_codex_receipt_to_helper(tmp_path):
     (package / "widget.py").write_text("raise AssertionError('widget path selected')\n")
     (package / "agent_links.py").write_text(
         "import json, os\n"
-        "def write_receipt(thread, pid):\n"
-        " open(os.environ['LINK_RESULT'], 'w').write(json.dumps([thread, pid]))\n")
+        "def write_receipt(thread, pid, *, expected_created=None):\n"
+        " open(os.environ['LINK_RESULT'], 'w').write(json.dumps([thread, pid, expected_created]))\n")
     entry = source / "branchglance_entry.py"
     entry.write_text(module._entry_source(), encoding="utf-8")
     marker = tmp_path / "link-result.json"
@@ -430,7 +508,12 @@ def test_build_entry_dispatches_codex_receipt_to_helper(tmp_path):
                              "--codex-pid", "4321"], cwd=source, env=env,
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0
-    assert json.loads(marker.read_text()) == [thread, 4321]
+    assert json.loads(marker.read_text()) == [thread, 4321, None]
+    result = subprocess.run([sys.executable, str(entry), "--link-codex", thread,
+                             "--codex-pid", "4321", "--codex-created", "123456"],
+                            cwd=source, env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert json.loads(marker.read_text()) == [thread, 4321, 123456]
 
 
 def test_build_entry_self_test_writes_report_without_importing_widget(tmp_path):

@@ -112,6 +112,9 @@ class Integrations:
                     else:
                         self.adapter.write_uninstall(restore)
 
+    def startup_enabled(self) -> bool:
+        return self.startup is not None and self._owned_shortcut(self.startup / "Branchglance.lnk") is not None
+
     def apply(self, *, startup_enabled: bool = False) -> None:
         self.snapshot()  # recheck all collision state immediately before writes
         launcher = str(self.launcher)
@@ -119,6 +122,8 @@ class Integrations:
         for index, path in enumerate(self.shortcut_paths):
             is_startup = path == (self.startup / "Branchglance.lnk" if self.startup is not None else None)
             if is_startup and not startup_enabled:
+                if self._owned_shortcut(path) is not None:
+                    self.adapter.remove_shortcut(path)
                 continue
             self.adapter.replace_shortcut(path, target=launcher, arguments="--background" if is_startup else "", workdir=str(self.root),
                                           app_id=APP_USER_MODEL_ID, description=MARKER)

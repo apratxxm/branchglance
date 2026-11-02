@@ -29,8 +29,6 @@ Branchglance reads data locally to show the user's own activity. This includes C
 
 Branchglance has no Branchglance-hosted account, analytics, or synchronization service. The desktop app does not upload transcripts or history to Branchglance. The local Codex app-server and optional provider greeting commands use the user's installed, signed-in provider tools; those tools may communicate with their respective providers under the user's account. Claude Desktop obtains its own usage data; Branchglance reads that local cache.
 
-The phone companion is separate, off by default, and starts only when the user explicitly runs it. It binds to `127.0.0.1` by default. If the user configures access from another device, phone traffic stays on the network the user exposes. Optional Web Push sends notification payloads to the push endpoint in the user's subscription; this is a direct network request to that endpoint, not to a Branchglance service.
-
 ## Changes made to Windows and Claude settings
 
 Setup installs per user in `%LOCALAPPDATA%\Programs\Branchglance`, creates a Windows uninstall registration, and creates Start menu and Desktop shortcuts. A Startup shortcut is created only when the user opts into starting Branchglance at sign-in. Local state is kept in `%LOCALAPPDATA%\Branchglance`.

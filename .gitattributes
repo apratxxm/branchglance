@@ -1,0 +1,7 @@
+# Keep the reproducible logo master stable across Windows and CI checkouts.
+assets/brand/*.svg text eol=lf
+assets/brand/*.py text eol=lf
+assets/brand/*.js text eol=lf
+assets/brand/source/*.py text eol=lf
+# The native Photoshop export is a byte-preserved archival input.
+assets/brand/source/*.ai binary

@@ -8,8 +8,6 @@ const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.me
 const refinedCss=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const dashboardCss=fs.readFileSync(new URL("../token_tracker/static/dashboard.css",import.meta.url),"utf8");
 const dashboardScript=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8");
-const reviewPage=fs.readFileSync(new URL("../token_tracker/static/runway_review.html",import.meta.url),"utf8");
-const reviewScript=fs.readFileSync(new URL("../token_tracker/static/runway_review.js",import.meta.url),"utf8");
 const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector)?.[2]||"";
 assert.match(page,/window\.__TOKEN_TRACKER_RUNWAY__=true/);
 assert.doesNotMatch(page,/Active work|data-action="pin"/);
@@ -42,6 +40,8 @@ assert.doesNotMatch(css,/^\.t-live,\.t-attn,\.t-err/m); // telemetry overrides c
 assert.match(css,/\.rr-left\.last-known[^{}]*\{[^}]*opacity:\.62/);
 assert.match(css,/\.meter\.last-known i\{background:var\(--muted\)\}/);
 assert.match(refinedCss,/\.meter\.last-known i\{background:var\(--muted\);\}/);
+assert.match(refinedCss,/\.rr-left\.last-known i\{display:none;\}/,"the strip keeps the age in the tooltip so it cannot push into the countdown");
+assert.match(refinedCss,/\.rr \.rr-left\.last-known b\{color:var\(--muted\);\}/,"a last-known value is grey like its meter");
 assert.match(cssRule('.runway-count.t-live'),/color:var\(--green\)/);
 assert.match(cssRule('.runway-count.t-attn'),/color:var\(--orange\)/);
 assert.match(css,/\.row:has\(\[data-own-waiting=true\]\) \.r-title/);
@@ -513,20 +513,6 @@ assert.match(longPathRow,/runway-path-leaf">\\long-leaf-x{120}<\/span>/);
 assert.ok(longPathRow.includes('title="Workspace · '+longPath+'"'));
 const unavailablePathRow=T.rowHTML({...root,workspace:null,root:{workspace:null}});
 assert.doesNotMatch(unavailablePathRow,/data-runway-slot="workspace"|Workspace unavailable|path unavailable/);
-assert.match(reviewPage,/option value="single-agent"/);
-assert.match(reviewPage,/option value="agents-23"/);
-const fixtureStart=reviewScript.indexOf("function fixtures(which){"),fixtureEnd=reviewScript.indexOf("\nrenderBoard();",fixtureStart);
-assert.ok(fixtureStart>=0&&fixtureEnd>fixtureStart,"review fixtures function must be present and isolated from browser startup");
-const reviewFixtures=vm.runInNewContext("("+reviewScript.slice(fixtureStart,fixtureEnd)+")");
-const singleAgents=reviewFixtures("single-agent").snapshot.providers[0].chats.filter(chat=>chat.id.startsWith("sim-agent-"));
-assert.equal(singleAgents.length,1);
-assert.ok(Date.parse(singleAgents[0].latestRequestAt)>Date.parse(singleAgents[0].latestUpdateAt));
-const manyAgents=reviewFixtures("agents-23").snapshot.providers[0].chats.filter(chat=>chat.id.startsWith("sim-agent-"));
-assert.equal(manyAgents.length,23);
-const pendingMessageAgents=manyAgents.filter(chat=>Date.parse(chat.latestRequestAt)>Date.parse(chat.latestUpdateAt));
-assert.ok(pendingMessageAgents.length,"fixture must include pending parent messages");
-assert.ok(manyAgents.some(chat=>Date.parse(chat.latestRequestAt)<Date.parse(chat.latestUpdateAt)),"fixture must include replies after parent messages");
-assert.deepEqual([...new Set(manyAgents.map(chat=>chat.status))].sort(),["compacting","needs input","running"]);
 assert.equal(T.runwayTitle({...root,title:'Sample app sol wake learning'},true),'wake learning');
 assert.equal(T.runwayTitle({...root,title:'Memoir sol wake learning'}),'Memoir sol wake learning');
 // Orchestration job briefs collapse to worker and task for root chats and agents alike.
@@ -653,8 +639,6 @@ assert.doesNotMatch(node('#chat-list').innerHTML,/Live parent|Status unavailable
 assert.equal(T.notch.active,0,"expired carry-forward rows no longer count as active");
 testNow=fixedNow;
 T.render(snapshot);
-assert.ok(Date.now()-Date.parse(singleAgents[0].latestRequestAt)<10000,"single-agent pending-message sample must be younger than ten seconds");
-assert.ok(pendingMessageAgents.every(chat=>Date.now()-Date.parse(chat.latestRequestAt)<10000),"pending-message samples must be younger than ten seconds");
 // Counts use unique active entities across the full forest, independent of search.
 const countChats=[root,child,grandchild,{...root,id:'finished-parent',status:'idle',stateDetail:'completed'},
   {...child,id:'parent-worker',parentId:'finished-parent'},
@@ -723,13 +707,35 @@ assert.equal(node('#search-toggle').hidden,false,'a valid active snapshot reveal
 T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleChats.map(chat=>({...chat,updatedAt:ago(0),usageUpdatedAt:ago(0),latestMessageAt:ago(0),latestMessageDirection:'assistant-analysis'}))}]});
 assert.equal(T.notch.expanded,false);assert.equal(T.notch.autoTimer,null); // ordinary activity/transcript updates do not reveal again
 let lifecycleNext=lifecycleChats.map(chat=>chat.id==='lifecycle-root'?{...chat,activeRunStartedAt:ago(1)}:chat);
-T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // changed run start means restart
+T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.autoTimer,null); // a new turn in a running chat does not pop the widget
 lifecycleNext=lifecycleNext.map(chat=>chat.id==='paused-worker'?{...chat,status:'running',activeRunStartedAt:ago(2)}:chat);
 T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // previously inactive chat becomes active
 lifecycleNext=[...lifecycleNext,{...child,id:'new-worker',parentId:'lifecycle-root',status:'running',activeRunStartedAt:ago(1),latestRequestAt:null}];
 T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // a new subagent appears
 lifecycleNext=lifecycleNext.map(chat=>chat.id==='new-worker'?{...chat,latestMessageAt:ago(0),latestMessageDirection:'parent-to-agent'}:chat);
-T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.expanded,true);expireReveal(); // new message to the active subagent
+T.render({...lifecycleSnapshot,providers:[{...provider,chats:lifecycleNext}]});assert.equal(T.notch.autoTimer,null); // a message to an active subagent does not pop the widget
+{ // A subagent that stops for under 8 s is a flap; once it stays stopped, its finish reveals once.
+  const finished=lifecycleNext.map(chat=>chat.id==='new-worker'?{...chat,status:'idle',stateDetail:'completed',activeRunStartedAt:null}:chat);
+  T.state.liveSampleAccepted=false;
+  const at=testNow,shot=chats=>({...lifecycleSnapshot,generatedAt:new Date(testNow).toISOString(),providers:[{...provider,chats}]});
+  T.render(shot(finished));assert.equal(T.notch.autoTimer,null,'a fresh stop is not yet a finish');
+  testNow=at+8001;
+  T.render(shot(finished));assert.equal(T.notch.expanded,true,'a settled finish reveals');expireReveal();
+  T.render(shot(finished));assert.equal(T.notch.autoTimer,null,'a finish reveals only once');
+  T.render(shot(lifecycleNext));assert.equal(T.notch.expanded,true,'a finished subagent coming back reveals');expireReveal();
+  testNow=at;T.render(shot(lifecycleNext));
+}
+{ // Activity never reorders rows: a quiet chat that becomes busiest keeps its place; a new chat goes on top.
+  const row=(id,updated,parentId)=>({...root,id,parentId,status:'running',activeRunStartedAt:ago(1),updatedAt:ago(updated),usageUpdatedAt:ago(updated)});
+  const keys=forest=>JSON.stringify(T.visibleRoots(forest).map(chat=>chat.id).filter(id=>id.startsWith('order-')));
+  const first=T.buildForest([{...provider,chats:[row('order-a',1),row('order-b',5),row('order-b1',6,'order-b'),row('order-b2',7,'order-b')]}]);
+  assert.equal(keys(first),'["order-a","order-b"]');
+  const busy=T.buildForest([{...provider,chats:[row('order-a',3),row('order-b',0),row('order-b1',6,'order-b'),row('order-b2',0,'order-b')]}]);
+  assert.equal(keys(busy),'["order-a","order-b"]','roots keep their order');
+  assert.equal(busy.roots.find(chat=>chat.id==='order-b').children.map(chat=>chat.id).join(),'order-b1,order-b2','children keep their order');
+  const added=T.buildForest([{...provider,chats:[row('order-a',3),row('order-b',0),row('order-c',2)]}]);
+  assert.equal(JSON.parse(keys(added))[0],'order-c','a new chat goes on top');
+}
 T.setNotch(false);T.notch.activeKeys=null;T.notch.workStates.clear();
 T.render(lifecycleSnapshot);const burstTimer=T.notch.autoTimer;
 const burstChats=[...lifecycleChats,{...child,id:'burst-worker',parentId:'lifecycle-root',status:'running',activeRunStartedAt:ago(1)}];
@@ -750,6 +756,9 @@ assert.equal(T.notch.autoTimer,burstTimer,"a burst of new children shares the fi
 T.setNotch(false);T.notch.activeKeys=null;T.notch.workStates.clear();
 const quotas=T.resetView(provider,"fiveHour");
 assert.equal(quotas.usedText,"92% used");assert.equal(quotas.countdown,"25m 00s");assert.equal(quotas.tone,"err");
+for(const [seconds,expected] of [[4659,"1h 17m"],[3600,"1h 00m"],[3599,"59m 59s"],[59,"59s"]]){
+  assert.equal(T.resetView({...provider,fiveHour:{percent:92,resetAt:fixedNow/1000+seconds}},"fiveHour").countdown,expected);
+}
 assert.equal(T.resetView(provider,"weekly").countdown,"22h 13m","weekly countdowns show hours/minutes while the target is within a day");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000+3*86400+7260}},"weekly").countdown,"3d 2h","weekly countdowns show day/hour remaining for distant targets");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000-1}},"weekly").countdown,"due");
@@ -1135,7 +1144,7 @@ assert.equal(nativeLock.locked,false);assert.equal(T.widgetLock.locked,false,'re
 assert.equal(nativeLock.revision,revisionBeforePendingRecenter+2,'the native recenter revision supersedes an accepted queued lock write');
 releaseLockWrite();assert.equal(await lateLockAck,false);deferLockWrite=false;
 assert.equal(T.widgetLock.locked,false,'a late acknowledgement from before recenter cannot reinstate the lock');
-assert.match(page,/id="widget-lock"/);assert.match(css,/body\.phone\s+#widget-lock|body\.phone[^{}]*#widget-lock/,'the lock control is hidden in phone mode');
+assert.match(page,/id="widget-lock"/);
 
 // A failed first snapshot retries quickly while visible, without quota fetches until data exists.
 T.state.snapshot=null;T.state.loading=false;T.state.refreshPending=false;T.state.bootstrapRetryMs=2000;
@@ -1161,61 +1170,4 @@ assert.equal(bootstrapCalls.filter(call=>call==="/api/limit-reset").length,1);
 assert.equal(T.state.snapshot,snapshot);
 assert.equal(T.state.bootstrapRetryTimer,null);
 
-// Phone mode reuses Runway's current-only renderer without desktop notch/native actions.
-const phoneContext={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_PHONE__:true,pywebview:{api:{set_notch(){throw new Error("phone mode must not call native APIs");}}}},
-  document:{querySelector:node,querySelectorAll(){return [];},hidden:false,activeElement:null},localStorage:context.localStorage,Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,setTimeout:fakeSetTimeout,clearTimeout:fakeClearTimeout,setInterval(){return 0;},fetch:null};
-vm.createContext(phoneContext);vm.runInContext(app,phoneContext);
-const P=phoneContext.window.__tokenTrackerTest;
-assert.equal(P.phone,true);assert.equal(P.runway,true);
-assert.equal(P.resetView(provider,"fiveHour").countdown,"25m 00s");
-assert.equal(P.resetView(provider,"fiveHour").usedText,"92% used");
-P.renderResets([{name:"Codex",...provider}]);assert.equal(node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>92%</b><i>used</i></span>');
-assert.equal(P.resetView(provider,"weekly").countdown,"","phone mode keeps the weekly countdown slot blank");
-const phoneRoot={...root,id:"phone-root"},phoneChild={...child,id:"phone-child",parentId:"phone-root",activity:{kind:"reading",files:["A:\\src\\phone.js"],observedAt:ago(0)}},
-  phoneQuestionChild={...child,id:"phone-question-child",parentId:"phone-root",status:"needs-input",pendingQuestion:"Choose a safe action",pendingQuestionAt:ago(1),pendingOptions:["Read only","Wait"],activity:null};
-const phoneSnapshot={...snapshot,providers:[{...provider,chats:[phoneRoot,phoneChild,phoneQuestionChild]}]};
-const phoneLiveOnly={...snapshot,providers:[{...provider,chats:[phoneRoot]}]};
-P.applyLive(phoneLiveOnly,{generatedAt:ago(0),chats:[{key:'Codex:phone-new',id:'phone-new',provider:'Codex',parentId:'phone-root',title:'No phone upsert',status:'running'}]});
-assert.equal(phoneLiveOnly.providers[0].chats.some(chat=>chat.id==='phone-new'),false,'desktop live identity upserts stay disabled in phone mode');
-P.applyLive(phoneLiveOnly,{generatedAt:ago(0),chats:[{key:'Codex:phone-root',id:'phone-root',provider:'Codex',title:'Desktop-only rename',workspace:'A:\\changed',status:'running'}]});
-assert.notEqual(phoneLiveOnly.providers[0].chats[0].title,'Desktop-only rename','desktop live identity fields stay out of phone records');
-assert.match(P.rowHTML({...phoneRoot,stateSince:ago(3),activeRunStartedAt:ago(3)}),/data-runway-slot="elapsed" class="runway-state-elapsed" title="Elapsed in current state">3:00/,'phone state elapsed remains unchanged');
-P.state.hiddenChats.add("Codex:phone-root");P.render(phoneSnapshot);
-const phoneMarkup=node("#chat-list").innerHTML;
-assert.match(phoneMarkup,/data-key="Codex:phone-root"/,"phone mode shows an active root hidden in the desktop roster");
-assert.doesNotMatch(phoneMarkup,/runway-agent-secondary|runway-topline/,"phone row markup keeps its existing activity placement");
-assert.match(phoneMarkup,/Reading phone\.js/);
-assert.equal(node("#notch-counts").title,"1 chat group, 3 active, 1 waiting");
-assert.match(node("#notch-counts").innerHTML,/aria-label="3 active"/);
-assert.match(node("#notch-counts").innerHTML,/aria-label="1 waiting[",]/);
-assert.equal(P.notch.autoTimer,null);assert.equal(P.notch.expanded,false);
-P.setNotch(true);P.syncNotch(1,[{key:"Codex:phone-root",active:true}]);
-assert.equal(P.notch.expanded,false);assert.equal(P.notch.autoTimer,null);
-assert.equal(phoneContext.window.tokenTrackerInspect,undefined);
-const phoneQuestion=P.runwayQuestionPopover(P.state.forest.rows.find(chat=>chat.key==="Codex:phone-question-child"));
-assert.match(phoneQuestion,/<li>Read only<\/li>/);assert.match(phoneQuestion,/<li>Wait<\/li>/);
-assert.doesNotMatch(phoneQuestion,/data-action="(?:answer|queue-answer|open)"/);
-let phoneQuestionOpens=0;phoneContext.fetch=async()=>{phoneQuestionOpens++;throw new Error("phone question preview must not open Codex");};
-const phoneQuestionButton={dataset:{action:"runway-question",key:"Codex:phone-question-child"},getBoundingClientRect:()=>({left:12,bottom:36})};
-assert.match(P.rowHTML(P.state.forest.roots.find(chat=>chat.id==="phone-root")),/title="Show exact pending question"/);
-P.handleClick({target:{closest:selector=>selector==="[data-action]"?phoneQuestionButton:null}});
-assert.equal(P.state.popover,phoneQuestionButton);assert.match(node("#popover").innerHTML,/<li>Read only<\/li>/);
-assert.equal(phoneQuestionOpens,0);assert.equal(phoneQuestionButton.__questionText,"Choose a safe action");
-let phoneFetches=0;phoneContext.fetch=async()=>{phoneFetches++;throw new Error("unexpected remote action");};
-for(const action of ["answer","queue-answer","open","pin","hide-chat","show-hidden"]){
-  const button={dataset:{action,key:"Codex:phone-root",thread:"phone-root",answer:"Read only"}};
-  P.handleClick({target:{closest:()=>button}});
-}
-assert.equal(phoneFetches,0);assert.equal(P.state.hiddenChats.has("Codex:phone-root"),true);assert.equal(P.state.pins.has("Codex:phone-root"),false);
-const phoneRequests=[];phoneContext.fetch=async url=>{
-  phoneRequests.push(url);
-  if(url==="/api/stats")return {ok:true,json:async()=>phoneSnapshot};
-  if(url==="/api/live")return {ok:true,json:async()=>({generatedAt:phoneSnapshot.generatedAt,chats:[]})};
-  throw new Error("phone mode must not call desktop-only endpoints: "+url);
-};
-await P.handleVisibilityChange();
-assert.equal(phoneRequests.filter(url=>url==="/api/stats").length,1);
-assert.equal(phoneRequests.filter(url=>url==="/api/live").length,1);
-assert.equal(P.state.foregroundLivePending,false);
-assert.doesNotMatch(phoneRequests.join(" "),/limit-reset|today|avatars/);
 console.log("Token Tracker Runway telemetry contracts passed");

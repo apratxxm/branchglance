@@ -8,9 +8,11 @@ from __future__ import annotations
 import ctypes
 from functools import wraps
 import json
+import logging
 import os
 import re
 import shlex
+import stat
 import tempfile
 import threading
 import time
@@ -24,6 +26,7 @@ MAX_INBOX_BYTES = 1024 * 1024
 REGISTRY_NAME = "agent-runs.json"
 INBOX_NAME = "codex-link-receipts"
 RECEIPT_FILE = "receipts.jsonl"
+KF_FLAG_NO_PACKAGE_REDIRECTION = 0x00010000
 RETENTION_SECONDS = 7 * 86400
 _GRAPH_LOCK = threading.Lock()
 _GRAPH_EDGES: dict[str, str | None] = {}
@@ -35,6 +38,7 @@ _SCAN_LOCK = threading.Lock()
 _LAST_FULL_SCAN_AT = float("-inf")
 _UNLINKED_LOCK = threading.Lock()
 _UNLINKED_EXECUTIONS: dict[tuple[str, int, int], dict[str, Any]] = {}
+_LOG = logging.getLogger(__name__)
 
 
 def _serialized_link_poll(function):
@@ -193,13 +197,22 @@ def _process_created(pid: int) -> int | None:
     return process_created(pid)
 
 
+def _probe_process(pid: int) -> tuple[str, int | None]:
+    from .claude_hook import probe_process
+    return probe_process(pid)
+
+
 def verify_process(pid: int, expected_created: int) -> bool | None:
     """Cheap bounded recheck for a remembered pid; None means unverifiable."""
     try:
-        observed = _process_created(pid)
-        return observed == expected_created if observed is not None else None
+        state, observed = _probe_process(pid)
     except Exception:
         return None
+    # A finished earlier run of a resumed thread is "gone", not unverifiable;
+    # treating it as unknown would block the thread's current link forever.
+    if state == "gone":
+        return False
+    return observed == expected_created if state == "alive" and observed is not None else None
 
 
 def _equal_sid(left: bytes | None, right: bytes | None) -> bool:
@@ -460,9 +473,157 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
 
 def receipt_path(root: Path | None = None) -> Path:
     if root is None:
-        from .product import hook_data_root
-        root = hook_data_root()
+        from .product import hook_data_root, is_frozen
+        root = _known_local_app_data() / "Branchglance" if is_frozen() else hook_data_root()
     return Path(root) / INBOX_NAME
+
+
+def _known_local_app_data() -> Path:
+    """Resolve LocalAppData independently of inherited environment variables."""
+    if os.name != "nt":
+        raise OSError("Windows known folder unavailable")
+    from ctypes import wintypes
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+    folder = GUID(0xF1B32785, 0x6FBA, 0x4FCF,
+                  (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91))
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    ole = ctypes.WinDLL("ole32", use_last_error=True)
+    shell.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
+                                           ctypes.POINTER(ctypes.c_void_p)]
+    shell.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    value = ctypes.c_void_p()
+    # Ask for the real folder even from inside a packaged (MSIX) process, so a
+    # receipt can never land in a package-private copy the widget doesn't read.
+    if shell.SHGetKnownFolderPath(ctypes.byref(folder), KF_FLAG_NO_PACKAGE_REDIRECTION, None,
+                                  ctypes.byref(value)) != 0 or not value.value:
+        raise OSError("LocalAppData known folder unavailable")
+    try:
+        return Path(ctypes.wstring_at(value))
+    finally:
+        ole.CoTaskMemFree(value)
+
+
+def _plain_chain(path: Path) -> bool:
+    """All existing path components must be inspectable and free of links."""
+    for part in (path, *path.parents):
+        try:
+            info = os.lstat(part)
+        except OSError:
+            return False
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            return False
+    return True
+
+
+def _shadow_exists(local: Path) -> bool:
+    packages = local / "Packages"
+    try:
+        os.lstat(packages)
+    except FileNotFoundError:
+        return False
+    # A shadow in any package can intercept the destination. Errors are unknown, so refuse.
+    with os.scandir(packages) as entries:
+        for entry in entries:
+            shadow = Path(entry.path) / "LocalCache" / "Local" / "Branchglance" / INBOX_NAME
+            try:
+                os.lstat(shadow)
+            except FileNotFoundError:
+                continue
+            return True
+    return False
+
+
+def _file_identity(fd: int) -> tuple[int, int, int] | None:
+    if os.name != "nt":
+        info = os.fstat(fd)
+        return (info.st_dev, info.st_ino, 0)
+    import msvcrt
+    from ctypes import wintypes
+    class FILETIME(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+    class INFO(ctypes.Structure):
+        _fields_ = [("attributes", wintypes.DWORD), ("created", FILETIME),
+                    ("accessed", FILETIME), ("written", FILETIME),
+                    ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD),
+                    ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
+                    ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(INFO)]
+    kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+    info = INFO()
+    if not kernel.GetFileInformationByHandle(msvcrt.get_osfhandle(fd), ctypes.byref(info)):
+        return None
+    if not (info.index_high or info.index_low):
+        return None
+    return (info.volume, info.index_high, info.index_low)
+
+
+def _create_private_inbox(directory: Path, file: Path) -> None:
+    if os.name != "nt":
+        directory.mkdir(mode=0o700, exist_ok=True)
+        fd = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600) if not file.exists() else None
+        if fd is not None:
+            os.close(fd)
+        return
+    from ctypes import wintypes
+    from .product import current_user_sid
+    class SECURITY_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("length", wintypes.DWORD), ("descriptor", ctypes.c_void_p),
+                    ("inherit", wintypes.BOOL)]
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    descriptor = ctypes.c_void_p()
+    sddl = f"D:P(A;OICI;GA;;;{current_user_sid()})(A;OICI;GA;;;SY)"
+    if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    attrs = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), descriptor, False)
+    kernel.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(SECURITY_ATTRIBUTES)]
+    kernel.CreateDirectoryW.restype = wintypes.BOOL
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                   ctypes.POINTER(SECURITY_ATTRIBUTES), wintypes.DWORD,
+                                   wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    advapi.SetFileSecurityW.restype = wintypes.BOOL
+    try:
+        if not kernel.CreateDirectoryW(str(directory), ctypes.byref(attrs)) and ctypes.get_last_error() != 183:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not _plain_chain(directory) or not directory.is_dir():
+            raise OSError("receipt directory is redirected")
+        handle = kernel.CreateFileW(str(file), 0x40000000, 7, ctypes.byref(attrs), 1, 0x80, None)
+        if handle == ctypes.c_void_p(-1).value:
+            if ctypes.get_last_error() != 80:
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            kernel.CloseHandle(handle)
+        if not _plain_chain(file) or not file.is_file():
+            raise OSError("receipt file is redirected")
+        for target in (directory, file):
+            if not advapi.SetFileSecurityW(str(target), 0x80000004, descriptor):
+                raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.LocalFree(descriptor)
+
+
+def initialize_receipt_inbox(root: Path | None = None) -> bool:
+    """Create the inbox only from the widget's instance-mutex owner."""
+    try:
+        directory = receipt_path(root)
+        if not _plain_chain(directory.parent) or not directory.parent.is_dir():
+            return False
+        _create_private_inbox(directory, directory / RECEIPT_FILE)
+        return _plain_chain(directory / RECEIPT_FILE) and (directory / RECEIPT_FILE).is_file()
+    except Exception:
+        _LOG.warning("Could not initialize receipt inbox", exc_info=True)
+        return False
 
 
 def _cross_provider_collection_allowed(policies: Any = None) -> bool:
@@ -525,6 +686,7 @@ def validate_receipt_process(receipt: dict[str, Any], *, table: dict[int, tuple[
 
 def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | None = None,
                   created: Callable[[int], int | None] = _process_created,
+                  expected_created: int | None = None,
                   root: Path | None = None, policies: Any = None,
                   permission_check: Callable[[Any], bool] = _cross_provider_collection_allowed,
                   pid_check: Callable[[int, str], int | bool | None] = validate_codex_pid) -> bool:
@@ -540,6 +702,8 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
         return False
     if not isinstance(codex_pid, int) or codex_pid <= 0:
         return False
+    if expected_created is not None and (type(expected_created) is not int or expected_created <= 0):
+        return False
     try:
         validated = pid_check(codex_pid, thread_id.lower())
     except Exception:
@@ -550,23 +714,38 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
                   else created(codex_pid))
     if created_at is None:
         return False
+    if expected_created is not None and created_at != expected_created:
+        return False
     try:
-        path = receipt_path(root)
-        path.mkdir(parents=True, exist_ok=True)
-        path = path / RECEIPT_FILE
+        path = receipt_path(root) / RECEIPT_FILE
+        if root is None:
+            from .product import is_frozen
+            if is_frozen() and _shadow_exists(_known_local_app_data()):
+                _LOG.warning("Refusing receipt append: package-local shadow exists")
+                return False
+        if not _plain_chain(path):
+            return False
         record = {"thread_id": thread_id.lower(), "codex_pid": codex_pid,
                   "codex_created": created_at, "claude_session_id": sid,
                   "recorded_at": time.time(), "method": "receipt"}
         encoded = (json.dumps(record, separators=(",", ":")) + "\n").encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
         try:
-            existing_bytes = path.stat().st_size
-        except FileNotFoundError:
-            existing_bytes = 0
-        if len(encoded) > MAX_RECEIPT_BYTES or existing_bytes + len(encoded) > MAX_INBOX_BYTES:
-            return False
-        with path.open("ab") as handle:
-            handle.write(encoded)
-        return True
+            other = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            try:
+                identity = _file_identity(fd)
+                if identity is None or identity != _file_identity(other) or not _plain_chain(path):
+                    return False
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or len(encoded) > MAX_RECEIPT_BYTES or info.st_size + len(encoded) > MAX_INBOX_BYTES:
+                    return False
+                if expected_created is not None and created(codex_pid) != expected_created:
+                    return False
+                return os.write(fd, encoded) == len(encoded)
+            finally:
+                os.close(other)
+        finally:
+            os.close(fd)
     except Exception:
         return False
 
@@ -735,8 +914,20 @@ def apply_exact_links(
         except Exception:
             return
     runs = registry_reader(registry_path)
+    claude_ids = {str(row.get("id")) for row in claude.get("chats") or [] if row.get("id")}
+    codex_ids = {str(row.get("id")) for row in codex.get("chats") or [] if row.get("id")}
+
+    def cross_provider_candidate(row: dict[str, Any]) -> bool:
+        # A cached Claude parent can arrive without its provider tag; it is
+        # still a cross-provider link to revalidate. Native Codex lineage wins:
+        # an untagged parent that names a Codex row stays native.
+        parent = row.get("parentId")
+        return (not parent or row.get("parentProvider") == "Claude"
+                or (not row.get("parentProvider") and str(parent) in claude_ids
+                    and str(parent) not in codex_ids))
+
     live_rows = [row for row in codex.get("chats") or []
-                 if (not row.get("parentId") or row.get("parentProvider") == "Claude")
+                 if cross_provider_candidate(row)
                  and row.get("source") == "exec"
                  and row.get("executionStatus") == "running"]
     global _LAST_FULL_SCAN_AT
@@ -893,15 +1084,13 @@ def apply_exact_links(
             by_thread.setdefault(thread, []).append(run)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
-    claude_ids = {str(row.get("id")) for row in claude.get("chats") or [] if row.get("id")}
     for row in codex.get("chats") or []:
         thread = str(row.get("id") or "").lower()
-        native_parent = bool(row.get("parentId") and row.get("parentProvider") != "Claude")
-        if native_parent:
+        if not cross_provider_candidate(row):
             continue
         # Existing Claude links must be revalidated from the registry/discovery
         # before they are republished in this poll.
-        if row.get("parentProvider") == "Claude":
+        if row.get("parentId"):
             row.pop("parentId", None)
             row.pop("parentProvider", None)
             row.pop("parentLinkMethod", None)

@@ -3,6 +3,7 @@
 Outputs (in a fresh folder outside the checkout):
   releases/<version>+<build>/   onedir app (BranchglanceApp.exe, BranchglanceHook.exe) + release-manifest.json
   Branchglance.exe              native launcher (in-box csc.exe)
+  bg-codex.exe                 native console wrapper
   BranchglanceUninstall.exe     Python installer core, uninstall role (PyInstaller onefile)
   BranchglanceSetup.exe         Python installer core, setup role, payload embedded (onefile)
   BranchglanceSetup.exe.sha256
@@ -23,11 +24,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.branchglance_installer.core import (read_json, validate_version, verify_manifest,
                                                 write_manifest, write_stamps)  # noqa: E402
-RELEASE_VERSION = "1.0.0"
+RELEASE_VERSION = "0.1.0"
 SPEC = ROOT / "packaging" / "branchglance.draft.spec"
 INSTALLER_SPEC = ROOT / "packaging" / "branchglance_installer.spec"
 ICON = ROOT / "assets" / "brand" / "branchglance.ico"
 LAUNCHER = ROOT / "scripts" / "launcher" / "Branchglance.cs"
+CODEX_WRAPPER = ROOT / "scripts" / "launcher" / "BgCodex.cs"
 # Signing hook point: SIGNING_HOOK(path) Authenticode-signs one binary in place. It is
 # applied to every shipped executable before it is hashed into a manifest or embedded,
 # and to the setup last. Unsigned (None) until a certificate is supplied.
@@ -100,11 +102,24 @@ def _pyinstaller(py: Path, spec: Path, work: Path, name: str, env: dict) -> Path
     return dist
 
 
+def _resolve_build_python(python: Path | None) -> Path:
+    py = (python or Path(sys.executable)).resolve()
+    if not py.is_file():
+        raise FileNotFoundError(f"Python interpreter is not a file: {py}")
+    try:
+        subprocess.run([str(py), "-c", "import PyInstaller"], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"Python interpreter cannot import PyInstaller: {py}; install packaging/requirements-release.txt") from exc
+    return py
+
+
 def build(output: Path, version: str, build_id: str, *, python: Path | None = None) -> dict:
     versioned = validate_version(f"{version}+{build_id}")
     output = output.resolve()
     if output == ROOT or ROOT in output.parents:
         raise RuntimeError("Build output must be outside the source checkout")
+    py = _resolve_build_python(python)
     output.mkdir(parents=True, exist_ok=True)
     releases = output / "releases"
     final = releases / versioned
@@ -113,7 +128,7 @@ def build(output: Path, version: str, build_id: str, *, python: Path | None = No
     work = output / ".branchglance-build"
     if work.exists():
         raise RuntimeError(f"Build work directory already exists; choose a fresh output path: {work}")
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe", "BranchglanceSetup.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe", "BranchglanceSetup.exe"):
         if (output / name).exists():
             raise RuntimeError(f"Output already contains {name}; choose a fresh output path")
     source = work / "source"
@@ -131,7 +146,6 @@ def build(output: Path, version: str, build_id: str, *, python: Path | None = No
     (source / "branchglance_entry.py").write_text(_entry_source(), encoding="utf-8")
     for role in ("setup", "uninstall"):
         (source / f"branchglance_{role}_entry.py").write_text(_installer_entry_source(role), encoding="utf-8")
-    py = python or Path(sys.executable)
     env = os.environ.copy()
     env.update({"BRANCHGLANCE_SOURCE": str(source), "BRANCHGLANCE_ICON": str(ICON), "PYTHONDONTWRITEBYTECODE": "1",
                 "PYINSTALLER_CONFIG_DIR": str(work / "pyinstaller-config"),
@@ -160,6 +174,11 @@ def build(output: Path, version: str, build_id: str, *, python: Path | None = No
                     "/win32icon:" + str(ICON), "/out:" + str(launcher), *LAUNCHER_REFERENCES,
                     str(launcher_version_info), str(LAUNCHER)], check=True)
     _sign(launcher)
+    wrapper = output / "bg-codex.exe"
+    subprocess.run([str(compiler), "/nologo", "/target:exe", "/platform:x64", "/optimize+",
+                    "/out:" + str(wrapper), "/reference:System.Web.Extensions.dll",
+                    str(launcher_version_info), str(CODEX_WRAPPER)], check=True)
+    _sign(wrapper)
 
     # 3. The uninstaller (installer core, uninstall role).
     uninstall_dist = _pyinstaller(py, INSTALLER_SPEC, work, "uninstall",
@@ -172,6 +191,7 @@ def build(output: Path, version: str, build_id: str, *, python: Path | None = No
     payload = work / "payload"
     payload.mkdir()
     shutil.copyfile(launcher, payload / "Branchglance.exe")
+    shutil.copyfile(wrapper, payload / "bg-codex.exe")
     shutil.copyfile(uninstaller, payload / "BranchglanceUninstall.exe")
     shutil.copytree(final, payload / "release")
     setup_dist = _pyinstaller(py, INSTALLER_SPEC, work, "setup",
@@ -201,9 +221,10 @@ def build_setup_from_components(output: Path, components: Path, version: str, bu
     components = components.resolve()
     if output == ROOT or ROOT in output.parents:
         raise RuntimeError("Build output must be outside the source checkout")
+    py = _resolve_build_python(python)
     release = components / "releases" / versioned
     verify_manifest(release, expected_version=versioned)
-    for name in ("Branchglance.exe", "BranchglanceUninstall.exe"):
+    for name in ("Branchglance.exe", "bg-codex.exe", "BranchglanceUninstall.exe"):
         if not (components / name).is_file():
             raise RuntimeError(f"Signed component is missing: {name}")
     output.mkdir(parents=True, exist_ok=True)
@@ -225,6 +246,7 @@ def build_setup_from_components(output: Path, components: Path, version: str, bu
     payload = work / "payload"
     payload.mkdir()
     shutil.copyfile(components / "Branchglance.exe", payload / "Branchglance.exe")
+    shutil.copyfile(components / "bg-codex.exe", payload / "bg-codex.exe")
     shutil.copyfile(components / "BranchglanceUninstall.exe", payload / "BranchglanceUninstall.exe")
     shutil.copytree(release, payload / "release")
     env = os.environ.copy()
@@ -232,7 +254,6 @@ def build_setup_from_components(output: Path, components: Path, version: str, bu
                 "BRANCHGLANCE_VERSION_INFO": str(version_info), "BRANCHGLANCE_INSTALLER_ROLE": "setup",
                 "BRANCHGLANCE_PAYLOAD": str(payload), "PYTHONDONTWRITEBYTECODE": "1",
                 "PYINSTALLER_CONFIG_DIR": str(work / "pyinstaller-config")})
-    py = python or Path(sys.executable)
     setup_dist = _pyinstaller(py, INSTALLER_SPEC, work, "setup", env)
     setup = output / "BranchglanceSetup.exe"
     shutil.copyfile(setup_dist / "BranchglanceSetup.exe", setup)
@@ -293,7 +314,8 @@ def link_codex():
         args = sys.argv[2:]
         thread = args[0] if args else ""
         pid = int(args[args.index("--codex-pid") + 1]) if "--codex-pid" in args else 0
-        write_receipt(thread, pid)
+        expected = int(args[args.index("--codex-created") + 1]) if "--codex-created" in args else None
+        write_receipt(thread, pid, expected_created=expected)
     except Exception:
         pass
     return 0

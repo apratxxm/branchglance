@@ -1,0 +1,36 @@
+(() => {
+  const mode = new URLSearchParams(location.search).get("capture");
+  window.pywebview = {api: {
+    set_notch: () => Promise.resolve(true),
+    get_keep_open: () => Promise.resolve({keepOpen: false, keepOpenRevision: 0}),
+    get_widget_lock: () => Promise.resolve({locked: false, expanded: false, revision: 0}),
+    get_monitors: () => Promise.resolve([])
+  }};
+  window.addEventListener("load", async () => {
+    const snapshot = await (await fetch("/api/stats")).json();
+    const tracker = window.__tokenTrackerTest;
+    tracker.state.providerPolicy = snapshot.providerPolicies;
+    tracker.state.providerPolicyReady = true;
+    tracker.render(snapshot);
+    tracker.setupNotch();
+    if (mode === "tree") {
+      tracker.notch.manual = true;
+      tracker.notch.inspecting = true;
+      tracker.setNotch(true);
+      // A headless browser cannot perform the native window resize requested by
+      // set_notch. Match the capture surface to its toolbar instead of applying
+      // viewport corrections intended for the real WebView host.
+      const surface = document.querySelector('.layout');
+      surface.style.setProperty('width', '100%', 'important');
+      surface.style.setProperty('min-width', '100%', 'important');
+    } else if (mode === "settings") {
+      tracker.openDashboard();
+      window.TokenTrackerDashboard.selectTab("settings");
+    } else if (mode.startsWith("insights")) {
+      localStorage.setItem("branchglanceInsightsRange", mode.endsWith("24h") ? "24h" : "30d");
+      tracker.openDashboard();
+    } else {
+      tracker.setNotch(false);
+    }
+  });
+})();

@@ -1,5 +1,6 @@
 """Claude Code rows from hook events plus transcripts (synthetic files)."""
 
+import copy
 import json
 import os
 import time
@@ -31,6 +32,77 @@ def ev(ts, event, sid=SID, **kw):
 def usage(inp, cached, creation, out):
     return {"input_tokens": inp, "cache_read_input_tokens": cached, "cache_creation_input_tokens": creation,
             "output_tokens": out}
+
+
+@pytest.mark.parametrize("initial,reduce_record,needles", [
+    (claude_provider._new_usage_state, claude_provider._reduce_usage,
+     claude_provider._USAGE_NEEDLES),
+])
+def test_claude_filtered_reduction_matches_unfiltered_on_append(tmp_path, initial, reduce_record, needles):
+    path = tmp_path / "transcript.jsonl"
+    # Escaped keys and ignored invalid UTF-8 can hide a semantic key from a raw search.
+    records = [
+        b'{"noise": 1}',
+        b'{"c\\u0077d": "/work/project"}',
+        b'{"entrypoint" : "cli"}',
+        b'{"\\u0074ype": "user", "timestamp": "2026-10-01T00:00:00Z"}',
+        b'{"type": "assistant", "timestamp": "2026-10-01T00:00:01Z", "message": {"id": "m1", "\\u0075sage": {"input_tokens": 3}}}',
+        b'{"type": "assistant", "timestamp": "2026-10-01T00:00:01Z", "message": {"id": "m1", "us\xffage": {"input_tokens": 5}}}',
+    ]
+    path.write_bytes(b'\n'.join(records) + b'\n' + b'{"type": "result"')
+
+    def read(kind, selected):
+        return providers._incremental_jsonl_reduce(
+            kind, path, initial, reduce_record, needles=selected)
+
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+    with path.open("ab") as stream:
+        stream.write(b', "timestamp": "2026-10-01T00:00:02Z"}\n{"irrelevant": true}\n')
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b'{"type":"assistant","message":{"usage":{"input_tokens":7}}}\n')
+    os.replace(replacement, path)
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+    path.write_bytes(b'{"cwd":"/new"}\n')
+    assert read("claude-test-filtered", needles) == read("claude-test-unfiltered", None)
+
+
+def test_filtered_reduction_counts_usage_completed_by_append_and_replacement(tmp_path):
+    path = tmp_path / "transcript.jsonl"
+    ts = '"timestamp":"2026-10-01T00:00:0%dZ"'
+    path.write_bytes(b'{"type":"assistant",' + (ts % 1).encode() + b',"message":{"id":"m1","usage":{"input_tokens":3}}}\n'
+                     + b'{"type":"assistant",' + (ts % 2).encode() + b',"message":{"id":"m2","usa')
+
+    def read(kind, selected):
+        return providers._incremental_jsonl_reduce(
+            kind, path, claude_provider._new_usage_state, claude_provider._reduce_usage, needles=selected)
+
+    first = read("claude-append-filtered", claude_provider._USAGE_NEEDLES)
+    assert first == read("claude-append-unfiltered", None) != claude_provider._new_usage_state()
+    with path.open("ab") as stream:
+        stream.write(b'ge":{"input_tokens":5}}}\n')
+    completed = read("claude-append-filtered", claude_provider._USAGE_NEEDLES)
+    assert completed == read("claude-append-unfiltered", None) != first
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b'{"type":"assistant",' + (ts % 3).encode() + b',"message":{"id":"m3","usage":{"input_tokens":7}}}\n')
+    os.replace(replacement, path)
+    replaced = read("claude-append-filtered", claude_provider._USAGE_NEEDLES)
+    assert replaced == read("claude-append-unfiltered", None) not in (first, completed, claude_provider._new_usage_state())
+
+
+def test_over_deep_json_line_is_skipped_like_invalid_json(tmp_path):
+    path = tmp_path / "transcript.jsonl"
+    deep = b"[" * 100_000 + b"]" * 100_000
+    path.write_bytes(deep + b'\n{"type":"assistant","timestamp":"2026-10-01T00:00:01Z","message":{"id":"m1","usage":{"input_tokens":3}}}\n'
+                     + b'{"usage":' + deep + b'}\n')
+
+    state = providers._incremental_jsonl_reduce(
+        "claude-test-deep", path, claude_provider._new_usage_state, claude_provider._reduce_usage)
+
+    assert state == providers._incremental_jsonl_reduce(
+        "claude-test-deep-filtered", path, claude_provider._new_usage_state, claude_provider._reduce_usage,
+        needles=claude_provider._USAGE_NEEDLES)
+    assert state != claude_provider._new_usage_state()
 
 
 def test_claude_pid_associations_keep_all_time_scoped_process_identities():
@@ -729,3 +801,65 @@ def test_out_of_order_hook_arrival_never_links_the_wrong_session(arrival):
     assert sids["b"] not in linked
     if arrival == ((10, "a"), (20, "b"), (30, "a")):
         assert linked == [sids["a"]]
+
+
+def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, tmp_path):
+    """Reproduces the served case: the live Claude provider must emit insight data, and that
+    data must survive snapshot persistence and restore so the Insights reader sees sessions,
+    models, cost, cache and active hours."""
+    from token_tracker import insights, server
+
+    world.transcript(SID, [
+        assistant(NOW - 3600, "r1", use=_usage5(10, 5, 80, 4, 1)),
+        assistant(NOW - 7200, "r2", model="claude-haiku-4-5", use=_usage5(1, 1, 0, 0, 0)),
+        assistant(NOW - 40 * 86400, "r-old", use=_usage5(999, 999, 0, 0, 0)),
+    ])
+    child_dir = world.projects / SID / "subagents"
+    child_dir.mkdir(parents=True)
+    (child_dir / "agent-kid.jsonl").write_text(
+        json.dumps(assistant(NOW - 300, "c1", model="claude-haiku-4-5", use=_usage5(1, 1, 8, 0, 0))) + "\n",
+        encoding="utf-8")
+    monkeypatch.setattr(claude_provider, "projects_root", lambda: world.projects.parent)
+    monkeypatch.setattr(claude_provider, "build_rows", lambda *a, **k: [])
+
+    class Limits:
+        def snapshot(self):
+            return {"connected": True, "name": "Claude", "fiveHour": {"percent": 24},
+                    "weekly": {"percent": 4}, "activity": []}
+
+    live = claude_provider.ClaudeCodeProvider(limits_factory=Limits).snapshot()
+    insight_data = live["_insightsData"]
+    assert {(s["id"], s["subagent"]) for s in insight_data["sessions"]} == {(SID, False), ("agent-kid", True)}
+    assert insight_data["activeHours"]
+    assert "claude-opus-5" in insight_data["dailyModels"][_local_day(NOW - 3600)]
+
+    snapshot = {"generatedAt": datetime.now(timezone.utc).isoformat(), "enabledProviders": ["Claude"],
+                "limitProviders": [], "providers": [live]}
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: None)
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Claude"}))
+    monkeypatch.setattr(server, "build_snapshot", lambda: copy.deepcopy(snapshot))
+    path = tmp_path / "stats-snapshot.json"
+    server.SnapshotCache(persist_path=path, compatibility="test")._build()
+    restored = server.SnapshotCache(persist_path=path, compatibility="test").get()
+    assert restored is not None and restored["snapshotCache"]["stale"] is True
+
+    result = insights.build_insights(
+        restored, "30d", peak_store=insights.LimitPeakStore(tmp_path / "peaks.jsonl", owner_check=lambda: False),
+        allowed_names={"Claude"})
+    claude = result["providers"][0]
+    assert claude["totals"]["sessions"] == 1 and claude["totals"]["subagentsActive"] == 1
+    assert claude["totals"]["activeHours"] >= 2.0
+    assert claude["totals"]["cacheHitRate"] is not None
+    assert {model["name"] for model in claude["models"]} == {"claude-opus-5", "claude-haiku-4-5"}
+    assert claude["totals"]["apiEquivalentCost"] is not None
+
+
+def test_usage_aggregates_tolerate_checkpoints_without_epochs(tmp_path, monkeypatch):
+    # A checkpoint written before per-response epochs existed must not break aggregation.
+    old = claude_provider._new_usage_state()
+    old.pop("epochs")
+    assert claude_provider._USAGE_KIND.endswith("-v2")
+    monkeypatch.setattr(providers, "_incremental_jsonl_reduce", lambda *a, **k: old)
+    monkeypatch.setattr(claude_provider, "_usage_files", lambda base, since: [(0, "x", tmp_path / "s.jsonl")])
+    result = claude_provider.usage_aggregates(root=tmp_path)
+    assert "_insightsData" in result

@@ -299,6 +299,7 @@ def _embedded_sha256_image_digests(data: bytes, certificate: tuple[int, int]) ->
 def _component_targets(versioned: str) -> list[str]:
     return [
         "Branchglance.exe",
+        "bg-codex.exe",
         "BranchglanceUninstall.exe",
         f"releases/{versioned}/BranchglanceApp.exe",
         f"releases/{versioned}/BranchglanceHook.exe",

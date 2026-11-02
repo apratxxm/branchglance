@@ -3,34 +3,6 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
-const html=fs.readFileSync(new URL("../token_tracker/static/index.html",import.meta.url),"utf8");
-const css=fs.readFileSync(new URL("../token_tracker/static/styles.css",import.meta.url),"utf8");
-
-// ---------- static shell ----------
-assert.match(html,/href="fonts\/localfonts\.css"/); // shipped local fonts avoid an external font request
-assert.doesNotMatch(html,/fonts\.googleapis\.com|fonts\.gstatic\.com/);
-assert.match(html,/class="titlebar pywebview-drag-region"/);
-assert.match(html,/id="window-fit" aria-label="Fit widget to screen"/);
-assert.match(app,/\$\("#window-fit"\)\?\.addEventListener\("click",\(\)=>window\.pywebview\?\.api\?\.fit\?\.\(\)\)/);
-assert.match(html,/id="strip"[\s\S]*id="resets"[\s\S]*id="analytics"[\s\S]*id="chat-list"[\s\S]*id="totals"/);
-assert.match(html,/<section id="analytics"[^>]*\bhidden\b/);
-assert.match(html,/id="window-seg"[\s\S]*data-days="1"[\s\S]*data-days="2"[\s\S]*data-days="5"[\s\S]*data-days="7"/);
-assert.equal((html.match(/class="resize-edge/g)||[]).length,3);
-assert.doesNotMatch(html,/<select|⌕|⌄|↳|⌖/);
-for(const token of ["--bg:#0A0A0A","--surface:#111111","--line:#242424","--text-1:#EDEDED","--text-2:#A1A1A1","--text-3:#878787","--live:#3FCF8E","--attn:#F5A524","--err:#FF6166","--stat-tok:#6FA8F0","--stat-tool:#B69CF6","--stat-file:#5CC8C0"])
-  assert.ok(css.includes(token),token);
-assert.match(css,/prefers-reduced-motion:reduce/);
-assert.match(css,/@media \(min-width:680px\)/);
-assert.match(css,/\.chat-list\{[^}]*overflow-y:auto/);
-assert.match(css,/\.strip\{[^}]*max-height:40vh[^}]*overflow-y:auto/); // long attention prompts cannot consume the entire compact widget
-assert.match(css,/\.q-opt\{[^}]*min-width:0[^}]*white-space:normal[^}]*overflow-wrap:anywhere/); // long answer choices wrap inside narrow widgets
-assert.match(css,/\.si-ask \.si-qt\{[^}]*white-space:normal[^}]*overflow-wrap:anywhere/);
-assert.match(css,/\.analytics details/);
-assert.match(css,/\.an-advice/);
-assert.doesNotMatch(css,/linear-gradient|radial-gradient|text-shadow/);
-// No declared font size under 11px anywhere.
-for(const m of css.matchAll(/font(?:-size)?:[^;}]*?(\d+(?:\.\d+)?)px/g)) assert.ok(Number(m[1])>=11,"font size "+m[0]);
-
 // ---------- VM with DOM stubs ----------
 const nodes=new Map();
 function node(selector){

@@ -71,7 +71,6 @@ body:not(.phone) .titlebar>#widget-lock{width:22px;min-width:22px;height:24px;fl
 body:not(.phone) #widget-lock[aria-pressed="true"]{background:var(--source-accent-soft);color:var(--source-accent)}
 body:not(.phone) #widget-lock[aria-pressed="true"]:hover{background:var(--source-hover);color:var(--source-accent)}
 body:not(.phone) #widget-keep-open[aria-pressed="true"]{background:var(--source-accent-soft);color:var(--source-accent)}
-body.phone #widget-lock{display:none}
 .notch-count{font:12px var(--mono)}
 .layout{order:2;width:100%;min-width:0;flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;scrollbar-width:none}
 

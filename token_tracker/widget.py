@@ -21,7 +21,7 @@ from PIL import Image
 
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
-from . import product, reset_delivery, server as server_module
+from . import agent_links, product, reset_delivery, server as server_module
 
 
 _WAIT_OBJECT_0 = 0x0
@@ -240,9 +240,9 @@ NOTCH_WIDTH = 680
 NOTCH_COLLAPSED_HEIGHT = 148
 NOTCH_MIN_HEIGHT, NOTCH_DEFAULT_HEIGHT = NOTCH_COLLAPSED_HEIGHT, 560
 COMPACT_NOTCH_MODES = {"idle", "rest", "controls", "inspect", "dashboard"}
-COMPACT_NOTCH_SIZES = {"idle": (420, 100), "rest": (420, 100),
-                       "controls": (420, 110), "inspect": (560, 114),
-                       "dashboard": (720, 540)}
+COMPACT_NOTCH_SIZES = {"idle": (328, 100), "rest": (328, 100),
+                       "controls": (328, 110), "inspect": (560, 114),
+                       "dashboard": (720, 608)}
 COMPACT_INSPECT_MAX_HEIGHT = 420
 COMPACT_DRAG_LEASE_SECONDS = 60
 COMPACT_DRAG_WATCHDOG_SECONDS = 0.10
@@ -2650,6 +2650,8 @@ class WidgetApp:
                 return
             if not self.claim_instance():
                 return
+            if not agent_links.initialize_receipt_inbox():
+                logging.getLogger(__name__).warning("Receipt inbox unavailable; Codex link receipts are disabled")
             # The policy is already loaded by LimitResetService.__init__. The
             # control listener is now bound, so a waiting installer can safely
             # discover and stop this instance.

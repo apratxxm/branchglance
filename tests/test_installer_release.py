@@ -118,6 +118,7 @@ def _setup_payload(tmp_path, *, version, build_id, body):
     write_manifest(payload / "release", version, build_id)
     (payload / "Branchglance.exe").write_bytes(b"launcher")
     (payload / "BranchglanceUninstall.exe").write_bytes(b"uninstaller")
+    (payload / "bg-codex.exe").write_bytes(b"wrapper")
     return payload
 
 
@@ -1484,3 +1485,439 @@ def test_paths_use_known_folder_resolver_with_env_fallback(tmp_path):
     assert failed_fallback.desktop == fallback.desktop
     assert failed_fallback.start_menu == fallback.start_menu
     assert failed_fallback.startup == fallback.startup
+
+@pytest.mark.parametrize("answer,quiet,initial,expected", [(False, False, True, False), (True, False, False, True), (None, True, True, True)])
+def test_upgrade_startup_choice_and_quiet_default(tmp_path, monkeypatch, answer, quiet, initial, expected):
+    from branchglance_installer import app, windows
+    root = _root(tmp_path)
+    paths = app.Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    native = _fake_installer_native(paths, running=False, events=[])
+    integrations = app._integrations(paths, native, "1.0.0+a")
+    integrations.apply(startup_enabled=initial)
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    monkeypatch.setattr(app, "_prepare_appdata", lambda paths: [])
+    monkeypatch.setattr(windows, "cleanup_stale_workers", lambda *args: None)
+    def fake_install(paths, payload, native, *, startup, deadline):
+        integrations.apply(startup_enabled=startup)
+        return {}
+    monkeypatch.setattr(app, "install", fake_install)
+    class FakeUi(app.Ui):
+        def confirm(self, text, *, default):
+            assert default == initial
+            assert "Choose No" in text
+            return default if quiet else answer
+        def info(self, text): pass
+    args = ["--payload", str(payload)] + (["--quiet"] if quiet else [])
+    assert app.main(args, paths=paths, native=native, ui=FakeUi()) == 0
+    assert integrations.startup_enabled() is expected
+
+
+def test_upgrade_no_removes_legacy_owned_startup_shortcut(tmp_path, monkeypatch):
+    from branchglance_installer import app, windows
+    root = _root(tmp_path)
+    paths = app.Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    native = _fake_installer_native(paths, running=False, events=[])
+    integrations = app._integrations(paths, native, "1.0.0+a")
+    shortcut = paths.startup / "Branchglance.lnk"
+    native.integration_adapter.links[str(shortcut)] = {
+        "description": "Branchglance managed shortcut " + "c" * 32,
+        "target": str(root / "Branchglance.exe"), "arguments": "--background",
+        "workdir": str(root), "app_id": "",
+    }
+    assert integrations.startup_enabled()
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    monkeypatch.setattr(app, "_prepare_appdata", lambda paths: [])
+    monkeypatch.setattr(windows, "cleanup_stale_workers", lambda *args: None)
+    def fake_install(paths, payload, native, *, startup, deadline):
+        integrations.apply(startup_enabled=startup)
+        return {}
+    monkeypatch.setattr(app, "install", fake_install)
+    class FakeUi(app.Ui):
+        def confirm(self, text, *, default):
+            assert default is True
+            return False
+        def info(self, text): pass
+    assert app.main(["--payload", str(payload)], paths=paths, native=native, ui=FakeUi()) == 0
+    assert str(shortcut) not in native.integration_adapter.links
+    assert not integrations.startup_enabled()
+
+
+@pytest.mark.parametrize("entry", ["uninstall", "rollback", "--uninstall", "--uninstall-worker"])
+@pytest.mark.parametrize("status", ["redirected", "unknown"])
+def test_removal_and_rollback_refuse_unverified_appdata_before_mutation(tmp_path, monkeypatch, entry, status):
+    from branchglance_installer import app
+    paths = app.Paths(tmp_path / "root", tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    native = _fake_installer_native(paths, running=False, events=[])
+    monkeypatch.setattr(app.product, "appdata_probe", lambda env: (status, "test"))
+    if entry == "uninstall":
+        with pytest.raises(SafetyError, match="AppData probe"):
+            app.uninstall(paths, native)
+    elif entry == "rollback":
+        with pytest.raises(SafetyError, match="AppData probe"):
+            app.rollback(paths, native)
+    else:
+        assert app.main([entry, "--quiet"], paths=paths, native=native) == 2
+    assert not paths.root.exists()
+    assert not paths.product_root.exists()
+    assert not paths.temp.exists()
+
+
+def test_uninstall_checks_root_and_manifest_before_claude_changes(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    before = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    release = _release(tmp_path, "corrupt", version="1.0.0", build_id="a")
+    ReleaseOps(paths.root).install(release, "1.0.0", "a")
+    (paths.root / "releases" / "1.0.0+a" / "BranchglanceApp.exe").write_text("tampered")
+    with pytest.raises(SafetyError):
+        uninstall(paths, native)
+    assert settings.read_bytes() == before
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_rollback_preserves_startup_state(tmp_path, enabled):
+    from branchglance_installer import app
+    root = _root(tmp_path)
+    ops = ReleaseOps(root)
+    ops.install(_release(tmp_path, "first", version="1.0.0", build_id="a"), "1.0.0", "a")
+    ops.install(_release(tmp_path, "second", version="1.0.1", build_id="b"), "1.0.1", "b")
+    paths = app.Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance", tmp_path / "Temp")
+    paths.product_root.parent.mkdir(parents=True)
+    native = _fake_installer_native(paths, running=False, events=[])
+    integration = app._integrations(paths, native, "1.0.1+b")
+    integration.apply(startup_enabled=enabled)
+    assert app.rollback(paths, native)["current"]["version"] == "1.0.0+a"
+    assert integration.startup_enabled() is enabled
+
+
+def test_uninstall_reports_claude_changes_if_later_removal_fails(tmp_path, monkeypatch):
+    from branchglance_installer import app
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    def fail(*args, **kwargs):
+        raise SafetyError("injected removal failure")
+    monkeypatch.setattr(app, "uninstall_owned_root", fail)
+    with pytest.raises(SafetyError, match="Claude consent.*Claude hooks.*injected removal failure"):
+        app.uninstall(paths, native)
+
+
+@pytest.mark.parametrize("operation,target", [("install", "1.0.0+a"), ("uninstall", "not-uninstall")])
+def test_uninstall_refuses_unfinished_or_corrupt_journal_before_claude_changes(tmp_path, monkeypatch, operation, target):
+    from branchglance_installer.app import uninstall
+    from branchglance_installer.core import Journal
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    ReleaseOps(paths.root).install(_release(tmp_path, "good", version="1.0.0", build_id="a"), "1.0.0", "a")
+    Journal(paths.root).begin(operation, target, {"pointer": None, "integration": {}})
+    before = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    with pytest.raises(SafetyError):
+        uninstall(paths, native)
+    assert settings.read_bytes() == before
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+
+
+def test_uninstall_after_install_folder_is_gone_still_removes_owned_hooks_and_shortcuts(tmp_path, monkeypatch):
+    import shutil
+    from branchglance_installer import app
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}, "keep": true}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    integration = app._integrations(paths, native, "1.0.0+a")
+    integration.apply(startup_enabled=True)
+    assert integration.startup_enabled()
+    shutil.rmtree(paths.root)
+    result = app.uninstall(paths, native)
+    assert result["claudeIntegration"]["ok"] is True and result["claudeIntegration"]["changed"] is True
+    remaining = json.loads(settings.read_text(encoding="utf-8"))
+    assert remaining["keep"] is True
+    assert not any(installer.is_ours(group) for groups in remaining.get("hooks", {}).values() for group in groups)
+    assert not (paths.product_root / "claude-consent.json").exists()
+    assert not integration.startup_enabled()
+
+
+def test_uninstall_refuses_resumed_finalizing_with_leftovers_before_claude_changes(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    from branchglance_installer.core import Journal
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    record = Journal(paths.root).begin("uninstall", "uninstall", {"pointer": None, "integration": {}})
+    record["phase"] = "finalizing"
+    Journal(paths.root).save(record)
+    (paths.root / "stray.txt").write_text("not ours")
+    before = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    with pytest.raises(SafetyError, match="unowned items"):
+        uninstall(paths, native)
+    assert settings.read_bytes() == before
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+
+@pytest.mark.parametrize("damaged_location", ["source", "destination"])
+def test_resumed_trash_intent_refuses_before_external_changes(tmp_path, monkeypatch, damaged_location):
+    from branchglance_installer import app
+    from branchglance_installer.core import Journal
+    installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    settings.write_text('{"hooks": {"Stop": []}}')
+    installer.install(settings, data_directory=paths.product_root, now=1_800_000_000)
+    ReleaseOps(paths.root).install(_release(tmp_path, "bundle", version="1.0.0", build_id="a"), "1.0.0", "a")
+    integration = app._integrations(paths, native, "1.0.0+a")
+    integration.apply(startup_enabled=True)
+    def crash(name):
+        if name == "trash-intent-journaled":
+            raise RuntimeError("simulated crash")
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        uninstall_owned_root(paths.root, after_mutation=crash)
+    entry = Journal(paths.root).load()["trashIntent"]
+    source = paths.root / "releases" / entry["version"]
+    destination = paths.root / "releases" / entry["name"]
+    if damaged_location == "destination":
+        source.rename(destination)
+    damaged = source if damaged_location == "source" else destination
+    (damaged / "BranchglanceApp.exe").write_text("tampered")
+    before_settings = settings.read_bytes()
+    consent = (paths.product_root / "claude-consent.json").read_bytes()
+    before_links = dict(native.integration_adapter.links)
+    before_registry = native.integration_adapter.registry
+    with pytest.raises(SafetyError):
+        app.uninstall(paths, native)
+    assert settings.read_bytes() == before_settings
+    assert (paths.product_root / "claude-consent.json").read_bytes() == consent
+    assert native.integration_adapter.links == before_links
+    assert native.integration_adapter.registry == before_registry
+
+
+def test_bg_codex_owned_install_upgrade_and_uninstall(tmp_path):
+    from branchglance_installer.core import read_owned_ledger
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ops = ReleaseOps(root, tools={"bg-codex.exe": source})
+    ops.install(_release(tmp_path, "first-wrapper-release"), "1.0.0", "a")
+    assert (root / "bg-codex.exe").read_bytes() == b"first wrapper"
+    assert "bg-codex.exe" in read_owned_ledger(root)["tools"]
+    source.write_bytes(b"second wrapper")
+    ops.install(_release(tmp_path, "second-wrapper-release", version="1.0.1", build_id="b"), "1.0.1", "b")
+    assert (root / "bg-codex.exe").read_bytes() == b"second wrapper"
+    uninstall_owned_root(root)
+    assert not root.exists()
+
+
+def test_bg_codex_foreign_collision_is_not_adopted_or_deleted(tmp_path):
+    root = _root(tmp_path)
+    foreign = root / "bg-codex.exe"
+    foreign.write_bytes(b"foreign")
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ops = ReleaseOps(root, tools={"bg-codex.exe": source})
+    with pytest.raises(SafetyError, match="unowned install file"):
+        ops.install(_release(tmp_path, "foreign-wrapper-release"), "1.0.0", "a")
+    ops.recover()
+    with pytest.raises(SafetyError, match="kept unowned items"):
+        uninstall_owned_root(root)
+    assert foreign.read_bytes() == b"foreign"
+
+
+def test_bg_codex_failed_upgrade_restores_old_owned_tool(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "first-release"), "1.0.0", "a")
+    source.write_bytes(b"second wrapper")
+    def interrupt(name):
+        if name == "tool-backed-up":
+            raise RuntimeError("power loss")
+    ops = ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=interrupt)
+    with pytest.raises(RuntimeError, match="power loss"):
+        ops.install(_release(tmp_path, "second-release", version="1.0.1", build_id="b"), "1.0.1", "b")
+    ReleaseOps(root).recover()
+    assert (root / "bg-codex.exe").read_bytes() == b"first wrapper"
+
+
+def test_bg_codex_replacement_is_refused_before_uninstall_integration(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release"), "1.0.0", "a")
+    wrapper = root / "bg-codex.exe"
+    wrapper.unlink()
+    wrapper.write_bytes(b"foreign")
+    called = []
+    with pytest.raises(SafetyError, match="ownership cannot be verified"):
+        uninstall_owned_root(root, integration_remove=lambda: called.append(True))
+    assert called == []
+    assert wrapper.read_bytes() == b"foreign"
+
+
+@pytest.mark.parametrize("point,changed", [("tool-staged", "staged"), ("tool-backed-up", "backup"), ("tool-replaced", "live")])
+def test_bg_codex_tampering_refuses_recovery_before_integration(tmp_path, point, changed):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"original")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release-a"), "1.0.0", "a")
+    source.write_bytes(b"replacement")
+    def crash(name):
+        if name == point:
+            raise RuntimeError("power loss")
+    with pytest.raises(RuntimeError, match="power loss"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash).install(
+            _release(tmp_path, "release-b", version="1.0.1", build_id="b"), "1.0.1", "b")
+    journal = read_json(root / "install-journal.json")
+    entry = journal["tools"]["bg-codex.exe"]
+    target = root / ({"staged": entry["staged"], "backup": entry["backup"], "live": "bg-codex.exe"}[changed])
+    target.unlink()
+    target.write_bytes(b"foreign")
+    calls = []
+    with pytest.raises(SafetyError):
+        ReleaseOps(root, integration_restore=lambda state: calls.append(state)).recover()
+    assert calls == []
+    assert target.read_bytes() == b"foreign"
+
+
+def test_bg_codex_missing_provenance_refuses_uninstall(tmp_path):
+    from branchglance_installer.core import read_owned_ledger, write_owned_ledger
+    root = _root(tmp_path)
+    wrapper = root / "bg-codex.exe"
+    wrapper.write_bytes(b"foreign")
+    ledger = read_owned_ledger(root)
+    ledger["tools"].append("bg-codex.exe")
+    write_owned_ledger(root, ledger)
+    with pytest.raises(SafetyError, match="ownership is missing"):
+        uninstall_owned_root(root)
+    assert wrapper.read_bytes() == b"foreign"
+
+
+def test_bg_codex_unrecorded_stage_is_retained_before_recovery(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"source")
+    def crash(name):
+        if name == "tool-staged":
+            raise RuntimeError("power loss")
+    with pytest.raises(RuntimeError):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash).install(
+            _release(tmp_path, "release"), "1.0.0", "a")
+    journal_path = root / "install-journal.json"
+    journal = read_json(journal_path)
+    entry = journal["tools"]["bg-codex.exe"]
+    staged = root / entry["staged"]
+    entry["newProvenance"] = None
+    journal_path.write_text(json.dumps(journal), encoding="utf-8")
+    calls = []
+    with pytest.raises(SafetyError):
+        ReleaseOps(root, integration_restore=lambda state: calls.append(state)).recover()
+    assert calls == []
+    assert staged.read_bytes() == b"source"
+
+
+def test_bg_codex_same_bytes_foreign_replacement_refuses_upgrade(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release-a"), "1.0.0", "a")
+    wrapper = root / "bg-codex.exe"
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"owned")
+    os.replace(replacement, wrapper)
+    with pytest.raises(SafetyError, match="ownership cannot be verified"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+            _release(tmp_path, "release-b", version="1.0.1", build_id="b"), "1.0.1", "b")
+    assert wrapper.read_bytes() == b"owned"
+
+
+def test_bg_codex_destination_race_is_not_overwritten(tmp_path, monkeypatch):
+    from branchglance_installer import core
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    rename = core._rename_wrapper
+    def race(path, target, expected):
+        if target.name == "bg-codex.exe":
+            target.write_bytes(b"foreign")
+        return rename(path, target, expected)
+    monkeypatch.setattr(core, "_rename_wrapper", race)
+    with pytest.raises(SafetyError, match="Cannot rename verified wrapper"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release"), "1.0.0", "a")
+    assert (root / "bg-codex.exe").read_bytes() == b"foreign"
+
+
+def test_bg_codex_source_swap_before_handle_open_is_not_deleted(tmp_path, monkeypatch):
+    from branchglance_installer import core
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"owned")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "release"), "1.0.0", "a")
+    delete = core._delete_wrapper
+    def race(path, expected):
+        path.unlink()
+        path.write_bytes(b"foreign")
+        return delete(path, expected)
+    monkeypatch.setattr(core, "_delete_wrapper", race)
+    with pytest.raises(SafetyError, match="ownership cannot be verified"):
+        uninstall_owned_root(root)
+    assert (root / "bg-codex.exe").read_bytes() == b"foreign"
+
+
+def test_bg_codex_crash_after_new_removed_can_restore_old(tmp_path):
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"old")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "first"), "1.0.0", "a")
+    source.write_bytes(b"new")
+    def crash_install(name):
+        if name == "tool-replaced": raise RuntimeError("install crash")
+    with pytest.raises(RuntimeError, match="install crash"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash_install).install(
+            _release(tmp_path, "second", version="1.0.1", build_id="b"), "1.0.1", "b")
+    def crash_restore(name):
+        if name == "wrapper-new-removed": raise RuntimeError("recovery crash")
+    with pytest.raises(RuntimeError, match="recovery crash"):
+        ReleaseOps(root, after_mutation=crash_restore).recover()
+    ReleaseOps(root).recover()
+    assert (root / "bg-codex.exe").read_bytes() == b"old"
+
+
+def test_bg_codex_locked_handle_denies_write_and_rename(tmp_path):
+    from branchglance_installer.core import _LockedWrapper
+    target = tmp_path / "target"
+    target.write_bytes(b"original")
+    with _LockedWrapper(target) as held:
+        expected = held.provenance()
+        with pytest.raises(OSError):
+            target.write_bytes(b"foreign")
+        with pytest.raises(OSError):
+            os.replace(target, tmp_path / "moved")
+        held.verify(expected)
+    assert target.read_bytes() == b"original"
+
+
+def test_bg_codex_restore_destination_race_keeps_foreign_and_backup(tmp_path, monkeypatch):
+    from branchglance_installer import core
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"old")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "first"), "1.0.0", "a")
+    source.write_bytes(b"new")
+    def crash(name):
+        if name == "tool-replaced": raise RuntimeError("power loss")
+    with pytest.raises(RuntimeError, match="power loss"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}, after_mutation=crash).install(
+            _release(tmp_path, "second", version="1.0.1", build_id="b"), "1.0.1", "b")
+    entry = read_json(root / "install-journal.json")["tools"]["bg-codex.exe"]
+    rename = core._rename_wrapper
+    def race(path, target, expected):
+        if path.name == entry["backup"]:
+            target.write_bytes(b"foreign")
+        return rename(path, target, expected)
+    monkeypatch.setattr(core, "_rename_wrapper", race)
+    with pytest.raises(SafetyError, match="Cannot rename verified wrapper"):
+        ReleaseOps(root).recover()
+    assert (root / "bg-codex.exe").read_bytes() == b"foreign"
+    assert (root / entry["backup"]).read_bytes() == b"old"
