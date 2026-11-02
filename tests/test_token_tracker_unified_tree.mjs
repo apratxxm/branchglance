@@ -108,10 +108,54 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
     assert.match(tokens,/ctx-tokens/);
     assert.match(tokens,/Cache 98%/);
     assert.ok(tokens.indexOf('ctx-tokens')<tokens.indexOf('Cache 98%'),'tokens stay above the muted cache line');
-    assert.match(markup,new RegExp('runway-path-leaf">'+leaves[index]+'<\\/span>'));
-    assert.match(markup,/title="Workspace \u00b7 A:\\pisha\\orchestrator/,'the full workspace path remains in the tooltip');
+    if(index===0) assert.match(markup,/runway-path-leaf">A: orchestrator/);
+    else assert.match(markup,/data-runway-slot="path-column" class="runway-refined-path"><\/span>/);
+    assert.equal(markup.match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1],'Running');
     assert.equal((markup.match(/data-runway-slot="cache"/g)||[]).length,1);
   }
+
+  const longName='Review a particularly long subagent name to check the single line truncation and full tooltip';
+  const longMarkup=T.runwayTelemetryHTML({...T.state.forest.roots[0].descendants[0],agentName:longName},true);
+  assert.ok(longMarkup.includes('title="'+longName+'"'),'full agent name is available in the tooltip');
+  // Subagent names wrap like parent names; the user asked for no truncation.
+  assert.doesNotMatch(css,/.ag.runway-agent .runway-refined-title .runway-agent-label{[^}]*text-overflow:ellipsis/);
+  assert.match(longMarkup,/data-runway-slot="model"/);
+  assert.match(longMarkup,/Cache 98%/);
+
+  const root=T.state.forest.roots[0],base=root.descendants[0];
+  const extra=Array.from({length:7},(_,i)=>({...base,key:'Codex:extra'+i,id:'extra'+i,parentKey:root.key,treeParentKey:root.key,latest:100+i}));
+  const entriesFor=descendants=>T.trayEntries({...root,descendants},{active:false});
+  const keys=entries=>Array.from(entries.filter(e=>e.cls.includes('runway-agent')),e=>e.key);
+  const click=(action,key=root.key,last=2)=>{const snapshot=T.state.snapshot;T.state.snapshot=null;T.handleClick({target:{closest:()=>({dataset:{action,key,last:String(last)}})}});T.state.snapshot=snapshot;};
+  let entries=entriesFor(extra);
+  assert.deepEqual(keys(entries),extra.slice(0,3).map(e=>e.key),'forest sibling order is retained');
+  assert.match(entries.at(-1).html,/\+4 more/);
+  click('runway-more');entries=entriesFor(extra);
+  assert.deepEqual(keys(entries),extra.slice(3,6).map(e=>e.key));
+  assert.match(entries.at(-1).html,/4\u20136 of 7/);
+  click('runway-more');entries=entriesFor(extra);
+  assert.deepEqual(keys(entries),[extra[6].key]);
+  assert.match(entries.at(-1).html,/7 of 7/);
+  click('runway-page-prev');entries=entriesFor(extra);
+  assert.deepEqual(keys(entries),extra.slice(3,6).map(e=>e.key));
+  click('runway-page-prev');
+  const waiting={...extra[5],status:'needs-input',executionStatus:'waiting',pendingQuestion:'Choose?',pendingQuestionAt:ago(0)};
+  entries=entriesFor(extra.map(a=>a.key===waiting.key?waiting:a));
+  assert.ok(keys(entries).includes(waiting.key),'waiting sibling past cap remains visible');
+  assert.match(T.runwayTelemetryHTML(waiting,true),/class="runway-state-word runway-waiting-link"[^>]*>Waiting<\/button>/);
+  const failed={...extra[6],status:'failed',executionStatus:'failed',updatedAt:ago(0)};
+  entries=entriesFor(extra.map(a=>a.key===failed.key?failed:a));
+  assert.ok(keys(entries).includes(failed.key),'failed child remains visible beyond the ordinary cap');
+  assert.equal(T.runwayTelemetryHTML(failed,true).match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1], 'Failed');
+  const waitingGrandchild={...waiting,key:'Codex:question',id:'question',parentKey:extra[5].key,treeParentKey:extra[5].key};
+  entries=entriesFor([...extra,waitingGrandchild]);
+  assert.ok(keys(entries).includes(extra[5].key)&&keys(entries).includes(waitingGrandchild.key),'actionable descendant preserves ancestor path');
+  const idle={...extra[0],status:'idle',executionStatus:'idle'},grandchild={...extra[1],parentKey:idle.key,treeParentKey:idle.key};
+  entries=entriesFor([idle,grandchild]);
+  assert.deepEqual(keys(entries),[grandchild.key],'visible grandchild survives an inactive intermediate');
+  T.state.pointerInList=true;
+  entries=entriesFor(extra.map((a,i)=>({...a,latest:i===6?9999:a.latest})));
+  assert.deepEqual(keys(entries),extra.slice(0,3).map(e=>e.key),'polling activity cannot reorder siblings');
 
   const inspect='body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) ';
   const rowRule=cssRule(inspect+'.runway-refined-row');
@@ -130,6 +174,49 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.doesNotMatch(css,/\.runway-refined-path \.runway-path-leaf\{overflow:visible;white-space:normal/,'workspace stays on one line');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/grid-row:1\/3/,'tokens span the same two-row axis as the single-line columns');
   assert.match(cssRule(inspect+'.runway-refined-tokens'),/align-items:center/,'tokens centre their two lines on the shared row axis');
+}
+
+// The keyed DOM patch updates the disclosure button without replacing its focused node.
+{
+  const {T,context}=boot(),doc=context.document;
+  class TextNode {
+    constructor(value){this.nodeType=3;this.nodeName='#text';this.nodeValue=value;this.childNodes=[];}
+    cloneNode(){return new TextNode(this.nodeValue);}
+  }
+  class Element {
+    constructor(name,attrs={},children=[]){this.nodeType=1;this.nodeName=name.toUpperCase();this.map={...attrs};this.childNodes=children;this.dataset={};this.isConnected=true;this.className='';this._html='';for(const child of children)child.parentNode=this;}
+    get attributes(){return Object.entries(this.map).map(([name,value])=>({name,value}));}
+    get children(){return this.childNodes.filter(n=>n.nodeType===1);}
+    get firstChild(){return this.childNodes[0]||null;}
+    get lastChild(){return this.childNodes.at(-1)||null;}
+    get nextSibling(){const siblings=this.parentNode?.childNodes||[];return siblings[siblings.indexOf(this)+1]||null;}
+    getAttribute(name){return this.map[name]??null;}
+    hasAttribute(name){return name in this.map;}
+    setAttribute(name,value){this.map[name]=String(value);}
+    removeAttribute(name){delete this.map[name];}
+    matches(){return false;}
+    querySelectorAll(){return [];}
+    contains(node){return this===node||this.children.some(child=>child.contains(node));}
+    focus(){doc.activeElement=this;}
+    cloneNode(deep){return new Element(this.nodeName,{...this.map},deep?this.childNodes.map(n=>n.cloneNode(true)):[]);}
+    insertBefore(node,before){if(node.parentNode){const old=node.parentNode.childNodes;old.splice(old.indexOf(node),1);}const index=before?this.childNodes.indexOf(before):this.childNodes.length;this.childNodes.splice(index,0,node);node.parentNode=this;return node;}
+    appendChild(node){return this.insertBefore(node,null);}
+    remove(){const siblings=this.parentNode.childNodes;siblings.splice(siblings.indexOf(this),1);}
+  }
+  const parse=html=>[...html.matchAll(/<button ([^>]*)>([^<]*)<\/button>/g)].map(([,raw,text])=>{
+    const attrs=Object.fromEntries([...raw.matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,value])=>[key,value]));
+    return new Element('button',attrs,[new TextNode(text)]);
+  });
+  doc.createElement=name=>name==='template'?{set innerHTML(value){this.content={childNodes:parse(value)};}}:new Element(name);
+  const initial='<button data-action="runway-page-prev" aria-disabled="true">\u2190</button><button data-action="runway-more" aria-expanded="false">+4 more</button>';
+  const updated='<button data-action="runway-page-prev" aria-disabled="false">\u2190</button><button data-action="runway-more" aria-expanded="true">4\u20136 of 7 \u2192</button>';
+  const wrapper=new Element('div',{},parse(initial));wrapper.dataset.key='__more:root';wrapper.className='runway-more';wrapper._html=initial;
+  const container=new Element('div',{},[wrapper]),button=wrapper.children[1];button.focus();
+  T.patchKeyed(container,[{key:'__more:root',cls:'runway-more',attrs:{},html:updated}]);
+  assert.equal(wrapper.children[1],button);
+  assert.equal(doc.activeElement,button);
+  assert.equal(button.getAttribute('aria-expanded'),'true');
+  assert.equal(button.firstChild.nodeValue,'4\u20136 of 7 \u2192');
 }
 
 // Mixed provider lineage uses canonical keys and the graph across provider boundaries.

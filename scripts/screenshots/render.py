@@ -35,7 +35,7 @@ MODEL_NAMES = {"Codex": ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6.1-luna", "gpt-6-
 MODEL_SHARES = [.4, .3, .2, .1]
 
 
-def fixtures(models=2, reset_continue=False):
+def fixtures(models=2, reset_continue=False, tree_space=False):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     iso = lambda minutes: (now - dt.timedelta(minutes=minutes)).isoformat()
     reset = lambda minutes: (now + dt.timedelta(minutes=minutes)).timestamp()
@@ -75,6 +75,13 @@ def fixtures(models=2, reset_continue=False):
     docs_child = chat("Codex", "docs-review", "Check examples", "gpt-6.1-terra", "Codex:docs",
                       agentName="Docs reviewer", workspace="C:\\fictional\\billing-service", elapsed=4.2,
                       context=54000, cache=71, activity="testing", updatedAt=iso(1))
+    if tree_space:
+        # Six direct active children exercise the compact tree and its overflow control.
+        extra = [chat("Codex", f"tree-{i}", f"Review compact tree layout {i}", "gpt-6.1-terra", "Claude:lead",
+                      agentName=("Review a particularly long subagent name to check the single line truncation and full tooltip" if i == 0 else f"Compact tree reviewer {i}"), elapsed=i + 1, updatedAt=iso(i)) for i in range(6)]
+        worker = extra[0]
+        nested = extra[1]
+        waiting = extra[2]
     providers = []
     for name, chats, five, weekly, minutes, weekly_minutes in (("Codex", [worker, nested, waiting, other, docs_child], 37, 52, 161, 4500),
                                                                 ("Claude", [lead], 24, 41, 47, 7360)):
@@ -82,10 +89,15 @@ def fixtures(models=2, reset_continue=False):
                           "fiveHour": {"percent": five, "resetAt": reset(minutes)},
                           "weekly": {"percent": weekly, "resetAt": reset(weekly_minutes)},
                           "limitsUpdatedAt": iso(0)})
+    if tree_space:
+        providers[0]["chats"] = extra + [other, docs_child]
     snapshot = {"generatedAt": iso(0), "enabledProviders": ["Codex", "Claude"], "providerPolicies": policy,
                 "providers": providers, "graph": {"revision": 1, "edges": {
                     "Claude:lead": None, "Codex:worker": "Claude:lead", "Codex:review": "Codex:worker",
                     "Codex:question": "Claude:lead", "Codex:docs": None, "Codex:docs-review": "Codex:docs"}}}
+    if tree_space:
+        snapshot["graph"]["edges"] = {"Claude:lead": None, "Codex:docs": None, "Codex:docs-review": "Codex:docs",
+                                       **{item["key"]: "Claude:lead" for item in extra}}
     counts = {"Codex": math.ceil(models / 2), "Claude": models // 2}
     insights = []
     for name, base in (("Codex", 120000), ("Claude", 90000)):
@@ -256,6 +268,7 @@ def main():
     parser.add_argument("--models", type=int, default=2, help="fixture models per run (fixture mode only)")
     parser.add_argument("--reset-continue", action="store_true",
                         help="fixture mode: Codex may send, the reset frame opens in Continue mode with nine chats")
+    parser.add_argument("--tree-space", action="store_true", help="fixture mode: six children under one of two parents")
     parser.add_argument("--live", action="store_true",
                         help="serve the running Branchglance app's real GET payloads instead of fixtures")
     parser.add_argument("--live-port", type=int, default=DEFAULT_LIVE_PORT)
@@ -267,12 +280,12 @@ def main():
         # so Windows logs the crash instead of popping an Application Error dialog.
         import ctypes
         ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
-    if args.live and args.reset_continue:
-        raise SystemExit("--reset-continue uses fixtures; drop --live")
+    if args.live and (args.reset_continue or args.tree_space):
+        raise SystemExit("--reset-continue and --tree-space use fixtures; drop --live")
     live = live_base(args.live_port) if args.live else None
     ranges = [item.strip() for item in args.insights_ranges.split(",") if item.strip()]
     server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(
-        Handler, responses=None if live else fixtures(args.models, args.reset_continue), live=live))
+        Handler, responses=None if live else fixtures(args.models, args.reset_continue, args.tree_space), live=live))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     args.output_dir.mkdir(parents=True, exist_ok=True)
