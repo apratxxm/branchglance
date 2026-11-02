@@ -620,3 +620,6 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.ru
 /* Subagent names also take the timer column; the timer sits in the empty drive slot. Status and tokens stay aligned with the parent. */
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title{grid-column:1 / 3;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-timing{grid-column:4;justify-items:center;}
+/* Usage bars carry no provider names: the bar colour says Codex (purple) or Claude (orange). Names stay for screen readers. */
+body.runway-refined.runway-compact:not(.phone) .rr-provider{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;margin:0;}
+body.runway-refined.runway-compact:not(.phone) .rr-left::before{content:none;}
