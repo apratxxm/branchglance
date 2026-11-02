@@ -183,6 +183,29 @@ def release_secured_mutex(handle) -> None:
 
 
 INSTANCE_MUTEX_NAME = mutex_name("Instance")
+_MACOS_INSTANCE_LOCK: int | None = None
+
+
+def acquire_macos_instance_lock(path: Path | None = None) -> bool:
+    """macOS stand-in for the instance mutex: an exclusive flock the kernel drops when the owner dies."""
+    global _MACOS_INSTANCE_LOCK
+    if _MACOS_INSTANCE_LOCK is not None:
+        return True
+    import fcntl
+    path = path or hook_data_root() / "instance.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    _MACOS_INSTANCE_LOCK = fd
+    return True
+
+
+def macos_instance_held() -> bool:
+    return _MACOS_INSTANCE_LOCK is not None
 INSTALL_MUTEX_NAME = mutex_name("Install")
 STATE_ROOT_ENV = "BRANCHGLANCE_STATE_ROOT"
 POLICY_FILE_ENV = "BRANCHGLANCE_POLICY_FILE"  # development only
@@ -211,7 +234,11 @@ def _environ(environ: Mapping[str, str] | None) -> Mapping[str, str]:
 
 def local_app_data(environ: Mapping[str, str] | None = None) -> Path:
     env = _environ(environ)
-    return Path(env.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    if env.get("LOCALAPPDATA"):
+        return Path(env["LOCALAPPDATA"])
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    return Path.home() / "AppData" / "Local"
 
 
 def _is_plain_directory(path: Path) -> bool:

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- macOS notch app (`macos/`): the same Insights and tree in the notch, a menu bar item, Settings, Open at Login, media controls and system indicators. Build, install, roll back and uninstall with `macos/build.sh`; Developer ID signing and notarization when configured.
+- `bg-codex` on macOS, installed with the app.
+- macOS menu switch for Codex messages after a reset, the equivalent of `TOKEN_TRACKER_CODEX_SEND`.
+
+### Fixed
+
+- macOS: Insights keeps its daily limit peaks and bg-codex receipts are read, now that the server holds a single-instance lock.
+- macOS: Claude hook events record the Claude process, so ended chats are recognised.
+
 ## 0.1.0 (alpha)
 
 ### Added

@@ -671,7 +671,8 @@ def _local_hour_key(epoch: int, tz: Any, cache: dict[int, str]) -> str:
     minute = epoch // 60
     key = cache.get(minute)
     if key is None:
-        key = datetime.fromtimestamp(epoch, tz).replace(minute=0, second=0, microsecond=0).isoformat()
+        from .providers import _local_hour_at
+        key = _local_hour_at(epoch).replace(minute=0, second=0, microsecond=0).isoformat()
         cache[minute] = key
     return key
 
@@ -811,6 +812,11 @@ def public_rows(rows: list[dict[str, Any]], keep_path: bool = False) -> list[dic
             item["path"] = row["_path"]
         out.append(item)
     return out
+
+
+def live_discovery_rows() -> list[dict[str, Any]]:
+    """Reuse the hook-backed roster and its private paths for live discovery."""
+    return public_rows(_cached_rows(), keep_path=True)
 
 
 def live_row(row: dict[str, Any], indexed: dict[str, Any]) -> dict[str, Any]:

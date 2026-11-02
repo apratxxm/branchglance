@@ -104,6 +104,14 @@ bg-codex exec --json "Your task"
 bg-codex exec resume <thread-uuid> --json "Continue the task"
 ```
 
+On macOS, `./macos/build.sh install` puts `bg-codex` in `~/Library/Application Support/Branchglance/runtime/bin`. Add it to PATH in `~/.zshrc`:
+
+```sh
+export PATH="$PATH:$HOME/Library/Application Support/Branchglance/runtime/bin"
+```
+
+It runs the first `codex` on PATH outside the current folder (Homebrew or npm installs both work) and links the `codex` process itself, not the npm launcher.
+
 For a new job, `--json` lets Branchglance identify the Codex thread. Without it, a new job remains separate. A resume with a thread UUID can link without `--json`; resumes using `--last` or a name link only if the UUID appears in the JSON output. Keep Branchglance running and allow collection for both Claude and Codex. The commands and their output are otherwise passed through to Codex.
 
 ## Client-side requirements log
