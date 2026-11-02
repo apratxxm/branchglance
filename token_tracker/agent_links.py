@@ -1124,5 +1124,8 @@ def apply_exact_links(
             turn_epoch = None
         if turn_epoch is not None and turn_epoch > float(selected["last_seen"]) or sid not in claude_ids:
             continue
+        if turn_epoch is None and row.get("detailPending"):
+            # A deferred row has no transcript detail; without a run boundary it cannot prove an old association.
+            continue
         row["parentId"], row["parentProvider"] = sid, "Claude"
         row["parentLinkMethod"] = selected.get("method")

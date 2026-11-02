@@ -752,7 +752,7 @@ def test_live_cache_bounds_cold_wait_and_shares_one_builder(monkeypatch):
     release = threading.Event()
     calls = []
 
-    def build():
+    def build(**_budget):
         calls.append(1)
         entered.set()
         assert release.wait(2)
@@ -864,7 +864,7 @@ def test_live_http_compression_and_generation_isolation(monkeypatch):
     import gzip
     cache = server.LiveCache()
     value = {"chats": [{"title": "\u0968" * 1000}], "graph": {"edges": {"x": None}}}
-    monkeypatch.setattr(server, "live_state", lambda: value)
+    monkeypatch.setattr(server, "live_state", lambda **_budget: value)
     monkeypatch.setattr(server, "LIVE_CACHE", cache)
     cache._refresh()
     first = cache.get(encoded=True)
@@ -896,7 +896,7 @@ def test_live_http_compression_and_generation_isolation(monkeypatch):
 
 def test_live_cache_compression_failure_publishes_fresh_plain(monkeypatch):
     cache = server.LiveCache()
-    monkeypatch.setattr(server, "live_state", lambda: {"generation": 1})
+    monkeypatch.setattr(server, "live_state", lambda **_budget: {"generation": 1})
     cache._refresh()
     monkeypatch.setattr(server.gzip, "compress", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("failed")))
     monkeypatch.setattr(server, "live_state", lambda: {"generation": 2})
@@ -908,7 +908,7 @@ def test_live_cache_compression_failure_publishes_fresh_plain(monkeypatch):
 
 def test_live_cache_serialization_failure_keeps_old_generation(monkeypatch):
     cache = server.LiveCache()
-    monkeypatch.setattr(server, "live_state", lambda: {"generation": 1})
+    monkeypatch.setattr(server, "live_state", lambda **_budget: {"generation": 1})
     cache._refresh()
     old = cache.get(encoded=True)
     completed = cache.completed_at
@@ -922,7 +922,7 @@ def test_live_cache_serialization_failure_keeps_old_generation(monkeypatch):
 
 def test_live_cache_encodes_once_per_publication(monkeypatch):
     cache = server.LiveCache()
-    monkeypatch.setattr(server, "live_state", lambda: {"chats": ["text"]})
+    monkeypatch.setattr(server, "live_state", lambda **_budget: {"chats": ["text"]})
     original = server.gzip.compress
     calls = []
     def compress(*args, **kwargs):
@@ -938,7 +938,7 @@ def test_live_cache_encodes_once_per_publication(monkeypatch):
 def test_live_cache_readers_get_consistent_generation_during_refresh(monkeypatch):
     import gzip
     cache = server.LiveCache()
-    monkeypatch.setattr(server, "live_state", lambda: {"generation": 1})
+    monkeypatch.setattr(server, "live_state", lambda **_budget: {"generation": 1})
     cache._refresh()
     entered, release = threading.Event(), threading.Event()
     def next_live():
@@ -2703,7 +2703,7 @@ def test_structure_stamp_changes_when_an_agent_is_added_to_existing_subagents_fo
 def test_http_stats_limit_and_live_endpoints(monkeypatch):
     snapshot = {"providers": [{"name": "Claude", "chats": [{"id": str(i), "updatedAt": f"2026-09-13T10:{i:02d}:00"} for i in range(20)]}]}
     monkeypatch.setattr(server, "build_snapshot", lambda: snapshot)
-    monkeypatch.setattr(server, "live_state", lambda: {"chats": [], "structureStamp": "z"})
+    monkeypatch.setattr(server, "live_state", lambda **_budget: {"chats": [], "structureStamp": "z"})
     monkeypatch.setattr(server, "today_usage", lambda: {"providers": [{"name": "Codex", "todayTokens": 42}]})
     server.CACHE.value = None
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
