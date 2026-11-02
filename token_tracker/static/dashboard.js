@@ -179,7 +179,7 @@
     const sum=all.reduce((total,row)=>total+(row.value>0?row.value:0),0);
     if(!sum)return null;
     const bar=data.providers.length>1?`<div class="dash-split" aria-hidden="true">${all.filter(row=>row.value>0).map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div>`:"";
-    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span><span class="dash-legend-head">Share</span><span class="dash-legend-head dash-plan-head" title="Rolling 30-day API-equivalent cost divided by the monthly plan price (default $20). It does not change with the range.">30d / plan</span>`;
+    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span><span class="dash-legend-head">Share</span><span class="dash-legend-head dash-plan-head" title="Last 30 days (calendar, incl. today) API-equivalent cost divided by the monthly plan price (default $20). It does not change with the range.">30d / plan</span>`;
     let unpriced=false;
     const items=all.map(row=>{
       const cls=`${providerKey(row.name)}-color`;
@@ -237,7 +237,7 @@
     const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head"><span>Models</span><small aria-hidden="true"></small><small>Tokens</small><small title="API-equivalent estimate">Est. cost</small></div>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<div class="dash-model-row"><span class="dash-model-name ${row.family}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag" title="Includes long-context usage">long ctx</small>':'<small class="dash-model-tag is-empty" aria-hidden="true"></small>'}<i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i><b>${esc(number(row.tokens))}</b><b title="Estimated API-equivalent cost">${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">—</span>':esc(money(row.apiEquivalentCost))}</b></div>`;}).join("")}</div>`:"";
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
     const peakCell=value=>value==null?'<span aria-label="Not recorded">—</span>':`${Math.round(value)}%`;
-    const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value==null||value>=99.5))&&peaks.some(p=>p.fiveHour!=null||p.weekly!=null);
+    const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value!=null&&value>=99.5));
     const limits=allMaxed?`<div class="dash-limits is-collapsed"><div class="dash-section-label"><span>Highest usage</span><small title="Highest recorded quota usage in this period, not current allowance">Every window reached 100%</small></div></div>`:peaks.length?`<div class="dash-limits"><table class="dash-peaks-table"><caption>Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col" title="Recorded in this period, not the current allowance">Highest usage</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(p=>`<tr><th scope="row" class="${providerKey(p.name)}-color">${esc(p.name)}</th><td>${peakCell(p.fiveHour)}</td><td>${peakCell(p.weekly)}</td></tr>`).join("")}</tbody></table></div>`:"";
     const activity=statsHTML?`<div class="dash-activity"><div class="dash-section-label"><span>Activity</span></div>${statsHTML}</div>`:"";
     const side=limits||activity?`<div class="dash-side">${limits}${activity}</div>`:"";
@@ -245,7 +245,7 @@
     const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}${chartHTML?"":" is-day"}">${modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:""}${side}${chartHTML}</section>`:chartHTML;
     return hero+lower+statusHTML;
   }
-  // Plan multiple: rolling 30-day API-equivalent cost over the plan price, per provider. It reads the 30-day window whatever range is selected, so the multiple means the same on every tab.
+  // Plan multiple: 30-calendar-day (incl. today) API-equivalent cost over the plan price, per provider. It reads the 30-day window whatever range is selected, so the multiple means the same on every tab.
   const PLAN_PROVIDERS=["Claude","Codex"];
   const planPrice=name=>{const raw=Number(readPref(`branchglancePlanPrice.${name}`,""));return Number.isFinite(raw)&&raw>0?raw:20;};
   // A lower bound (unpriced models present) that rounds to zero reads "0.0", never "<0.1", which would claim an upper bound.
@@ -270,7 +270,7 @@
     if(!(row.tokens>0))return planCells(`<span class="dash-plan-text">No usage</span>`);
     if(row.cost==null)return planCells(`<span class="dash-plan-text" title="No published price for these models">Unpriced</span>`);
     const price=planPrice(name),multiple=row.cost/price,prefix=row.unpriced?"≥":"";
-    return planCells(`<span title="${esc(`${row.unpriced?"≥ excludes usage with no published price. ":""}Rolling 30-day API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
+    return planCells(`<span title="${esc(`${row.unpriced?"≥ excludes usage with no published price. ":""}Last 30 days (calendar, incl. today) API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
   }
   async function loadMonth(){
     const token=++state.monthToken;
