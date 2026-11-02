@@ -994,6 +994,10 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 self._send_json(payload)
             return
+        if parsed.path == "/api/ledger/status":
+            from . import ledger_service
+            self._send_json(ledger_service.status_payload())
+            return
         if parsed.path in {"/api/ledger", "/api/ledger/export"}:
             from . import ledger_service
             status, headers, body = ledger_service.http_response(parsed.path, parse_qs(parsed.query))
@@ -1114,14 +1118,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        settings_mutation = parsed.path == "/api/claude-collection"
+        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge"}
         if not self._valid_local_host():
             if settings_mutation:
                 self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
             self._reject_post(parsed.path, {"ok": False, "error": "local Host required"}, 403)
             return
-        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection"}:
+        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge"}:
             self._reject_post(parsed.path, {"ok": False, "error": "not found"}, 404)
             return
         if not self._same_origin_request():
@@ -1135,7 +1139,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
             return
         if self.headers.get_content_type() != "application/json":
-            if settings_mutation:
+            if settings_mutation and parsed.path == "/api/claude-collection":
                 self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
             self._reject_post(parsed.path, {"ok": False, "error": "application/json required"}, 415)
@@ -1152,6 +1156,9 @@ class Handler(SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json({"ok": False, "error": "invalid JSON"}, 400)
+            return
+        if parsed.path == "/api/ledger/purge":
+            self._purge_ledger(body)
             return
         if settings_mutation:
             action = body.get("action") if isinstance(body, dict) else None
@@ -1246,6 +1253,40 @@ class Handler(SimpleHTTPRequestHandler):
             return
         self._send_json({"ok": True, "status": "queued", "detail": "Queued for the next turn. This does not answer the pending question."})
 
+    def _purge_ledger(self, body) -> None:
+        """POST /api/ledger/purge: delete one provider's saved ledger history through the widget's single writer."""
+        provider = body.get("provider") if isinstance(body, dict) else None
+        if (not isinstance(body, dict) or set(body) != {"provider"} or not isinstance(provider, str)
+                or provider not in {"Claude", "Codex"}):
+            self._send_json({"ok": False, "error": "Expected provider Claude or Codex."}, 400)
+            return
+        from . import ledger_service
+        service = ledger_service.current()
+        if service is None or service.health()["state"] == "disabled":
+            self._send_json({"ok": False, "error": "Ledger is off."}, 503)
+            return
+        # The writer's resolved collect flags are the authority; the window's copy is advisory.
+        if service.collect.get(provider):
+            self._send_json({"ok": False, "error": f"Turn off collection for {provider} first."}, 409)
+            return
+        # The settings capability must still hold when the purge is queued: the token may have been revoked
+        # while the body was read. The lock is released before waiting on the ticket.
+        provided_token = self.headers.get("X-Branchglance-Settings-Token")
+        with _SETTINGS_TOKEN_LOCK:
+            if not _settings_token_matches_locked(provided_token):
+                self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                return
+            ticket = service.request_purge(provider)
+        if not ticket.wait(ledger_service.PURGE_WAIT_SECONDS):
+            self._send_json({"ok": True, "pending": True, "ticket": ticket.id}, 202)
+            return
+        if ticket.status == "done":
+            self._send_json({"ok": True, "ticket": ticket.id})
+        elif ticket.status == "failed":
+            self._send_json({"ok": False, "error": ticket.error or "failed", "ticket": ticket.id}, 500)
+        else:
+            self._send_json({"ok": False, "error": "Not deleted; Branchglance is closing.", "ticket": ticket.id}, 503)
+
     def _valid_local_host(self) -> bool:
         host = self.headers.get("Host", "")
         try:
@@ -1318,7 +1359,7 @@ class Handler(SimpleHTTPRequestHandler):
         lengths = self.headers.get_all("Content-Length", [])
         limit = QUEUE_MESSAGE_LIMIT + 512 if path == "/api/queue" else 4096
         digits = lengths[0].lstrip("0") or "0" if len(lengths) == 1 else ""
-        if (path in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/quota"}
+        if (path in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/quota"}
                 and not self.headers.get_all("Transfer-Encoding", []) and len(lengths) == 1
                 and re.fullmatch(r"[0-9]+", lengths[0]) and len(digits) <= len(str(limit))
                 and int(digits) <= limit):

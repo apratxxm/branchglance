@@ -99,3 +99,14 @@ html.settings-embedded,body.settings-embedded{--d-ink:#f3f4f6;--d-sub:#b7bcc8;--
 .settings-embedded .note,.settings-embedded .status,.settings-embedded .search-label,.settings-embedded legend{color:var(--d-mute);}
 .settings-embedded input[type=search]{border-color:var(--d-edge);background:var(--d-well);}
 .settings-embedded .quiet,.settings-embedded .primary{border-color:var(--d-edge);}
+
+/* Saved usage history: one row per provider, same surface and text tokens as the Claude Code section. */
+.ledger-history{display:grid;gap:8px;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.ledger-history h2{font-size:14px;margin:0;font-weight:600}
+.ledger-history .ledger-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px 12px}
+.ledger-history .ledger-name{grid-column:1;grid-row:1;font-weight:600}
+.ledger-history .ledger-row button{grid-column:2;grid-row:1;white-space:nowrap}
+.ledger-history .ledger-row .note,.ledger-history .ledger-row .message{grid-column:1/-1;margin:0;font-size:12px}
+.ledger-history .ledger-row .message:empty{display:none}
+.settings-embedded .ledger-history{padding:6px 8px;gap:4px}
+.settings-embedded .ledger-history h2{font-size:13px}

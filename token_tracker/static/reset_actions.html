@@ -21,6 +21,11 @@
       <p id="claude-readonly-note" class="note" hidden>Open settings from the Branchglance widget to change this.</p>
       <button id="claude-toggle" class="quiet" type="button" disabled>Checking…</button>
     </section>
+    <section id="ledger-history" class="ledger-history" aria-labelledby="ledger-heading">
+      <div><h2 id="ledger-heading">Saved usage history</h2><p id="ledger-note" class="note">Removes Branchglance's saved totals for this provider. Your transcripts stay on disk and are read again if you turn collection back on.</p></div>
+      <div class="ledger-row"><span class="ledger-name">Claude Code</span><button class="quiet" type="button" data-purge="Claude" disabled>Delete saved history</button><p class="note" data-reason="Claude" hidden></p><p class="message" data-status="Claude" role="status" aria-live="polite"></p></div>
+      <div class="ledger-row"><span class="ledger-name">Codex</span><button class="quiet" type="button" data-purge="Codex" disabled>Delete saved history</button><p class="note" data-reason="Codex" hidden></p><p class="message" data-status="Codex" role="status" aria-live="polite"></p></div>
+    </section>
     <p id="permission" class="message" role="status" aria-live="polite"></p>
     <section id="picker" hidden>
       <label class="search-label" for="search">Select chats <span id="selected-count">0 selected</span></label>

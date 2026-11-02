@@ -30,7 +30,7 @@ OUTPUT = ROOT / "docs" / "release" / "screenshots"
 HERE = Path(__file__).resolve().parent
 DEFAULT_LIVE_PORT = 8765  # token_tracker/widget.py HTTP_PORT, the running app's fixed local server
 LIVE_ENDPOINTS = {"/api/stats", "/api/live", "/api/insights", "/api/provider-policy", "/api/identity", "/api/claude-collection", "/api/reset-action",
-                  "/api/quota", "/api/today", "/api/limit-reset", "/api/avatars"}
+                  "/api/quota", "/api/today", "/api/limit-reset", "/api/avatars", "/api/ledger"}
 MODEL_NAMES = {"Codex": ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6.1-luna", "gpt-6-codex-mini"],
                "Claude": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]}
 MODEL_SHARES = [.4, .3, .2, .1]
