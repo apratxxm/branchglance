@@ -5,13 +5,73 @@
 # /Applications. The installed app then no longer reads the checkout, which matters when the
 # checkout is in Desktop/Documents: macOS asks for folder access again after every rebuild,
 # and the server stalls until someone answers.
+# `rollback` puts back the app and tracker from before the last install (the Windows release
+# keeps the previous release the same way). `uninstall` removes the app, its runtime and its
+# Claude hooks; `uninstall --purge` also deletes Branchglance's own data and preferences.
 set -e
 cd "$(dirname "$0")"
 REPO="$(cd .. && pwd)"
 ROOT="$REPO"
+SUPPORT="$HOME/Library/Application Support/Branchglance"
+PREVIOUS="$SUPPORT/previous"
+APPS="${BRANCHGLANCE_APPLICATIONS:-/Applications}"  # overridable for testing
+
+# A test run (BRANCHGLANCE_APPLICATIONS set) leaves the real app alone.
+quit_app() {
+    [ -z "$BRANCHGLANCE_APPLICATIONS" ] || return 0
+    osascript -e 'quit app id "com.branchglance.notch"' 2>/dev/null || true
+    sleep 1
+}
+launch_app() {
+    [ -z "$BRANCHGLANCE_APPLICATIONS" ] || return 0
+    open "$APPS/Branchglance.app"
+}
+
+if [ "$1" = "rollback" ]; then
+    if [ ! -d "$PREVIOUS/Branchglance.app" ] || [ ! -d "$PREVIOUS/token_tracker" ]; then
+        echo "No previous install to roll back to." >&2
+        exit 1
+    fi
+    quit_app
+    rsync -a --delete "$PREVIOUS/token_tracker/" "$SUPPORT/runtime/token_tracker/"
+    rm -rf "$APPS/Branchglance.app"
+    cp -R "$PREVIOUS/Branchglance.app" "$APPS/"
+    launch_app
+    echo "Rolled back to the previous install"
+    exit 0
+fi
+
+if [ "$1" = "uninstall" ]; then
+    quit_app
+    # Hooks first: the consent marker goes before the settings edit, so they are inert even if
+    # that edit fails. Only Branchglance's own entries are removed.
+    PY="$SUPPORT/runtime/.venv/bin/python"; PYROOT="$SUPPORT/runtime"
+    [ -x "$PY" ] || { PY="$REPO/.venv/bin/python"; PYROOT="$REPO"; }
+    [ -x "$PY" ] || PY=python3
+    PYTHONPATH="$PYROOT" "$PY" -m token_tracker.claude_hook_install uninstall >/dev/null || \
+        echo "Could not remove the Claude hooks; check ~/.claude/settings.json" >&2
+    rm -rf "$APPS/Branchglance.app" "$SUPPORT/runtime" "$PREVIOUS"
+    if [ "$2" = "--purge" ]; then
+        rm -rf "$SUPPORT" "$HOME/Library/Application Support/TokenTracker"
+        # Preferences live per user, not under $HOME, so a test run must not touch them.
+        [ -n "$BRANCHGLANCE_APPLICATIONS" ] || defaults delete com.branchglance.notch 2>/dev/null || true
+        echo "Uninstalled Branchglance and deleted its data"
+    else
+        echo "Uninstalled Branchglance. Data kept in $SUPPORT; run with --purge to delete it."
+    fi
+    exit 0
+fi
+
 if [ "$1" = "install" ]; then
-    ROOT="$HOME/Library/Application Support/Branchglance/runtime"
+    ROOT="$SUPPORT/runtime"
     mkdir -p "$ROOT"
+    # Keep what is installed now, for `rollback`.
+    if [ -d "$ROOT/token_tracker" ] && [ -d "$APPS/Branchglance.app" ]; then
+        rm -rf "$PREVIOUS"
+        mkdir -p "$PREVIOUS"
+        cp -R "$ROOT/token_tracker" "$PREVIOUS/"
+        cp -R "$APPS/Branchglance.app" "$PREVIOUS/"
+    fi
     rsync -a --delete --exclude __pycache__ "$REPO/token_tracker" "$ROOT/"
     if [ ! -x "$ROOT/.venv/bin/python" ]; then
         python3 -m venv "$ROOT/.venv"
@@ -56,15 +116,29 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>BranchglanceRoot</key><string>$ROOT</string>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+IDENTITY="${BRANCHGLANCE_SIGN_IDENTITY:--}"
+if [ "$IDENTITY" = "-" ]; then
+    # Ad hoc: runs on this Mac; other Macs need a Developer ID build (see macos/README.md).
+    codesign --force --sign - "$APP"
+else
+    codesign --force --options runtime --timestamp \
+        --entitlements Resources/Branchglance.entitlements --sign "$IDENTITY" "$APP"
+    codesign --verify --strict "$APP"
+    if [ -n "$BRANCHGLANCE_NOTARY_PROFILE" ]; then
+        ditto -c -k --keepParent "$APP" build/Branchglance-notarize.zip
+        xcrun notarytool submit build/Branchglance-notarize.zip \
+            --keychain-profile "$BRANCHGLANCE_NOTARY_PROFILE" --wait
+        xcrun stapler staple "$APP"
+        rm -f build/Branchglance-notarize.zip
+    fi
+fi
 echo "Built $APP"
 
 if [ "$1" = "install" ]; then
-    osascript -e 'quit app id "com.branchglance.notch"' 2>/dev/null || true
-    sleep 1
-    rm -rf /Applications/Branchglance.app
+    quit_app
+    rm -rf "$APPS/Branchglance.app"
     # Move rather than copy, so Spotlight and Launchpad see a single Branchglance.
-    mv "$APP" /Applications/
-    open /Applications/Branchglance.app
-    echo "Installed /Applications/Branchglance.app"
+    mv "$APP" "$APPS/"
+    launch_app
+    echo "Installed $APPS/Branchglance.app"
 fi
