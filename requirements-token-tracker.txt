@@ -5,3 +5,5 @@ zstandard==0.25.0
 
 # Development and source-test dependency
 pytest==8.4.2
+# Time zone data for the DST tests on Windows (the app itself uses the OS offsets)
+tzdata==2026.5
