@@ -31,6 +31,12 @@ TOKEN = {"X-Branchglance-Settings-Token": "purge-test-token"}
 
 
 @pytest.fixture(autouse=True)
+def no_startup_delay(monkeypatch):
+    # The widget's 60 s ledger start delay is covered in test_ledger_service; purge tests start at once.
+    monkeypatch.setattr(ledger_service, "STARTUP_DELAY_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
 def restore_current_service(monkeypatch):
     # LedgerService.start() publishes itself as the current service; keep that from leaking across tests.
     monkeypatch.setattr(ledger_service, "_CURRENT", None)
