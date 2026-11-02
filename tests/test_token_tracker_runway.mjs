@@ -769,6 +769,33 @@ assert.equal(T.resetView({...provider,weekly:{percent:78},limitsUpdatedAt:new Da
 assert.equal(T.watcherPopoverHTML('Codex'),'<p class="policy-notice" data-policy-warning hidden></p><button class="ghost" data-action="reset-settings">Reset action settings</button>');
 assert.equal(T.watcherTone(null,'Codex').tip,'');
 const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
+{
+  const saved={...provider,fiveHour:{percent:92,resetAt:fixedNow/1000+3600,lastKnown:true},weekly:{percent:null},limitsUpdatedAt:ago(1)};
+  const view=T.resetView(saved,"fiveHour");
+  assert.equal(view.measured,false);assert.equal(view.lastKnown,true);assert.equal(view.lastKnownAge,"1m ago");
+  T.renderResets([saved]);
+  assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');
+  T.routingStates.clear();
+  T.evaluateRoutingAlerts([saved]);
+  assert.equal(T.routingStates.size,0,'last-known usage cannot seed or trigger routing alerts');
+  assert.equal(T.resetView({...saved,fiveHour:{...saved.fiveHour,resetAt:fixedNow/1000-1}},"fiveHour").hasValue,false);
+  const previous=T.state.snapshot;
+  T.state.snapshot={providers:[saved]};
+  const incoming={providers:[{...saved,fiveHour:{percent:30,resetAt:fixedNow/1000+3600},weekly:{percent:null},limitsUpdatedAt:new Date(fixedNow).toISOString()}]};
+  T.reconcileSnapshotQuotas(incoming,fixedNow);
+  assert.equal(incoming.providers[0].fiveHour.percent,30);
+  assert.equal(incoming.providers[0].fiveHour.lastKnown,undefined);
+  T.state.snapshot=previous;
+  const watched={...saved,name:'Fixture'};
+  T.applyQuotaSamples({Fixture:{lastStatus:{checkedAt:new Date(fixedNow).toISOString(),five_hour_percent:33}}},1,[watched]);
+  assert.equal(watched.fiveHour.percent,33);assert.equal(watched.fiveHour.lastKnown,undefined);
+  assert.equal(watched.fiveHour.resetAt,undefined,'a new sample cannot inherit a restored reset');
+  const partial={...saved,name:'Partial',weekly:{percent:20,resetAt:fixedNow/1000+7200},limitsUpdatedAt:ago(1)};
+  T.applyQuotaSamples({Partial:{lastStatus:{checkedAt:new Date(fixedNow).toISOString(),five_hour_percent:null,weekly_percent:47,weekly_reset_at:fixedNow/1000+7200}}},1,[partial]);
+  assert.equal(partial.fiveHour.percent,92);assert.equal(partial.fiveHour.lastKnown,true);
+  assert.equal(partial._quotaWindowObservedAt.fiveHour,ago(1));
+  assert.equal(partial.weekly.percent,47);assert.equal(partial._quotaWindowObservedAt.weekly,new Date(fixedNow).toISOString());
+}
 assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);assert.equal(staleQuota.usedLabel,"92%");assert.equal(staleQuota.lastKnownAge,"11m ago");assert.equal(staleQuota.countdown,"25m 00s");assert.equal(staleQuota.tone,"");assert.equal(staleQuota.stale,"");
 assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"22h 13m");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);

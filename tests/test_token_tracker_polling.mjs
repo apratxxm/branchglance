@@ -7,8 +7,9 @@ const app = fs.readFileSync(new URL("../token_tracker/static/app.js", import.met
 const baseNow = Date.parse("2026-10-21T10:00:00.000Z");
 assert.match(app,/renderLoading\(\);if\(RUNWAY\)\{void loadProviderPolicy\(\);void loadQuota\(\);\}refresh\(\)/,"desktop startup loads policy and quota beside the unchanged full-stat refresh");
 
-function harness(fetchImpl = async () => ({ ok: true, json: async () => ({ providers: {} }) })) {
+function harness(fetchImpl = async () => ({ ok: true, json: async () => ({ providers: {} }) }), fakeTimers = false) {
   let now = baseNow, fetcher = fetchImpl;
+  let nextTimer=1;const timers=new Map();
   const nodes = new Map();
   const node = selector => {
     if (!nodes.has(selector)) nodes.set(selector, { selector, innerHTML: "", textContent: "", value: "", hidden: false, title: "", dataset: {}, attributes: {},
@@ -23,9 +24,9 @@ function harness(fetchImpl = async () => ({ ok: true, json: async () => ({ provi
   const context = { window: { __TOKEN_TRACKER_TEST__: true, __TOKEN_TRACKER_RUNWAY__: true, __TOKEN_TRACKER_REFINED__: true }, document,
     localStorage: { getItem(key) { return key === "tokenTrackerRunwayHiddenSeedV1" ? "1" : null; }, setItem() {} },
     fetch: (...args) => fetcher(...args), Intl, Date: TestDate, Math, Number, JSON, AbortController, AbortSignal,
-    setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; } };
+    setTimeout(fn,delay) { const id=nextTimer++;if(fakeTimers)timers.set(id,{fn,delay});return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return 1; } };
   vm.createContext(context); vm.runInContext(app, context);
-  return { T: context.window.__tokenTrackerTest, nodes, setNow(value) { now = value; }, setFetch(value) { fetcher = value; } };
+  return { T: context.window.__tokenTrackerTest, nodes, timers, fireTimer(id) { const timer=timers.get(id);timers.delete(id);now+=timer.delay;timer.fn(); }, setNow(value) { now = value; }, setFetch(value) { fetcher = value; } };
 }
 
 const iso = value => new Date(value).toISOString();
@@ -43,6 +44,45 @@ const cacheMeta = (overrides = {}) => ({ generation: 4, builtAt: iso(baseNow - 5
 const quotaPayload = (sample=null,meta={}) => ({ providers: { Codex: sample ? { lastStatus: sample } : {} }, quotaCache: {
   ready:Boolean(sample),fresh:Boolean(sample),ageSeconds:sample?0.25:null,refreshing:!sample,errorCategory:null,...meta
 } });
+
+test("last-known stats follow up on a bounded schedule and stop when fresh", async () => {
+  let calls=0, fresh=false;
+  const snap=()=>({generatedAt:iso(baseNow),enabledProviders:["Codex"],providers:[{name:"Codex",connected:true,chats:[],limitsUpdatedAt:iso(baseNow-60000),fiveHour:{percent:90,resetAt:baseNow/1000+3600,lastKnown:true},weekly:{percent:null}}]});
+  const h=harness(async url=>{
+    if(String(url).startsWith('/api/stats')){calls++;const s=snap();if(fresh){s.providers[0].fiveHour={percent:12,resetAt:baseNow/1000+3600};s.providers[0].limitsUpdatedAt=iso(baseNow+29000);}return {ok:true,json:async()=>s};}
+    if(String(url)==='/api/limit-reset')return {ok:true,json:async()=>({providers:{}})};
+    throw new Error('unexpected request '+url);
+  },true);
+  await h.T.refresh();
+  for(const [index,delay] of [2000,4000,8000,16000].entries()){
+    const timer=[...h.timers].find(([,entry])=>entry.delay===delay);
+    assert.ok(timer,`follow-up ${delay}ms scheduled`);h.fireTimer(timer[0]);
+    await until(()=>calls===index+2&&!h.T.state.loading&&!h.T.state.refreshing);
+  }
+  assert.equal(h.timers.size,0,'four attempts return to normal stats cadence');
+  fresh=true;await h.T.refresh();
+  assert.equal(h.T.state.snapshot.providers[0].fiveHour.percent,12);
+  assert.equal(h.T.resetView(h.T.state.snapshot.providers[0],'fiveHour').measured,true);
+  assert.equal(h.timers.size,0,'fresh quota stops follow-ups');
+});
+
+test("stable roster receives the async result on the first follow-up and retains it at normal cadence", async () => {
+  let calls=0;
+  const h=harness(async url=>{
+    if(String(url).startsWith('/api/stats')){
+      calls++;const fresh=calls>1;
+      return {ok:true,json:async()=>({generatedAt:iso(baseNow),enabledProviders:['Codex'],providers:[{name:'Codex',connected:true,chats:[],limitsUpdatedAt:iso(fresh?baseNow+1000:baseNow-60000),fiveHour:{percent:fresh?12:90,resetAt:baseNow/1000+3600,...(fresh?{}:{lastKnown:true})},weekly:{percent:null}}]})};
+    }
+    if(String(url)==='/api/limit-reset')return {ok:true,json:async()=>({providers:{}})};
+    throw new Error('unexpected request '+url);
+  },true);
+  await h.T.refresh();assert.equal(h.T.state.snapshot.providers[0].fiveHour.percent,90);
+  const first=[...h.timers].find(([,entry])=>entry.delay===2000);assert.ok(first);h.fireTimer(first[0]);
+  await until(()=>calls===2&&!h.T.state.loading&&!h.T.state.refreshing);
+  assert.equal(h.T.state.snapshot.providers[0].fiveHour.percent,12);assert.equal(h.timers.size,0);
+  h.setNow(baseNow+120000);await h.T.refresh();
+  assert.equal(h.T.state.snapshot.providers[0].fiveHour.percent,12);assert.equal(h.timers.size,0);
+});
 
 test("watcher quotas never replace newer dated stats or watcher observations", () => {
   const { T } = harness();

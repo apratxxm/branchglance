@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -640,23 +641,46 @@ class SnapshotCache:
         }
 
     @staticmethod
+    def _valid_last_known(quota, observed_at, now):
+        observed = SnapshotCache._parse_utc(observed_at)
+        if not isinstance(quota, dict) or observed is None or observed.timestamp() > now + 60:
+            return False
+        percent, reset = quota.get("percent"), quota.get("resetAt")
+        try:
+            return (type(percent) in (int, float) and math.isfinite(percent) and 0 <= percent <= 100
+                    and type(reset) in (int, float) and math.isfinite(reset) and reset > now)
+        except OverflowError:
+            return False
+
+    @staticmethod
     def _egress(value, metadata: dict, *, restored: bool = False):
         if value is None:
             return None
         result = copy.deepcopy(value)
+        for provider in result.get("providers", []):
+            if isinstance(provider, dict):
+                times = provider.get("_quotaWindowObservedAt")
+                times = times if isinstance(times, dict) else {}
+                for field in ("fiveHour", "weekly"):
+                    quota = provider.get(field)
+                    if restored or isinstance(quota, dict) and quota.get("lastKnown") is True:
+                        if not isinstance(quota, dict):
+                            quota = {}
+                            provider[field] = quota
+                        observed = times.get(field, provider.get("limitsUpdatedAt"))
+                        if SnapshotCache._valid_last_known(quota, observed, time.time()):
+                            quota["lastKnown"] = True
+                        else:
+                            quota["percent"] = None
+                            quota.pop("lastKnown", None)
         if restored:
             for provider in result.get("providers", []):
                 if not isinstance(provider, dict):
                     continue
                 provider["stale"] = True
-                for field in ("fiveHour", "weekly"):
-                    quota = provider.get(field)
-                    if not isinstance(quota, dict):
-                        quota = {}
-                        provider[field] = quota
-                    quota["percent"] = None
-                provider["limitsUpdatedAt"] = None
-                provider.pop("_quotaWindowObservedAt", None)
+                if not any((provider.get(field) or {}).get("lastKnown") for field in ("fiveHour", "weekly")):
+                    provider["limitsUpdatedAt"] = None
+                    provider.pop("_quotaWindowObservedAt", None)
                 for chat in provider.get("chats", []):
                     if not isinstance(chat, dict):
                         continue
@@ -699,10 +723,23 @@ class SnapshotCache:
         with self.condition:
             published_at = time.monotonic()
             generation = self.generation + 1
-        if self._persistable(value):
-            self._write_persisted(value, generation, built_at)
         with self.condition:
-            self._value = value
+            display = copy.deepcopy(value)
+            if self._value is not None:
+                prior = self._egress(self._value, {}, restored=self._restored)
+                previous = {p.get("name"): p for p in prior.get("providers", []) if isinstance(p, dict)}
+                for provider in display.get("providers", []):
+                    old = previous.get(provider.get("name"), {})
+                    for field in ("fiveHour", "weekly"):
+                        current, saved = provider.get(field), old.get(field)
+                        if (not isinstance(current, dict) or current.get("percent") is None) and isinstance(saved, dict) and saved.get("lastKnown"):
+                            provider[field] = copy.deepcopy(saved)
+                            times = provider.setdefault("_quotaWindowObservedAt", {})
+                            times[field] = (old.get("_quotaWindowObservedAt") or {}).get(field, old.get("limitsUpdatedAt"))
+        if self._persistable(value):
+            self._write_persisted(display, generation, built_at)
+        with self.condition:
+            self._value = display
             self._trusted_value = copy.deepcopy(value)
             self._at = published_at
             self.generation = generation
@@ -859,51 +896,186 @@ class FastClaudeLimits:
         self.value = None
         self.at = 0.0
         self.loading = False
+        self.retained = {}
+
+    def _prune_retained_locked(self):
+        now = time.time()
+        for field, sample in list(self.retained.items()):
+            if not SnapshotCache._valid_last_known(sample["value"], sample["observed"], now):
+                del self.retained[field]
+
+    def _remember_locked(self, limits):
+        self._prune_retained_locked()
+        observed = limits.get("limitsUpdatedAt")
+        parsed = SnapshotCache._parse_utc(observed)
+        now = time.time()
+        if parsed is None or parsed.timestamp() > now + 60:
+            return
+        for field in ("fiveHour", "weekly"):
+            value = limits.get(field)
+            previous = self.retained.get(field)
+            if (SnapshotCache._valid_last_known(value, observed, now)
+                    and (previous is None or parsed.timestamp() >= previous["at"])):
+                self.retained[field] = {"value": copy.deepcopy(value), "observed": observed,
+                                        "at": parsed.timestamp()}
+
+    def _load(self):
+        try:
+            from .providers import ClaudeLimitsProvider
+            provider = ClaudeLimitsProvider()
+            history = provider.root / "plan-usage-history.json"
+            if history.stat().st_size > self.MAX_USAGE_HISTORY_BYTES:
+                return None
+            limits = provider.snapshot()
+            if not isinstance(limits, dict):
+                return None
+            with self.condition:
+                self.value = copy.deepcopy(limits)
+                self.at = time.monotonic()
+                self._remember_locked(limits)
+            return limits
+        except Exception:
+            return None
+        finally:
+            with self.condition:
+                self.loading = False
+                self.condition.notify_all()
 
     def overlay(self, snapshot: dict, *, owned: bool = False) -> dict:
         """Overlay quota data, copying unless the caller owns its snapshot."""
+        restored = any(p.get("name") == "Claude" and p.get("stale") is True
+                       for p in snapshot.get("providers", []) if isinstance(p, dict))
         from .provider_policy import POLICIES, policy_for
         if not policy_for("Claude", POLICIES).allows("show"):
             return snapshot
+        if restored:
+            start = False
+            with self.condition:
+                now = time.monotonic()
+                self._prune_retained_locked()
+                if isinstance(self.value, dict):
+                    self._remember_locked(self.value)
+                retained = copy.deepcopy(self.retained)
+                if (self.value is None or now - self.at > self.TTL_SECONDS) and not self.loading:
+                    self.loading = True
+                    start = True
+            if start:
+                try:
+                    threading.Thread(target=self._load, name="fast-claude-limits", daemon=True).start()
+                except (RuntimeError, OSError):
+                    with self.condition:
+                        self.loading = False
+                        self.condition.notify_all()
+            if not retained:
+                return snapshot
+            result = snapshot if owned else copy.deepcopy(snapshot)
+            for provider in result.get("providers", []):
+                if isinstance(provider, dict) and provider.get("name") == "Claude":
+                    self._overlay_retained(provider, retained)
+                    break
+            return result
+        waiting = False
         with self.condition:
             now = time.monotonic()
             if self.value is not None and now - self.at <= self.TTL_SECONDS:
                 limits = copy.deepcopy(self.value)
+                self._remember_locked(limits)
             elif self.loading:
-                return snapshot
+                limits = None
+                waiting = True
             else:
                 self.loading = True
                 limits = None
         if limits is None:
-            try:
-                from .providers import ClaudeLimitsProvider
-                provider = ClaudeLimitsProvider()
-                history = provider.root / "plan-usage-history.json"
-                if history.stat().st_size > self.MAX_USAGE_HISTORY_BYTES:
-                    return snapshot
-                limits = provider.snapshot()
-                if not isinstance(limits, dict):
-                    return snapshot
-            except Exception:
-                return snapshot
-            finally:
-                with self.condition:
-                    self.loading = False
-                    self.condition.notify_all()
-            with self.condition:
-                self.value = copy.deepcopy(limits)
-                self.at = time.monotonic()
+            if waiting:
+                return self._apply_retained(snapshot, owned=owned)
+            limits = self._load()
+            if limits is None:
+                return self._apply_retained(snapshot, owned=owned)
         result = snapshot if owned else copy.deepcopy(snapshot)
         for provider in result.get("providers", []):
             if isinstance(provider, dict) and provider.get("name") == "Claude":
+                previous_at = provider.get("limitsUpdatedAt")
+                with self.condition:
+                    self._prune_retained_locked()
+                    available = set(self.retained)
                 for field in ("fiveHour", "weekly", "limitsUpdatedAt"):
                     if field in limits:
+                        current = provider.get(field)
+                        times = provider.get("_quotaWindowObservedAt")
+                        observed = times.get(field, previous_at) if isinstance(times, dict) else previous_at
+                        known = (isinstance(current, dict) and current.get("lastKnown") is True
+                                 and SnapshotCache._valid_last_known(current, observed, time.time()))
+                        if field in ("fiveHour", "weekly") and (known or field in available) and (limits.get(field) or {}).get("percent") is None:
+                            provider.setdefault("_quotaWindowObservedAt", {}).setdefault(field, previous_at)
+                            continue
+                        if field in ("fiveHour", "weekly") and isinstance(provider.get("_quotaWindowObservedAt"), dict):
+                            provider["_quotaWindowObservedAt"].pop(field, None)
                         provider[field] = copy.deepcopy(limits[field])
+                        if field in ("fiveHour", "weekly") and isinstance(provider[field], dict):
+                            reset = provider[field].get("resetAt")
+                            if type(reset) in (int, float) and reset <= time.time():
+                                provider[field]["percent"] = None
+                break
+        return self._apply_retained(result, owned=True)
+
+    def _apply_retained(self, snapshot, *, owned):
+        with self.condition:
+            self._prune_retained_locked()
+            retained = copy.deepcopy(self.retained)
+        if not retained:
+            return snapshot
+        result = snapshot if owned else copy.deepcopy(snapshot)
+        for provider in result.get("providers", []):
+            if isinstance(provider, dict) and provider.get("name") == "Claude":
+                self._overlay_retained(provider, retained)
                 break
         return result
 
+    @staticmethod
+    def _overlay_retained(provider, retained):
+        previous_at = provider.get("limitsUpdatedAt")
+        times = provider.get("_quotaWindowObservedAt")
+        times = dict(times) if isinstance(times, dict) else {}
+        now = time.time()
+        replaced = False
+        for field in ("fiveHour", "weekly"):
+            current, sample = provider.get(field), retained.get(field)
+            times.setdefault(field, previous_at)
+            if not sample:
+                continue
+            observed = SnapshotCache._parse_utc(times[field])
+            if (not SnapshotCache._valid_last_known(sample["value"], sample["observed"], now)
+                    or isinstance(current, dict) and current.get("percent") is not None and observed is not None and (observed.timestamp() > sample["at"]
+                        or observed.timestamp() == sample["at"] and isinstance(current, dict)
+                        and current.get("percent") is not None and not current.get("lastKnown"))):
+                continue
+            provider[field] = copy.deepcopy(sample["value"])
+            if now - sample["at"] > 600:
+                provider[field]["lastKnown"] = True
+            else:
+                provider[field].pop("lastKnown", None)
+            times[field] = sample["observed"]
+            replaced = True
+        if replaced:
+            provider["_quotaWindowObservedAt"] = times
+            newest = max((SnapshotCache._parse_utc(t) for t in times.values() if SnapshotCache._parse_utc(t)), default=None)
+            if newest is not None:
+                provider["limitsUpdatedAt"] = newest.isoformat()
+
 
 CACHE = SnapshotCache(persist_path=product.state_root() / "stats-snapshot.json")
+
+
+def _insights_snapshot():
+    snapshot = CACHE.get()
+    if snapshot is not None:
+        for provider in snapshot.get("providers", []):
+            for field in ("fiveHour", "weekly"):
+                quota = provider.get(field)
+                if isinstance(quota, dict) and quota.get("lastKnown") is True:
+                    quota["percent"] = None
+    return snapshot
 FAST_CLAUDE_LIMITS = FastClaudeLimits()
 
 
@@ -987,7 +1159,7 @@ class Handler(SimpleHTTPRequestHandler):
             generation = public_policies(POLICIES)["generation"]
             payload = insights.INSIGHTS_CACHE.get(
                 range_name, generation, allowed_names=allowed,
-                snapshot_loader=lambda: CACHE.get(),
+                snapshot_loader=_insights_snapshot,
                 peak_store=insights.LimitPeakStore())
             if payload is None:
                 self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
