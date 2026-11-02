@@ -86,7 +86,20 @@ _SCHEMA_V2 = (
         total INTEGER, prev_total INTEGER,
         PRIMARY KEY(provider, source_key, fact_key))""",
 )
-MIGRATIONS: dict[int, tuple[str, ...]] = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
+def _clear_codex_ledger(conn: sqlite3.Connection) -> None:
+    """Schema 3: Codex copied-history attribution was wrong, so stored Codex data is cleared and re-ingested.
+
+    User kind overrides are decisions, not derived data, so they survive the clear.
+    """
+    overrides = conn.execute("SELECT provider, thread_id, kind FROM overrides WHERE provider='Codex'").fetchall()
+    purge_provider(conn, "Codex")
+    conn.execute("DELETE FROM meta WHERE key LIKE '%:Codex'")
+    conn.executemany("INSERT INTO overrides(provider, thread_id, kind) VALUES(?, ?, ?)", overrides)
+    meta_set(conn, "revision", int(meta_value(conn, "revision") or 0) + 1)
+
+
+# A migration step is SQL text or a callable taking the connection (for steps that need Python).
+MIGRATIONS: dict[int, tuple[Any, ...]] = {1: _SCHEMA_V1, 2: _SCHEMA_V2, 3: (_clear_codex_ledger,)}
 
 
 class LedgerSchemaError(RuntimeError):
@@ -144,7 +157,10 @@ def migrate(conn: sqlite3.Connection) -> int:
             raise LedgerSchemaError(f"ledger schema {current} is newer than supported {target}")
         for version in sorted(v for v in MIGRATIONS if current < v <= target):
             for statement in MIGRATIONS[version]:
-                conn.execute(statement)
+                if callable(statement):
+                    statement(conn)
+                else:
+                    conn.execute(statement)
             meta_set(conn, "schemaVersion", version)
     return target
 
@@ -331,6 +347,21 @@ def purge_provider(conn: sqlite3.Connection, provider: str) -> None:
             conn.execute(f"DELETE FROM {table} WHERE provider=?", (provider,))
     for table in ("provisional_facts", "source_facts", "facts", "hourly", "threads", "sources", "gaps", "counters", "overrides"):
         conn.execute(f"DELETE FROM {table} WHERE provider=?", (provider,))
+    # Provider-scoped coverage metadata ("observedFrom:<P>", "pendingBytes:<P>", ...) goes with the rows it describes.
+    for (key,) in conn.execute("SELECT key FROM meta").fetchall():
+        if key.endswith(":" + provider):
+            conn.execute("DELETE FROM meta WHERE key=?", (key,))
+    recompute_globals(conn)
+
+
+def recompute_globals(conn: sqlite3.Connection) -> None:
+    """Global coverage aggregates from the providers that remain; drop the global clock when no facts remain."""
+    for name in ("pendingBytes", "verifyingBytes"):
+        total = sum(int(meta_value(conn, f"{name}:{provider}") or 0) for provider in model_mod.PROVIDERS)
+        meta_set(conn, name, total)
+    has_facts = conn.execute("SELECT 1 FROM facts UNION ALL SELECT 1 FROM provisional_facts LIMIT 1").fetchone()
+    if has_facts is None:
+        conn.execute("DELETE FROM meta WHERE key IN ('observedFrom', 'lastIngestedAt')")
 
 
 # Only normalized accounting attributes are stored; arbitrary input records are never serialized.

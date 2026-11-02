@@ -246,6 +246,11 @@ class Ingestor:
         self.conn.execute("CREATE TABLE IF NOT EXISTS ledger_gap_details("
                           "gap_id INTEGER PRIMARY KEY, thread_id TEXT, interval_start INTEGER, interval_end INTEGER)")
 
+    def forget_provider(self, provider: str) -> None:
+        """Drop in-memory partial verification for one provider (its stored rows were purged)."""
+        for key in [key for key in self._partial_verification if key[0] == provider]:
+            del self._partial_verification[key]
+
     def run(self, collect: Mapping[str, bool], budget: int | None = None,
             fault: FaultHook | None = None, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
         self.registry = classify_mod.load_kind_registry(self.kind_registry_path) if self.kind_registry_path else dict(classify_mod.DEFAULT_KIND_REGISTRY)
@@ -692,8 +697,10 @@ class Ingestor:
         if not state["thread_loaded"]:
             for _, item in items:
                 head = item.get("payload") if isinstance(item.get("payload"), dict) else {}
-                if item.get("type") == "session_meta" and isinstance(head.get("id"), str) and head["id"]:
-                    state["thread"] = head["id"][:128]
+                if item.get("type") == "session_meta":
+                    # Only the first session_meta names the thread; a forked rollout's copied parent meta follows it.
+                    if isinstance(head.get("id"), str) and head["id"]:
+                        state["thread"] = head["id"][:128]
                     break
             state["thread"] = state["thread"] or path.stem
             self._load_segment(state, model_mod.CODEX, state["thread"])
@@ -710,13 +717,19 @@ class Ingestor:
                     state["slug"] = classify_mod.recognised_slug(user_text)
             kind = item.get("type")
             if kind == "session_meta":
-                state["started"] = state["started"] or providers._timestamp_epoch(payload.get("timestamp"))
-                if isinstance(payload.get("id"), str) and payload["id"]:
-                    state["thread"] = payload["id"][:128]
-                chat_source = providers._chat_source(payload.get("source"))
-                sub = bool(payload.get("parent_thread_id")) or chat_source in {"subagent", "review"}
-                state.update(sub=sub, exec_review=chat_source == "review",
-                             interactive=chat_source in {"app", "cli"} and not sub, read_only=_read_only(payload))
+                if not state.get("meta_seen"):  # later metas are copied context, not this source's identity
+                    state["meta_seen"] = True
+                    state["started"] = state["started"] or providers._timestamp_epoch(payload.get("timestamp"))
+                    if isinstance(payload.get("id"), str) and payload["id"]:
+                        state["thread"] = state["meta_id"] = payload["id"][:128]
+                    chat_source = providers._chat_source(payload.get("source"))
+                    sub = bool(payload.get("parent_thread_id")) or chat_source in {"subagent", "review"}
+                    state.update(sub=sub, exec_review=chat_source == "review",
+                                 interactive=chat_source in {"app", "cli"} and not sub, read_only=_read_only(payload))
+                elif (isinstance(payload.get("id"), str) and payload["id"] and state.get("meta_id")
+                        and payload["id"][:128] != state["meta_id"]):
+                    # A later meta naming another thread is copied parent context; its history is not this thread's.
+                    state["foreign_context"] = True
             elif kind == "turn_context":
                 if isinstance(payload.get("model"), str):
                     state["model"] = model_mod.raw_model(payload["model"])
@@ -752,6 +765,26 @@ class Ingestor:
                     state.setdefault("observed_keys", []).append(fact_identity)
                     continue
                 seen.add(fact_identity)
+                started = state["started"]
+                seeded = state.setdefault("seeded", [])
+                if started is not None and epoch < started:
+                    # History before this session began: it never counts and never gaps. In a forked rollout it
+                    # belongs to another counter domain, so it is skipped. Otherwise it may establish a baseline, and
+                    # advance one that this source seeded from history, until the thread's own usage begins.
+                    if not state.get("foreign_context"):
+                        if counters[thread] is None:
+                            counters[thread], counter_epochs[thread], counter_sources[thread] = current, epoch, source
+                            if thread not in seeded:
+                                seeded.append(thread)
+                            touched.add(thread)
+                        elif (thread in seeded and counter_sources.get(thread) == source
+                              and counter_epochs.get(thread) is not None and epoch > counter_epochs[thread]):
+                            # A seed follows history in time order, resets included: the newest report is the baseline.
+                            counters[thread], counter_epochs[thread] = current, epoch
+                            touched.add(thread)
+                    continue
+                if thread in seeded:
+                    seeded.remove(thread)  # own usage begins: the seeded baseline becomes an ordinary baseline
                 if (state.get("replay_ambiguous") and offset + position < state.get("replay_end", float("inf")) and counters[thread] is not None and
                         current["total_tokens"] < counters[thread]["total_tokens"]):
                     baseline_epoch = counter_epochs.get(thread)
@@ -773,9 +806,6 @@ class Ingestor:
                 counter_epochs[thread] = epoch
                 counter_sources[thread] = source
                 touched.add(thread)
-                started = state["started"]
-                if started is not None and epoch < started:
-                    continue  # Counters copied from a source thread before this session began.
                 if not any(delta.values()):
                     continue  # Equal counters are a duplicate report.
                 model = state["model"] or "unknown"

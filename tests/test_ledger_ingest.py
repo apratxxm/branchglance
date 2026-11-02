@@ -11,7 +11,7 @@ import pytest
 
 from test_ledger_support import (  # ledger_guard is autouse
     DAY_END, HOUR_START, append_jsonl, claude_file, claude_response, clock_at, codex_count, codex_file,
-    codex_meta, ledger_guard, make_roots, write_jsonl,
+    codex_meta, ledger_guard, make_roots, stamp, write_jsonl,
 )
 
 from token_tracker import ledger_store as store
@@ -939,3 +939,172 @@ def test_metadata_only_stamp_churn_stays_within_budget(tmp_path, monkeypatch):
         assert result['bytesRead'] <= 1024
     cursor = store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(path))
     assert cursor['state']['verify']['restarts'] == 0
+
+
+def _meta_line(seconds: int, thread: str, *, source: str = 'cli', parent: str | None = None) -> dict:
+    payload = {'id': thread, 'timestamp': stamp(seconds), 'source': source}
+    if parent is not None:
+        payload['parent_thread_id'] = parent
+    return {'type': 'session_meta', 'timestamp': stamp(seconds), 'payload': payload}
+
+
+def _child_rollout(codex, name='child'):
+    """Forked rollout: its own meta, a copied parent meta and parent history, then its own counters from 0."""
+    return codex_file(codex, name), [
+        _meta_line(10, 'child', parent='parent'),
+        _meta_line(1, 'parent', source='exec'),  # copied from the parent
+        codex_count(2, input_tokens=600000, output_tokens=0),  # copied parent history, before this session began
+        codex_count(4, input_tokens=900000, output_tokens=0),
+        codex_count(20, input_tokens=10, output_tokens=0),
+        codex_count(25, input_tokens=25, output_tokens=0),
+        codex_count(40, input_tokens=40, output_tokens=0),
+    ]
+
+
+def test_child_rollout_attributes_usage_to_child_thread_with_parent_ingested_first(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    write_jsonl(codex_file(codex, 'parent'), [_meta_line(1, 'parent', source='exec'),
+                                              codex_count(2, input_tokens=600000, output_tokens=0),
+                                              codex_count(4, input_tokens=900000, output_tokens=0)])
+    _drain_ledger(ledger)
+    path, lines = _child_rollout(codex)
+    write_jsonl(path, lines)
+    _drain_ledger(ledger)
+    by_thread = dict(ledger.conn.execute(
+        "SELECT thread_id, SUM(total) FROM facts WHERE provider='Codex' GROUP BY thread_id").fetchall())
+    assert by_thread == {'parent': 900000, 'child': 40}
+    assert ledger.conn.execute("SELECT COUNT(*) FROM gaps WHERE provider='Codex'").fetchone()[0] == 0
+
+
+def test_copied_parent_history_alone_produces_no_fact_or_gap(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    path, lines = _child_rollout(codex)
+    write_jsonl(path, lines)
+    _drain_ledger(ledger)
+    assert summary(ledger)['totals']['totalTokens'] == 40
+    assert ledger.conn.execute("SELECT COUNT(*) FROM facts WHERE thread_id='parent'").fetchone()[0] == 0
+    assert ledger.conn.execute("SELECT COUNT(*) FROM gaps").fetchone()[0] == 0
+
+
+def _claude_and_codex_rows(ledger):
+    tables = ('facts', 'sources', 'threads', 'hourly', 'counters', 'gaps')
+    return {table: ledger.conn.execute(f"SELECT * FROM {table} WHERE provider='Claude' ORDER BY 1, 2").fetchall()
+            for table in tables}
+
+
+def test_schema_three_clears_codex_keeps_claude_and_reingests(tmp_path):
+    ledger, claude, codex = open_ledger(tmp_path)
+    write_jsonl(claude_file(claude, 's1'), claude_lines((10, 'msg_a', 5)))
+    write_jsonl(codex_file(codex, 'T1'), codex_meta('T1', 10) + [codex_count(11, input_tokens=10, output_tokens=5)])
+    ledger.ingest(ALL)
+    claude_before = _claude_and_codex_rows(ledger)
+    codex_total = summary(ledger)['totals']['totalTokens']
+    assert ledger.conn.execute("SELECT COUNT(*) FROM facts WHERE provider='Codex'").fetchone()[0] == 1
+    ledger.close()
+    raw = store.connect(tmp_path / 'data' / store.DB_NAME)
+    raw.execute("UPDATE meta SET value='2' WHERE key='schemaVersion'")  # the previous version's ledger
+    raw.execute("INSERT INTO overrides(provider, thread_id, kind) VALUES('Codex', 'T1', 'review')")  # a user decision
+    raw.close()
+    ledger = Ledger(tmp_path / 'data', claude_root=claude, codex_root=codex, clock=clock_at(3600))
+    assert ledger.health()['schemaVersion'] == 3
+    assert ledger.conn.execute("SELECT COUNT(*) FROM facts WHERE provider='Codex'").fetchone()[0] == 0
+    assert ledger.conn.execute("SELECT COUNT(*) FROM sources WHERE provider='Codex'").fetchone()[0] == 0
+    assert ledger.conn.execute("SELECT COUNT(*) FROM meta WHERE key LIKE '%:Codex'").fetchone()[0] == 0
+    assert _claude_and_codex_rows(ledger) == claude_before
+    assert ledger.conn.execute("SELECT kind FROM overrides WHERE provider='Codex' AND thread_id='T1'").fetchone() == ('review',)
+    ledger.ingest(ALL)
+    assert summary(ledger)['totals']['totalTokens'] == codex_total
+    assert _claude_and_codex_rows(ledger)['facts'] == claude_before['facts']
+
+
+def _own_first_counter(seconds: int, total: int) -> dict:
+    last = {'input_tokens': total, 'output_tokens': 0, 'total_tokens': total}
+    return codex_count(seconds, input_tokens=total, output_tokens=0, last=last)
+
+
+def test_copied_parent_counters_do_not_seed_child_counter_domain(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    write_jsonl(codex_file(codex, 'child'), [
+        _meta_line(10, 'child', parent='parent'),
+        _meta_line(1, 'parent', source='exec'),
+        codex_count(2, input_tokens=100, output_tokens=0),
+        codex_count(4, input_tokens=200, output_tokens=0),  # copied parent counters, before this session began
+        _own_first_counter(20, 250),  # the child's own counter domain starts fresh
+    ])
+    _drain_ledger(ledger)
+    assert summary(ledger)['totals']['totalTokens'] == 250
+    assert ledger.conn.execute("SELECT COUNT(*) FROM gaps").fetchone()[0] == 0
+
+
+def test_single_copied_parent_counter_does_not_seed_child_counter_domain(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    write_jsonl(codex_file(codex, 'child'), [
+        _meta_line(10, 'child', parent='parent'),
+        _meta_line(1, 'parent', source='exec'),
+        codex_count(2, input_tokens=100, output_tokens=0),
+        _own_first_counter(20, 250),
+    ])
+    _drain_ledger(ledger)
+    assert summary(ledger)['totals']['totalTokens'] == 250
+
+
+def test_same_thread_resume_still_seeds_from_earlier_history(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    write_jsonl(codex_file(codex, 'resumed'), [
+        _meta_line(10, 'T1'),  # no copied foreign meta: the same thread resumed in a new file
+        codex_count(5, input_tokens=150, output_tokens=0),  # earlier history of this thread: seeds the baseline
+        codex_count(20, input_tokens=200, output_tokens=0),
+    ])
+    _drain_ledger(ledger)
+    assert summary(ledger)['totals']['totalTokens'] == 50
+
+
+def _resume_lines(seconds_history=((2, 100), (5, 150))):
+    lines = [_meta_line(10, 'T1')]
+    lines += [codex_count(at, input_tokens=total, output_tokens=0) for at, total in seconds_history]
+    return lines
+
+
+def test_resumed_same_thread_history_advances_seeded_baseline_to_latest(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    own = codex_count(20, input_tokens=200, output_tokens=0,
+                      last={'input_tokens': 50, 'output_tokens': 0, 'total_tokens': 50})
+    write_jsonl(codex_file(codex, 'resumed'), _resume_lines() + [own])
+    _drain_ledger(ledger)
+    assert summary(ledger)['totals']['totalTokens'] == 50
+    assert ledger.conn.execute("SELECT COUNT(*) FROM gaps").fetchone()[0] == 0
+
+
+def test_resumed_history_split_across_budgeted_passes_gives_same_total(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    path = codex_file(codex, 'resumed')
+    own = codex_count(20, input_tokens=200, output_tokens=0,
+                      last={'input_tokens': 50, 'output_tokens': 0, 'total_tokens': 50})
+    write_jsonl(path, _resume_lines() + [own])
+    _drain_ledger(ledger, budget=64)  # roughly one record per pass, so history reports land in separate passes
+    assert summary(ledger)['totals']['totalTokens'] == 50
+    assert ledger.conn.execute("SELECT COUNT(*) FROM gaps").fetchone()[0] == 0
+
+
+def test_history_never_rewinds_or_advances_another_sources_confirmed_baseline(tmp_path):
+    ledger, _, codex = open_ledger(tmp_path)
+    write_jsonl(codex_file(codex, 'a'), codex_meta('T1', 1) + [codex_count(2, input_tokens=300, output_tokens=0)])
+    ledger.ingest(ALL)  # A confirms 300 at t2
+    write_jsonl(codex_file(codex, 'b'), [_meta_line(10, 'T1'),
+                                         codex_count(4, input_tokens=350, output_tokens=0),  # history, after A's report
+                                         codex_count(20, input_tokens=400, output_tokens=0)])  # own: +100 over 300
+    _drain_ledger(ledger)
+    assert summary(ledger)['totals']['totalTokens'] == 400
+    assert ledger.conn.execute("SELECT COUNT(*) FROM gaps").fetchone()[0] == 0
+
+def test_seeded_baseline_follows_a_historical_reset_in_time_order(tmp_path):
+    # History 100, 150, then a compaction reset to 100 before the resume; own 200 with last=100 counts 100.
+    for budget in (None, 64):
+        ledger, _, codex = open_ledger(tmp_path / str(budget))
+        own = codex_count(20, input_tokens=200, output_tokens=0,
+                          last={'input_tokens': 100, 'output_tokens': 0, 'total_tokens': 100})
+        write_jsonl(codex_file(codex, 'resumed'), _resume_lines(((2, 100), (5, 150), (7, 100))) + [own])
+        _drain_ledger(ledger, budget=budget) if budget else _drain_ledger(ledger)
+        assert summary(ledger)['totals']['totalTokens'] == 100
+        assert ledger.conn.execute("SELECT COUNT(*) FROM gaps").fetchone()[0] == 0
+        ledger.close()

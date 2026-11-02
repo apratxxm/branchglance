@@ -168,3 +168,91 @@ await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(element("#claude-readonly-note").hidden,false,"browser without a token stays read-only");
 assert.equal(element("#claude-toggle").disabled,true);
 assert.equal(T.state.threads.length,0);
+
+// Saved usage history: the delete button is gated by collection and ledger state, and sends only on the second click.
+{
+  const nodes=new Map();
+  const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  const sent=[];
+  const ledgerState={ok:true,state:"live",purging:[],lastPurge:null,collect:{Claude:true,Codex:false}};
+  const ledgerDocument={querySelector:node,querySelectorAll:()=>[],addEventListener(){}};
+  const ledgerWindow={location:{hash:"#t=ledger-test-token",pathname:"/reset_actions.html",search:""},history:{replaceState(){}}};
+  const ledgerContext={document:ledgerDocument,window:ledgerWindow,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async(url,options={})=>{
+    if(url==="/api/ledger/status")return {ok:true,status:200,json:async()=>ledgerState};
+    if(url==="/api/ledger/purge"){sent.push({url,method:options.method,token:options.headers["X-Branchglance-Settings-Token"],body:JSON.parse(options.body)});return {ok:true,status:200,json:async()=>({ok:true})};}
+    return {ok:false,status:404,json:async()=>({ok:false,error:"not used"})};
+  }};
+  vm.createContext(ledgerContext);vm.runInContext(source,ledgerContext);
+  const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
+  await settle();
+  assert.equal(node('[data-purge="Claude"]').disabled,true,"collection on: delete is disabled");
+  assert.equal(node('[data-reason="Claude"]').textContent,"Turn off collection first");
+  assert.equal(node('[data-reason="Claude"]').hidden,false);
+  assert.equal(node('[data-purge="Codex"]').disabled,false,"collection off and ledger on: delete is enabled");
+  assert.equal(node('[data-reason="Codex"]').hidden,true);
+  node('[data-purge="Codex"]').onclick();
+  await settle();
+  assert.equal(node('[data-purge="Codex"]').textContent,"Delete — confirm","first click arms the confirm");
+  assert.equal(sent.length,0,"the first click sends nothing");
+  node('[data-purge="Codex"]').onclick();
+  await settle();
+  assert.deepEqual(sent,[{url:"/api/ledger/purge",method:"POST",token:"ledger-test-token",body:{provider:"Codex"}}]);
+  assert.equal(node('[data-status="Codex"]').textContent,"Deleted");
+  ledgerState.state="disabled";
+  node("#refresh").onclick();
+  await settle();
+  assert.equal(node('[data-reason="Codex"]').textContent,"Ledger is off");
+  assert.equal(node('[data-purge="Codex"]').disabled,true);
+  assert.equal(sent.length,1,"nothing is sent while the ledger is off");
+}
+
+// Purge results are per provider and per ticket: Deleted needs an explicit matching done result. Polls are shortened here.
+{
+  const realTimeout=setTimeout;
+  const pause=()=>new Promise(resolve=>realTimeout(resolve,0));
+  const settle=async()=>{for(let i=0;i<20;i++)await pause();};
+  const until=async(predicate,limit=200000)=>{for(let i=0;i<limit&&!predicate();i++)await pause();};
+  const harness=(initialStatus,posts)=>{
+    const nodes=new Map();
+    const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+    const statusRef={value:initialStatus};
+    const ctx={document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){}},
+      window:{location:{hash:"#t=ledger-test-token",pathname:"/reset_actions.html",search:""},history:{replaceState(){}}},
+      AbortSignal:{timeout(){}},URLSearchParams,clearTimeout,
+      setTimeout:(fn,ms,...rest)=>realTimeout(fn,ms===2000?50:ms,...rest),
+      fetch:async(url,options={})=>{
+        if(url==="/api/ledger/status")return {ok:true,status:200,json:async()=>statusRef.value};
+        if(url==="/api/ledger/purge"){const reply=posts[JSON.parse(options.body).provider]();return {ok:reply.status<300,status:reply.status,json:async()=>reply.body};}
+        return {ok:false,status:404,json:async()=>({ok:false,error:"not used"})};
+      }};
+    vm.createContext(ctx);vm.runInContext(source,ctx);
+    return {node,statusRef};
+  };
+  const idle={ok:true,state:"live",purging:[],lastPurge:{},collect:{Claude:false,Codex:false}};
+  const sendTwice=async(h,provider)=>{h.node(`[data-purge="${provider}"]`).onclick();await settle();h.node(`[data-purge="${provider}"]`).onclick();await settle();};
+
+  // Sol's replay: Claude's purge fails and Codex's succeeds afterwards. Claude must never read as Deleted.
+  const A=harness({...idle,purging:["Claude"]},{
+    Claude:()=>({status:202,body:{ok:true,pending:true,ticket:"claude-ticket"}}),
+    Codex:()=>({status:200,body:{ok:true,ticket:"codex-ticket"}})});
+  await settle();
+  await sendTwice(A,"Claude");
+  assert.equal(A.node('[data-status="Claude"]').textContent,"Still deleting…");
+  A.statusRef.value={ok:true,state:"live",purging:[],collect:{Claude:false,Codex:false},lastPurge:{
+    Claude:{ticket:"claude-ticket",result:"failed",error:"RuntimeError"},
+    Codex:{ticket:"codex-ticket",result:"done",error:null}}};
+  await until(()=>A.node('[data-status="Claude"]').textContent!=="Still deleting…");
+  assert.equal(A.node('[data-status="Claude"]').textContent,"Saved history could not be deleted.");
+  await sendTwice(A,"Codex");
+  assert.equal(A.node('[data-status="Codex"]').textContent,"Deleted");
+  assert.equal(A.node('[data-status="Claude"]').textContent,"Saved history could not be deleted.","Codex's success never changes Claude's row");
+
+  // A result for another ticket, or none at all, is not success: the row stays pending, then reads unknown.
+  const B=harness({...idle,purging:[],lastPurge:{Claude:{ticket:"stale-ticket",result:"done",error:null}}},{
+    Claude:()=>({status:202,body:{ok:true,pending:true,ticket:"claude-ticket"}})});
+  await settle();
+  await sendTwice(B,"Claude");
+  await until(()=>B.node('[data-status="Claude"]').textContent!=="Still deleting…");
+  assert.equal(B.node('[data-status="Claude"]').textContent,"Status unknown — reopen to check");
+  assert.notEqual(B.node('[data-status="Claude"]').textContent,"Deleted");
+}

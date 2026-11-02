@@ -16,6 +16,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -47,11 +48,40 @@ HOUR_SECONDS = 3600
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 _CURRENT: "LedgerService | None" = None
+PURGE_WAIT_SECONDS = 10.0  # how long POST /api/ledger/purge waits for its ticket before answering 202
+PURGE_OUTCOMES = ("done", "failed", "cancelled")
 
 
 def current() -> "LedgerService | None":
     """The service the widget started, or None. The HTTP handler reads health and the data dir through it."""
     return _CURRENT
+
+
+class PurgeTicket:
+    """One accepted purge. Resolves exactly once: "done", "failed" (public error class name) or "cancelled"."""
+
+    def __init__(self, provider: str) -> None:
+        self.id = uuid.uuid4().hex
+        self.provider = provider
+        self.status = "queued"
+        self.error: str | None = None
+        self._resolved = threading.Event()
+
+    def resolve(self, status: str, error: str | None = None) -> None:
+        if not self._resolved.is_set():
+            self.status, self.error = status, error
+            self._resolved.set()
+
+    def wait(self, timeout: float) -> bool:
+        return self._resolved.wait(timeout)
+
+
+def status_payload() -> dict[str, Any]:
+    """Read-only health for the settings window: state, purging providers and the collect flags the writer uses."""
+    service = _CURRENT
+    if service is None:
+        return {"ok": True, "state": "disabled", "pendingBytes": 0, "purging": [], "lastPurge": None, "collect": {}}
+    return {"ok": True, **service.health(), "collect": dict(service.collect)}
 
 
 class LedgerService:
@@ -71,8 +101,9 @@ class LedgerService:
         self._budget = budget_bytes
         self._factory = ledger_factory
         self._stop = threading.Event()
-        self._wait = waiter or self._stop.wait
-        self._lock = threading.Lock()  # guards the published state read by health()
+        self._wake = threading.Event()  # set by purge requests and stop(): ends the worker's wait early
+        self._wait = waiter or self._wait_wake
+        self._lock = threading.Lock()  # guards the published state read by health() and the purge queue
         self._lifecycle = threading.Lock()  # serializes start() and stop()
         self._thread: threading.Thread | None = None
         self._ledger: Any = None  # worker-only: the writer connection never leaves the worker thread
@@ -80,6 +111,9 @@ class LedgerService:
         self._last_pass_at: str | None = None
         self._last_error: str | None = None
         self._pending = 0
+        self._tickets: dict[str, PurgeTicket] = {}  # unresolved purges per provider, queued or running
+        self._queue: list[str] = []  # providers whose purge has not started, in request order
+        self._last_purge: dict[str, dict[str, Any]] = {}  # newest result per provider, keyed by ticket
         self.collect: dict[str, bool] = {}
         self.show: dict[str, bool] = {}
 
@@ -113,17 +147,100 @@ class LedgerService:
             self._thread = thread
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Signal the worker and wait up to timeout. A worker still inside a pass is left to finish as a daemon."""
+        """Signal the worker and wait up to timeout. A worker still inside a pass is left to finish as a daemon.
+
+        Queued purges cancel at once: nothing was deleted. A purge already running finishes its own
+        transaction and resolves with its real outcome.
+        """
         with self._lifecycle:
             self._stop.set()
+            self._wake.set()
             thread = self._thread
+        self._cancel_queued()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout)
 
     def health(self) -> dict[str, Any]:
         with self._lock:
             return {"state": self._state, "lastPassAt": self._last_pass_at,
-                    "lastError": self._last_error, "pendingBytes": self._pending}
+                    "lastError": self._last_error, "pendingBytes": self._pending,
+                    "purging": sorted(self._tickets),
+                    "lastPurge": {provider: dict(result) for provider, result in self._last_purge.items()}}
+
+    # ------------------------------------------------------------------ purge queue
+
+    def request_purge(self, provider: str) -> PurgeTicket:
+        """Queue a purge of one provider's stored history. Coalesces with an unresolved request for it.
+
+        The worker runs it between passes; a queued request also ends the running pass at its next
+        safe point. Nothing is deleted on this thread.
+        """
+        with self._lock:
+            ticket = self._tickets.get(provider)
+            if ticket is not None:
+                return ticket
+            ticket = PurgeTicket(provider)
+            if self._thread is None or self._stop.is_set():
+                ticket.resolve("cancelled")
+                return ticket
+            self._tickets[provider] = ticket
+            self._queue.append(provider)
+        self._wake.set()
+        return ticket
+
+    def _purge_requested(self) -> bool:
+        with self._lock:
+            return bool(self._queue)
+
+    def _cancel_queued(self) -> None:
+        with self._lock:
+            cancelled = [provider for provider in self._queue]
+            tickets = [self._tickets.pop(provider) for provider in cancelled if provider in self._tickets]
+            self._queue.clear()
+            for ticket in tickets:
+                self._last_purge[ticket.provider] = {"ticket": ticket.id, "result": "cancelled", "error": None}
+        for ticket in tickets:
+            ticket.resolve("cancelled")
+
+    def _run_purges(self) -> None:
+        """Worker only: run queued purges one at a time, before the next pass."""
+        while True:
+            with self._lock:
+                if not self._queue:
+                    return
+                provider = self._queue.pop(0)
+                ticket = self._tickets[provider]
+                ticket.status = "running"
+            if self._stop.is_set():
+                self._finish_purge(ticket, "cancelled", None)
+                continue
+            try:
+                if self._ledger is None:
+                    self._ledger = self._factory(self.data_dir, claude_root=self.claude_root,
+                                                 codex_root=self.codex_root)
+                self._ledger.purge(provider)
+            except Exception as error:
+                # Drop the writer so the next purge or pass reopens it cleanly.
+                self._close_ledger()
+                self._finish_purge(ticket, "failed", type(error).__name__)
+            else:
+                self._finish_purge(ticket, "done", None)
+
+    def _finish_purge(self, ticket: PurgeTicket, status: str, error: str | None) -> None:
+        with self._lock:
+            if self._tickets.get(ticket.provider) is ticket:
+                del self._tickets[ticket.provider]
+            self._last_purge[ticket.provider] = {"ticket": ticket.id, "result": status, "error": error}
+        ticket.resolve(status, error)
+
+    def _stop_requested(self) -> bool:
+        return self._stop.is_set() or self._purge_requested()
+
+    def _wait_wake(self, seconds: float) -> bool:
+        """Wait for the cadence or a purge or stop wake-up. True means stop."""
+        self._wake.wait(seconds)
+        self._wake.clear()
+        return self._stop.is_set()
 
     # ------------------------------------------------------------------ worker
 
@@ -133,6 +250,9 @@ class LedgerService:
             # The loop checks _stop itself, so a waiter that returns True here still lets the first pass run.
             self._pause(STARTUP_DELAY_SECONDS)
             while not self._stop.is_set():
+                self._run_purges()
+                if self._stop.is_set():
+                    break
                 if self._ledger is None:
                     try:
                         self._ledger = self._factory(self.data_dir, claude_root=self.claude_root,
@@ -146,9 +266,11 @@ class LedgerService:
                 try:
                     began = self._monotonic()
                     result = self._ledger.ingest(self.collect, budget_bytes=self._budget,
-                                                 should_stop=self._stop.is_set)
+                                                 should_stop=self._stop_requested)
                     if result.get("stopped"):
-                        break
+                        if self._stop.is_set():
+                            break
+                        continue  # a queued purge ended this pass: run it at the top of the loop
                     duration = self._monotonic() - began
                     # Scheduling uses every collected provider's backlog, not the shown subset.
                     internal = int(result["pendingBytes"])
@@ -165,6 +287,7 @@ class LedgerService:
                 if self._pause(wait):
                     break
         finally:
+            self._cancel_queued()
             self._close_ledger()
 
     def _pause(self, seconds: float) -> bool:

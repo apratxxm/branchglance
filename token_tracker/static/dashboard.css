@@ -300,3 +300,27 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-settings-columns{grid-template-columns:minmax(0,1fr);padding-left:12px;padding-right:12px;}
 }
 @media(prefers-reduced-motion:reduce){.dashboard-content,.dashboard-tab,.dash-toggle::after,.dash-point line,.dash-point circle,.dash-tooltip{transition:none!important;}.area-glow{filter:none;opacity:.18;}}
+/* Breakdown toggle: the section title doubles as the switch between Models and By work. */
+.dash-breakdown{display:flex;align-items:center;gap:14px;}
+.dash-breakdown button{padding:0;border:0;background:transparent;color:var(--d-mute);font:600 13px/22px var(--d-font);cursor:pointer;}
+.dash-breakdown button:hover{color:#c9cbd1;}
+.dash-breakdown button.is-active{color:#e6e8ef;cursor:default;}
+.dash-breakdown button:focus-visible{outline:1px solid var(--d-link);outline-offset:3px;border-radius:3px;}
+.dash-model-head .dash-breakdown{grid-column:1 / 4;}
+/* By work: models down, kinds of work across, one compact figure per cell. */
+.dash-work-block{min-width:0;}
+.dash-work-head small{text-align:right;}
+.dash-work-note.is-qualified{color:#d9b56a;cursor:help;}
+.dash-work-grid{display:grid;margin-top:2px;}
+.dash-work-row{display:grid;grid-template-columns:minmax(118px,1fr) repeat(var(--work-cols),minmax(40px,58px)) 64px;column-gap:6px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
+.dash-work-row.is-head{min-height:20px;color:var(--d-faint);font-size:11px;font-weight:450;}
+.dash-work-row.is-head>span,.dash-work-cell{text-align:right;font-variant-numeric:tabular-nums;}
+.dash-work-row.is-foot{margin-top:2px;padding-top:2px;border-top:1px solid var(--d-edge);color:var(--d-sub);}
+.dash-work-row.is-foot>span:first-child{font-size:12px;}
+.dash-work-cell{color:var(--d-ink);font-weight:500;border-radius:4px;}
+.dash-work-cell.is-total{font-weight:600;}
+.dash-work-cell.is-zero{color:#4a4f5c;font-weight:400;}
+.dash-work-cell[tabindex]:hover,.dash-work-cell[tabindex]:focus-visible{background:#ffffff0d;outline:none;}
+.dash-work-foot{margin:6px 0 0;color:var(--d-faint);font-size:11px;line-height:16px;}
+.dash-work-foot code{font:inherit;color:var(--d-sub);}
+.dash-work-grid .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
