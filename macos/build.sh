@@ -84,6 +84,13 @@ if [ "$1" = "install" ]; then
 BG_CODEX_LAUNCHER="\$0" PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -m token_tracker.bg_codex "\$@"
 LAUNCHER
     chmod 755 "$ROOT/bin/bg-codex"
+    # Claude Code status line helper (Branchglance.exe --statusline on Windows): set
+    # "statusLine": {"type": "command", "command": "<this path>"} in ~/.claude/settings.json.
+    cat > "$ROOT/bin/branchglance-statusline" <<LAUNCHER
+#!/bin/sh
+PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -c 'from token_tracker.claude_statusline import main; raise SystemExit(main())'
+LAUNCHER
+    chmod 755 "$ROOT/bin/branchglance-statusline"
 fi
 # Same version as the Windows release.
 VERSION="$(sed -n 's/^RELEASE_VERSION = "\(.*\)"/\1/p' ../packaging/build.py)"
