@@ -971,6 +971,16 @@ class Handler(SimpleHTTPRequestHandler):
             else:
                 self._send_json(payload)
             return
+        if parsed.path in {"/api/ledger", "/api/ledger/export"}:
+            from . import ledger_service
+            status, headers, body = ledger_service.http_response(parsed.path, parse_qs(parsed.query))
+            self.send_response(status)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if parsed.path == "/api/live":
             selected = LIVE_CACHE.get(encoded=True)
             if selected is None:
