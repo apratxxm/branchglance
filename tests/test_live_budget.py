@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from token_tracker import agent_links, claude_provider, providers, server
+from token_tracker import agent_links, claude_events, claude_provider, providers, server
 from token_tracker.provider_policy import load_policies
 
 
@@ -344,3 +344,82 @@ def test_hook_backed_claude_subagent_keeps_its_parent_when_deferred(lineage_rost
     assert deferred.get("detailPending") is True, "the subagent must be deferred for this check to mean anything"
     assert (deferred.get("parentId"), deferred.get("parentProvider")) == (detailed.get("parentId"), detailed.get("parentProvider"))
     assert deferred_live["graph"]["edges"]["Claude:session:agent"] == detailed_live["graph"]["edges"]["Claude:session:agent"] == "Claude:session"
+
+
+def test_hook_subagent_discovered_before_snapshot_has_snapshot_parent(claude_live, monkeypatch):
+    now = time.time()
+    projects = claude_live.tmp / "projects"
+    project = projects / "project"
+    child_dir = project / "session" / "subagents"
+    child_dir.mkdir(parents=True)
+    (project / "session.jsonl").write_text('{}\n', encoding="utf-8")
+    (child_dir / "agent-child.jsonl").write_text('{}\n', encoding="utf-8")
+    events = claude_live.tmp / "events"
+    events.mkdir()
+    records = [
+        {"ts": now - 2, "event": "UserPromptSubmit", "session_id": "session", "claude_pid": 4242, "claude_pid_created": 777},
+        {"ts": now - 1, "event": "SubagentStart", "session_id": "session", "claude_pid": 4242, "claude_pid_created": 777,
+         "agent_id": "child", "agent_type": "explore"},
+    ]
+    (events / claude_events.day_names(now)[1]).write_text(
+        ''.join(json.dumps(record) + '\n' for record in records), encoding="utf-8")
+    snapshot_rows = claude_provider.build_rows(now, lambda *_: True, events, projects)
+    child = next(row for row in snapshot_rows if row["id"] == "session:child")
+    monkeypatch.setattr(claude_provider, "_cached_rows", lambda: snapshot_rows)
+    monkeypatch.setattr(claude_provider, "live_discovery_rows",
+                        lambda: claude_provider.public_rows(snapshot_rows, keep_path=True))
+
+    live = providers.live_state()
+    row = next(row for row in live["chats"] if row["key"] == "Claude:session:child")
+    assert row["parentId"] == child["parentId"] == "session"
+    assert row.get("parentProvider") is None
+    assert live["graph"]["edges"][row["key"]] == "Claude:session"
+
+
+def test_live_discovery_refreshes_replaced_claude_path_and_parent(claude_live, monkeypatch):
+    old = claude_live.add("old-path", 3 * 3600)
+    new = claude_live.add("new-path", 3 * 3600)
+    filler = claude_live.add("filler-path", 2 * 3600)
+    rows = [{"id": "session:child", "path": old["path"], "parentId": "session",
+             "title": "old title", "agentName": "old agent", "recordSource": "hook"}]
+    monkeypatch.setattr(claude_provider, "live_discovery_rows", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(claude_provider, "_cached_rows", lambda: rows)
+    claude_live.index([{"id": "filler", "path": filler["path"]}])
+    first = providers.live_state()
+    assert next(row for row in first["chats"] if row["key"] == "Claude:session:child")["parentId"] == "session"
+    key = "Claude:session:child"
+    assert providers._LIVE_DETAILED[key][0] == old["path"]
+
+    # Replace the path between consecutive live polls, with no snapshot refresh.
+    providers._LIVE_INDEX[key]["contextTokens"] = 123
+    from pathlib import Path
+    Path(old["path"]).unlink()
+    rows[0].update(path=new["path"], title="new title", agentName="new agent", parentId="new-session")
+    providers._LIVE_DETAILED.pop("Claude:filler")  # the newer filler takes the forced budget slot
+    real_state = providers._claude_transcript_state
+    reads = []
+
+    def recording(path):
+        if str(path) == new["path"]:
+            assert key not in providers._LIVE_DETAILED
+        reads.append(str(path))
+        return real_state(path)
+
+    monkeypatch.setattr(providers, "_claude_transcript_state", recording)
+    live = providers.live_state(budget_seconds=-1)
+    row = next(row for row in live["chats"] if row["key"] == key)
+    assert new["path"] in reads and not row.get("detailPending")
+    assert (row["parentId"], row["parentProvider"]) == ("new-session", None)
+    assert providers._LIVE_INDEX[key]["path"] == new["path"]
+    assert providers._LIVE_INDEX[key].get("contextTokens") is None
+    assert providers._LIVE_DETAILED[key][0] == new["path"]
+
+    # Same-path discovery refreshes identity while retaining detailed observations.
+    providers._LIVE_INDEX[key]["contextTokens"] = 123
+    rows[0].update(title="latest title", agentName="latest agent", parentId="latest-session")
+    monkeypatch.setattr(providers, "_claude_transcript_state", real_state)
+    providers.live_state()
+    assert providers._LIVE_INDEX[key]["contextTokens"] == 123
+    assert providers._LIVE_INDEX[key]["title"] == "latest title"
+    assert providers._LIVE_INDEX[key]["agentName"] == "latest agent"
+    assert providers._LIVE_INDEX[key]["parentId"] == "latest-session"

@@ -813,6 +813,11 @@ def public_rows(rows: list[dict[str, Any]], keep_path: bool = False) -> list[dic
     return out
 
 
+def live_discovery_rows() -> list[dict[str, Any]]:
+    """Reuse the hook-backed roster and its private paths for live discovery."""
+    return public_rows(_cached_rows(), keep_path=True)
+
+
 def live_row(row: dict[str, Any], indexed: dict[str, Any]) -> dict[str, Any]:
     """Replace a live row's inferred fields with the hook-sourced projection.
 

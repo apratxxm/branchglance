@@ -4881,11 +4881,34 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     # live roster copy. This does no app-server work and never promotes SQLite
     # timestamps or model columns into runtime observations.
     persisted = _persisted_codex_threads() if "Codex" in visible_full else []
+    if "Claude" in visible_full:
+        from .claude_provider import live_discovery_rows
+        claude_discovered = live_discovery_rows()
+    else:
+        claude_discovered = []
+    replaced_claude_paths = set()
     global _LIVE_INDEX_POLICY_GENERATION
     with _LIVE_LOCK:
         if _LIVE_INDEX_POLICY_GENERATION != policy_generation:
             _LIVE_INDEX.clear()
             _LIVE_INDEX_POLICY_GENERATION = policy_generation
+        for record in claude_discovered:
+            identity, path = record.get("id"), record.get("path")
+            if identity and path:
+                key = f"Claude:{identity}"
+                prior = _LIVE_INDEX.get(key)
+                if prior is None or str(prior.get("path")) != str(path):
+                    if prior is not None:
+                        replaced_claude_paths.add(key)
+                        _LIVE_DETAILED.pop(key, None)
+                    _LIVE_INDEX[key] = {**record, "parentProvider": None}
+                else:
+                    # Refresh identity and lineage without replacing observations
+                    # retained from a detailed read of this same transcript.
+                    for field in ("id", "path", "parentId", "title", "workspace",
+                                  "agentName", "recordSource", "resumable"):
+                        prior[field] = record.get(field)
+                    prior["parentProvider"] = None
         for record in persisted:
             identity, path_value = record.get("id"), record.get("path")
             if not identity or not path_value:
@@ -4938,7 +4961,7 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     chats = []
     newly_detailed: dict[str, tuple[str, float]] = {}
     for key, indexed in ordered:
-        if (budget_seconds is not None and key != forced and awaiting_detail(key)
+        if (budget_seconds is not None and key != forced and key not in replaced_claude_paths and awaiting_detail(key)
                 and time.monotonic() - started > budget_seconds):
             pending += 1
             chats.append(_deferred_live_row(key, indexed, stamps[key]))
@@ -5079,6 +5102,7 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
             # Hook-sourced rows keep their execution fields; the transcript state
             # above (which infers running from trailing records) is discarded.
             row = _claude_live_row(row, indexed)
+            row.update(parentId=indexed.get("parentId"), parentProvider=indexed.get("parentProvider"))
         elif provider != "Codex":
             for field in ("statusSource", "statusObservedAt", "telemetryUnavailable", "metricsUnavailable", "stateSince", "compactionStartedAt", "activity", "activityUnavailable",
                           "executionStatus", "executionSource", "executionObservedAt", "executionSince",
