@@ -1,11 +1,19 @@
 # Changelog
 
-## Unreleased
-
-## 0.1.0 (alpha)
+## 0.1.0 (alpha) - 2026-11-03
 
 ### Added
 
+- macOS notch app built from source, with Insights, tree, menu bar controls, `bg-codex`, rollback and uninstall.
+- Optional Claude Code status line helper for quota display.
+- Opt-in local usage ledger (`TOKEN_TRACKER_LEDGER=1`), with a By work view and per-provider saved-history deletion.
+- Opt-in Claude reset greetings with explicit send permission and a signed-in Claude Code CLI.
+- Insights provider toggles, cost share and plan multiple, model table and hourly 24-hour chart.
+- Claude Code hook collection requires explicit user consent; hooks are not installed before enablement.
+- Monitoring reads local provider data. Branchglance does not upload transcripts to a Branchglance service. An enabled greeting invokes the provider CLI with a short request.
+- Claude subagent coverage depends on hook events and has not been established across real sessions.
+- Uninstall revokes Claude consent first, backs up settings, removes Branchglance-owned hooks and preserves other hooks. Unreadable settings remain untouched and are reported; a concurrent Claude Code settings write can race the edit because no lock serializes writes.
+- User settings and history under `%LOCALAPPDATA%\Branchglance` are kept after uninstall.
 - Compact Windows widget for Codex and opt-in Claude Code chats and hook-reported subagents.
 - Codex blue-violet and Claude orange accents in one shared tree, with usage meters that count up to 100% used.
 - Compact pop-up that can surface new work or a waiting question.
@@ -21,20 +29,22 @@
 
 ### Changed
 
+- The quota grid uses colours for usage left; the clock and timers are green. The ⋯ menu and click-outside dismissal simplify navigation.
+- Usage bars use colour instead of provider names.
+- The live tree starts sooner and fills in older chat details in the background.
 - The collapsed widget is narrower (328 px at 100% scaling).
-- Insights opens as a widget-shaped panel between the 5-hour and weekly bands. Settings shows the installed version and build.
+- Settings shows the installed version and build.
 - Codex row titles drop brief-style prefixes (`# `, `[Project]`) and a leading word that only repeats the model name.
 - The app icon has more margin around the mark.
 - Claude Code settings follow `CLAUDE_HOME` or `CLAUDE_CONFIG_DIR` when set, for hooks, transcripts and uninstall.
 - Upgrades keep the existing start-at-sign-in choice.
 - Tree rows use shared column tracks. Long titles wrap in the expanded tree.
 - `/api/live` is gzip-compressed (about 387 KB to about 82 KB).
-- Cold builds are faster: snapshot about 35 s to 25 s, live about 19.7 s to 14 s (measured on copied data).
 - Widget idle CPU is lower (about 29% to about 2% of a core): identical DOM writes are skipped and the edge sheen animates only on hover.
 - Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1 are priced from exact model ids. Models without a known price are never given a guessed price.
 - Live tree polls send the full link map on every poll instead of a delta.
 - Limit countdowns drop seconds at one hour or more.
-- Names in the tree are 13px.
+- Subagents beyond three fold behind a +N more control, with smaller names.
 - Chat titles are tidied on the live view too.
 - The widget opens by itself only when a subagent starts, finishes or comes back, and rows keep their place.
 - Status and activity share one column; every cell fits on one line.
@@ -42,6 +52,8 @@
 
 ### Fixed
 
+- Codex subagent usage is attributed to the correct work in the ledger.
+- On macOS, the server retains limit peaks and reads `bg-codex` receipts, and Claude hook events identify the Claude process.
 - A finished earlier run of a resumed Codex thread no longer blocks the thread's current link.
 - Running Codex jobs started from a Claude chat nest under that chat. A cached Claude parent without its provider tag is revalidated first.
 - Tree lines stay visible under resting parent rows, and stuck parents get a shadow.
@@ -51,11 +63,3 @@
 - A first paint without a chat graph is held for a bounded time before the tree is drawn without it.
 - Limit peak journal writes are limited to the running widget instance. Journal dates are validated strictly.
 - The 24h Insights range no longer falls back to day totals. Quota peaks use fresh observations only.
-
-### Privacy and scope
-
-- Claude Code hook collection requires explicit user consent; hooks are not installed before enablement.
-- Monitoring reads local provider data. Branchglance does not upload transcripts to a Branchglance service. An enabled greeting invokes the provider CLI with a short request.
-- Claude subagent coverage depends on hook events and has not been established across real sessions.
-- Uninstall revokes Claude consent first, backs up settings, removes Branchglance-owned hooks and preserves other hooks. Unreadable settings remain untouched and are reported; a concurrent Claude Code settings write can race the edit because no lock serializes writes.
-- User settings and history under `%LOCALAPPDATA%\Branchglance` are kept after uninstall.
