@@ -4591,6 +4591,10 @@ def _error_provider(name: str, accent: str, exc: Exception) -> dict[str, Any]:
 
 
 _LIVE_LOCK = threading.Lock()
+# A budgeted live_state never defers a chat modified this recently.
+LIVE_RECENT_SECONDS = 15 * 60
+# Chat key -> (path, mtime) of the last transcript read in full by live_state.
+_LIVE_DETAILED: dict[str, tuple[str, float]] = {}
 _LIVE_INDEX: dict[str, dict[str, Any]] = {}
 _LIVE_INDEX_POLICY_GENERATION: str | None = None
 
@@ -4735,6 +4739,9 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                     )
                     entry["activityUnavailable"] = bool(chat.get("telemetryUnavailable") and entry.get("activity"))
                 entry.update(path=str(path), indexedAt=observed_at)
+                # Run boundaries for deferred rows; a stale provider keeps the boundary it last recorded.
+                entry.update(identityRunStartedAt=prior.get("identityRunStartedAt") if provider_stale else chat.get("runStartedAt"),
+                             identityActiveRunStartedAt=prior.get("identityActiveRunStartedAt") if provider_stale else chat.get("activeRunStartedAt"))
                 if provider_stale:
                     chat.update(status=entry.get("status"), previousStatus=entry.get("previousStatus"),
                                 statusSource=entry.get("statusSource"), telemetryUnavailable=entry.get("telemetryUnavailable"),
@@ -4813,13 +4820,58 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
         _LIVE_INDEX_POLICY_GENERATION = policy_generation
 
 
+def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> dict[str, Any]:
+    """Cheap row for a chat whose transcript detail the live budget deferred.
+
+    Identity and lineage come from the index only, so the roster and graph stay
+    complete. The row is not active: a deferred chat is older than the recent window.
+    """
+    provider = key.split(":", 1)[0]
+    # Parent id and provider are one pair. Codex uses the detailed row's own choice. A hook-backed Claude
+    # subagent carries its parent session id (claude_provider sets parentId); the index holds that same
+    # pair, and detailed Claude rows set no parentProvider, so the deferred row copies what the index holds.
+    if provider == "Codex":
+        parent_id, parent_provider = _codex_parent_pair(None, indexed)
+    else:
+        parent_id, parent_provider = indexed.get("parentId"), indexed.get("parentProvider")
+    title = (_tidy_codex_title(indexed.get("identityTitle") or indexed.get("title") or "", indexed.get("model"))
+             if provider == "Codex" else indexed.get("title")) or None
+    return {
+        "key": key, "id": indexed.get("id") or key.split(":", 1)[1], "provider": provider,
+        "activityAt": datetime.fromtimestamp(modified, timezone.utc).isoformat(),
+        "status": "idle", "statusSource": "transcript", "statusObservedAt": None,
+        "telemetryUnavailable": False, "metricsUnavailable": True,
+        "activity": None, "activityUnavailable": True, "detailPending": True,
+        "stateSince": None, "compactionStartedAt": None, "pendingQuestion": None,
+        "pendingQuestionIds": [], "questionResolutionAt": None,
+        "executionStatus": "unavailable", "executionSource": "unavailable",
+        "executionObservedAt": None, "executionSince": None, "executionCompactionStartedAt": None,
+        "executionTerminalAt": None, "executionActivity": None,
+        # The run boundary is copied only when the index recorded one; agent_links needs it to
+        # judge a cross-provider association, and a deferred row without it never falls back to history.
+        "runStartedAt": indexed.get("identityRunStartedAt"),
+        "activeRunStartedAt": indexed.get("identityActiveRunStartedAt"),
+        "parentId": parent_id, "parentProvider": parent_provider,
+        "title": title,
+        "workspace": indexed.get("identityWorkspace") or indexed.get("workspace"),
+        "source": indexed.get("identitySource") or indexed.get("source"),
+        "agentName": indexed.get("identityAgentName") or indexed.get("agentName"),
+    }
+
+
 @_in_build_scope
-def live_state() -> dict[str, Any]:
+def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     """Seconds-fresh activity and state for known chats, without a full snapshot.
 
     File stats are cheap and state parsing is memoized per file stamp, so only
-    transcripts that changed since the last poll are re-read.
+    transcripts that changed since the last poll are re-read. With a budget,
+    chats are processed newest first. Once the budget is spent, older chats
+    whose detail is still pending get a cheap index-only row (detailPending)
+    instead of a full read, so the roster and lineage stay complete. The first
+    pending chat is always read, so every budgeted call makes progress.
+    complete is False while any chat is pending; pendingChats counts them.
     """
+    started = time.monotonic()
     policies = POLICIES
     full_collect, _limit_collect = _provider_collection_sets(policies)
     visible_full = tuple(name for name in full_collect if policy_for(name, policies).allows("show"))
@@ -4864,8 +4916,33 @@ def live_state() -> dict[str, Any]:
                 _LIVE_INDEX[key] = {"id": identity, "path": path, **identity_fields}
         index = {key: dict(value) for key, value in _LIVE_INDEX.items()
                  if key.partition(":")[0] in visible_full}
-    chats = []
+    # Missing files are cheap, so they are always processed; present files run newest first.
+    stamps: dict[str, float | None] = {}
     for key, indexed in index.items():
+        try:
+            stamps[key] = _stat_memoized(Path(indexed["path"])).st_mtime
+        except OSError:
+            stamps[key] = None
+    ordered = sorted(index.items(), key=lambda item: (stamps[item[0]] is not None, -(stamps[item[0]] or 0.0)))
+    recent_after = time.time() - LIVE_RECENT_SECONDS
+    with _LIVE_LOCK:
+        detailed = dict(_LIVE_DETAILED)
+
+    def awaiting_detail(key: str) -> bool:
+        # Only an old chat whose detail is not current at its stamp can be deferred.
+        stamp = stamps[key]
+        return stamp is not None and stamp < recent_after and detailed.get(key) != (index[key]["path"], stamp)
+
+    forced = next((key for key, _ in ordered if budget_seconds is not None and awaiting_detail(key)), None)
+    pending = 0
+    chats = []
+    newly_detailed: dict[str, tuple[str, float]] = {}
+    for key, indexed in ordered:
+        if (budget_seconds is not None and key != forced and awaiting_detail(key)
+                and time.monotonic() - started > budget_seconds):
+            pending += 1
+            chats.append(_deferred_live_row(key, indexed, stamps[key]))
+            continue
         path_value = indexed["path"]
         path = Path(path_value)
         try:
@@ -5111,6 +5188,13 @@ def live_state() -> dict[str, Any]:
                            workspace=indexed.get("identityWorkspace"),
                            source=indexed.get("identitySource"))
         chats.append(row)
+        if stamps[key] is not None:
+            newly_detailed[key] = (path_value, stamps[key])
+    with _LIVE_LOCK:
+        _LIVE_DETAILED.update(newly_detailed)
+    # Processing order is newest first; the payload keeps the index order.
+    position = {key: number for number, key in enumerate(index)}
+    chats.sort(key=lambda chat: position.get(str(chat.get("key")), len(position)))
     if "Claude" in visible_full and "Codex" in visible_full:
         try:
             from .agent_links import apply_exact_links
@@ -5135,7 +5219,8 @@ def live_state() -> dict[str, Any]:
     graph = snapshot_graph(chats)
     return {"generatedAt": datetime.now(timezone.utc).isoformat(),
             "structureStamp": _structure_stamp(visible_full), "chats": chats,
-            "providerPolicies": policy_payload, "graph": graph}
+            "providerPolicies": policy_payload, "graph": graph,
+            "complete": pending == 0, "pendingChats": pending}
 
 
 def today_usage() -> dict[str, Any]:
