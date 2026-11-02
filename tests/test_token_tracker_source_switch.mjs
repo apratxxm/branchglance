@@ -128,7 +128,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
 {
   const empty=boot(undefined,{compact:true}),idle=Array.from({length:27},(_,i)=>codexChat("idle"+i));
   empty.T.render(snapshotOf({codex:idle,claude:[]}));
-  assert.equal(empty.node("#chat-list").innerHTML,"");
+  assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty tree-empty">No active chats</div>',"idle-only roster paints its empty state, never a blank panel");
   assert.doesNotMatch(empty.node("#chat-list").innerHTML,/Nothing in|data-action="window"/);
   empty.T.state.searchOpen=true;empty.T.state.query="not-found";
   empty.T.render(snapshotOf({codex:idle,claude:[]}));

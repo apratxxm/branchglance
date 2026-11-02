@@ -794,3 +794,31 @@ def test_claude_poll_without_fresh_percent_is_undated_so_it_cannot_blank_display
     watcher.check_provider("Claude", LimitSample(None, None, 0))
     status = provider(watcher, "Claude")["lastStatus"]
     assert status["five_hour_percent"] is None and status["checkedAt"] is None
+
+
+def test_forged_and_replayed_statusline_files_cannot_arm_or_send(tmp_path, monkeypatch):
+    from token_tracker import claude_statusline
+    clock = Clock()
+    sender = Sender()
+    watcher = make(tmp_path, clock, Claude=sender)
+    root = tmp_path / 'sample'
+    monkeypatch.setattr(claude_statusline, 'sample_paths', lambda: [root / claude_statusline.FILENAME])
+    monkeypatch.setattr(claude_statusline.time, 'time', clock)
+    monkeypatch.setattr(limit_reset.ClaudeDesktopProvider, '_usage', lambda self: ([], {}))
+    calls = []
+    def desktop_usage(*args, **kwargs):
+        calls.append(kwargs)
+        return {'fiveHourPercent': None, 'weeklyPercent': None, 'observedAt': None, 'fiveHour': None, 'weekly': None}
+    monkeypatch.setattr(limit_reset, 'usage_info', desktop_usage)
+    for used, reset in ((99, T0 + 100), (0, T0 + 18100)):
+        payload = {'rate_limits': {'five_hour': {'used_percentage': used, 'resets_at': reset}}}
+        claude_statusline.write(claude_statusline.parse(payload, now=clock()), root, now=clock())
+        watcher.check_provider('Claude', limit_reset.claude_limit_sample())
+        clock.advance(120)
+    assert sender.calls == 0
+    assert provider(watcher, 'Claude')['phase'] != 'armed'
+    watcher.check_provider('Claude', LimitSample(99, None, clock(), clock() + 100))
+    clock.advance(120)
+    watcher.check_provider('Claude', limit_reset.claude_limit_sample())
+    assert sender.calls == 0
+    assert calls == [{}, {}, {}]  # retain usage_info's original 90-second default

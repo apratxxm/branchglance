@@ -531,7 +531,7 @@ public static class BranchglanceLauncher
         string root = AppDomain.CurrentDomain.BaseDirectory;
         // These helper modes must retain the caller's environment and never show UI
         // or go through the Explorer AppData relaunch.
-        if (args.Length > 0 && (args[0] == "--claude-hook" || args[0] == "--link-codex"))
+        if (args.Length > 0 && (args[0] == "--claude-hook" || args[0] == "--link-codex" || args[0] == "--statusline"))
             return RunHook(root, args);
         if (args.Length > 0 && args[0] == "--appdata-probe" && args.Length == 2)
         {
@@ -627,6 +627,21 @@ public static class BranchglanceLauncher
         return thread;
     }
 
+    // Keep status-line output private until the helper exits within its deadline.
+    static Thread PumpStatusLine(Stream from, MemoryStream target)
+    {
+        var thread = new Thread(() => {
+            var buffer = new byte[4096];
+            try { int count; while ((count = from.Read(buffer, 0, buffer.Length)) > 0) {
+                int keep = (int)Math.Min(count, Math.Max(0, 65536 - target.Length));
+                if (keep > 0) target.Write(buffer, 0, keep);
+            } } catch { }
+        });
+        thread.IsBackground = true;
+        thread.Start();
+        return thread;
+    }
+
     static void Note(string text)
     {
         try { using (var error = Console.OpenStandardError()) { var bytes = Encoding.UTF8.GetBytes(text + "\n"); error.Write(bytes, 0, bytes.Length); } } catch { }
@@ -638,6 +653,7 @@ public static class BranchglanceLauncher
     public static int RunHook(string root, string[] args)
     {
         HookDiagnosticCategory = "";
+        bool quiet = args.Length > 0 && args[0] == "--statusline";
         var clock = Stopwatch.StartNew();
         ActiveHookClock = clock;
         int deadline = Math.Max(1, HookDeadlineMs);
@@ -669,7 +685,7 @@ public static class BranchglanceLauncher
                 }
                 finally { Marshal.FreeHGlobal(buffer); }
                 launcherInJob = AssignProcessToJobObject(job, GetCurrentProcess());
-                if (!launcherInJob) NoteAsync("Branchglance hook launcher self-assignment failed; using child-assignment fallback");
+                if (!launcherInJob && !quiet) NoteAsync("Branchglance hook launcher self-assignment failed; using child-assignment fallback");
                 using (var child = Process.Start(start))
                 {
                     if (child == null) throw new InvalidOperationException("Hook process did not start");
@@ -678,8 +694,10 @@ public static class BranchglanceLauncher
                         try { child.Kill(); } catch { }
                         throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "AssignProcessToJobObject failed");
                     }
-                    var output = Pump(child.StandardOutput.BaseStream, Console.OpenStandardOutput(), false);
-                    var error = Pump(child.StandardError.BaseStream, Console.OpenStandardError(), false);
+                    var statusOutput = quiet ? new MemoryStream() : null;
+                    var output = quiet ? PumpStatusLine(child.StandardOutput.BaseStream, statusOutput)
+                                       : Pump(child.StandardOutput.BaseStream, Console.OpenStandardOutput(), false);
+                    var error = Pump(child.StandardError.BaseStream, quiet ? Stream.Null : Console.OpenStandardError(), false);
                     int remaining = Math.Max(1, deadline - (int)clock.ElapsedMilliseconds);
                     if (child.WaitForExit(remaining))
                     {
@@ -687,11 +705,16 @@ public static class BranchglanceLauncher
                         bool outDrained = output.Join(remaining);
                         remaining = Math.Max(0, deadline - (int)clock.ElapsedMilliseconds);
                         bool errDrained = error.Join(remaining);
-                        if (!outDrained || !errDrained) NoteAsync("Branchglance hook output may be incomplete");
+                        if (quiet && outDrained && errDrained)
+                        {
+                            byte[] bytes = statusOutput.ToArray();
+                            using (var stdout = Console.OpenStandardOutput()) { stdout.Write(bytes, 0, bytes.Length); stdout.Flush(); }
+                        }
+                        if ((!outDrained || !errDrained) && !quiet) NoteAsync("Branchglance hook output may be incomplete");
                     }
                     else
                     {
-                        Note("Branchglance hook diagnostic: timeout");
+                        if (!quiet) Note("Branchglance hook diagnostic: timeout");
                         try { Console.Out.Flush(); } catch { }
                         try { Console.Error.Flush(); } catch { }
                         HookDiagnosticCategory = "timeout";
@@ -718,7 +741,7 @@ public static class BranchglanceLauncher
                     || message.Contains("reparse") || message.Contains("redirected"))
                 HookDiagnosticCategory = "stamp-refusal";
             else if (HookDiagnosticCategory.Length == 0) HookDiagnosticCategory = "hook-error";
-            NoteAsync("Branchglance hook skipped: " + e.Message);
+            if (!quiet) NoteAsync("Branchglance hook skipped: " + e.Message);
         }
         return 0;
     }

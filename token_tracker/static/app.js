@@ -202,10 +202,10 @@ async function recenterWidget(){
     return true;
   }catch{return false;}
 }
-function openDashboard(){
+function openDashboard(tab){
   if(!COMPACT||dashboardState.open)return false;
   dashboardState.returnMode=notch.mode||'controls';dashboardState.restoreMode=null;dashboardState.open=true;
-  window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot)});
+  window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:tab==='settings'?'settings':'insights'});
   setNotch(notch.expanded);return true;
 }
 function closeDashboard(){
@@ -217,12 +217,19 @@ function closeDashboard(){
   setNotch(notch.expanded);return true;
 }
 window.tokenTrackerCloseDashboard=closeDashboard;
-window.tokenTrackerOpenDashboard=()=>openDashboard();
+// The dashboard sizes the window (720 wide, 608 tall, or the shorter 24h panel). The window may not shrink below that while it is open.
+window.addEventListener?.('dashboard-size',()=>{if(dashboardState.open)setNotch(notch.expanded);});
+window.addEventListener?.('resize',()=>{
+  if(!dashboardState.open)return;
+  const height=window.TokenTrackerDashboard?.windowHeight?.()||608;
+  if(window.innerWidth<720||window.innerHeight<height){const api=window.pywebview?.api?.set_notch;if(api)Promise.resolve(api(true,height,reducedMotion(),'dashboard')).catch(()=>{});}
+});
+window.tokenTrackerOpenDashboard=tab=>openDashboard(tab);
 window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
 function notchHeight() {
   if(COMPACT){
-    if(notch.mode==='dashboard')return 608;
+    if(notch.mode==='dashboard')return window.TokenTrackerDashboard?.windowHeight?.()||608;
     if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
     if(notch.mode==='idle')return 100;
     if(notch.mode==='rest')return 100;
@@ -302,7 +309,7 @@ function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
     rowRect=unstick(rowRect);
     const visible=[...root.querySelectorAll('.ag.runway-agent[data-sub]')].filter(el=>!el._leaving&&el.getClientRects?.().length!==0);
     const entries=[{key:root.dataset.key,...(()=>{const item=state.forest?.rows.find(candidate=>candidate.key===root.dataset.key),name=row.querySelector?.('.r-title'),anchor=REFINED?row.querySelector?.('.runway-refined-tree-anchor'):null;return {provider:item?.provider,id:item?.id,parentKey:treeParentKey(item),rowRect,messageRect:rowRect,nameRect:unstick(name?.getBoundingClientRect?.()),dotRect:unstick(anchor?.getBoundingClientRect?.())};})()}];
-    for(const el of visible){const item=state.forest?.rows.find(candidate=>candidate.key===el.dataset.sub),glance=el.querySelector?.('.runway-agent-glance'),name=el.querySelector?.('.runway-agent-name'),anchor=REFINED?glance?.querySelector?.('.runway-refined-tree-anchor'):null;if(item)entries.push({key:item.key,provider:item.provider,id:item.id,parentKey:treeParentKey(item),rowRect:el.getBoundingClientRect?.(),messageRect:glance?.getBoundingClientRect?.(),nameRect:name?.getBoundingClientRect?.(),glanceRect:glance?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()});}
+    for(const el of visible){const item=state.forest?.rows.find(candidate=>candidate.key===el.dataset.sub),glance=el.querySelector?.('.runway-agent-glance'),name=el.querySelector?.('.runway-agent-name'),anchor=REFINED?glance?.querySelector?.('.runway-refined-tree-anchor'):null;if(item)entries.push({key:item.key,provider:item.provider,id:item.id,parentKey:el.dataset.visibleParent||treeParentKey(item),rowRect:el.getBoundingClientRect?.(),messageRect:glance?.getBoundingClientRect?.(),nameRect:name?.getBoundingClientRect?.(),glanceRect:glance?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()});}
     const geometry=runwayTreePathGeometry(rootRect,entries,REFINED),paths=geometry.paths.map(path=>path.d),dots=geometry.dots;
     if(!REFINED){
       for(const target of [row,...visible.map(el=>el.querySelector?.('.runway-agent-glance'))])target?.querySelector?.('[data-runway-slot="message-lane"]')?.removeAttribute('data-message-positioned');
@@ -332,6 +339,7 @@ function setNotch(expanded, treeSynced=false) {
   if(!RUNWAY)return;
   if(COMPACT){
     const mode=compactModeForState();
+    if(notch.mode&&notch.mode!==mode)closeToolbarMenu();
     if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
     if(mode==='inspect'){
       if(notch.mode!=='inspect'){inspectLayoutGeneration++;inspectWidthCorrectionUsed=false;clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}
@@ -362,7 +370,8 @@ function setNotch(expanded, treeSynced=false) {
   const wasExpanded=notch.expanded;
   const restoreLockedOpen=Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded&&!state.runwaySnapshotPainted);
   if(widgetLock.known&&widgetLock.locked)expanded=widgetLock.expanded;
-  const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)));
+  // A routing alert reveal (auto-expanded only, same timer as a new question) can open an idle widget.
+  const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)||(notch.autoExpanded&&routingAlert)));
   if(!canOpen)expanded=false;
   if(!expanded){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;notch.autoClosePending=false;if(!state.popover){notch.inspecting=false;if(!notch.keyboardInspecting)notch.manual=false;}}
   const closingQuestion=!expanded&&state.popover?.dataset?.action==='runway-question';
@@ -508,6 +517,7 @@ function setupNotch() {
   };
   const scheduleInspect=()=>{if((!COMPACT&&(!widgetLock.known||widgetLock.locked))||notch.inspectTimer!=null||!state.runwaySnapshotPainted||(!COMPACT&&!notch.active))return;notch.inspectTimer=setTimeout(()=>{notch.inspectTimer=null;if((COMPACT||widgetLock.known&&!widgetLock.locked)&&notch.hover&&(!COMPACT?notch.contentHover:!notch.hoverSuppressed)&&state.runwaySnapshotPainted&&(COMPACT||notch.active)){notch.inspecting=true;setNotch(true);}},COMPACT?60:120);};
   const leave=()=>{if(!COMPACT&&(!widgetLock.known||widgetLock.locked))return;clearTimeout(notch.exitTimer);notch.exitTimer=setTimeout(()=>{
+    if(!notch.hover&&!compactHasFocus())closeToolbarMenu();
     if(COMPACT){
       const held=keepOpenState.value||state.searchOpen||Boolean(state.popover);
       if(!notch.hover&&!compactHasFocus()&&!notch.keyboardInspecting&&!held){const wasInspecting=notch.inspecting||notch.manual;notch.inspecting=false;notch.manual=false;if(wasInspecting){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;}}
@@ -853,7 +863,7 @@ function optionsHTML(options, thread) {
     (thread?'<button class="q-open" data-action="open"'+t+' title="Open this chat in Codex">'+ICON.open+'<span>'+(opts.length?"Open":"Answer in Codex")+'</span>'+ICON.check+'</button>':'')+'</div>';
 }
 const QUESTION_STALE_MS=24*60*60*1000;
-const isAsking = chat => (!RUNWAY||(!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS)))&&(Boolean(chat.pendingQuestion)||chat.status==="needs-input");
+const isAsking = chat => (!RUNWAY||(!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS)))&&(Boolean(chat.pendingQuestion)||normalizeStatus(chat.status)==="needs-input");
 // A failure is only actionable while it is recent (30 min).
 const recentFail = chat => chat.status==="failed"&&Date.now()-stamp(chat.updatedAt)<FAIL_WINDOW_MS;
 const needsAttention = chat => isAsking(chat)||recentFail(chat);
@@ -968,6 +978,9 @@ const agentModelLabel = chat => /^gpt-/i.test(chat.model||"") ? "GPT-"+modelLabe
 function runwayModelLabel(chat) {
   if(isAutoReview(chat))return "Auto-review";
   const model=String(chat.model||"").trim().replace(/-20\d{6}$/,'');if(!model||model.toLowerCase()==='codex')return "";
+  // long-context is a pricing tier (server key suffix "|long-context"), not a model family: label the base model plus a tier note.
+  const tier=model.match(/^(.*?)(?:\|long-context|-long-context)$/i);
+  if(tier){const base=runwayModelLabel({model:tier[1]});return base?base+" · long context":"";}
   let match=model.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
   if(match){const family=(match[2]||"").split("-").filter(Boolean).at(-1)||"";return "GPT-"+match[1]+(family?" "+family[0].toUpperCase()+family.slice(1).toLowerCase():"");}
   match=model.match(/^claude-(?:(opus|sonnet|haiku)-(\d+)[.-](\d+)|(\d+)[.-](\d+)-(opus|sonnet|haiku))(?:-.+)?$/i);
@@ -994,6 +1007,8 @@ function runwayModelRecentlyChanged(chat) {
 }
 function agentLabel(chat) {
   if(isAutoReview(chat))return "Auto-review";
+  // Claude subagents carry the Agent tool's description as their title; the type is the fallback.
+  if(chat.recordSource==="hook"&&chat.parentId&&chat.title){const described=String(chat.title).trim();if(described)return described.charAt(0).toUpperCase()+described.slice(1);}
   const name=String(chat.agentName||"").replace(/^\/?root\//,"").split(/[\\/]/).filter(Boolean).pop();
   // Same display as the Codex app: "terra_foundations" -> "Terra foundations"; nicknames stay as is.
   const label=String(name||chat.title||"agent").replace(/[_-]+/g," ").trim();
@@ -1148,6 +1163,12 @@ function snapshotParentKey(provider, raw, edges=null) {
   }
   return rowParent||nativeParent;
 }
+// State precedence: Needs you (0, 1) > Running (2) > Finished (2.5, idle after a run that ended in the last 10 minutes) > Idle (3).
+function runwayRank(chat) {
+  if(chat.pendingQuestion)return 0;
+  const rank=statusRank(chat.status);
+  return rank===3&&stamp(chat.runEndedAt)>Date.now()-600000?2.5:rank;
+}
 function buildForest(providers, graph=undefined) {
   if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){graph=providers.graph;providers=providers.providers;}
   const graphValue=graph,edges=graphValue&&typeof graphValue.edges==="object"&&!Array.isArray(graphValue.edges)?graphValue.edges:null;
@@ -1178,7 +1199,7 @@ function buildForest(providers, graph=undefined) {
     for(const child of chat.children){aggregate(child,root,depth+1);chat.descendants.push(child,...child.descendants);chat.latest=Math.max(chat.latest,child.latest);}
     chat.parentTitle=map.get(chat.treeParentKey)?.title;
     chat.highestContext=Math.max(-1,...[chat,...chat.descendants].map(c=>safeNumber(c.contextPercent)??-1));
-    chat.priority=Math.min(...[chat,...chat.descendants].map(c=>c.pendingQuestion?0:statusRank(c.status)));
+    chat.priority=Math.min(...[chat,...chat.descendants].map(runwayRank));
     const list=$('#chat-list'),interacting=state.pointerInList||list?.contains?.(document.activeElement)||state.popover?.dataset?.action==='runway-question';
     if(!RUNWAY||!interacting)chat.children.sort((a,b)=>b.latest-a.latest);
   }
@@ -1196,7 +1217,7 @@ function buildForest(providers, graph=undefined) {
 const rowPlace={rank:new Map(),next:-1};
 function placeRows(rows) {
   const fresh=rows.filter(chat=>!rowPlace.rank.has(chat.key));
-  if(!rowPlace.rank.size)fresh.sort((a,b)=>b.latest-a.latest).forEach((chat,index)=>rowPlace.rank.set(chat.key,index));
+  if(!rowPlace.rank.size)fresh.sort((a,b)=>(a.priority??3)-(b.priority??3)||b.latest-a.latest).forEach((chat,index)=>rowPlace.rank.set(chat.key,index));
   else fresh.sort((a,b)=>a.latest-b.latest).forEach(chat=>rowPlace.rank.set(chat.key,rowPlace.next--));
 }
 function stabilizeRunwayForest(forest, previous) {
@@ -1240,7 +1261,7 @@ function visibleRoots(forest, days=state.windowDays) {
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(runwayVisibleActive))&&matches;
+      (hiddenMatch||rows.some(runwayVisibleActive)||(REFINED&&COMPACT&&chat.descendants.some(runwayActionable)))&&matches;
   });
   const keep=chat=>query.active ? [chat,...chat.descendants].some(c=>matchesQuery(c,query)) : state.pins.has(chat.key)||(RUNWAY&&state.showHidden&&state.hiddenChats.has(chat.key))||inWindow(chat,days);
   return byLatest.filter(chat=>(!RUNWAY||state.showHidden||!state.hiddenChats.has(chat.key))&&keep(chat));
@@ -1273,17 +1294,22 @@ function warmthView(chat) {
   if(warmth.level==="cooling")return {kind:"maybe",text:"cold?"};
   return {kind:"cold"};
 }
+// One shared staleness rule: after STALE_AFTER_MS without a successful refresh the widget says so once ("Updated 3m ago")
+// and elapsed timers stop at the last good update instead of counting on or going blank.
+const STALE_AFTER_MS=60000;
+const dataIsStale=()=>Boolean(RUNWAY&&state.lastOkAt&&Date.now()-state.lastOkAt>=STALE_AFTER_MS);
+const clockNow=()=>dataIsStale()?state.lastOkAt:Date.now();
 function runInfo(chat) {
   const execution=RUNWAY?runwayExecutionView(chat):null;
   if(execution){
-    const start=stamp(chat.executionSince);
-    return start&&start<=Date.now()?{seconds:Math.max(0,(Date.now()-start)/1000),live:true}:null;
+    const start=stamp(chat.executionSince),now=clockNow();
+    return start&&start<=now?{seconds:Math.max(0,(now-start)/1000),live:true}:null;
   }
   if(RUNWAY&&chat.executionStatus!==undefined)return null;
   const start=stamp(RUNWAY&&agentLive(chat)?chat.activeRunStartedAt||chat.runStartedAt:chat.runStartedAt);
   if(!start)return null;
   const live=agentLive(chat)&&!chat.runEndedAt;
-  const end=live?Date.now():stamp(chat.runEndedAt)||chat.latest||stamp(chat.updatedAt)||start;
+  const end=live?clockNow():stamp(chat.runEndedAt)||chat.latest||stamp(chat.updatedAt)||start;
   return {live,seconds:Math.max(0,(end-start)/1000)};
 }
 
@@ -1488,6 +1514,7 @@ function patchKeyed(container, entries, {enter,exit}={}) {
     if(container.innerHTML!==html)container.innerHTML=html;
     return;
   }
+  const focused=container.contains?.(document.activeElement)?document.activeElement:null;
   const existing=new Map();
   for(const el of [...container.children]) {
     if(el._leaving)continue;
@@ -1502,13 +1529,14 @@ function patchKeyed(container, entries, {enter,exit}={}) {
     if(!el){el=document.createElement("div");el.dataset.key=entry.key;fresh=true;}
     if(el.className!==entry.cls)el.className=entry.cls;
     for(const [k,v] of Object.entries(entry.attrs||{})){if(v==null)el.removeAttribute(k);else if(el.getAttribute(k)!==String(v))el.setAttribute(k,v);}
-    if(el._html!==entry.html){if(RUNWAY&&entry.cls.includes('runway-agent'))runwayPatchContent(el,entry.html);else el.innerHTML=entry.html;el._html=entry.html;syncBreath(el);}
+    if(el._html!==entry.html){if(RUNWAY&&(entry.cls.includes('runway-agent')||entry.cls==='runway-more'))runwayPatchContent(el,entry.html);else el.innerHTML=entry.html;el._html=entry.html;syncBreath(el);}
     el._entry=entry;
     const next=prev?prev.nextSibling:container.firstChild;
     if(next!==el)container.insertBefore(el,next);
     prev=el;
     if(fresh&&enter)enter(el);
   }
+  if(focused?.isConnected&&document.activeElement!==focused)focused.focus?.({preventScroll:true});
 }
 // Re-created "live" glyphs join the global breathing phase instead of restarting it.
 function syncBreath(el) {
@@ -1535,11 +1563,12 @@ function watcherTone(watcher, name) {
 function resetView(provider, key) {
   const item=provider[key]||{},used=safeNumber(item.percent);
   const quotaAt=provider._quotaWindowObservedAt&&Object.prototype.hasOwnProperty.call(provider._quotaWindowObservedAt,key)?provider._quotaWindowObservedAt[key]:provider.limitsUpdatedAt;
-  const sampled=stamp(quotaAt),age=sampled?Date.now()-sampled:null;
+  // A sample stamped up to a minute ahead of this clock (clock skew, a paused page) counts as fresh, not as missing.
+  const sampled=stamp(quotaAt),rawAge=sampled?Date.now()-sampled:null,age=rawAge!=null&&rawAge<0&&rawAge>=-60000?0:rawAge;
   const measured=!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000);
   const observedParts=used!=null&&sampled&&age!=null&&age>=0?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const maxAge=key==="weekly"?7*86400000:86400000;
-  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&age<maxAge&&observedParts.target!=null&&observedParts.seconds>0);
+  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0));
   const expired=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&observedParts.target!=null&&observedParts.seconds<=0);
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
@@ -1547,8 +1576,8 @@ function resetView(provider, key) {
   const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
-  return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,
-    tone:shownUsed==null||lastKnown?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
+  return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,resetTarget:hasReset&&parts.target!=null?Number(parts.target):null,
+    tone:shownUsed==null||lastKnown?"":RUNWAY?(shownUsed>80?"err":shownUsed>50?"attn":""):shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
     // Keep the last-known age beside each independently rendered quota value.
     stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
     tip:RUNWAY?(lastKnown?"Last reported by "+(provider.name==="Claude"?"Claude Desktop":provider.name)+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014")};
@@ -1598,7 +1627,7 @@ function renderResets(providers) {
     node.dataset.shape=shape;
     const markup=key=>providers.map((p,i)=>{
       const id="r"+i+"-"+key,providerClass=p.name==="Claude"?"provider-claude":"provider-codex";
-      return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
+      return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span><span class="rr-provider" id="'+id+'-name">'+esc(p.name)+'</span>'+
         (key==="fiveHour"&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
         '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>\uFFFD</b><i>used</i></span>':'\uFFFD')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">\uFFFD:\uFFFD</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
@@ -1619,7 +1648,7 @@ function renderResets(providers) {
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
   }));
-  if(RUNWAY)renderGreeterStatus(providers);
+  if(RUNWAY){renderGreeterStatus(providers);evaluateRoutingAlerts(providers);}
 }
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;
@@ -1636,6 +1665,121 @@ function renderGreeterStatus(providers) {
   node.textContent=label;node.className="greeter-status"+(w.needsLogin||error?" error":"");
   node.title=(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
 }
+/* ---------- routing alerts ---------- */
+// Each rule fires once per low-quota crossing and re-arms after recovery or a reset.
+// Wording uses the bars' framing (percent USED) and names the window and its reset, so the alert and the bars agree.
+// A rule never suggests a lane that is out of quota: the lane it points at must have enough left.
+const ROUTING_REARM_POINTS=5;
+// A 5-hour window that resets within this many seconds is about to refill, so it does not count as low.
+const ROUTING_SOON_SECONDS=15*60;
+const ROUTING_WINDOW_LABEL={fiveHour:"5-hour",weekly:"weekly"};
+function routingDescribe(name,reading) {
+  const item=reading?.binding;if(!item)return name;
+  return name+" "+ROUTING_WINDOW_LABEL[item.key]+" "+Math.round(item.used)+"% used"+(item.countdown?" · resets "+item.countdown:"");
+}
+function routingBothMessage(readings) {
+  const order=["Codex","Claude"].map(name=>({name,item:readings[name]?.binding})).filter(row=>row.item?.countdown);
+  order.sort((a,b)=>(a.item.seconds??Infinity)-(b.item.seconds??Infinity));
+  if(order.length<2)return "Both low — hold big jobs until a window resets";
+  return "Both low — hold big jobs · "+order[0].name+" frees up in "+order[0].item.countdown+", "+order[1].name+" in "+order[1].item.countdown;
+}
+const ROUTING_RULES=[
+  // Claude low while Codex has plenty: Codex lanes take the work.
+  {id:"Claude",provider:"Claude",threshold:40,minimums:{Codex:50},message:(left,reading)=>routingDescribe("Claude",reading)+" — Terra builders, Sol reviews"},
+  // Codex low while Claude still has room: Claude workers take the work, Sol only reviews.
+  {id:"Codex",provider:"Codex",threshold:40,minimums:{Claude:40},message:(left,reading)=>routingDescribe("Codex",reading)+" — Haiku workers, Sol reviews only"},
+  // Both low: neither lane is a safe suggestion, so hold large jobs and say when each frees up.
+  {id:"Both",provider:"Codex",threshold:40,maximums:{Claude:40},also:["Claude"],message:(left,reading,readings)=>routingBothMessage(readings)}
+];
+const routingStates=new Map();
+let routingAlert=null;
+// "57m 00s" reads as "57m"; the alert is a sentence, not a stopwatch.
+function routingCountdown(text) {
+  const value=String(text||"");
+  if(/^\d+s$/.test(value))return "<1m";
+  return value.replace(/^(\d+m) \d+s$/,"$1");
+}
+function routingReading(provider) {
+  const windows={};
+  for(const key of ["fiveHour","weekly"]){
+    const view=resetView(provider,key);
+    // Stale or last-known values never trigger an alert.
+    if(view.measured&&view.hasValue&&!view.lastKnown&&!view.expired){
+      const seconds=view.resetTarget!=null?(view.resetTarget-Date.now())/1000:null;
+      windows[key]={key,used:view.usedPercent,left:100-view.usedPercent,resetTarget:view.resetTarget,countdown:routingCountdown(view.countdown),seconds,soon:key==="fiveHour"&&seconds!=null&&seconds<=ROUTING_SOON_SECONDS};
+    }
+  }
+  const all=Object.values(windows);
+  if(!all.length)return null;
+  // The window that matters: the lowest one that is not about to reset. If every window is refilling, nothing is low.
+  const counted=all.filter(item=>!item.soon);
+  const binding=counted.length?counted.reduce((lowest,item)=>item.left<lowest.left?item:lowest):null;
+  return {left:binding?binding.left:100,binding,windows};
+}
+function evaluateRoutingAlerts(providers, rules=ROUTING_RULES) {
+  if(!RUNWAY)return;
+  const readings=Object.fromEntries(providers.map(provider=>[provider.name,routingReading(provider)]));
+  let candidate=null;
+  for(const rule of rules){
+    const reading=readings[rule.provider];
+    if(!reading)continue;
+    const minimums=Object.entries(rule.minimums||{}),maximums=Object.entries(rule.maximums||{});
+    // Missing or stale supporting measurements cannot establish a match.
+    if(minimums.concat(maximums).some(([name])=>!readings[name]))continue;
+    const targets=Object.fromEntries(Object.entries(reading.windows).filter(([,item])=>item.resetTarget!=null).map(([key,item])=>[key,item.resetTarget]));
+    const below=reading.left<rule.threshold,previous=routingStates.get(rule.id);
+    const matches=below&&minimums.every(([name,minimum])=>readings[name].left>=minimum)&&maximums.every(([name,maximum])=>readings[name].left<maximum);
+    if(!previous){
+      // First reading is a baseline: an already matching rule does not reveal the widget.
+      routingStates.set(rule.id,{fired:matches,targets});
+      continue;
+    }
+    const resetChanged=Object.entries(targets).some(([key,target])=>previous.targets[key]!=null&&previous.targets[key]!==target);
+    if(previous.fired&&(reading.left>rule.threshold+ROUTING_REARM_POINTS||resetChanged))previous.fired=false;
+    previous.targets={...previous.targets,...targets};
+    if(!previous.fired&&matches){
+      previous.fired=true;
+      const shown=[rule.provider,...(rule.also||[])];
+      const suggestion={provider:rule.provider,providers:shown,message:rule.message(Math.max(0,Math.floor(reading.left)),reading,readings)};
+      const specificity=minimums.length+maximums.length;
+      if(!candidate||specificity>candidate.specificity)candidate={...suggestion,specificity};
+    }
+  }
+  if(candidate){
+    routingAlert={provider:candidate.provider,providers:candidate.providers,message:candidate.message};
+    expandForNewWork();
+  }
+  renderRoutingAlert();
+}
+function routingAlertInner(alert) {
+  const dots=alert.providers.map(name=>'<i class="routing-dot '+(/claude/i.test(name)?"claude":"codex")+'" aria-hidden="true"></i>').join("");
+  return '<span class="routing-alert-dots">'+dots+'</span><span class="routing-alert-text" title="'+esc(alert.message)+'">'+esc(alert.message)+'</span><button type="button" class="routing-alert-dismiss" data-action="routing-dismiss" aria-label="Dismiss routing alert" title="Dismiss"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button>';
+}
+// The alert lives in the toolbar band (#routing-alert, after the clock). While it shows, the toolbar's icon row is hidden,
+// so it covers no chat row and nothing below it moves; dismissing restores the icons.
+function renderRoutingAlert() {
+  const node=$("#routing-alert"),toolbar=$(".compact-toolbar");
+  if(!node)return;
+  if(toolbar?.classList?.toggle)toolbar.classList.toggle("has-routing-alert",Boolean(routingAlert));
+  if(!routingAlert){node.hidden=true;return;}
+  node.hidden=false;
+  const html=routingAlertInner(routingAlert);
+  if(node.innerHTML!==html)node.innerHTML=html;
+}
+function toolbarMenu(open) {
+  const menu=$("#toolbar-menu"),button=$("#toolbar-more");if(!menu||!button)return;
+  const next=open??menu.hidden;
+  menu.hidden=!next;button.setAttribute?.("aria-expanded",String(next));
+}
+const toggleToolbarMenu=()=>toolbarMenu();
+function closeToolbarMenu(){toolbarMenu(false);}
+document.addEventListener?.("pointerdown",event=>{const menu=$("#toolbar-menu");if(menu&&!menu.hidden&&!event.target?.closest?.(".toolbar-more"))closeToolbarMenu();});
+document.addEventListener?.("pointerdown",event=>{const view=$("#dashboard-view");if(dashboardState.open&&view&&!view.contains?.(event.target))closeDashboard();});
+window.addEventListener?.("blur",closeToolbarMenu);
+document.addEventListener?.("keydown",event=>{if(event.key==="Escape"){const menu=$("#toolbar-menu");if(menu&&!menu.hidden){closeToolbarMenu();$("#toolbar-more")?.focus?.({preventScroll:true});}}});
+function dismissRoutingAlert() {
+  routingAlert=null;renderRoutingAlert();
+}
 
 /* ---------- chat rows (layer 1) ---------- */
 function ringHTML(fraction, cls="ring") {
@@ -1645,7 +1789,8 @@ function ringHTML(fraction, cls="ring") {
 function glyphHTML(st) { return '<i class="g g-'+st.glyph+' t-'+st.tone+(st.key==="running"?" breathe":"")+'"></i>'; }
 function runwayContextPair(chat) {
   const tokens=safeNumber(chat.contextTokens),windowSize=safeNumber(chat.contextWindow),observed=stamp(chat.contextObservedAt),compacted=stamp(chat.compactionStartedAt);
-  const valid=Boolean(runwayCurrentEvidenceFresh()&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&chat.model&&chat.contextModel===chat.model&&observed&&observed<=Date.now()&&windowSize>0&&tokens!=null&&(!compacted||observed>=compacted));
+  // A known window must be positive; an unknown window keeps the recorded tokens (shown as "tokens / —").
+  const valid=Boolean(runwayCurrentEvidenceFresh()&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&chat.model&&chat.contextModel===chat.model&&observed&&observed<=Date.now()&&(windowSize==null||windowSize>0)&&tokens!=null&&(!compacted||observed>=compacted));
   return {tokens:valid?tokens:null,windowSize:valid?windowSize:null,observed:valid?observed:null};
 }
 function runwayContextDelta(chat,pair=runwayContextPair(chat)) {
@@ -1655,12 +1800,12 @@ function runwayContextDelta(chat,pair=runwayContextPair(chat)) {
 function contextHTML(chat) {
   if(RUNWAY) {
     const pair=runwayContextPair(chat),tokens=pair.tokens,windowSize=pair.windowSize;
-    if(tokens==null||windowSize==null)return '';
-    const pct=windowSize>0&&tokens!=null?tokens*100/windowSize:null;
+    if(tokens==null)return '';
+    const pct=windowSize>0?tokens*100/windowSize:null;
     const tone=pct==null?'':pct>75?'err':pct>50?'attn':'';
     const delta=runwayContextDelta(chat,pair),deltaText=delta==null?'':'; change since previous sample '+(delta>0?'+':'')+fmt(delta)+' tokens';
-    const title=String(tokens)+' / '+String(windowSize)+deltaText;
-    return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+fmt(windowSize)+'</span></span></span>';
+    const title=String(tokens)+' / '+(windowSize==null?'window size unknown':String(windowSize))+deltaText;
+    return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+(windowSize==null?'—':fmt(windowSize))+'</span></span></span>';
   }
   const pct=safeNumber(chat.contextPercent);
   const title='';
@@ -1884,7 +2029,7 @@ function runwayTelemetryHTML(chat,agent=false) {
   const childNameStatus=agent&&!REFINED?'<span data-runway-slot="name-status" class="runway-name-status'+(childDotTone?' t-'+childDotTone:'')+'"'+(!status?' aria-hidden="true"':'')+'>'+(status?runwayStatusDot(status,childDotTone):'')+'</span>':'';
   const activityHTML=RUNWAY?runwayActivityHTML(chat):'';
   const displayTitle=runwayTitle(chat,agent);
-  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+(REFINED?messageLane:'')+childNameStatus+'</span>';
+  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+(REFINED?messageLane:'')+childNameStatus+'</span>';
   const context=contextHTML(chat);
   const elapsed=currentEvidence&&ownCurrent&&!statusUnavailable?runwayStateElapsed(chat):'—';
   const elapsedHTML=elapsed!=='—'?'<span data-runway-slot="elapsed" class="runway-state-elapsed" title="Elapsed in current state">'+esc(elapsed)+'</span>':'';
@@ -1916,12 +2061,17 @@ function runwayTelemetryHTML(chat,agent=false) {
     const inherited=!chat.workspace&&Boolean(chat.root?.workspace);
     const workspaceTitle=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+workspacePath;
     const workspaceLabel=(inherited?'Inherited workspace: ':'Workspace: ')+workspacePath;
-    const cleanPath=workspacePath&&workspaceLeaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(workspaceLeaf)+'</span></span>':'';
+    // Drive first, one line: the leaf keeps the drive as its start and truncates at the end.
+    const drive=workspacePath?workspacePath.slice(0,2):'';
+    const cleanPath=workspacePath&&workspaceLeaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(drive)+' '+esc(workspaceLeaf)+'</span></span>':'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
     const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
     // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
     const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
-     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+cleanPath+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+'</span></div>';
+    // Never a silent blank: an active run without a usable sample shows a quiet dash.
+    const awaitingSample=!contextValue&&!cacheValue&&ownCurrent&&currentEvidence&&!chat.telemetryUnavailable;
+    const tokenPlaceholder=awaitingSample?'<span class="runway-refined-context t-mute" title="No usable context sample yet for this run">—</span>':'';
+     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+(agent?'':cleanPath)+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+tokenPlaceholder+'</span></div>';
   }
   return agent?messageLane+topline+'<span class="runway-agent-secondary">'+modelTiming+'</span>'+contextSlot+objectiveSlot:messageLane+topline+modelTiming+contextSlot;
 }
@@ -1973,12 +2123,13 @@ const sortAgents = agents => [...agents].sort((a,b)=>(isAsking(b)-isAsking(a))||
 // The tray is a live control surface, not agent history. Never retain completed or failed children.
 const isWorking = a => agentLive(a)||isAsking(a);
 // Auto-review/guardian sessions are internal bookkeeping; surface them only when they need a reply.
-const isVisibleAgent = a => RUNWAY?runwayVisibleActive(a):isAutoReview(a)?isAsking(a):isWorking(a);
+const runwayActionable = a => runwayCurrentEvidenceFresh()&&!runwayTerminated(a)&&(runwayWaiting(a)||recentFail(a)||runwayEffectiveStatus(a)==='failed');
+const isVisibleAgent = a => RUNWAY?(runwayVisibleActive(a)||(REFINED&&COMPACT&&runwayActionable(a))):isAutoReview(a)?isAsking(a):isWorking(a);
 function trayState(chat) {
   return chat.descendants.some(isVisibleAgent)?"active":"resting";
 }
-function agentRowEntry(agent, query) {
-  if(RUNWAY)return {key:agent.key,cls:'ag runway-agent'+(query.active&&matchesQuery(agent,query)?' match':''),attrs:{'data-sub':agent.key,'data-provider':agent.provider,style:'--agent-depth:'+Math.max(0,(agent.depth||1)-1)},html:'<div class="runway-agent-glance">'+runwayTelemetryHTML(agent,true)+'</div>'};
+function agentRowEntry(agent, query, visibleParent=null, visibleDepth=null) {
+  if(RUNWAY)return {key:agent.key,cls:'ag runway-agent'+(query.active&&matchesQuery(agent,query)?' match':''),attrs:{'data-sub':agent.key,'data-provider':agent.provider,'data-visible-parent':visibleParent,style:'--agent-depth:'+Math.max(0,(visibleDepth??agent.depth??1)-1)},html:'<div class="runway-agent-glance">'+runwayTelemetryHTML(agent,true)+'</div>'};
   const st=ownState(agent),stats=agentStats(agent),fin=noteLiveness(agent,stats.live);
   const tip=["context "+(safeNumber(agent.contextPercent)==null?"—":Math.round(agent.contextPercent)+"%"),ageShort(agent.latest)+(agent.latest&&ageShort(agent.latest)!=="now"?" ago":""),agent.reasoningEffort?"effort "+agent.reasoningEffort:null,"click to copy resume"].filter(Boolean).join(" · ");
   return {key:agent.key,cls:"ag"+(stats.live?" is-live":" is-done")+(isAsking(agent)?" asks":"")+(query.active&&matchesQuery(agent,query)?" match":""),
@@ -1992,10 +2143,39 @@ function denseRowEntry(agent) {
   return {key:agent.key,cls:"ag dense",attrs:{role:"button",tabindex:"0","data-action":resumeCommand(agent)?"copy":null,"data-copy":resumeCommand(agent)||null,"data-sub":agent.key,title:modelLabel(agent)+" · "+(stats.tools??"—")+" tools · "+(stats.files??"—")+" files"},
     html:'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span>'+(stats.tokens==null&&!stats.tools?'<span class="s s-time">'+esc(modelLabel(agent))+'</span>':'<span class="s s-tok"><b>'+fmt(stats.tokens)+'</b> <i>tok</i></span>'+filesHTML(stats)+'<span class="s s-time">'+(stats.run==null?"—":"ran "+runSpan(stats.run))+'</span>')};
 }
+const runwayMorePage=new Map();
 function trayEntries(chat, query) {
   const agents=RUNWAY?chat.descendants.filter(isVisibleAgent):sortAgents(chat.descendants.filter(isVisibleAgent));
-  // Record liveness first so an agent that just stopped is still "working" for its fade minute.
   agents.forEach(a=>{if(state.agentLive.get(a.key)!==agentStats(a).live)noteLiveness(a,agentStats(a).live);});
+  if(RUNWAY&&REFINED&&COMPACT){
+    // Reparent visible agents across inactive nodes without changing forest order.
+    const all=new Map(chat.descendants.map(a=>[a.key,a])),visible=new Map(agents.map(a=>[a.key,a]));
+    const children=new Map();
+    for(const agent of agents){
+      let parent=treeParentKey(agent),seen=new Set([agent.key]);
+      while(parent!==chat.key&&!visible.has(parent)&&all.has(parent)&&!seen.has(parent)){seen.add(parent);parent=treeParentKey(all.get(parent));}
+      if(!visible.has(parent))parent=chat.key;
+      if(!children.has(parent))children.set(parent,[]);
+      children.get(parent).push(agent);
+    }
+    const protectedPath=new Set();
+    function mark(parent){let actionable=false;for(const child of children.get(parent)||[]){const keep=mark(child.key)||runwayActionable(child);if(keep){protectedPath.add(child.key);actionable=true;}}return actionable;}
+    mark(chat.key);
+    const entries=[];
+    function visit(parent,depth=1){
+      const siblings=children.get(parent.key)||[],ordinary=siblings.filter(a=>!protectedPath.has(a.key)&&runwayRunning(a));
+      const last=Math.max(0,Math.ceil(ordinary.length/3)-1),page=Math.min(last,Math.max(0,runwayMorePage.get(parent.key)||0));
+      runwayMorePage.set(parent.key,page);
+      const slice=new Set(ordinary.slice(page*3,page*3+3).map(a=>a.key));
+      for(const agent of siblings){if(protectedPath.has(agent.key)||!runwayRunning(agent)||slice.has(agent.key)){entries.push(agentRowEntry(agent,query,parent.key,depth));visit(agent,depth+1);}}
+      if(last){
+        const start=page*3+1,end=Math.min(ordinary.length,page*3+3),label=page===0?'+'+(ordinary.length-3)+' more':(start===end?String(start):start+'\u2013'+end)+' of '+ordinary.length;
+        const name=esc(runwayTitle(parent,hasTreeParent(parent)));
+        entries.push({key:'__more:'+parent.key,cls:'runway-more',attrs:{},html:'<button type="button" data-action="runway-page-prev" data-key="'+esc(parent.key)+'" aria-label="Previous agents for '+name+'" aria-disabled="'+(page===0)+'">\u2190</button><button type="button" data-action="runway-more" data-key="'+esc(parent.key)+'" data-last="'+last+'" aria-expanded="'+(page>0)+'" aria-label="'+esc(label)+' agents for '+name+'">'+esc(label)+(page>0&&page<last?' \u2192':page===last?' \u2190':'')+'</button>'});
+      }
+    }
+    visit(chat);return entries;
+  }
   if(RUNWAY){const entries=[];const visit=parent=>{for(const agent of agents.filter(a=>treeParentKey(a)===parent.key)){entries.push(agentRowEntry(agent,query));visit(agent);}};visit(chat);for(const agent of agents)if(!entries.some(e=>e.key===agent.key))entries.push(agentRowEntry(agent,query));return entries;}
   // Agents with no recorded usage (bare auto-review shells) never get a stats strip.
   const empty=a=>!agentLive(a)&&!recentFail(a)&&!isAsking(a)&&agentStats(a).tokens==null&&!agentStats(a).tools;
@@ -2065,10 +2245,13 @@ function chatBlockHTML(chat, query) {
     (open?'<div class="l2 open"><div class="l2-in">'+panelHTML(chat)+'</div></div>':'')+tray+'</div>';
 }
 function emptyHTML(forest, providers) {
-  if(COMPACT)return parseQuery(state.query).active?'<div class="empty">No matches</div>':'';
+  const searching=parseQuery(state.query).active;
+  // The compact tree lists only active chats, and this runs only when none is listed, so it counts as empty.
+  if(COMPACT){if(searching)return '<div class="empty">No matches</div>';forest={...forest,rows:[]};}
   if(!forest.rows.length) {
     const down=providers.filter(p=>p.connected===false);
-    return '<div class="empty">'+(down.length?"No data":"No "+esc(providers.map(p=>p.name).join(" or "))+" chats")+'</div>';
+    // Visible provider(s) with no chats: one quiet line, no icon or button. A disconnected provider keeps its "No data" text.
+    return down.length?'<div class="empty">No data</div>':'<div class="empty tree-empty">No active chats</div>';
   }
   if(parseQuery(state.query).active)return '<div class="empty">No matches</div>';
   const next=nextWindowWithChats(forest);
@@ -2255,7 +2438,8 @@ function renderChats(providers) {
   const seg=$("#window-seg");if(seg?.style)seg.style.setProperty("--i",String(WINDOWS.indexOf(state.windowDays)));
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
-  const searchCanShowEmpty=COMPACT&&state.searchOpen&&query.active;
+  // The compact tree always paints its empty state (the list is hidden by CSS while the widget is collapsed), never a blank panel.
+  const searchCanShowEmpty=COMPACT;
   if(!realDom(list)) {
     const html=roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers);
     if(list.innerHTML!==html)list.innerHTML=html;
@@ -2378,9 +2562,18 @@ function refreshControlTitle(){
   if(state.watcherFetchError)parts.push('Greeter status fetch failed '+ageShort(state.watcherFetchError.at)+' ago');
   return parts.join(' · ');
 }
+function renderUpdatedMarker() {
+  const marker=$("#updated-marker");if(!marker)return;
+  const stale=dataIsStale(),text=stale?"Updated "+ageShort(state.lastOkAt)+" ago":"";
+  if(marker.textContent!==text)marker.textContent=text;
+  marker.hidden=!stale;
+  if(marker.title!==(stale?"Elapsed times are frozen at the last update":""))marker.title=stale?"Elapsed times are frozen at the last update":"";
+  document.body?.classList?.toggle("data-stale",stale);
+}
 function renderTitle(providers) {
   const name=$("#brand-name");if(name)name.textContent=RUNWAY?"Branchglance":providers.map(p=>p.name).join(" · ")||"Codex";
   syncCompactClock();
+  renderUpdatedMarker();
   const age=$("#sync-age");if(!age)return;
   if(state.refreshing||state.loading||state.initialBootstrapPending){if(COMPACT){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();}else age.textContent="";age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
   if(RUNWAY){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=REFINED?refreshControlTitle():(state.lastOkAt?"Last successful refresh at "+clock(state.lastOkAt):"Refresh usage");age.className="sync-age";age.setAttribute?.("aria-busy","false");return;}
@@ -2962,6 +3155,9 @@ function handleClick(event) {
   if(!button)return;
   const {action,key}=button.dataset;
   if(RUNWAY&&action==='widget-lock'){void toggleWidgetLock();return;}
+  if(RUNWAY&&action==='routing-dismiss'){dismissRoutingAlert();return;}
+  if(action==='toolbar-more'){toggleToolbarMenu();return;}
+  if(action==='open-settings'){closeToolbarMenu();openDashboard('settings');return;}
   if(RUNWAY&&action==='jump-waiting'){jumpToWaiting();return;}
   if(RUNWAY&&action==='source'){setSource(button.dataset.source);return;}
   if(RUNWAY&&action==='dashboard'){openDashboard();return;}
@@ -2984,6 +3180,7 @@ function handleClick(event) {
   else if(RUNWAY&&action==="close-popover"){closePopover({restoreFocus:true});return;}
   else if(action==="jump"){jumpTo(button.dataset.target,button.dataset.sub);return;}
   else if(action==="dismiss"){state.dismissed.add(button.dataset.dismiss);saveDismissed();const item=button.closest?.(".si");if(item)item._dismissed=true;renderStripNow();return;}
+  else if(RUNWAY&&(action==="runway-more"||action==="runway-page-prev")){const page=runwayMorePage.get(key)||0,last=Number(button.dataset.last)||0;runwayMorePage.set(key,action==="runway-page-prev"?Math.max(0,page-1):(page>=last?0:page+1));if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="strip-more"){state.stripOpen=!state.stripOpen;renderStripNow();return;}
   else if(action==="toggle-question"){const question=button.dataset.question,was=state.expandedQuestions.has(question);if(RUNWAY)closeRunwayDetails();if(!was)state.expandedQuestions.add(question);renderStripNow();if(RUNWAY&&state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="toggle-agents"){const target=button.dataset.key;const chat=state.forest?.roots.find(c=>c.key===target);const expanded=RUNWAY&&chat?runwayAgentsExpanded(chat):state.agentOpen.has(target);if(expanded){state.agentOpen.delete(target);state.agentCollapsed.add(target);state.agentSearchClosed.add(target);}else{state.agentOpen.add(target);state.agentCollapsed.delete(target);state.agentSearchClosed.delete(target);}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
@@ -3021,12 +3218,12 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.evaluateRoutingAlerts=evaluateRoutingAlerts;window.__tokenTrackerTest.routingStates=routingStates;window.__tokenTrackerTest.getRoutingAlert=()=>routingAlert;window.__tokenTrackerTest.getRoutingNotch=()=>notch;window.__tokenTrackerTest.dismissRoutingAlert=dismissRoutingAlert;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   loadAvatars();
   document.addEventListener("click",handleClick);

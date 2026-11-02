@@ -530,9 +530,11 @@ def test_unverifiable_known_process_blocks_without_bypassing_scan_cadence(monkey
     assert "parentId" not in providers[1]["chats"][0]
 
 
-def test_new_exec_triggers_scan_and_links_only_exact_session():
+def test_new_exec_triggers_scan_and_links_only_exact_session(monkeypatch):
     sid, thread, providers, run = _link_fixture()
     run["verified_at"] = 0
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
     calls = []
     agent_links.apply_exact_links(
         providers, now=105, registry_path=Path("unused"), permission_check=_allow_collection,

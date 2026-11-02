@@ -24,13 +24,18 @@ def setup_paths(tmp_path, monkeypatch):
     consent = tmp_path / "Branchglance" / "claude-consent.json"
     settings = tmp_path / "claude" / "settings.json"
     monkeypatch.setattr(product, "policy_file_path", lambda: policy)
-    monkeypatch.setattr(product, "claude_consent_marker_path", lambda: consent)
+    monkeypatch.setattr(product, "claude_consent_marker_path", lambda **_kwargs: consent)
     monkeypatch.setattr(claude_hook_install, "default_settings_path", lambda: settings)
     monkeypatch.setattr(claude_hook_install.claude_hook, "data_dir", lambda: str(consent.parent))
     monkeypatch.setattr(claude_hook_install, "status", lambda: {"state": "missing", "installed": [], "reason": None})
     monkeypatch.setattr(claude_hook_install, "install", lambda: {"ok": True})
     monkeypatch.setattr(claude_hook_install, "uninstall", lambda: {"ok": True, "hooksLeft": []})
     monkeypatch.setattr(collection, "_installer_update_lock", no_install_mutex)
+    # The app's startup policy snapshot is a process-wide lazy cache. Pin it to
+    # "started with no grant" so it is never read from the real AppData path and
+    # never depends on which test resolved it first.
+    monkeypatch.setattr(provider_policy, "POLICIES", provider_policy.LazyPolicyMap(
+        lambda: provider_policy.load_policies_resilient({}, policy_path=None)))
     yield policy, consent, settings
 
 
@@ -49,6 +54,26 @@ def _installed(monkeypatch, consent: Path):
 
     monkeypatch.setattr(claude_hook_install, "install", install)
     monkeypatch.setattr(claude_hook_install, "uninstall", uninstall)
+
+
+def test_restart_status_propagates_programming_errors(setup_paths, monkeypatch):
+    policy, _consent, _settings = setup_paths
+    provider_policy.public_policies(provider_policy.POLICIES)
+    def broken_loader(**_kwargs):
+        raise TypeError("broken policy stub")
+    monkeypatch.setattr(provider_policy, "load_policies_resilient", broken_loader)
+    with pytest.raises(TypeError, match="broken policy stub"):
+        collection._runtime_restart_required(policy, False)
+
+
+@pytest.mark.parametrize("error", [OSError("unreadable"), ValueError("invalid policy")])
+def test_restart_status_handles_expected_policy_errors(setup_paths, monkeypatch, error):
+    policy, _consent, _settings = setup_paths
+    provider_policy.public_policies(provider_policy.POLICIES)
+    def broken_loader(**_kwargs):
+        raise error
+    monkeypatch.setattr(provider_policy, "load_policies_resilient", broken_loader)
+    assert collection._runtime_restart_required(policy, False) == (True, None)
 
 
 def test_enable_disable_preserves_other_providers_and_metadata(setup_paths, monkeypatch):

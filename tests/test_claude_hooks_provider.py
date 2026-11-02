@@ -680,6 +680,46 @@ def _usage5(inp, out, read, w5, w1):
             "cache_creation": {"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": w1}}
 
 
+@pytest.mark.parametrize("sizes", [(90_000,), (120_000,), (90_000, 120_000), (100_000,)])
+def test_haiku_request_tiers_survive_aggregates_and_insights(world, tmp_path, sizes):
+    from token_tracker import insights
+
+    # Each request includes every kind of input, and output is billed at the same tier.
+    requests = [_usage5(size - 30_000, 2_000, 10_000, 10_000, 10_000) for size in sizes]
+    world.transcript(SID, [assistant(NOW - 10 - i, f"r{i}", model="claude-haiku-5-5", use=use)
+                           for i, use in enumerate(requests)])
+    aggregate = claude_provider.usage_aggregates(now=NOW, root=world.projects.parent)
+    expected = sum(((size - 30_000) * rates[0] + 10_000 * sum(rates[1:4]) + 2_000 * rates[4]) / 1_000_000
+                   for size, rates in ((size, providers.HAIKU_5_5_LONG_PROMPT if size > 100_000
+                                        else providers.CLAUDE_PRICING["haiku-5.5"]) for size in sizes))
+    assert aggregate["cache"]["apiEquivalentCost"] == pytest.approx(round(expected, 4))
+    snapshot = {"providers": [{"name": "Claude", "_insightsData": aggregate["_insightsData"]}]}
+    peak_store = insights.LimitPeakStore(tmp_path / "peaks", owner_check=lambda: False)
+    result = insights.build_insights(snapshot, "30d", now=datetime.fromtimestamp(NOW, timezone.utc),
+                                     peak_store=peak_store)["providers"][0]
+    row = result["models"][0]
+    assert row["apiEquivalentCost"] == pytest.approx(round(expected, 4))
+    assert "estimate" not in row
+
+
+@pytest.mark.parametrize("missing", ["input_tokens", "cache_read_input_tokens", "cache_creation"])
+def test_haiku_incomplete_usage_stays_low_estimate(world, tmp_path, missing):
+    from token_tracker import insights
+
+    incomplete = _usage5(80_000, 2_000, 20_000, 10_000, 10_000)
+    del incomplete[missing]
+    world.transcript(SID, [
+        assistant(NOW - 10, "incomplete", model="claude-haiku-5-5", use=incomplete),
+        assistant(NOW - 9, "complete", model="claude-haiku-5-5", use=_usage5(60_000, 2_000, 10_000, 10_000, 10_000)),
+    ])
+    aggregate = claude_provider.usage_aggregates(now=NOW, root=world.projects.parent)
+    snapshot = {"providers": [{"name": "Claude", "_insightsData": aggregate["_insightsData"]}]}
+    peaks = insights.LimitPeakStore(tmp_path / "peaks", owner_check=lambda: False)
+    row = insights.build_insights(snapshot, "30d", now=datetime.fromtimestamp(NOW, timezone.utc),
+                                  peak_store=peaks)["providers"][0]["models"][0]
+    assert row["estimate"] == "low"
+
+
 def test_aggregates_match_desktop_shapes_and_window(world):
     """Parity: 31-day totals, cache-hit rate, activity and model usage from transcripts."""
     old = NOW - 40 * 86400
@@ -858,7 +898,7 @@ def test_usage_aggregates_tolerate_checkpoints_without_epochs(tmp_path, monkeypa
     # A checkpoint written before per-response epochs existed must not break aggregation.
     old = claude_provider._new_usage_state()
     old.pop("epochs")
-    assert claude_provider._USAGE_KIND.endswith("-v2")
+    assert claude_provider._USAGE_KIND.endswith("-v3")
     monkeypatch.setattr(providers, "_incremental_jsonl_reduce", lambda *a, **k: old)
     monkeypatch.setattr(claude_provider, "_usage_files", lambda base, since: [(0, "x", tmp_path / "s.jsonl")])
     result = claude_provider.usage_aggregates(root=tmp_path)
