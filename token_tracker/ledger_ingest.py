@@ -247,7 +247,7 @@ class Ingestor:
                           "gap_id INTEGER PRIMARY KEY, thread_id TEXT, interval_start INTEGER, interval_end INTEGER)")
 
     def run(self, collect: Mapping[str, bool], budget: int | None = None,
-            fault: FaultHook | None = None) -> dict[str, Any]:
+            fault: FaultHook | None = None, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
         self.registry = classify_mod.load_kind_registry(self.kind_registry_path) if self.kind_registry_path else dict(classify_mod.DEFAULT_KIND_REGISTRY)
         discovered = discover(self.claude_root, self.codex_root, collect)
         read_total = 0
@@ -255,10 +255,13 @@ class Ingestor:
         for provider, path in discovered:
             if not collect.get(provider):
                 continue
+            if should_stop and should_stop():
+                # Cooperative stop between files: nothing from this pass is left half-applied.
+                return {"filesVisited": visited, "bytesRead": read_total, "pendingBytes": None, "stopped": True}
             if budget is not None and read_total >= budget:
                 break
             remaining = None if budget is None else budget - read_total
-            read_total += self.ingest_file(provider, path, remaining, fault)
+            read_total += self.ingest_file(provider, path, remaining, fault, should_stop)
             visited += 1
         pending_by_provider = {provider: self._pending(discovered, {provider: bool(collect.get(provider))})
                                for provider in (model_mod.CLAUDE, model_mod.CODEX)}
@@ -342,12 +345,13 @@ class Ingestor:
                     continue
         return total
 
-    def ingest_file(self, provider: str, path: Path, budget: int | None, fault: FaultHook | None) -> int:
+    def ingest_file(self, provider: str, path: Path, budget: int | None, fault: FaultHook | None,
+                    should_stop: Callable[[], bool] | None = None) -> int:
         key = path_key(path)
         try:
             info = path.stat()
             cursor = store.load_source(self.conn, provider, key)
-            plan = self._plan(provider, path, info, cursor, budget)
+            plan = self._plan(provider, path, info, cursor, budget, should_stop)
         except OSError:
             self._partial_verification.pop((provider, key), None)
             with store.transaction(self.conn) as conn:
@@ -367,7 +371,7 @@ class Ingestor:
         return plan.get("work", plan["consumed"])
 
     def _plan(self, provider: str, path: Path, info: Any, cursor: dict[str, Any] | None,
-              budget: int | None) -> dict[str, Any]:
+              budget: int | None, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
         generation, offset, head_key = 1, 0, None
         state = _fresh_state()
         gaps: list[tuple[str, int]] = []
@@ -410,8 +414,12 @@ class Ingestor:
                     # Finish the boundary span first. A partial digest is process-local;
                     # only completed spans advance the durable cursor.
                     cache_key = (provider, path_key(path))
+                    stopped = False
                     with path.open("rb") as handle:
                         while work < limit and (not verify["boundary"] or verify["next"] < count - 1):
+                            if should_stop and should_stop():
+                                stopped = True  # checked once per hashed chunk; commits nothing from this pass
+                                break
                             index = count - 1 if not verify["boundary"] else verify["next"]
                             length, expected = spans[index]
                             identity = (generation, tuple(_file_stamp(info)), index, expected, length)
@@ -438,6 +446,12 @@ class Ingestor:
                                 verify["boundary"] = True
                             else:
                                 verify["next"] = index + 1
+                    if stopped:
+                        # The unfinished digest is dropped; the durable cursor has not moved.
+                        self._partial_verification.pop(cache_key, None)
+                        return {"generation": generation, "offset": offset, "head_key": head_key,
+                                "state": state, "gaps": [], "facts": [], "threads": {}, "omissions": [],
+                                "consumed": 0, "work": work, "state_changed": False, "counters": {}}
                     if not reset:
                         state_changed = True
                         if not verify["boundary"] or verify["next"] < count - 1:

@@ -32,6 +32,10 @@ def _hour(epoch: float) -> int:
     return int(epoch // 3600) * 3600
 
 
+class LedgerUnavailable(RuntimeError):
+    """A read-only view could not be produced: the database is missing, locked, or not yet migrated."""
+
+
 class Ledger:
     def __init__(self, data_dir: Path | str, *, claude_root: Path | str, codex_root: Path | str,
                  clock: Callable[[], float] = time.time, kind_registry_path: Path | str | None = None) -> None:
@@ -144,13 +148,21 @@ class Ledger:
     # ------------------------------------------------------------------ writes
 
     def ingest(self, collect: Mapping[str, bool] | None = None, *, budget_bytes: int | None = None,
-               fault: Callable[[str], None] | None = None) -> dict[str, Any]:
+               fault: Callable[[str], None] | None = None,
+               should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
         """Read retained sources for collected providers only. Fail closed: no collect, no reads.
 
         fault is a test seam: it is called inside the transaction at "after_facts" and
         "after_cursor", and raising there must leave nothing counted or advanced.
+        should_stop is polled between files and once per hashed verification chunk; a stop
+        commits nothing from the interrupted step and returns with "stopped": True.
         """
-        return self._ingestor.run(dict(collect or {}), budget_bytes, fault)
+        return self._ingestor.run(dict(collect or {}), budget_bytes, fault, should_stop)
+
+    def pending_bytes(self, show: Mapping[str, bool] | None = None) -> int:
+        """Bytes not yet read from the last pass, counting only providers the show policy allows."""
+        allowed = [name for name in ledger_model.PROVIDERS if show is None or show.get(name)]
+        return sum(int(store.meta_value(self.conn, f"pendingBytes:{name}") or 0) for name in allowed)
 
     def set_override(self, provider: str, thread_id: str, kind: str) -> None:
         if kind not in ledger_classify.load_kind_registry(self.kind_registry_path) and kind != "other":
@@ -188,16 +200,21 @@ class Ledger:
                 time_zone: str = "UTC", plan_fee_usd: float | None = None) -> dict[str, Any]:
         """Per provider+model+kind rows and totals for hours in [start, end), from one snapshot."""
         now = self.clock()
-        conn = store.connect(self.db_path)
+        conn = store.connect_readonly(self.db_path)
         try:
-            with store.snapshot(conn):
-                raw = store.summary_rows(conn, _hour(start), int(end))
-                coverage = self._coverage(conn, now, show)
-                revision = int(store.meta_value(conn, "revision") or 0)
-                schema = int(store.meta_value(conn, LEDGER_SCHEMA_VERSION_KEY) or 0)
+            return self._payload(conn, now, start, end, show=show, time_zone=time_zone, plan_fee_usd=plan_fee_usd)
         finally:
             conn.close()
-        rows = self._rows(raw, show)
+
+    @staticmethod
+    def _payload(conn: sqlite3.Connection, now: float, start: float, end: float, *,
+                 show: Mapping[str, bool] | None, time_zone: str, plan_fee_usd: float | None) -> dict[str, Any]:
+        with store.snapshot(conn):
+            raw = store.summary_rows(conn, _hour(start), int(end))
+            coverage = Ledger._coverage(conn, now, show)
+            revision = int(store.meta_value(conn, "revision") or 0)
+            schema = int(store.meta_value(conn, LEDGER_SCHEMA_VERSION_KEY) or 0)
+        rows = Ledger._rows(raw, show)
         totals = {"requests": 0, "inputTotal": 0, "outputTotal": 0, "totalTokens": 0, "knownCostUsd": None,
                   "costComplete": True, "unpricedTokens": 0}
         known = 0.0
@@ -232,6 +249,7 @@ class Ledger:
             "planConsumedPercent": None,
             "planConsumedUnavailableReason": "Local logs carry no allowance data",
         }
+
 
     @staticmethod
     def _rows(raw: list[dict[str, Any]], show: Mapping[str, bool] | None) -> list[dict[str, Any]]:
@@ -295,14 +313,15 @@ class Ledger:
         return rows
 
     def coverage(self) -> dict[str, Any]:
-        conn = store.connect(self.db_path)
+        conn = store.connect_readonly(self.db_path)
         try:
             with store.snapshot(conn):
                 return self._coverage(conn, self.clock())
         finally:
             conn.close()
 
-    def _coverage(self, conn: sqlite3.Connection, now: float, show: Mapping[str, bool] | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _coverage(conn: sqlite3.Connection, now: float, show: Mapping[str, bool] | None = None) -> dict[str, Any]:
         allowed = [name for name in ledger_model.PROVIDERS if show is None or show.get(name)]
         observed_values = [store.meta_value(conn, "observedFrom:" + name) for name in allowed]
         last_values = [store.meta_value(conn, "lastIngestedAt:" + name) for name in allowed]
@@ -372,3 +391,21 @@ class Ledger:
             "unknownKinds": unknown_kinds,
             "providersNotCollected": [name for name in allowed if name not in collected],
         }
+
+
+def read_summary(data_dir: Path | str, start: float, end: float, *, show: Mapping[str, bool] | None,
+                 time_zone: str, plan_fee_usd: float | None = None, clock: Callable[[], float] = time.time) -> dict[str, Any]:
+    """Same payload as Ledger.summary, read through a reader that never creates, migrates or recovers the file."""
+    path = Path(data_dir) / store.DB_NAME
+    if not path.is_file():
+        raise LedgerUnavailable("ledger database is missing")
+    try:
+        conn = store.connect_readonly(path)
+    except sqlite3.Error as error:
+        raise LedgerUnavailable("ledger database could not be opened") from error
+    try:
+        return Ledger._payload(conn, clock(), start, end, show=show, time_zone=time_zone, plan_fee_usd=plan_fee_usd)
+    except sqlite3.Error as error:
+        raise LedgerUnavailable("ledger database could not be read") from error
+    finally:
+        conn.close()
