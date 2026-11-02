@@ -10,6 +10,7 @@ from functools import wraps
 import json
 import logging
 import os
+import sys
 import re
 import shlex
 import stat
@@ -39,6 +40,10 @@ _LAST_FULL_SCAN_AT = float("-inf")
 _UNLINKED_LOCK = threading.Lock()
 _UNLINKED_EXECUTIONS: dict[tuple[str, int, int], dict[str, Any]] = {}
 _LOG = logging.getLogger(__name__)
+
+
+# The Codex executable is codex.exe on Windows and codex on macOS.
+CODEX_EXE_NAMES = frozenset({"codex.exe", "codex"})
 
 
 def _serialized_link_poll(function):
@@ -104,6 +109,8 @@ def _process_table() -> dict[int, tuple[int, str]]:
 
 def _read_current_user_sid() -> bytes | None:
     """Return the current token SID bytes, failing closed on any API error."""
+    if sys.platform == "darwin":
+        return f"uid:{os.getuid()}".encode()
     if os.name != "nt":
         return None
     try:
@@ -152,6 +159,10 @@ def _current_user_sid() -> bytes | None:
 
 
 def _process_sid(pid: int) -> bytes | None:
+    if sys.platform == "darwin":
+        from .macos_process import process_uid
+        uid = process_uid(pid)
+        return f"uid:{uid}".encode() if uid is not None else None
     if os.name != "nt" or not isinstance(pid, int) or pid <= 0:
         return None
     try:
@@ -260,6 +271,9 @@ def _read_process_command_line(query: Callable[[Any, int], tuple[int, int]], *,
 
 def _command_line(pid: int) -> str | None:
     """Query ProcessCommandLineInformation (60); never retain the raw value."""
+    if sys.platform == "darwin":
+        from .macos_process import command_line
+        return command_line(pid)
     if os.name != "nt":
         return None
     try:
@@ -394,7 +408,7 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
 
     output = []
     for child, (_parent, exe) in table.items():
-        if exe.casefold() != "codex.exe":
+        if exe.casefold() not in CODEX_EXE_NAMES:
             continue
         try:
             child_created = created(child)
@@ -644,7 +658,7 @@ def validate_codex_pid(pid: int, thread_id: str, *,
     """Validate same-user codex.exe identity around owner and argv reads."""
     try:
         table = table_reader()
-        if table.get(pid, (None, ""))[1].casefold() != "codex.exe":
+        if table.get(pid, (None, ""))[1].casefold() not in CODEX_EXE_NAMES:
             return None
         before = created(pid)
         sid = current_sid()
@@ -670,7 +684,7 @@ def validate_receipt_process(receipt: dict[str, Any], *, table: dict[int, tuple[
         pid = int(receipt["codex_pid"])
         expected = int(receipt["codex_created"])
         thread = str(receipt["thread_id"]).lower()
-        if table.get(pid, (None, ""))[1].casefold() != "codex.exe":
+        if table.get(pid, (None, ""))[1].casefold() not in CODEX_EXE_NAMES:
             return False
         if created(pid) != expected or not equal_sid(process_sid(pid), current_sid):
             return False
@@ -869,6 +883,9 @@ def load_registry(path: Path, *, now: float | None = None) -> list[dict[str, Any
 
 def _instance_mutex_held() -> bool:
     try:
+        if sys.platform == "darwin":
+            from .product import macos_instance_held
+            return macos_instance_held()
         from . import widget
         return getattr(widget, "_INSTANCE_HANDLE", None) is not None
     except Exception:

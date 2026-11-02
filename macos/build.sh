@@ -17,6 +17,13 @@ if [ "$1" = "install" ]; then
         python3 -m venv "$ROOT/.venv"
     fi
     "$ROOT/.venv/bin/python" -m pip install -q --disable-pip-version-check zstandard==0.25.0
+    # bg-codex, as on Windows: add this folder to PATH, or call it by its full path.
+    mkdir -p "$ROOT/bin"
+    cat > "$ROOT/bin/bg-codex" <<LAUNCHER
+#!/bin/sh
+BG_CODEX_LAUNCHER="\$0" PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -m token_tracker.bg_codex "\$@"
+LAUNCHER
+    chmod 755 "$ROOT/bin/bg-codex"
 fi
 # Same version as the Windows release.
 VERSION="$(sed -n 's/^RELEASE_VERSION = "\(.*\)"/\1/p' ../packaging/build.py)"

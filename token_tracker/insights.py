@@ -5,6 +5,7 @@ import copy
 import json
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -35,6 +36,9 @@ def _owner_check(check: Callable[[], bool]) -> bool:
 
 def _instance_mutex_held() -> bool:
     try:
+        if sys.platform == "darwin":
+            from .product import macos_instance_held
+            return macos_instance_held()
         from . import widget
         return getattr(widget, "_INSTANCE_HANDLE", None) is not None
     except Exception:

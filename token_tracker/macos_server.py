@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import hmac
 import os
+import sys
 import re
 import threading
 import time
@@ -61,6 +62,18 @@ def main() -> None:
     product.hook_data_root().mkdir(parents=True, exist_ok=True)
     server.set_settings_token(os.environ.pop("BRANCHGLANCE_SETTINGS_TOKEN", None) or None)
     httpd = server.ThreadingHTTPServer(("127.0.0.1", args.port), proof_handler(key))
+    # One server per user owns the Insights stores and the bg-codex receipt inbox,
+    # as the instance mutex does on Windows.
+    # A restarted app's previous server can take a moment to notice its parent left.
+    deadline = time.monotonic() + 6
+    while not product.acquire_macos_instance_lock() and time.monotonic() < deadline:
+        time.sleep(0.25)
+    if not product.macos_instance_held():
+        print("Branchglance: another instance is already running", file=sys.stderr)
+        httpd.server_close()
+        raise SystemExit(3)
+    from . import agent_links
+    agent_links.initialize_receipt_inbox()
     parent = os.getppid()
 
     def exit_with_parent() -> None:

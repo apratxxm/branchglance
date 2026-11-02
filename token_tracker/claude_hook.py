@@ -87,8 +87,19 @@ def events_dir() -> str:
 
 # ---------------------------------------------------------------- processes
 
+def _macos_process():
+    if __package__:
+        from . import macos_process
+    else:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from token_tracker import macos_process
+    return macos_process
+
+
 def _process_table() -> dict[int, tuple[int, str]]:
     """pid -> (parent pid, lowercase exe name) from a Toolhelp32 snapshot."""
+    if sys.platform == "darwin":
+        return _macos_process().process_table()
     import ctypes
     import ctypes.wintypes as wt
 
@@ -120,6 +131,8 @@ def _process_table() -> dict[int, tuple[int, str]]:
 
 def probe_process(pid: int) -> tuple[str, int | None]:
     """("alive", creation ticks) | ("gone", None) | ("unknown", None)."""
+    if sys.platform == "darwin":
+        return _macos_process().probe_process(pid)
     if os.name != "nt" or not isinstance(pid, int) or pid <= 0:
         return "unknown", None
     try:
@@ -171,7 +184,7 @@ def nearest_claude_ancestor(table: dict[int, tuple[int, str]], start: int, limit
 
 
 def _claude_process() -> tuple[int, int] | tuple[None, None]:
-    if os.name != "nt":
+    if os.name != "nt" and sys.platform != "darwin":
         return None, None
     try:
         pid = nearest_claude_ancestor(_process_table(), os.getpid())
