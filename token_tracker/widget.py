@@ -22,6 +22,7 @@ from PIL import Image
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
 from . import agent_links, product, reset_delivery, server as server_module
+from . import ledger_service
 
 
 _WAIT_OBJECT_0 = 0x0
@@ -980,6 +981,7 @@ class WidgetApp:
             queue_continue=reset_delivery.queue_continue,
         )
         Handler.reset_service = self.limit_reset
+        self.ledger = ledger_service.LedgerService()
 
     def _native_window_handle(self) -> int | None:
         """Return the Edge/WinForms host HWND once pywebview has created it."""
@@ -2505,6 +2507,8 @@ class WidgetApp:
         # alive with a destroyed tray or an undestroyed window.
         with suppress(Exception):
             self.limit_reset.stop()
+        with suppress(Exception):
+            self.ledger.stop()
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()
@@ -2682,6 +2686,7 @@ class WidgetApp:
                          "is running, quit it from its tray icon and start Branchglance again.")
             return
         self._startup_step(self.limit_reset.start)
+        self._startup_step(self.ledger.start)
         self._startup_step(self._create_main_window)
         self._startup_step(self._start_tray)
         storage = self._startup_step(lambda: self._webview_storage)
