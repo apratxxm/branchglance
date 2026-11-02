@@ -500,7 +500,8 @@ def test_default_provider_uses_limits_only_base(world, monkeypatch):
     assert snapshot["fiveHour"]["percent"] == 51 and snapshot["weekly"]["percent"] == 12
 
 
-def test_live_row_discards_inferred_status(world):
+def test_live_row_discards_inferred_status(world, monkeypatch, real_claude_cached_rows):
+    monkeypatch.setattr(claude_provider, "_cached_rows", real_claude_cached_rows)
     world.transcript(SID, [user(NOW - 30), assistant(NOW - 20, "m1")])
     world.hooks([ev(NOW - 25, "UserPromptSubmit"), ev(NOW - 3, "Stop")], now=time.time())
     legacy = {"key": f"Claude:{SID}", "status": "running", "statusSource": None, "pendingQuestion": "stale",
@@ -520,7 +521,8 @@ def test_live_row_discards_inferred_status(world):
     assert missing["status"] == "unavailable" and missing["executionStatus"] == "unavailable"
 
 
-def test_live_state_keeps_hook_execution_for_claude(world, monkeypatch):
+def test_live_state_keeps_hook_execution_for_claude(world, monkeypatch, real_claude_cached_rows):
+    monkeypatch.setattr(claude_provider, "_cached_rows", real_claude_cached_rows)
     monkeypatch.setattr(claude_hook, "events_dir", lambda: str(world.events))
     policies = load_policies({"TOKEN_TRACKER_CLAUDE_COLLECT": "1", "TOKEN_TRACKER_CLAUDE_SHOW": "1",
                               "TOKEN_TRACKER_CODEX_COLLECT": "0"})
