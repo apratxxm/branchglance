@@ -161,6 +161,20 @@ def test_claude_limits_never_step_back_to_an_older_cached_response(tmp_path, mon
     assert provider._newest_live(older, now=expired) == older  # never resurrect beyond the display window
 
 
+def test_claude_limits_stay_fresh_when_a_newer_response_repeats_the_same_usage(tmp_path, monkeypatch):
+    from token_tracker.providers import ClaudeLimitsProvider, CLAUDE_DISPLAY_USAGE_AGE_SECONDS
+    monkeypatch.setattr(ClaudeLimitsProvider, "_last_live", {})
+    provider = ClaudeLimitsProvider(str(tmp_path))
+    first = {"observedAt": 1000.0, "fiveHourPercent": 70, "weeklyPercent": 40, "fiveHour": 90000, "weekly": 990000}
+    provider._newest_live(first, now=1000)
+    later = 1000 + CLAUDE_DISPLAY_USAGE_AGE_SECONDS + 1
+    repeat = {**first, "observedAt": float(later)}
+    assert provider._newest_live(repeat, now=later)["fiveHourPercent"] == 70
+    # A replayed older response with the same value doesn't refresh the age.
+    provider._newest_live(first, now=later + 1)
+    assert provider._last_live[str(provider.root)]["fiveHour"]["receivedAt"] == later
+
+
 def test_usage_limits_preserve_zero_and_expose_absent_values_as_unknown(tmp_path):
     package = tmp_path / "Packages" / "Claude_test" / "LocalCache" / "Roaming" / "Claude"
     package.mkdir(parents=True)

@@ -37,6 +37,8 @@ HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { 
         return 0; }
     if (a[0] == "mac") { Console.Write(BranchglanceLauncher.ControlMac(a[1], a[2], a.Skip(3).ToArray())); return 0; }
     if (a[0] == "ask") { Console.Write(BranchglanceLauncher.AskMaintenanceExit(a[1], int.Parse(a[2])) ? "true" : "false"); return 0; }
+    if (a[0] == "statusline") { BranchglanceLauncher.HookDeadlineMs = int.Parse(a[1]);
+        return BranchglanceLauncher.RunHook(a[2], new[] { "--statusline" }.Concat(a.Skip(3)).ToArray()); }
     if (a[0] == "hook") { BranchglanceLauncher.HookDeadlineMs = int.Parse(a[1]);
         return BranchglanceLauncher.RunHook(a[2], new[] { "--claude-hook" }.Concat(a.Skip(3)).ToArray()); }
     if (a[0] == "hookdiag") { BranchglanceLauncher.HookDeadlineMs = int.Parse(a[1]);
@@ -53,6 +55,7 @@ HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { 
 
 # A stand-in hook entry that echoes raw bytes: args as UTF-8, then '|', then stdin verbatim.
 ECHO = r'''using System; using System.IO; using System.Text; using System.Diagnostics; class Echo { static int Main(string[] a) {
+    if (Array.IndexOf(a, "--write-before-sleep") >= 0) { Console.Write("partial"); Console.Error.Write("private"); Console.Out.Flush(); Console.Error.Flush(); System.Threading.Thread.Sleep(20000); }
     if (Array.IndexOf(a, "--sleep") >= 0) System.Threading.Thread.Sleep(20000);
     if (Array.IndexOf(a, "--show-session") >= 0) { Console.Write(Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID") + "|"); }
     int spawn = Array.IndexOf(a, "--spawn-blocker");
@@ -482,3 +485,45 @@ def test_launcher_has_no_install_or_uninstall_code_paths():
     source = CS.read_text(encoding="utf-8")
     for retired in ("Install(", "UninstallWorker", "Recover(", "Registry.", "payload.zip", "MoveFileEx"):
         assert retired not in source
+
+
+def test_statusline_main_dispatches_console_with_piped_input(launcher, tmp_path):
+    folder, _ = launcher
+    exe = tmp_path / 'Branchglance.exe'
+    _csc('/target:winexe', '/out:' + str(exe), *REFERENCES, str(CS))
+    _hook_release(tmp_path, folder / 'Echo.exe')
+    payload = b'{"rate_limits":{"five_hour":{"used_percentage":22,"resets_at":2000}}}'
+    result = subprocess.run([str(exe), '--statusline'], input=payload, capture_output=True, timeout=30)
+    assert result.returncode == 0
+    assert result.stdout == b'--statusline|' + payload
+
+
+def test_statusline_helper_invalid_release_timeout_and_stderr_are_quiet(launcher, tmp_path):
+    folder, harness = launcher
+    missing = subprocess.run([str(harness), 'statusline', '9000', str(tmp_path)], input=b'{}', capture_output=True, timeout=15)
+    assert missing.returncode == 0 and missing.stdout == missing.stderr == b''
+    _hook_release(tmp_path, folder / 'Echo.exe')
+    timed = subprocess.run([str(harness), 'statusline', '500', str(tmp_path), '--write-before-sleep'], input=b'{}', capture_output=True, timeout=15)
+    assert timed.returncode == 0 and timed.stdout == timed.stderr == b''
+    done = subprocess.run([str(harness), 'statusline', '9000', str(tmp_path)], input=b'{}', capture_output=True, timeout=15)
+    assert done.returncode == 0 and done.stdout == b'--statusline|{}' and done.stderr == b''
+
+
+@pytest.mark.parametrize("child_assignment_fails", [False, True])
+def test_statusline_job_assignment_fallback_is_quiet(launcher, tmp_path, child_assignment_fails):
+    folder, _ = launcher
+    forced_source = tmp_path / 'launcher-fallback.cs'
+    source = CS.read_text(encoding='utf-8').replace('launcherInJob = AssignProcessToJobObject(job, GetCurrentProcess());', 'launcherInJob = false;')
+    if child_assignment_fails:
+        source = source.replace('AssignProcessToJobObject(job, child.Handle)', 'false')
+    forced_source.write_text(source, encoding='utf-8')
+    exe = tmp_path / 'forced-launcher.exe'
+    _csc('/target:exe', '/out:' + str(exe), *REFERENCES, str(forced_source))
+    harness_source = tmp_path / 'Harness.cs'
+    harness_source.write_text(HARNESS, encoding='utf-8')
+    harness = tmp_path / 'forced-harness.exe'
+    _csc('/target:exe', '/out:' + str(harness), *REFERENCES, '/reference:' + str(exe), str(harness_source))
+    _hook_release(tmp_path, folder / 'Echo.exe')
+    result = subprocess.run([str(harness), 'statusline', '9000', str(tmp_path)], input=b'{}', capture_output=True, timeout=15)
+    expected = b'' if child_assignment_fails else b'--statusline|{}'
+    assert result.returncode == 0 and result.stdout == expected and result.stderr == b''

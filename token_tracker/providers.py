@@ -21,6 +21,7 @@ from typing import Any, Iterable
 
 from .codex_client import CodexAppServer, CodexUnavailable
 from .claude_cache import reset_info, usage_info
+from .claude_statusline import merge_usage
 
 CLAUDE_DISPLAY_USAGE_AGE_SECONDS = 600  # matches the widget's quota freshness (app.js resetView)
 from .provider_policy import POLICIES, policy_for, public_policies
@@ -3193,8 +3194,18 @@ class ClaudeDesktopProvider:
             "output": int(totals["output_tokens"]),
             **_costs(totals, transcript["models"], CLAUDE_PRICING, claude=True),
         }
-        deadlines = reset_info(self.root, samples)
-        reset_at = deadlines["fiveHour"] if deadlines["observedAt"] is not None else self._reset_at()
+        deadlines = merge_usage(usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS))
+        history_usage = usage
+        usage = {**usage, "fh": deadlines["fiveHourPercent"] if deadlines["fiveHourPercent"] is not None else (None if deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else usage.get("fh")), "sd": deadlines["weeklyPercent"] if deadlines["weeklyPercent"] is not None else (None if deadlines.get("_weeklySelected") or deadlines.get("lastKnownWeekly") else usage.get("sd"))}
+        merged_live = deadlines["fiveHourPercent"] is not None or deadlines["weeklyPercent"] is not None
+        history_live = any(_usage_percent(history_usage.get(short)) is not None and deadlines[field + "Percent"] is None
+                           and not deadlines.get("_" + field + "Selected") and not deadlines.get("lastKnown" + field[0].upper() + field[1:])
+                           for short, field in (("fh", "fiveHour"), ("sd", "weekly")))
+        merged_at = (datetime.fromtimestamp(deadlines["observedAt"], timezone.utc).isoformat()
+                     if merged_live and deadlines.get("observedAt") is not None else None)
+        history_at = _iso_from_ms(latest.get("t")) if history_live else None
+        limits_at = min(merged_at, history_at) if merged_at and history_at else (None if history_live and not history_at else merged_at or history_at)
+        reset_at = deadlines["fiveHour"] if deadlines["observedAt"] is not None or deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else self._reset_at()
         weekly_reset = deadlines["weekly"]
         return {
             "connected": True,
@@ -3213,8 +3224,7 @@ class ClaudeDesktopProvider:
             "trackingWindowDays": 31,
             "lifetimeTokens": int(totals["total_tokens"]),
             "lastSync": _iso_from_ms(latest.get("t")),
-            # Usage history is sampled separately from this snapshot build.
-            "limitsUpdatedAt": _iso_from_ms(latest.get("t")),
+            "limitsUpdatedAt": limits_at,
             "source": "Claude Desktop + Claude Code transcript telemetry",
         }
 
@@ -3230,20 +3240,55 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     _last_live: dict[str, dict[str, Any]] = {}
     _last_live_lock = threading.Lock()
 
-    def _newest_live(self, info: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+    def _newest_live(self, info: dict[str, Any], now: float | None = None,
+                     *, watermarks: bool = False) -> dict[str, Any]:
+        """Retain each window's identity, high-water usage and its observation time."""
         now = time.time() if now is None else now
         key = str(self.root)
+        result = dict(info)
+        fresh_times = []
         with self._last_live_lock:
-            last = self._last_live.get(key)
-            observed = info.get("observedAt")
-            has_percent = info.get("fiveHourPercent") is not None or info.get("weeklyPercent") is not None
-            if observed is not None and has_percent and (last is None or observed >= last["observedAt"]):
-                self._last_live[key] = dict(info)
-                return info
-            if last is not None and now - last["observedAt"] <= CLAUDE_DISPLAY_USAGE_AGE_SECONDS and (
-                    observed is None or observed < last["observedAt"] or not has_percent):
-                return dict(last)
-            return info
+            records = self._last_live.setdefault(key, {})
+            for field in ("fiveHour", "weekly"):
+                reset, used = info.get(field), info.get(field + "Percent")
+                observed = info.get("observedAt")
+                valid_reset = (isinstance(reset, (int, float)) and not isinstance(reset, bool)
+                               and math.isfinite(reset) and reset > 0)
+                valid_observed = (isinstance(observed, (int, float)) and not isinstance(observed, bool)
+                                  and math.isfinite(observed) and observed <= now + 60)
+                valid_used = (isinstance(used, (int, float)) and not isinstance(used, bool)
+                              and math.isfinite(used) and 0 <= used <= 100)
+                previous = records.get(field)
+                if valid_reset and valid_observed:
+                    candidate = {"resets_at": reset, "used_percentage": used if valid_used else None,
+                                 "receivedAt": observed}
+                    if previous is None or (reset > previous["resets_at"] + 60 and reset > now):
+                        records[field] = candidate
+                    elif abs(reset - previous["resets_at"]) <= 60 and valid_used:
+                        previous_used = previous["used_percentage"]
+                        if previous_used is None or used > previous_used:
+                            records[field] = candidate
+                        elif used == previous_used and observed > previous["receivedAt"]:
+                            # A newer response confirming the same usage keeps the meter fresh.
+                            records[field] = {**previous, "receivedAt": observed}
+                record = records.get(field)
+                if record is None:
+                    continue
+                if watermarks:
+                    result["_" + field + "Watermark"] = dict(record)
+                if record["resets_at"] <= now:
+                    result[field] = None
+                    result[field + "Percent"] = None
+                    result["lastKnown" + field[0].upper() + field[1:]] = record["resets_at"]
+                    continue
+                result[field] = record["resets_at"]
+                fresh = now - record["receivedAt"] <= CLAUDE_DISPLAY_USAGE_AGE_SECONDS
+                result[field + "Percent"] = record["used_percentage"] if fresh else None
+                if result[field + "Percent"] is not None:
+                    fresh_times.append(record["receivedAt"])
+            if fresh_times:
+                result["observedAt"] = min(fresh_times)
+        return result
 
     @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
@@ -3251,13 +3296,13 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
         usage = latest.get("u") or {}
         # Claude Desktop refetches usage only every few minutes, so a 90-second window
         # leaves the meters blank most of the time. Display accepts a response up to the
-        # widget's own 10-minute quota freshness; the greeter keeps the strict default.
+        # widget's own 10-minute quota freshness; the greeter remains at 90 seconds.
         info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
-        info = self._newest_live(info)
+        info = merge_usage(self._newest_live(info, watermarks=True))
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
-        five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else usage.get("fh")
-        weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else usage.get("sd")
-        reset_at = info["fiveHour"] if info["observedAt"] is not None else self._reset_at()
+        five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else (None if info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else usage.get("fh"))
+        weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else (None if info.get("_weeklySelected") or info.get("lastKnownWeekly") else usage.get("sd"))
+        reset_at = info["fiveHour"] if info["observedAt"] is not None or info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else self._reset_at()
         updated_at = datetime.fromtimestamp(info["observedAt"], timezone.utc).isoformat() if live else _iso_from_ms(latest.get("t"))
         return {
             "connected": True,
