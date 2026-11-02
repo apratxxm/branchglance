@@ -339,6 +339,7 @@ function setNotch(expanded, treeSynced=false) {
   if(!RUNWAY)return;
   if(COMPACT){
     const mode=compactModeForState();
+    if(notch.mode&&notch.mode!==mode)closeToolbarMenu();
     if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
     if(mode==='inspect'){
       if(notch.mode!=='inspect'){inspectLayoutGeneration++;inspectWidthCorrectionUsed=false;clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}
@@ -516,6 +517,7 @@ function setupNotch() {
   };
   const scheduleInspect=()=>{if((!COMPACT&&(!widgetLock.known||widgetLock.locked))||notch.inspectTimer!=null||!state.runwaySnapshotPainted||(!COMPACT&&!notch.active))return;notch.inspectTimer=setTimeout(()=>{notch.inspectTimer=null;if((COMPACT||widgetLock.known&&!widgetLock.locked)&&notch.hover&&(!COMPACT?notch.contentHover:!notch.hoverSuppressed)&&state.runwaySnapshotPainted&&(COMPACT||notch.active)){notch.inspecting=true;setNotch(true);}},COMPACT?60:120);};
   const leave=()=>{if(!COMPACT&&(!widgetLock.known||widgetLock.locked))return;clearTimeout(notch.exitTimer);notch.exitTimer=setTimeout(()=>{
+    if(!notch.hover&&!compactHasFocus())closeToolbarMenu();
     if(COMPACT){
       const held=keepOpenState.value||state.searchOpen||Boolean(state.popover);
       if(!notch.hover&&!compactHasFocus()&&!notch.keyboardInspecting&&!held){const wasInspecting=notch.inspecting||notch.manual;notch.inspecting=false;notch.manual=false;if(wasInspecting){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;}}
@@ -1573,7 +1575,7 @@ function resetView(provider, key) {
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
   return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,resetTarget:hasReset&&parts.target!=null?Number(parts.target):null,
-    tone:shownUsed==null||lastKnown?"":shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
+    tone:shownUsed==null||lastKnown?"":RUNWAY?(shownUsed>80?"err":shownUsed>50?"attn":""):shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
     // Keep the last-known age beside each independently rendered quota value.
     stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
     tip:RUNWAY?(lastKnown?"Last reported by "+(provider.name==="Claude"?"Claude Desktop":provider.name)+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014")};
@@ -1768,8 +1770,10 @@ function toolbarMenu(open) {
   menu.hidden=!next;button.setAttribute?.("aria-expanded",String(next));
 }
 const toggleToolbarMenu=()=>toolbarMenu();
-const closeToolbarMenu=()=>toolbarMenu(false);
+function closeToolbarMenu(){toolbarMenu(false);}
 document.addEventListener?.("pointerdown",event=>{const menu=$("#toolbar-menu");if(menu&&!menu.hidden&&!event.target?.closest?.(".toolbar-more"))closeToolbarMenu();});
+document.addEventListener?.("pointerdown",event=>{const view=$("#dashboard-view");if(dashboardState.open&&view&&!view.contains?.(event.target))closeDashboard();});
+window.addEventListener?.("blur",closeToolbarMenu);
 document.addEventListener?.("keydown",event=>{if(event.key==="Escape"){const menu=$("#toolbar-menu");if(menu&&!menu.hidden){closeToolbarMenu();$("#toolbar-more")?.focus?.({preventScroll:true});}}});
 function dismissRoutingAlert() {
   routingAlert=null;renderRoutingAlert();

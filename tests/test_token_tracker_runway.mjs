@@ -811,7 +811,8 @@ for(const verificationEvidence of ["stable_deadline","unknown",undefined]){
 }
 assert.equal(node("#r0-fiveHour-bar").style.width,"92%");
 assert.equal(node("#r0-weekly-bar").style.width,"78%");
-for(const [used,tone] of [[49,""],[50,"attn"],[69,"attn"],[70,"err"]]){
+// Healthy quotas keep an empty tone (other code treats any tone as a signal); CSS paints them green.
+for(const [used,tone] of [[0,""],[50,""],[51,"attn"],[80,"attn"],[81,"err"],[100,"err"]]){
   const view=T.resetView({fiveHour:{percent:used},limitsUpdatedAt:new Date(fixedNow).toISOString()},"fiveHour");
   assert.equal(view.usedText,used+"% used");assert.equal(view.tone,tone);
 }

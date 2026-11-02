@@ -262,6 +262,11 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     parser.add_argument("--prefix", default="")
     args = parser.parse_args()
+    if os.name == "nt":
+        # Headless Edge sometimes crashes on exit; children inherit this error mode,
+        # so Windows logs the crash instead of popping an Application Error dialog.
+        import ctypes
+        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
     if args.live and args.reset_continue:
         raise SystemExit("--reset-continue uses fixtures; drop --live")
     live = live_base(args.live_port) if args.live else None

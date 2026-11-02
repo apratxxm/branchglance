@@ -327,7 +327,7 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar{gap:1px;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;border-radius:5px;box-shadow:inset 0 0 0 1px var(--source-edge),inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;box-shadow:inset 0 1px var(--source-edge-strong),inset 1px 0 var(--source-edge),inset -1px 0 var(--source-edge-end),0 4px 0 #05070b,inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;margin-left:auto;pointer-events:none;color:var(--muted);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;margin-left:auto;pointer-events:none;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .window-controls,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .window-controls{order:2;}
 body.runway-refined.runway-compact:not(.phone) .compact-clock,
@@ -558,7 +558,7 @@ body.runway-refined.runway-compact:not(.phone) #resets,body.runway-refined.runwa
 body.runway-refined.runway-compact:not(.phone) #resets[data-provider-count="1"],body.runway-refined.runway-compact:not(.phone) .weekly-resets[data-provider-count="1"]{grid-template-columns:68px minmax(0,1fr);}
 body.runway-refined.runway-compact:not(.phone) .rr{overflow:visible;display:grid;grid-template-columns:max-content max-content minmax(0,1fr) max-content;grid-template-rows:20px 4px;gap:2px 0;padding:0;height:30px;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex:has(.greet){padding-left:0;}
-body.runway-refined.runway-compact:not(.phone) .rr-provider{grid-column:1;grid-row:1;align-self:center;margin-right:5px;font:600 12px/20px var(--sans);white-space:nowrap;}
+body.runway-refined.runway-compact:not(.phone) .rr-provider{grid-column:1;grid-row:1;align-self:center;margin-right:5px;font:600 8.4px/20px var(--sans);white-space:nowrap;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-provider{color:#aaa1ff;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-provider{color:#f0a06e;}
 body.runway-refined.runway-compact:not(.phone) .rr-left{grid-column:2;grid-row:1;justify-content:flex-start;gap:4px;color:var(--ink);}
@@ -570,6 +570,7 @@ body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{display:inl
 body.runway-refined.runway-compact:not(.phone) .rr .rr-left.last-known b{color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) .rr-left.t-attn b{color:var(--orange);}
 body.runway-refined.runway-compact:not(.phone) .rr-left.t-err b{color:var(--red);}
+body.runway-refined.runway-compact:not(.phone) .rr-left:not(.t-attn):not(.t-err):not(.last-known) b{color:var(--green);}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-err,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-err{color:var(--ink);}
 body.runway-refined.runway-compact:not(.phone) .rr-moment{grid-column:4;grid-row:1;justify-content:flex-end;}
 body.runway-refined.runway-compact:not(.phone) .rr-cd,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-cd,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-cd{width:auto;max-width:none;color:var(--ink);font:550 12px/20px var(--sans);font-variant-numeric:tabular-nums;text-align:right;}
@@ -597,9 +598,16 @@ body.runway-refined.runway-compact:not(.phone) .resets::before,body.runway-refin
 body.runway-refined.runway-compact:not(.phone) .resets::after,body.runway-refined.runway-compact:not(.phone) .weekly-resets::after{left:8px;font-size:9px;}
 body.runway-refined.runway-compact:not(.phone) #resets,body.runway-refined.runway-compact:not(.phone) .weekly-resets{grid-template-columns:46px minmax(0,1fr) minmax(0,1fr);column-gap:8px;padding:0 8px;}
 body.runway-refined.runway-compact:not(.phone) .rr-left::before,body.runway-refined.runway-compact:not(.phone) .rr-left:not(.last-known) i{display:none;}
-body.runway-refined.runway-compact:not(.phone) .rr-provider{margin-right:4px;font-size:11px;}
+body.runway-refined.runway-compact:not(.phone) .rr-provider{margin-right:4px;font-size:7.7px;}
 body.runway-refined.runway-compact:not(.phone) .rr-cd:empty::before{content:"";}
 body.runway-refined.runway-compact:not(.phone) .rr-left b,body.runway-refined.runway-compact:not(.phone) .rr-cd{font-size:11px;}
 body.runway-refined.runway-compact:not(.phone) .rr-left i{font-size:10px;}
 body.runway-refined.runway-compact:not(.phone) .rr-left{gap:3px;}
 }
+
+body.runway-refined.runway-compact:not(.phone) #toolbar-clock,
+body.runway-refined.runway-compact:not(.phone) #compact-clock,
+body.runway-refined.runway-compact:not(.phone) .runway-run-time{color:var(--green);}
+body.runway-refined.runway-compact.data-stale:not(.phone) #toolbar-clock,
+body.runway-refined.runway-compact.data-stale:not(.phone) #compact-clock,
+body.runway-refined.runway-compact.data-stale:not(.phone) .runway-run-time{color:var(--muted);}
