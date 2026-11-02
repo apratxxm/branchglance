@@ -7,7 +7,11 @@
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
     window.history?.replaceState?.(null,"",`${window.location.pathname}${window.location.search}`);
   } catch {}
-  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0 };
+  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0, ledger: null, purge: {} };
+  // Saved usage history: the purge needs the settings token, so the embedded frame shows its rows read-only.
+  const LEDGER_PROVIDERS = ["Claude", "Codex"];
+  const PURGE_CONFIRM_MS = 5000, PURGE_POLL_MS = 2000, PURGE_POLL_LIMIT = 30;
+  const purgeTimers = {};
   // The embedded frame never scrolls: the chat list shows a few rows at a time with Previous and Next.
   const PAGE_SIZE = 3;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -138,10 +142,80 @@
     } catch(e){message(e.message||"Could not save action. Your draft is still here.",true);}
     finally {state.busy=false;render();}
   }
+  function ledgerReason(provider) {
+    if(!settingsToken)return "Open settings from the Branchglance widget to change this.";
+    if(!state.ledger)return "Ledger status is unavailable.";
+    if(state.ledger.state==="disabled")return "Ledger is off";
+    if(state.ledger.collect?.[provider])return "Turn off collection first";
+    return "";
+  }
+  function renderLedger() {
+    for(const provider of LEDGER_PROVIDERS){
+      const flow=state.purge[provider]||{phase:"idle"},reason=ledgerReason(provider),busy=flow.phase==="deleting"||flow.phase==="pending";
+      const reasonEl=document.querySelector(`[data-reason="${provider}"]`),button=document.querySelector(`[data-purge="${provider}"]`),status=document.querySelector(`[data-status="${provider}"]`);
+      if(reasonEl){reasonEl.textContent=reason;reasonEl.hidden=!reason;}
+      if(button){button.textContent=flow.phase==="confirm"?"Delete — confirm":"Delete saved history";button.disabled=Boolean(reason)||busy;}
+      if(status){
+        const text=flow.phase==="deleting"?"Deleting…":flow.phase==="pending"?"Still deleting…":flow.phase==="done"?"Deleted":flow.phase==="error"?flow.text:"";
+        status.textContent=text;status.classList.toggle("error",flow.phase==="error");
+      }
+    }
+  }
+  async function loadLedger() {
+    try {
+      const response=await fetch("/api/ledger/status",{cache:"no-store",signal:AbortSignal.timeout(10000)});
+      const data=await response.json();
+      state.ledger=response.ok&&data?.ok?data:null;
+    } catch { state.ledger=null; }
+    renderLedger();
+    return state.ledger;
+  }
+  function purgeClick(provider) {
+    const flow=state.purge[provider]||{phase:"idle"};
+    if(ledgerReason(provider)||flow.phase==="deleting"||flow.phase==="pending")return;
+    clearTimeout(purgeTimers[provider]);
+    if(flow.phase!=="confirm"){
+      // First click arms the button for five seconds; the second click sends.
+      state.purge[provider]={phase:"confirm"};
+      purgeTimers[provider]=setTimeout(()=>{if(state.purge[provider]?.phase==="confirm"){state.purge[provider]={phase:"idle"};renderLedger();}},PURGE_CONFIRM_MS);
+      renderLedger();return;
+    }
+    sendPurge(provider);
+  }
+  async function sendPurge(provider) {
+    state.purge[provider]={phase:"deleting"};renderLedger();
+    try {
+      const response=await fetch("/api/ledger/purge",{method:"POST",headers:{"Content-Type":"application/json","X-Branchglance-Settings-Token":settingsToken},body:JSON.stringify({provider}),cache:"no-store",signal:AbortSignal.timeout(15000)});
+      const data=await response.json().catch(()=>({}));
+      // A 202 carries the ticket; only an explicit done result for that provider and ticket reads as Deleted.
+      if(response.status===202&&data.pending){state.purge[provider]={phase:"pending",ticket:data.ticket};renderLedger();pollPurge(provider,0);return;}
+      if(!response.ok||!data.ok)throw new Error(response.status===500||!data.error?"Saved history could not be deleted.":data.error);
+      state.purge[provider]={phase:"done",ticket:data.ticket};
+    } catch(e) { state.purge[provider]={phase:"error",text:e.message||"Saved history could not be deleted."}; }
+    renderLedger();
+    await loadLedger();
+  }
+  // A 202 means the writer still owns the purge. Re-check health until this provider leaves purging and its own
+  // ticket has a result. A missing or mismatched result is never success: it stays pending until the poll limit.
+  function pollPurge(provider, polls) {
+    purgeTimers[provider]=setTimeout(async()=>{
+      await loadLedger();
+      const flow=state.purge[provider];
+      if(flow?.phase!=="pending")return;
+      const busy=!state.ledger||state.ledger.purging?.includes(provider);
+      const result=state.ledger?.lastPurge?.[provider];
+      if(!busy&&result&&flow.ticket&&result.ticket===flow.ticket){
+        state.purge[provider]=result.result==="done"?{phase:"done",ticket:flow.ticket}:{phase:"error",text:result.result==="cancelled"?"Not deleted; Branchglance is closing.":"Saved history could not be deleted."};
+      }else if(polls+1<PURGE_POLL_LIMIT){renderLedger();pollPurge(provider,polls+1);return;}
+      else{state.purge[provider]={phase:"error",text:"Status unknown — reopen to check"};}
+      renderLedger();
+    },PURGE_POLL_MS);
+  }
   document.addEventListener("change",e=>{if(e.target.matches('input[name="mode"]')){state.dirty=true;render();}if(e.target.matches('#threads input[type="checkbox"]')){state.dirty=true;e.target.checked?state.selected.add(e.target.dataset.id):state.selected.delete(e.target.dataset.id);render();}});
   document.addEventListener("keydown",event=>{if(embedded&&event.key==="Escape"){event.preventDefault();window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);}});
   $("#search").addEventListener("input",()=>{state.page=0;render();}); $("#page-prev")?.addEventListener("click",()=>{state.page--;render();}); $("#page-next")?.addEventListener("click",()=>{state.page++;render();}); $("#refresh").addEventListener("click",load); $("#save").addEventListener("click",save);
-  $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();});
-  load();loadClaude();
+  $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();loadLedger();});
+  for(const provider of LEDGER_PROVIDERS)document.querySelector(`[data-purge="${provider}"]`)?.addEventListener("click",()=>purgeClick(provider));
+  load();loadClaude();loadLedger();
   if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};
 })();

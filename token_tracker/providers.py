@@ -2741,8 +2741,12 @@ def _insights_hour_from_timestamp(value: Any, fallback_epoch: float | None = Non
     epoch = _timestamp_epoch(value) if value else fallback_epoch
     if epoch is None:
         return None
-    return datetime.fromtimestamp(epoch, _local_timezone()).replace(
-        minute=0, second=0, microsecond=0).isoformat()
+    return _local_hour_at(epoch).replace(minute=0, second=0, microsecond=0).isoformat()
+
+
+def _local_hour_at(epoch: float) -> datetime:
+    """Local time at an instant, including the system offset at that instant."""
+    return datetime.fromtimestamp(epoch).astimezone()
 
 
 def _insights_add_model(bucket: dict[str, Any], model: str, usage: dict[str, int]) -> None:
@@ -2913,6 +2917,9 @@ class ClaudeDesktopProvider:
         candidates = sorted(local.glob("Claude-Data/claude_*")) + [
             match / "LocalCache" / "Roaming" / "Claude" for match in sorted((local / "Packages").glob("Claude_*"))
         ]
+        if sys.platform == "darwin" and not local_app_data and not os.environ.get("LOCALAPPDATA"):
+            # Claude Desktop's Mac data folder; an explicit LOCALAPPDATA (as in tests) still wins.
+            candidates.insert(0, Path.home() / "Library" / "Application Support" / "Claude")
         self.root = next((path for path in candidates if (path / "plan-usage-history.json").is_file()),
                          candidates[0] if candidates else Path("__missing__"))
         from .claude_hook_install import claude_config_dir
@@ -4881,11 +4888,34 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     # live roster copy. This does no app-server work and never promotes SQLite
     # timestamps or model columns into runtime observations.
     persisted = _persisted_codex_threads() if "Codex" in visible_full else []
+    if "Claude" in visible_full:
+        from .claude_provider import live_discovery_rows
+        claude_discovered = live_discovery_rows()
+    else:
+        claude_discovered = []
+    replaced_claude_paths = set()
     global _LIVE_INDEX_POLICY_GENERATION
     with _LIVE_LOCK:
         if _LIVE_INDEX_POLICY_GENERATION != policy_generation:
             _LIVE_INDEX.clear()
             _LIVE_INDEX_POLICY_GENERATION = policy_generation
+        for record in claude_discovered:
+            identity, path = record.get("id"), record.get("path")
+            if identity and path:
+                key = f"Claude:{identity}"
+                prior = _LIVE_INDEX.get(key)
+                if prior is None or str(prior.get("path")) != str(path):
+                    if prior is not None:
+                        replaced_claude_paths.add(key)
+                        _LIVE_DETAILED.pop(key, None)
+                    _LIVE_INDEX[key] = {**record, "parentProvider": None}
+                else:
+                    # Refresh identity and lineage without replacing observations
+                    # retained from a detailed read of this same transcript.
+                    for field in ("id", "path", "parentId", "title", "workspace",
+                                  "agentName", "recordSource", "resumable"):
+                        prior[field] = record.get(field)
+                    prior["parentProvider"] = None
         for record in persisted:
             identity, path_value = record.get("id"), record.get("path")
             if not identity or not path_value:
@@ -4938,7 +4968,7 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     chats = []
     newly_detailed: dict[str, tuple[str, float]] = {}
     for key, indexed in ordered:
-        if (budget_seconds is not None and key != forced and awaiting_detail(key)
+        if (budget_seconds is not None and key != forced and key not in replaced_claude_paths and awaiting_detail(key)
                 and time.monotonic() - started > budget_seconds):
             pending += 1
             chats.append(_deferred_live_row(key, indexed, stamps[key]))
@@ -5079,6 +5109,7 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
             # Hook-sourced rows keep their execution fields; the transcript state
             # above (which infers running from trailing records) is discarded.
             row = _claude_live_row(row, indexed)
+            row.update(parentId=indexed.get("parentId"), parentProvider=indexed.get("parentProvider"))
         elif provider != "Codex":
             for field in ("statusSource", "statusObservedAt", "telemetryUnavailable", "metricsUnavailable", "stateSince", "compactionStartedAt", "activity", "activityUnavailable",
                           "executionStatus", "executionSource", "executionObservedAt", "executionSince",

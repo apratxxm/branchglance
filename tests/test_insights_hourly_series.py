@@ -22,6 +22,7 @@ def _snapshot(hourly):
 
 def _build(snapshot, tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "_local_timezone", lambda: LOCAL_TZ)
+    monkeypatch.setattr(providers, "_local_hour_at", lambda epoch: datetime.fromtimestamp(epoch, LOCAL_TZ))
     now = datetime(2026, 10, 27, 10, 35, tzinfo=LOCAL_TZ)
     return insights.build_insights(snapshot, "24h", now=now, peak_store=_store(tmp_path))["providers"][0]
 
@@ -33,6 +34,7 @@ def test_hour_key_truncates_to_local_clock_hour():
 
 def test_provider_timestamps_bucket_on_local_hour_boundaries(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "_local_timezone", lambda: LOCAL_TZ)
+    monkeypatch.setattr(providers, "_local_hour_at", lambda epoch: datetime.fromtimestamp(epoch, LOCAL_TZ))
     before = datetime(2026, 10, 27, 14, 59, 59, tzinfo=timezone.utc)
     boundary = datetime(2026, 10, 27, 15, 0, tzinfo=timezone.utc)
     codex_key = providers._insights_hour_from_timestamp(before.isoformat())

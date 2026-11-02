@@ -53,6 +53,9 @@
 ### Fixed
 
 - Codex subagent usage is attributed to the correct work in the ledger.
+- 24-hour Insights labels and hourly buckets follow real local hours across daylight-saving changes, including half-hour zones.
+- Claude subagents keep their parent in the live view between snapshots.
+- Right after launch, limit bars show each window's last unexpired reading (marked last-known) instead of staying blank until the first refresh.
 - On macOS, the server retains limit peaks and reads `bg-codex` receipts, and Claude hook events identify the Claude process.
 - A finished earlier run of a resumed Codex thread no longer blocks the thread's current link.
 - Running Codex jobs started from a Claude chat nest under that chat. A cached Claude parent without its provider tag is revalidated first.

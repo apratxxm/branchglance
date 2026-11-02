@@ -5,6 +5,7 @@ import copy
 import json
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -35,6 +36,9 @@ def _owner_check(check: Callable[[], bool]) -> bool:
 
 def _instance_mutex_held() -> bool:
     try:
+        if sys.platform == "darwin":
+            from .product import macos_instance_held
+            return macos_instance_held()
         from . import widget
         return getattr(widget, "_INSTANCE_HANDLE", None) is not None
     except Exception:
@@ -68,12 +72,16 @@ def _range_window(range_name: str, now: datetime) -> dict[str, Any]:
         # Hourly grain: 24 points ending at the current local hour. Each point in
         # provider["series"] keeps the same keys as the daily grain; its "date" field
         # holds the local hour start as ISO text (e.g. "2026-10-27T10:00:00-05:00").
-        current_hour = now.replace(minute=0, second=0, microsecond=0)
-        hours = [current_hour - timedelta(hours=offset) for offset in reversed(range(24))]
-        previous = [hour - timedelta(hours=24) for hour in hours]
+        from .providers import _local_hour_at
+        hours_desc = [_local_hour_at(now.timestamp()).replace(minute=0, second=0, microsecond=0)]
+        for _ in range(47):
+            hours_desc.append(_local_hour_at(hours_desc[-1].timestamp() - 1).replace(
+                minute=0, second=0, microsecond=0))
+        hours = list(reversed(hours_desc[:24]))
+        previous = list(reversed(hours_desc[24:]))
         start_epoch = hours[0].timestamp()
         end_epoch = now.timestamp()
-        previous_start, previous_end = start_epoch - 24 * 3600, start_epoch
+        previous_start, previous_end = previous[0].timestamp(), start_epoch
         return {"grain": "hour", "keys": [hour.isoformat() for hour in hours],
                 "previousKeys": [hour.isoformat() for hour in previous],
                 "start": start_epoch, "end": end_epoch,
