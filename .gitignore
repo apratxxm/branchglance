@@ -37,6 +37,8 @@ build/
 dist/
 .branchglance-build/
 state/
+macos/build/
+macos/Resources/*.iconset/
 
 # Local review bundles; production assets live directly in assets/brand.
 assets/brand/live-stack-v2/
