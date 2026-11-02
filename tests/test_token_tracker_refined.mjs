@@ -407,6 +407,11 @@ assert.equal(T.state.searchOpen, true); assert.equal(T.state.query, "preserved q
 assert.equal(node("#chats-head").hidden, false); assert.equal(T.state.popover, safePopover);
 assert.equal(node("#chat-list").innerHTML, '<div class="empty">No matches</div>', "stale evidence cannot leave old chat rows on screen; a searched empty result stays quiet");
 
+// The empty compact tree always paints its empty state (never a blank panel), whether or not the tree was opened by hand.
+node("#chat-list").innerHTML = ""; T.notch.manual = false; T.notch.inspecting = false; T.state.query = ""; node("#chat-search").value = ""; T.state.searchOpen = false;
+T.render({ generatedAt: new Date(testNow).toISOString(), enabledProviders: ["Codex"], providers: [{ ...provider, chats: [] }] });
+assert.match(node("#chat-list").innerHTML, /<div class="empty tree-empty">No active chats<\/div>/, "an empty compact tree says so");
+
 // A compact refresh keeps its icon while pending, then clears busy state on either outcome.
 node("#popover").hidden = true; T.state.popover = null; T.state.searchOpen = false; T.state.query = "";
 T.state.snapshot = null; T.state.loading = false; T.state.refreshing = false; T.state.refreshPending = false;

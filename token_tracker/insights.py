@@ -65,6 +65,9 @@ def _epoch(value: Any) -> float | None:
 def _range_window(range_name: str, now: datetime) -> dict[str, Any]:
     today = now.date()
     if range_name == "24h":
+        # Hourly grain: 24 points ending at the current local hour. Each point in
+        # provider["series"] keeps the same keys as the daily grain; its "date" field
+        # holds the local hour start as ISO text (e.g. "2026-10-27T10:00:00-05:00").
         current_hour = now.replace(minute=0, second=0, microsecond=0)
         hours = [current_hour - timedelta(hours=offset) for offset in reversed(range(24))]
         previous = [hour - timedelta(hours=24) for hour in hours]

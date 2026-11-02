@@ -9,15 +9,19 @@
   window.addEventListener("load", async () => {
     const snapshot = await (await fetch("/api/stats")).json();
     const tracker = window.__tokenTrackerTest;
-    // Live mode: overlay the running app's /api/live chats (GET only) so the tree shows its current chats like the app does.
-    try {
-      const live = await (await fetch("/api/live")).json();
-      if (Array.isArray(live?.chats) && live.chats.length && tracker.applyLive) tracker.applyLive(snapshot, live);
-    } catch {}
     tracker.state.providerPolicy = snapshot.providerPolicies;
     tracker.state.providerPolicyReady = true;
     tracker.render(snapshot);
     tracker.setupNotch();
+    // Live mode: poll /api/live exactly as the app does (GET only), so running chats arrive with the evidence the tree needs.
+    if ((mode === "tree" || mode === "collapsed") && new URLSearchParams(location.search).get("live") === "1") {
+      tracker.state.snapshot = tracker.state.snapshot || snapshot;
+      // The app's own start-up load can hold pollLive back; retry until a live sample has been accepted.
+      for (let attempt = 0; attempt < 12 && !tracker.state.live && tracker.pollLive; attempt++) {
+        await tracker.pollLive();
+        if (!tracker.state.live) await new Promise(resolve => setTimeout(resolve, 150));
+      }
+    }
     // routing=codex|claude|both: a healthy first reading, then a crossing, so the routing alert fires as it does live.
     const routing = new URLSearchParams(location.search).get("routing");
     if (routing) {
@@ -37,6 +41,7 @@
       tracker.notch.manual = true;
       tracker.notch.inspecting = true;
       tracker.setNotch(true);
+      if (new URLSearchParams(location.search).get("menu") === "1") tracker.toggleToolbarMenu();
       // A headless browser cannot perform the native window resize requested by
       // set_notch. Match the capture surface to its toolbar instead of applying
       // viewport corrections intended for the real WebView host.

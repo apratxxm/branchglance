@@ -252,7 +252,50 @@ function widget({unlocked=false}={}){
   assert.match(toolbar,/<time id="toolbar-clock"[^>]*><\/time>\s*<div id="routing-alert"/,"the alert sits in the toolbar right after the clock");
   const rules=css.match(/\.routing-alert[^{]*\{[^}]*\}/g).join("\n");
   assert.doesNotMatch(rules,/position:sticky|border:1px|box-shadow:inset|linear-gradient|margin:0 6px -34px/,"no overlay, outline, gradient or card");
-  assert.match(css,/\.compact-toolbar\.has-routing-alert>\*:not\(#toolbar-clock\):not\(#routing-alert\)\{display:none!important;\}/);
+  assert.match(css,/\.compact-toolbar\.has-routing-alert>\*:not\(#toolbar-clock\):not\(#routing-alert\):not\(\.window-controls\)\{display:none!important;\}/);
 }
 
+// Shared staleness: one "Updated … ago" marker, elapsed timers freeze at the last good update, nothing goes blank.
+{
+  const w=widget();
+  w.T.state.lastOkAt=testNow-5000;
+  assert.equal(w.T.dataIsStale(),false);w.T.renderUpdatedMarker();
+  assert.equal(w.nodes.get("#updated-marker").hidden,true,"no marker while data is fresh");
+  w.T.state.lastOkAt=testNow-125000;
+  assert.equal(w.T.dataIsStale(),true);assert.equal(w.T.clockNow(),testNow-125000,"elapsed timers stop at the last update");
+  w.T.renderUpdatedMarker();
+  assert.equal(w.nodes.get("#updated-marker").hidden,false);assert.match(w.nodes.get("#updated-marker").textContent,/^Updated 2m ago$/);
+}
+// State precedence: Needs you > Running > Finished > Idle.
+{
+  const w=widget();
+  const ended=new Date(testNow-60000).toISOString(),old=new Date(testNow-3*3600000).toISOString();
+  const rank=chat=>w.T.runwayRank(chat);
+  assert.ok(rank({pendingQuestion:"q",status:"running"})<rank({status:"failed"}));
+  assert.ok(rank({status:"failed"})<rank({status:"running"}));
+  assert.ok(rank({status:"running"})<rank({status:"idle",runEndedAt:ended}),"running before finished");
+  assert.ok(rank({status:"idle",runEndedAt:ended})<rank({status:"idle",runEndedAt:old}),"finished before idle");
+}
+// Toolbar: Settings and Move-monitor live in the overflow menu; lock and pin are on the left, window actions stay on the right.
+{
+  const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
+  const css=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
+  const toolbar=page.match(/<header class="titlebar compact-toolbar[\s\S]*?<\/header>/)[0];
+  const menu=toolbar.match(/<div id="toolbar-menu"[\s\S]*?<\/div>/)[0];
+  assert.match(menu,/id="toolbar-settings"[^>]*data-action="open-settings"/);assert.match(menu,/id="monitor-toggle"/);
+  assert.ok(menu.indexOf('id="toolbar-settings"')<menu.indexOf('id="monitor-toggle"'),"menu order: Settings, then Move to next monitor");
+  assert.doesNotMatch(menu,/id="sync-age"/,"Refresh is back in the toolbar row");
+  assert.ok(toolbar.indexOf('id="widget-lock"')<toolbar.indexOf('id="toolbar-more"')&&toolbar.indexOf('id="toolbar-more"')<toolbar.indexOf('class="window-controls"'));
+  assert.ok(toolbar.indexOf('id="widget-keep-open"')<toolbar.indexOf('id="sync-age"')&&toolbar.indexOf('id="sync-age"')<toolbar.indexOf('id="dashboard-open"'),"Refresh sits after the pin and before the Insights button");
+  // One quota grid for both bands, identical tracks, "resets in" stated once.
+  assert.match(css,/#resets,body\.runway-refined\.runway-compact:not\(\.phone\) \.weekly-resets\{box-sizing:border-box;grid-template-columns:68px minmax\(0,1fr\) minmax\(0,1fr\);column-gap:14px;padding:0 12px;\}/);
+  assert.match(css,/\.resets::after,body\.runway-refined\.runway-compact:not\(\.phone\) \.weekly-resets::after\{content:"resets in"/);
+  assert.match(css,/\.rr-provider\{/);
+}
+// Settings from the overflow menu opens the dashboard straight on the Settings tab.
+{
+  const dash=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8"),appSrc=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
+  assert.match(dash,/function open\(\{source,tab\}=\{\}\)\{\s*state\.open=true;state\.tab=tab==="settings"\?"settings":"insights";/);
+  assert.match(appSrc,/window\.tokenTrackerOpenDashboard=tab=>openDashboard\(tab\);/);assert.match(appSrc,/action==='open-settings'\)\{closeToolbarMenu\(\);openDashboard\('settings'\)/);
+}
 console.log("Token Tracker routing alert tests passed");

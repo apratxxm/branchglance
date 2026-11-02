@@ -153,4 +153,16 @@ const clockRule=css.match(/\[data-notch-mode\]\s+\.compact-toolbar #toolbar-cloc
 assert.match(clockRule,/min-width:max-content/);assert.match(clockRule,/width:auto/);assert.match(clockRule,/white-space:nowrap/);
 assert.ok(page.indexOf('href="runway_refined.css"')<page.indexOf('href="dashboard.css"'),"dashboard.css loads after the per-mode clock widths");
 
+// 24h: hourly points (date is the local hour start) draw the chart with hour ticks, "now", chips and the Hourly note.
+{
+  const hours=Array.from({length:24},(_,i)=>({date:`2026-10-06T${String(i).padStart(2,"0")}:00:00+00:00`,tokens:1000*(i+1),apiEquivalentCost:(i+1)/10}));
+  dashboard.state.insights=livePayload({range:"24h",providers:livePayload().providers.map(p=>({...p,series:hours}))});
+  const day=dashboard.insightsHTML();
+  assert.match(day,/class="dash-chart-section"/);assert.match(day,/Hourly · /);
+  assert.equal((day.match(/class="dash-hit"/g)||[]).length,24);
+  for(const label of ["0:00","6:00","12:00","now"])assert.match(day,new RegExp(">"+label+"<"),"hour tick "+label);
+  assert.match(day,/class="dash-chips"/,"provider chips are available at 24h");
+  assert.doesNotMatch(day,/dash-lower is-single is-day|dash-lower is-day/,"the 24h view is no longer chartless");
+}
+
 console.log("Insights payload contracts passed");

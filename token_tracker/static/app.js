@@ -202,10 +202,10 @@ async function recenterWidget(){
     return true;
   }catch{return false;}
 }
-function openDashboard(){
+function openDashboard(tab){
   if(!COMPACT||dashboardState.open)return false;
   dashboardState.returnMode=notch.mode||'controls';dashboardState.restoreMode=null;dashboardState.open=true;
-  window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot)});
+  window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:tab==='settings'?'settings':'insights'});
   setNotch(notch.expanded);return true;
 }
 function closeDashboard(){
@@ -224,7 +224,7 @@ window.addEventListener?.('resize',()=>{
   const height=window.TokenTrackerDashboard?.windowHeight?.()||608;
   if(window.innerWidth<720||window.innerHeight<height){const api=window.pywebview?.api?.set_notch;if(api)Promise.resolve(api(true,height,reducedMotion(),'dashboard')).catch(()=>{});}
 });
-window.tokenTrackerOpenDashboard=()=>openDashboard();
+window.tokenTrackerOpenDashboard=tab=>openDashboard(tab);
 window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
 function notchHeight() {
@@ -1161,6 +1161,12 @@ function snapshotParentKey(provider, raw, edges=null) {
   }
   return rowParent||nativeParent;
 }
+// State precedence: Needs you (0, 1) > Running (2) > Finished (2.5, idle after a run that ended in the last 10 minutes) > Idle (3).
+function runwayRank(chat) {
+  if(chat.pendingQuestion)return 0;
+  const rank=statusRank(chat.status);
+  return rank===3&&stamp(chat.runEndedAt)>Date.now()-600000?2.5:rank;
+}
 function buildForest(providers, graph=undefined) {
   if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){graph=providers.graph;providers=providers.providers;}
   const graphValue=graph,edges=graphValue&&typeof graphValue.edges==="object"&&!Array.isArray(graphValue.edges)?graphValue.edges:null;
@@ -1191,7 +1197,7 @@ function buildForest(providers, graph=undefined) {
     for(const child of chat.children){aggregate(child,root,depth+1);chat.descendants.push(child,...child.descendants);chat.latest=Math.max(chat.latest,child.latest);}
     chat.parentTitle=map.get(chat.treeParentKey)?.title;
     chat.highestContext=Math.max(-1,...[chat,...chat.descendants].map(c=>safeNumber(c.contextPercent)??-1));
-    chat.priority=Math.min(...[chat,...chat.descendants].map(c=>c.pendingQuestion?0:statusRank(c.status)));
+    chat.priority=Math.min(...[chat,...chat.descendants].map(runwayRank));
     const list=$('#chat-list'),interacting=state.pointerInList||list?.contains?.(document.activeElement)||state.popover?.dataset?.action==='runway-question';
     if(!RUNWAY||!interacting)chat.children.sort((a,b)=>b.latest-a.latest);
   }
@@ -1209,7 +1215,7 @@ function buildForest(providers, graph=undefined) {
 const rowPlace={rank:new Map(),next:-1};
 function placeRows(rows) {
   const fresh=rows.filter(chat=>!rowPlace.rank.has(chat.key));
-  if(!rowPlace.rank.size)fresh.sort((a,b)=>b.latest-a.latest).forEach((chat,index)=>rowPlace.rank.set(chat.key,index));
+  if(!rowPlace.rank.size)fresh.sort((a,b)=>(a.priority??3)-(b.priority??3)||b.latest-a.latest).forEach((chat,index)=>rowPlace.rank.set(chat.key,index));
   else fresh.sort((a,b)=>a.latest-b.latest).forEach(chat=>rowPlace.rank.set(chat.key,rowPlace.next--));
 }
 function stabilizeRunwayForest(forest, previous) {
@@ -1286,17 +1292,22 @@ function warmthView(chat) {
   if(warmth.level==="cooling")return {kind:"maybe",text:"cold?"};
   return {kind:"cold"};
 }
+// One shared staleness rule: after STALE_AFTER_MS without a successful refresh the widget says so once ("Updated 3m ago")
+// and elapsed timers stop at the last good update instead of counting on or going blank.
+const STALE_AFTER_MS=60000;
+const dataIsStale=()=>Boolean(RUNWAY&&state.lastOkAt&&Date.now()-state.lastOkAt>=STALE_AFTER_MS);
+const clockNow=()=>dataIsStale()?state.lastOkAt:Date.now();
 function runInfo(chat) {
   const execution=RUNWAY?runwayExecutionView(chat):null;
   if(execution){
-    const start=stamp(chat.executionSince);
-    return start&&start<=Date.now()?{seconds:Math.max(0,(Date.now()-start)/1000),live:true}:null;
+    const start=stamp(chat.executionSince),now=clockNow();
+    return start&&start<=now?{seconds:Math.max(0,(now-start)/1000),live:true}:null;
   }
   if(RUNWAY&&chat.executionStatus!==undefined)return null;
   const start=stamp(RUNWAY&&agentLive(chat)?chat.activeRunStartedAt||chat.runStartedAt:chat.runStartedAt);
   if(!start)return null;
   const live=agentLive(chat)&&!chat.runEndedAt;
-  const end=live?Date.now():stamp(chat.runEndedAt)||chat.latest||stamp(chat.updatedAt)||start;
+  const end=live?clockNow():stamp(chat.runEndedAt)||chat.latest||stamp(chat.updatedAt)||start;
   return {live,seconds:Math.max(0,(end-start)/1000)};
 }
 
@@ -1548,11 +1559,12 @@ function watcherTone(watcher, name) {
 function resetView(provider, key) {
   const item=provider[key]||{},used=safeNumber(item.percent);
   const quotaAt=provider._quotaWindowObservedAt&&Object.prototype.hasOwnProperty.call(provider._quotaWindowObservedAt,key)?provider._quotaWindowObservedAt[key]:provider.limitsUpdatedAt;
-  const sampled=stamp(quotaAt),age=sampled?Date.now()-sampled:null;
+  // A sample stamped up to a minute ahead of this clock (clock skew, a paused page) counts as fresh, not as missing.
+  const sampled=stamp(quotaAt),rawAge=sampled?Date.now()-sampled:null,age=rawAge!=null&&rawAge<0&&rawAge>=-60000?0:rawAge;
   const measured=!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000);
   const observedParts=used!=null&&sampled&&age!=null&&age>=0?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const maxAge=key==="weekly"?7*86400000:86400000;
-  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&age<maxAge&&observedParts.target!=null&&observedParts.seconds>0);
+  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0));
   const expired=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&observedParts.target!=null&&observedParts.seconds<=0);
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
@@ -1611,7 +1623,7 @@ function renderResets(providers) {
     node.dataset.shape=shape;
     const markup=key=>providers.map((p,i)=>{
       const id="r"+i+"-"+key,providerClass=p.name==="Claude"?"provider-claude":"provider-codex";
-      return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span>'+
+      return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span><span class="rr-provider" id="'+id+'-name">'+esc(p.name)+'</span>'+
         (key==="fiveHour"&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
         '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>\uFFFD</b><i>used</i></span>':'\uFFFD')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">\uFFFD:\uFFFD</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
@@ -1750,6 +1762,15 @@ function renderRoutingAlert() {
   const html=routingAlertInner(routingAlert);
   if(node.innerHTML!==html)node.innerHTML=html;
 }
+function toolbarMenu(open) {
+  const menu=$("#toolbar-menu"),button=$("#toolbar-more");if(!menu||!button)return;
+  const next=open??menu.hidden;
+  menu.hidden=!next;button.setAttribute?.("aria-expanded",String(next));
+}
+const toggleToolbarMenu=()=>toolbarMenu();
+const closeToolbarMenu=()=>toolbarMenu(false);
+document.addEventListener?.("pointerdown",event=>{const menu=$("#toolbar-menu");if(menu&&!menu.hidden&&!event.target?.closest?.(".toolbar-more"))closeToolbarMenu();});
+document.addEventListener?.("keydown",event=>{if(event.key==="Escape"){const menu=$("#toolbar-menu");if(menu&&!menu.hidden){closeToolbarMenu();$("#toolbar-more")?.focus?.({preventScroll:true});}}});
 function dismissRoutingAlert() {
   routingAlert=null;renderRoutingAlert();
 }
@@ -2189,7 +2210,8 @@ function chatBlockHTML(chat, query) {
 }
 function emptyHTML(forest, providers) {
   const searching=parseQuery(state.query).active;
-  if(COMPACT){if(searching)return '<div class="empty">No matches</div>';if(forest.rows.length)return '';}
+  // The compact tree lists only active chats, and this runs only when none is listed, so it counts as empty.
+  if(COMPACT){if(searching)return '<div class="empty">No matches</div>';forest={...forest,rows:[]};}
   if(!forest.rows.length) {
     const down=providers.filter(p=>p.connected===false);
     // Visible provider(s) with no chats: one quiet line, no icon or button. A disconnected provider keeps its "No data" text.
@@ -2380,8 +2402,8 @@ function renderChats(providers) {
   const seg=$("#window-seg");if(seg?.style)seg.style.setProperty("--i",String(WINDOWS.indexOf(state.windowDays)));
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
-  // A manually opened tree with nothing active says so instead of showing a blank panel.
-  const searchCanShowEmpty=COMPACT&&((state.searchOpen&&query.active)||notch.manual||notch.inspecting);
+  // The compact tree always paints its empty state (the list is hidden by CSS while the widget is collapsed), never a blank panel.
+  const searchCanShowEmpty=COMPACT;
   if(!realDom(list)) {
     const html=roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers);
     if(list.innerHTML!==html)list.innerHTML=html;
@@ -2504,9 +2526,18 @@ function refreshControlTitle(){
   if(state.watcherFetchError)parts.push('Greeter status fetch failed '+ageShort(state.watcherFetchError.at)+' ago');
   return parts.join(' · ');
 }
+function renderUpdatedMarker() {
+  const marker=$("#updated-marker");if(!marker)return;
+  const stale=dataIsStale(),text=stale?"Updated "+ageShort(state.lastOkAt)+" ago":"";
+  if(marker.textContent!==text)marker.textContent=text;
+  marker.hidden=!stale;
+  if(marker.title!==(stale?"Elapsed times are frozen at the last update":""))marker.title=stale?"Elapsed times are frozen at the last update":"";
+  document.body?.classList?.toggle("data-stale",stale);
+}
 function renderTitle(providers) {
   const name=$("#brand-name");if(name)name.textContent=RUNWAY?"Branchglance":providers.map(p=>p.name).join(" · ")||"Codex";
   syncCompactClock();
+  renderUpdatedMarker();
   const age=$("#sync-age");if(!age)return;
   if(state.refreshing||state.loading||state.initialBootstrapPending){if(COMPACT){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();}else age.textContent="";age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
   if(RUNWAY){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=REFINED?refreshControlTitle():(state.lastOkAt?"Last successful refresh at "+clock(state.lastOkAt):"Refresh usage");age.className="sync-age";age.setAttribute?.("aria-busy","false");return;}
@@ -3089,6 +3120,8 @@ function handleClick(event) {
   const {action,key}=button.dataset;
   if(RUNWAY&&action==='widget-lock'){void toggleWidgetLock();return;}
   if(RUNWAY&&action==='routing-dismiss'){dismissRoutingAlert();return;}
+  if(action==='toolbar-more'){toggleToolbarMenu();return;}
+  if(action==='open-settings'){closeToolbarMenu();openDashboard('settings');return;}
   if(RUNWAY&&action==='jump-waiting'){jumpToWaiting();return;}
   if(RUNWAY&&action==='source'){setSource(button.dataset.source);return;}
   if(RUNWAY&&action==='dashboard'){openDashboard();return;}
@@ -3148,7 +3181,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,

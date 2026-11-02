@@ -191,8 +191,17 @@ class Handler(SimpleHTTPRequestHandler):
                                   "subagentsActive": 8, "activeHours": 7}
                         models = [{**model, "tokens": current["tokens"], "apiEquivalentCost": current["apiEquivalentCost"]}
                                   for model in provider["models"]]
+                        # Hourly points, like build_insights(range=24h): date is the local hour start.
+                        weights = [0.2 + abs(math.sin(hour / 3.0)) * (1.6 if 8 <= hour <= 20 else 0.4) for hour in range(24)]
+                        total_weight = sum(weights)
+                        start = dt.datetime.now().astimezone().replace(minute=0, second=0, microsecond=0) - dt.timedelta(hours=23)
+                        hourly = [{"date": (start + dt.timedelta(hours=hour)).isoformat(),
+                                   "tokens": round(current["tokens"] * weights[hour] / total_weight),
+                                   "apiEquivalentCost": (round(current["apiEquivalentCost"] * weights[hour] / total_weight, 4)
+                                                         if current["apiEquivalentCost"] is not None else None)}
+                                  for hour in range(24)]
                         providers.append({**provider, "totals": totals, "models": models,
-                                          "series": [current], "previous": previous})
+                                          "series": hourly, "previous": previous})
                     response = {"range": "24h", "providers": providers}
                 data = json.dumps(response).encode()
                 content_type = "application/json"
@@ -207,7 +216,7 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/capture.html":
             data = (b'<!doctype html><style>html,body{margin:0;background:#000} '
                     b'iframe{display:block;width:328px;height:110px;border:0}</style>'
-                    b'<iframe src="/runway.html?review=1&amp;capture=collapsed"></iframe>')
+                    b'<iframe src="/runway.html?review=1&amp;capture=collapsed' + (b'&amp;live=1' if self.live else b'') + b'"></iframe>')
             content_type = "text/html; charset=utf-8"
         elif path == "/runway.html":
             html = (STATIC / "runway.html").read_text(encoding="utf-8")
@@ -239,6 +248,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--insights-only", action="store_true")
     parser.add_argument("--settings-only", action="store_true")
+    parser.add_argument("--menu-open", action="store_true", help="capture the tree with the overflow menu open")
     parser.add_argument("--routing", choices=("codex", "claude", "both"), action="append",
                         help="capture the routing alert state (repeatable): the widget tree after a quota crossing")
     parser.add_argument("--insights-ranges", default="24h,30d",
@@ -263,25 +273,34 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="branchglance-screenshots-") as profile:
-            if args.routing:
+            if args.menu_open:
+                captures = [("tree&menu=1", "tree-menu-open.png", 560, 420)]
+            elif args.routing:
                 captures = [(f"tree&routing={kind}", f"routing-{kind}.png", 560, 420) for kind in args.routing]
             elif args.insights_only:
-                # The 24h panel has no hourly chart, so its window is shorter (dashboard.js windowHeight).
-                captures = [(f"insights-{item}", f"insights-{item}.png", 720, 478 if item == "24h" else 608) for item in ranges]
+                captures = [(f"insights-{item}", f"insights-{item}.png", 720, 608) for item in ranges]
             elif args.settings_only:
                 captures = [("settings", "settings.png", 720, 608), ("reset-frame", "reset-frame.png", 320, 354)]
             else:
                 captures = [("collapsed", "widget-collapsed.png", 328, 110),
                             ("tree", "tree-expanded.png", 560, 420),
-                            ("insights", "insights.png", 720, 608)]
+                            ("insights-24h", "insights.png", 720, 608)]
             for mode, filename, width, height in captures:
-                page = {"collapsed": "capture.html", "reset-frame": "reset-frame.html"}.get(mode, f"runway.html?review=1&capture={mode}")
+                page = {"collapsed": "capture.html", "reset-frame": "reset-frame.html"}.get(mode, f"runway.html?review=1&capture={mode}" + ("&live=1" if live else ""))
                 url = f"http://127.0.0.1:{server.server_port}/{page}"
-                subprocess.run([str(edge_path()), "--headless", "--disable-gpu", "--hide-scrollbars",
+                command = [str(edge_path()), "--headless", "--disable-gpu", "--hide-scrollbars",
                                 "--force-device-scale-factor=2", "--force-prefers-reduced-motion",
                                 "--no-first-run", "--no-default-browser-check", f"--user-data-dir={profile}",
                                 f"--window-size={width},{height}", "--virtual-time-budget=4000",
-                                f"--screenshot={args.output_dir / (args.prefix + filename)}", url], check=True, timeout=60)
+                                f"--screenshot={args.output_dir / (args.prefix + filename)}", url]
+                for attempt in range(2):
+                    # Headless Edge occasionally hangs on a page that polls the live app; one retry is enough.
+                    try:
+                        subprocess.run(command, check=True, timeout=60)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if attempt:
+                            raise
                 print(args.output_dir / (args.prefix + filename))
     finally:
         server.shutdown()

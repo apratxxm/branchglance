@@ -176,6 +176,35 @@ def _agent_descriptions(parent: Path | None) -> dict[str, str]:
     return dict(result) if isinstance(result, dict) else {}
 
 
+_AGENT_META_KIND = "claude-agent-meta"
+_AGENT_META_MAX_BYTES = 64 * 1024
+_AGENT_META_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def _read_agent_meta_description(path: Path) -> str | None:
+    try:
+        if path.stat().st_size > _AGENT_META_MAX_BYTES:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    description = data.get("description") if isinstance(data, dict) else None
+    return description if isinstance(description, str) else None
+
+
+def _agent_meta_description(parent: Path | None, agent_id: str) -> str | None:
+    """Subagent `description` from its own `agent-<id>.meta.json`, written when it starts.
+
+    Available while the subagent runs, before the parent's tool_result exists. The
+    file sits beside the subagent transcripts and is read through the path stat memo.
+    """
+    if parent is None or not _AGENT_META_ID_RE.fullmatch(agent_id):
+        return None
+    from . import providers
+    path = parent.with_suffix("") / "subagents" / f"agent-{agent_id}.meta.json"
+    return providers._file_memo(_AGENT_META_KIND, path, lambda: _read_agent_meta_description(path))
+
+
 def find_transcript(session_id: str, agent_id: str = "", root: Path | None = None) -> Path | None:
     """Locate a session (or subagent) transcript by id. The location stays internal."""
     base = root or projects_root()
@@ -377,7 +406,10 @@ def _hook_row(entry: dict[str, Any], root_entry: dict[str, Any] | None, now: flo
     # Subagents are named by the Agent tool's description; the type stays as agentName.
     described = None
     if aid:
-        described = public_title(_agent_descriptions(find_transcript(sid, "", projects)).get(aid))
+        parent = find_transcript(sid, "", projects)
+        # Parent tool_use/tool_result first; the subagent's own meta.json while the result is pending.
+        described = (public_title(_agent_descriptions(parent).get(aid))
+                     or public_title(_agent_meta_description(parent, aid)))
     title, model = _remembered_identity(f"{sid}:{aid or ''}", described if aid else row_title(transcript),
                                         public_model(transcript.get("model")) or public_model(state.get("model")))
     row: dict[str, Any] = {

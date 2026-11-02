@@ -80,3 +80,34 @@ def test_every_priced_claude_model_has_a_context_window():
     assert providers._claude_context_window("claude-haiku-4-5-20251001") == 200_000
     assert providers._claude_context_window("claude-unknown-9") is None
 
+
+
+def test_running_subagent_takes_description_from_its_meta_file(tmp_path):
+    # Sync Agent still running: the parent has the tool_use but no tool_result yet.
+    parent = tmp_path / "proj" / "sess-3.jsonl"
+    _write(parent, [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_C", "name": "Agent",
+         "input": {"description": "Sync pending", "subagent_type": "sonnet-builder", "prompt": "secret prompt"}},
+    ]}}])
+    subagents = tmp_path / "proj" / "sess-3" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-run123.meta.json").write_text(json.dumps({
+        "agentType": "sonnet-builder", "description": "Meta pending title",
+        "toolUseId": "toolu_C", "model": "claude-test-model", "finished": False}), encoding="utf-8")
+    assert claude_provider._agent_descriptions(parent) == {}
+    assert claude_provider._agent_meta_description(parent, "run123") == "Meta pending title"
+    assert claude_provider._agent_meta_description(parent, "missing1") is None
+    assert claude_provider._agent_meta_description(parent, "../escape") is None
+    assert claude_provider._agent_meta_description(None, "run123") is None
+
+
+def test_meta_file_reader_ignores_bad_or_oversized_files(tmp_path):
+    bad = tmp_path / "agent-bad.meta.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert claude_provider._read_agent_meta_description(bad) is None
+    listish = tmp_path / "agent-list.meta.json"
+    listish.write_text(json.dumps(["Not a dict"]), encoding="utf-8")
+    assert claude_provider._read_agent_meta_description(listish) is None
+    big = tmp_path / "agent-big.meta.json"
+    big.write_text(json.dumps({"description": "x" * (claude_provider._AGENT_META_MAX_BYTES + 1)}), encoding="utf-8")
+    assert claude_provider._read_agent_meta_description(big) is None

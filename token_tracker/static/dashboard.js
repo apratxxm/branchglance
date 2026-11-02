@@ -47,8 +47,10 @@
     const fallback=state.insights?.fallback===true,range=state.resultValue===state.insights?(state.resultRange||state.range):(isRange(state.insights?.range)?state.insights.range:state.range),allProviders=availableProviders();
     let dates=[...new Set(allProviders.flatMap(p=>(p.series||[]).map(row=>row.date).filter(Boolean)))].sort(),end=dates.at(-1);
     const days=RANGE_DAYS[range];
-    if(Number.isFinite(days)&&end)dates=dates.filter(date=>(new Date(`${end}T12:00:00`)-new Date(`${date}T12:00:00`))/DAY<days);
-    if(dates.length>1){const filled=[],cursor=new Date(dates[0]+"T12:00:00"),last=dates.at(-1);while(localDate(cursor)<=last&&filled.length<31){filled.push(localDate(cursor));cursor.setDate(cursor.getDate()+1);}dates=filled;}
+    // 24h comes back as hourly points whose date is the local hour start (an ISO datetime). They are used as they are.
+    const hourly=range==="24h"&&dates.length>1&&dates.every(date=>String(date).includes("T"));
+    if(!hourly&&Number.isFinite(days)&&end)dates=dates.filter(date=>(new Date(`${end}T12:00:00`)-new Date(`${date}T12:00:00`))/DAY<days);
+    if(!hourly&&dates.length>1){const filled=[],cursor=new Date(dates[0]+"T12:00:00"),last=dates.at(-1);while(localDate(cursor)<=last&&filled.length<31){filled.push(localDate(cursor));cursor.setDate(cursor.getDate()+1);}dates=filled;}
     const inRange=new Set(dates);
     const sumOf=values=>{const present=values.filter(value=>finite(value)!=null);return present.length?present.reduce((sum,value)=>sum+value,0):null;};
     const rowsIn=p=>(p.series||[]).filter(row=>inRange.has(row.date));
@@ -79,7 +81,7 @@
     const unpricedTokens=models.filter(row=>row.apiEquivalentCost==null&&row.tokens!=null).reduce((sum,row)=>sum+row.tokens,0);
     const tokenDenominator=finite(totals.tokens)??models.reduce((sum,row)=>sum+(finite(row.tokens)||0),0);
     const mostlyUnpriced=tokenDenominator>0&&unpricedTokens>tokenDenominator/2;
-    return {fallback,range,providers,totals,previous,seriesByKey,series:seriesByKey[chartKey],chartKey,heroKey,costHero,costPartial,unpricedModels,mostlyUnpriced,models,peaks,dates};
+    return {fallback,range,hourly,providers,totals,previous,seriesByKey,series:seriesByKey[chartKey],chartKey,heroKey,costHero,costPartial,unpricedModels,mostlyUnpriced,models,peaks,dates};
   }
   const joinNames=names=>names.length<=2?names.join(" and "):`${names.slice(0,-1).join(", ")} and ${names.at(-1)}`;
   const tokenHero=value=>{const [figure,unit]=value>=1e9?[(value/1e9).toFixed(2),"B tokens"]:value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
@@ -110,7 +112,7 @@
     const key=data.chartKey,cost=key==="apiEquivalentCost",format=value=>cost?money(value):number(value);
     // The chart starts at the first day with usage (never fewer than two points when the range has them).
     const allRows=data.seriesByKey[key],firstUsed=allRows.findIndex(row=>data.providers.some(p=>(finite(row[p.name])||0)>0));
-    const rows=firstUsed>0?allRows.slice(Math.min(firstUsed,Math.max(allRows.length-2,0))):allRows;
+    const rows=firstUsed>0&&!data.hourly?allRows.slice(Math.min(firstUsed,Math.max(allRows.length-2,0))):allRows;
     const candidates=cost?data.providers.filter(p=>rows.some(row=>finite(row[p.name])!=null)):data.providers;
     const excluded=cost?data.providers.filter(p=>!candidates.includes(p)):[];
     if(!rows.length||!candidates.length||!rows.some(row=>candidates.some(p=>finite(row[p.name])!=null)))return "";
@@ -146,15 +148,25 @@
     const axisFormat=value=>cost&&max>=10?"$"+Math.round(value).toLocaleString("en-US"):format(value);
     const axis=[1,.5,0].map(fraction=>`<span class="dash-axis-value" style="top:${(yAt(max*fraction)/H*100).toFixed(2)}%">${esc(fraction===0?(cost?"$0":"0"):axisFormat(max*fraction))}</span>`).join("");
     // Date ticks: the first and last day, plus two evenly spaced days between them once the range is long enough to read them.
-    const tickIndexes=rows.length>=8?[0,Math.round((rows.length-1)/3),Math.round((rows.length-1)*2/3),rows.length-1]:rows.length>1?[0,rows.length-1]:[0];
-    const dates=`<div class="dash-dates">${tickIndexes.map((i,n)=>`<span class="dash-date${n===0?" is-first":n===tickIndexes.length-1&&n>0?" is-last":""}" style="left:${(rows.length>1?i/(rows.length-1)*100:0).toFixed(2)}%">${esc(dayLabel(rows[i].date))}</span>`).join("")}</div>`;
+    // Hourly (24h): a tick at every sixth local hour and "now" at the end. Daily ranges: first, last and two evenly spaced days.
+    const hourOf=value=>Number(String(value).slice(11,13));
+    let tickLabels;
+    if(data.hourly){
+      const last=rows.length-1,marks=rows.map((row,i)=>i).filter(i=>i<last-2&&hourOf(rows[i].date)%6===0);
+      tickLabels=[...marks.map(i=>[i,hourOf(rows[i].date)+":00"]),[last,"now"]];
+    }else{
+      const idx=rows.length>=8?[0,Math.round((rows.length-1)/3),Math.round((rows.length-1)*2/3),rows.length-1]:rows.length>1?[0,rows.length-1]:[0];
+      tickLabels=idx.map(i=>[i,dayLabel(rows[i].date)]);
+    }
+    const dates=`<div class="dash-dates">${tickLabels.map(([i,label],n)=>`<span class="dash-date${n===0&&i===0?" is-first":i===rows.length-1&&n>0?" is-last":""}" style="left:${(rows.length>1?i/(rows.length-1)*100:0).toFixed(2)}%">${esc(label)}</span>`).join("")}</div>`;
+    const pointLabel=date=>data.hourly?new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(new Date(date)):dayLabel(date);
     const hover=rows.map((row,index)=>{
       const x=xAt(index),total=totals[index],partial=cost&&(excluded.length>0||providers.some(p=>row[p.name+"__partial"])),unknown=total==null;
       const totalLabel=unknown?"Total unavailable":(partial?"Recorded subtotal: ":"Total: ")+format(total);
       const parts=providers.map(p=>`${p.name}: ${finite(row[p.name])==null?"unavailable":format(row[p.name])+(cost&&row[p.name+"__partial"]?" (partial estimate)":"")}`);
       const excludedLabel=excluded.length?`Excludes ${joinNames(excluded.map(p=>p.name))}: no recorded price`:"";
       const accessible=`${row.date}. ${totalLabel}. ${parts.join(". ")}${unknown?". Missing provider data":""}${excludedLabel?". "+excludedLabel:""}`;
-      const tip=`<span class="tip-date">${esc(dayLabel(row.date))}</span><b class="tip-total">${esc(unknown?"—":(partial?"Recorded subtotal · ":"")+format(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(finite(row[p.name])==null?"—":format(row[p.name])+(cost&&row[p.name+"__partial"]?" (partial)":""))}</strong></span>`).join("")}${unknown?'<span>Missing provider data</span>':""}${excludedLabel?`<span>${esc(excludedLabel)}</span>`:""}`;
+      const tip=`<span class="tip-date">${esc(pointLabel(row.date))}</span><b class="tip-total">${esc(unknown?"—":(partial?"Recorded subtotal · ":"")+format(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(finite(row[p.name])==null?"—":format(row[p.name])+(cost&&row[p.name+"__partial"]?" (partial)":""))}</strong></span>`).join("")}${unknown?'<span>Missing provider data</span>':""}${excludedLabel?`<span>${esc(excludedLabel)}</span>`:""}`;
       const left=index===0?L:(xAt(index-1)+x)/2,right=index===rows.length-1?W-R:(x+xAt(index+1))/2;
       return `<g class="dash-point" tabindex="0" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/>${total==null?"":`<circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/>`}</g>`;
     }).join("");
@@ -207,7 +219,7 @@
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">estimated</span>`:tokenHero(value);
-    const chart=data.range==="24h"&&!data.fallback?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">Daily · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost estimate":"tokens"}</span>${chipsHTML(data)}${chartStyleHTML()}</div>${chart}</section>`:"";
+    const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">${data.hourly?"Hourly":"Daily"} · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost estimate":"tokens"}</span>${chipsHTML(data)}${chartStyleHTML()}</div>${chart}</section>`:"";
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
     const tokensPresent=finite(data.totals.tokens)>0;
     const missing=v=>finite(v)==null||(v===0&&tokensPresent);
@@ -331,12 +343,17 @@
     state.fadeTimer=setTimeout(()=>{state.fadeTimer=null;if(generation!==state.fadeVersion||!state.open)return;change();requestAnimationFrame(()=>{if(generation===state.fadeVersion&&state.open)content.classList.remove("is-switching");});},90);
   }
   // The 24h view has no hourly chart, so its panel is shorter. The widget window follows (see windowHeight).
-  const compactPanel=()=>state.tab==="insights"&&state.range==="24h";
+  const compactPanel=()=>{
+    if(state.tab!=="insights"||state.range!=="24h"||!state.insights)return false;
+    const data=insightsData(false);
+    return !(data.fallback||data.hourly);
+  };
   const DASHBOARD_HEIGHT=608,COMPACT_DASHBOARD_HEIGHT=478;
   const windowHeight=()=>compactPanel()?COMPACT_DASHBOARD_HEIGHT:DASHBOARD_HEIGHT;
   function syncSize(){
-    const root=$("#dashboard-view");if(root)root.dataset.size=compactPanel()?"compact":"full";
-    if(typeof Event==="function")window.dispatchEvent?.(new Event("dashboard-size"));
+    const size=compactPanel()?"compact":"full",root=$("#dashboard-view");
+    if(root)root.dataset.size=size;
+    if(state.sizeKey!==size){state.sizeKey=size;if(typeof Event==="function")window.dispatchEvent?.(new Event("dashboard-size"));}
   }
   function syncTabs(){
     const root=$("#dashboard-view");if(root)root.dataset.tab=state.tab;syncSize();
@@ -395,13 +412,14 @@
       if(settingsKey!==state.settingsRenderKey){state.settingsRenderKey=settingsKey;settings.innerHTML=settingsHTML();state.frame=$("#dashboard-settings iframe");}
     }
     bindTooltipsOnce();
+    syncSize();
   }
-  function open({source}={}){
-    state.open=true;state.tab="insights";if(typeof source==="string")state.source=source;
+  function open({source,tab}={}){
+    state.open=true;state.tab=tab==="settings"?"settings":"insights";if(typeof source==="string")state.source=source;
     state.range=readPref("branchglanceInsightsRange","30d");if(!isRange(state.range))state.range="30d";
     state.metricExplicit=readPref("branchglanceInsightsMetric",null)!==null;state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
-    syncTabs();syncSegments();render();void loadInsights();void loadMonth();
+    syncTabs();syncSegments();render();void loadInsights();void loadMonth();if(state.tab==="settings"&&!state.settingsLoaded)void loadSettings();
     if(state.refreshTimer!=null)clearInterval(state.refreshTimer);
     state.refreshTimer=setInterval(()=>{if(state.open&&!state.loading)void loadInsights();void loadMonth();},120000);
   }
