@@ -74,6 +74,10 @@ def main() -> None:
         raise SystemExit(3)
     from . import agent_links
     agent_links.initialize_receipt_inbox()
+    # The ledger writer runs where the widget runs it on Windows: in the instance that owns the stores.
+    from . import ledger_service
+    ledger = ledger_service.LedgerService()
+    ledger.start()
     parent = os.getppid()
 
     def exit_with_parent() -> None:
@@ -88,6 +92,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        ledger.stop()
         httpd.server_close()
 
 
