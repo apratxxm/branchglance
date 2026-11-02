@@ -611,3 +611,12 @@ body.runway-refined.runway-compact:not(.phone) .runway-run-time{color:var(--gree
 body.runway-refined.runway-compact.data-stale:not(.phone) #toolbar-clock,
 body.runway-refined.runway-compact.data-stale:not(.phone) #compact-clock,
 body.runway-refined.runway-compact.data-stale:not(.phone) .runway-run-time{color:var(--muted);}
+
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-more button{border:0;background:transparent;color:var(--muted);font:500 12px/24px var(--sans);padding:0 0 0 48px;cursor:pointer;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-more [aria-disabled="true"]{display:none;}
+/* Subagent names one step smaller so typical names fit on one line; very long names still wrap, never truncate. */
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title .runway-agent-label{font-size:12px;line-height:16px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title .runway-model-name{font-size:11.5px;}
+/* Subagent names also take the timer column; the timer sits in the empty drive slot. Status and tokens stay aligned with the parent. */
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title{grid-column:1 / 3;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-timing{grid-column:4;justify-items:center;}
