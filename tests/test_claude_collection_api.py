@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import io
+import socket
 import threading
+import time
+from email.message import Message
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -11,8 +15,14 @@ from token_tracker import claude_collection, server
 
 
 @pytest.fixture
-def api():
+def server_errors():
+    return []
+
+
+@pytest.fixture
+def api(server_errors):
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    httpd.handle_error = lambda request, address: server_errors.append((request, address))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     try:
@@ -96,3 +106,134 @@ def test_status_get_and_scoped_mutation_token_flow(api, monkeypatch):
 def test_status_origin_guard(api):
     status, _ = request(api, headers={"Origin": "http://evil.invalid"})
     assert status == 403
+
+
+def test_status_programming_error_is_logged_and_returns_safe_failure(api, monkeypatch, caplog):
+    def broken_status():
+        raise TypeError("broken policy stub")
+    monkeypatch.setattr(claude_collection, "status", broken_status)
+    status, data = request(api)
+    assert status == 503
+    assert data == {"ok": False, "error": "Claude Code collection status is unavailable."}
+    assert "Claude Code collection status failed (TypeError)" in caplog.text
+
+
+def _rejection_handler(headers, chunks):
+    handler = server.Handler.__new__(server.Handler)
+    handler.headers = Message()
+    for name, value in headers:
+        handler.headers.add_header(name, value)
+    class Connection:
+        timeout = 7
+        calls = []
+        def gettimeout(self): return self.timeout
+        def settimeout(self, value):
+            self.calls.append(value)
+            self.timeout = value
+    class Reader:
+        calls = []
+        def read1(self, size):
+            self.calls.append(size)
+            result = chunks.pop(0)
+            if isinstance(result, Exception): raise result
+            return result
+    handler.connection = Connection()
+    handler.rfile = Reader()
+    handler.wfile = io.BytesIO()
+    handler.send_response = lambda status: None
+    handler.send_header = lambda *args: None
+    handler.end_headers = lambda: None
+    return handler
+
+
+@pytest.mark.parametrize("path,headers", [
+    ("/unknown", [("Content-Length", "1")]),
+    ("/api/queue", []),
+    ("/api/queue", [("Content-Length", "1"), ("Content-Length", "1")]),
+    ("/api/queue", [("Content-Length", "1, 1")]),
+    ("/api/queue", [("Content-Length", "+1")]),
+    ("/api/queue", [("Content-Length", "-1")]),
+    ("/api/queue", [("Content-Length", "2513")]),
+    ("/api/claude-collection", [("Content-Length", "4097")]),
+    ("/api/queue", [("Content-Length", "1"), ("Transfer-Encoding", "identity")]),
+])
+def test_rejection_never_reads_invalid_framing(path, headers):
+    handler = _rejection_handler(headers, [])
+    handler._reject_post(path, {"ok": False}, 403)
+    assert handler.rfile.calls == []
+    assert handler.close_connection
+    assert handler.connection.timeout == 7
+
+
+@pytest.mark.parametrize("chunks,expected", [
+    ([b"a", b"bc"], [3, 2]), ([b"a", b""], [3, 2]),
+    ([OSError("closed")], [3]),
+])
+def test_rejection_bounded_read_and_restore(chunks, expected):
+    handler = _rejection_handler([("Content-Length", "3")], chunks)
+    handler._reject_post("/api/claude-collection", {"ok": False}, 403)
+    assert handler.rfile.calls == expected
+    assert handler.connection.timeout == 7
+
+
+def test_rejection_zero_and_deadline(monkeypatch):
+    handler = _rejection_handler([("Content-Length", "0")], [])
+    handler._reject_post("/api/queue", {}, 403)
+    assert handler.rfile.calls == [] and handler.connection.timeout == 7
+    handler = _rejection_handler([("Content-Length", "3")], [b"a", b"b"])
+    times = iter([0, 0.05, 0.15, 0.26])
+    monkeypatch.setattr(server.time, "monotonic", lambda: next(times))
+    handler._reject_post("/api/queue", {}, 403)
+    assert handler.rfile.calls == [3, 2]
+    assert handler.connection.calls == pytest.approx([0.20, 0.10, 7])
+    assert handler.connection.timeout == 7
+
+
+def test_denied_guards_and_no_mutation(api, monkeypatch):
+    calls = []
+    monkeypatch.setattr(claude_collection, "enable", lambda: calls.append("enable"))
+    monkeypatch.setattr(claude_collection, "disable", lambda: calls.append("disable"))
+    server.set_settings_token("valid")
+    cases = [
+        ("/api/claude-collection", {"Host": "evil", "Origin": "http://evil"}, 403, server._SETTINGS_AUTH_MESSAGE),
+        ("/missing", {"Origin": "http://evil"}, 404, "not found"),
+        ("/api/queue", {"Origin": "http://evil", "Content-Type": "text/plain"}, 403, "same-origin request required"),
+        ("/api/claude-collection", {"X-Branchglance-Settings-Token": "wrong"}, 403, server._SETTINGS_AUTH_MESSAGE),
+        ("/api/queue", {"Content-Type": "text/plain"}, 415, "application/json required"),
+    ]
+    for path, headers, status, error in cases:
+        actual, body = request(api, "POST", {"action": "enable"}, headers, path=path)
+        assert (actual, body) == (status, {"ok": False, "error": error})
+    assert calls == []
+
+
+def test_slow_drip_denial_has_total_deadline(api):
+    with socket.create_connection(("127.0.0.1", api), timeout=2) as sock:
+        sock.sendall((f"POST /api/claude-collection HTTP/1.1\r\nHost: 127.0.0.1:{api}\r\n"
+                      f"Origin: http://127.0.0.1:{api}\r\nContent-Length: 100\r\n\r\n").encode())
+        started = time.monotonic()
+        sock.sendall(b"a")
+        time.sleep(0.12)
+        sock.sendall(b"b")
+        response = sock.recv(4096)
+        elapsed = time.monotonic() - started
+    assert b"403" in response and b"Connection: close" in response
+    assert 0.18 <= elapsed < 3.0
+
+
+def test_complete_small_body_denials_loopback_stress(api, monkeypatch, server_errors):
+    calls = []
+    monkeypatch.setattr(claude_collection, "enable", lambda: calls.append("enable"))
+    counts = {"denied": 0, "other": 0, "exception": 0}
+    first_exception = None
+    for _ in range(1000):
+        try:
+            status, body = request(api, "POST", {"action": "enable"})
+            counts["denied" if status == 403 and body.get("error") == server._SETTINGS_AUTH_MESSAGE else "other"] += 1
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            counts["exception"] += 1
+            if first_exception is None:
+                first_exception = f"{type(exc).__name__}: {exc}"
+    assert counts == {"denied": 1000, "other": 0, "exception": 0}, first_exception
+    assert server_errors == []
+    assert calls == []

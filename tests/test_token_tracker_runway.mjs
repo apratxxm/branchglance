@@ -20,7 +20,7 @@ assert.match(page,/id="dashboard-open"[^>]*data-action="dashboard"[^>]*aria-labe
 assert.match(page,/id="dashboard-view"[^>]*aria-label="Insights and Settings dashboard"/);
 assert.match(page,/src="dashboard.js"><\/script>\s*<script src="app.js"/);
 assert.match(dashboardCss,/data-notch-mode="dashboard"/);assert.match(dashboardCss,/prefers-reduced-motion/);
-assert.match(dashboardScript,/Last 31 days/);assert.match(dashboardScript,/Provider permissions/);
+assert.match(dashboardScript,/31-day totals/,"fallback totals disclose their actual 31-day coverage");assert.match(dashboardScript,/Provider permissions/);
 assert.match(page,/id="widget-lock"[^>]*data-action="widget-lock"[^>]*aria-pressed="false"[^>]*aria-label="Lock widget"[^>]*title="Lock widget"/);
 assert.match(page,/id="widget-lock"[^>]*><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2\.5" y="5" width="7" height="5\.5" rx="1"\/><path d="M4 5V3\.8a2 2 0 0 1 3\.6-1\.2"\/><\/svg>/,"the initial lock button shows the unlocked icon");
 assert.doesNotMatch(page,/<header class="titlebar pywebview-drag-region"/);
@@ -465,6 +465,9 @@ assert.doesNotMatch(T.rowHTML(globallyFreshIdleParent),/Subagents running/);
 testNow=fixedNow;
 assert.equal(T.isAsking({...root,status:"needs-input",pendingQuestion:"Stale?",pendingQuestionAt:ago(24*60+1)}),false);
 assert.equal(T.isAsking({...root,status:"needs-input",pendingQuestion:"Recent?",pendingQuestionAt:ago(23*60)}),true);
+// Python rows carry Claude permission waits as "needs input" with no question text; they must reveal as Needs you.
+assert.equal(T.isAsking({...root,status:"needs input",pendingQuestion:null}),true);
+assert.equal(T.isAsking({...root,status:"running",pendingQuestion:null}),false);
 assert.doesNotMatch(T.rowHTML({...T.state.forest.roots[0],lastRequest:{input:100,cached:0}}),/Cache|cached|runway-cache/);
 assert.doesNotMatch(T.rowHTML({...T.state.forest.roots[0],lastRequest:null}),/Cache|cached|runway-cache/);
 assert.match(T.rowHTML({...T.state.forest.roots[0],contextPercent:92,contextTokens:92,contextWindow:100}),/runway-context-used t-err/);
@@ -808,7 +811,8 @@ for(const verificationEvidence of ["stable_deadline","unknown",undefined]){
 }
 assert.equal(node("#r0-fiveHour-bar").style.width,"92%");
 assert.equal(node("#r0-weekly-bar").style.width,"78%");
-for(const [used,tone] of [[49,""],[50,"attn"],[69,"attn"],[70,"err"]]){
+// Healthy quotas keep an empty tone (other code treats any tone as a signal); CSS paints them green.
+for(const [used,tone] of [[0,""],[50,""],[51,"attn"],[80,"attn"],[81,"err"],[100,"err"]]){
   const view=T.resetView({fiveHour:{percent:used},limitsUpdatedAt:new Date(fixedNow).toISOString()},"fiveHour");
   assert.equal(view.usedText,used+"% used");assert.equal(view.tone,tone);
 }

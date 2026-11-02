@@ -1,25 +1,42 @@
-"""Render fictional Branchglance screenshots with a local fixture server and Edge."""
+"""Render Branchglance screenshots with a local server and Edge.
+
+By default the server answers from fictional fixtures. With --live it proxies
+read-only GET requests to the running Branchglance app on 127.0.0.1, so the
+captures show the user's real payloads. Nothing is written to the app, to
+~/.claude, to ~/.codex or to %LOCALAPPDATA%: the browser profile is a temporary
+directory and the proxy never forwards anything but GET.
+"""
 
 import argparse
 import datetime as dt
 import functools
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import URLError
 from urllib.parse import parse_qs, urlsplit
+import urllib.request
 
 
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = ROOT / "token_tracker" / "static"
 OUTPUT = ROOT / "docs" / "release" / "screenshots"
 HERE = Path(__file__).resolve().parent
+DEFAULT_LIVE_PORT = 8765  # token_tracker/widget.py HTTP_PORT, the running app's fixed local server
+LIVE_ENDPOINTS = {"/api/stats", "/api/live", "/api/insights", "/api/provider-policy", "/api/identity", "/api/claude-collection", "/api/reset-action",
+                  "/api/quota", "/api/today", "/api/limit-reset", "/api/avatars"}
+MODEL_NAMES = {"Codex": ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6.1-luna", "gpt-6-codex-mini"],
+               "Claude": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]}
+MODEL_SHARES = [.4, .3, .2, .1]
 
 
-def fixtures():
+def fixtures(models=2, reset_continue=False, tree_space=False):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     iso = lambda minutes: (now - dt.timedelta(minutes=minutes)).isoformat()
     reset = lambda minutes: (now + dt.timedelta(minutes=minutes)).timestamp()
@@ -27,6 +44,10 @@ def fixtures():
         {"name": name, "collect": True, "show": True, "send": False, "capabilities": {}}
         for name in ("Codex", "Claude")
     ]}
+    if reset_continue:
+        # Codex may send: the reset frame offers Continue mode with a chat list longer than one page.
+        policy["providers"][0].update({"send": True, "sendOrigin": "provider_env",
+                                       "capabilities": {"greet": True, "continue": True}})
 
     def chat(provider, ident, title, model, parent=None, *, elapsed=12, context=68000,
              window=200000, cache=84, activity="thinking", **extra):
@@ -55,6 +76,13 @@ def fixtures():
     docs_child = chat("Codex", "docs-review", "Check examples", "gpt-6.1-terra", "Codex:docs",
                       agentName="Docs reviewer", workspace="C:\\fictional\\billing-service", elapsed=4.2,
                       context=54000, cache=71, activity="testing", updatedAt=iso(1))
+    if tree_space:
+        # Six direct active children exercise the compact tree and its overflow control.
+        extra = [chat("Codex", f"tree-{i}", f"Review compact tree layout {i}", "gpt-6.1-terra", "Claude:lead",
+                      agentName=("Review a particularly long subagent name to check the single line truncation and full tooltip" if i == 0 else f"Compact tree reviewer {i}"), elapsed=i + 1, updatedAt=iso(i)) for i in range(6)]
+        worker = extra[0]
+        nested = extra[1]
+        waiting = extra[2]
     providers = []
     for name, chats, five, weekly, minutes, weekly_minutes in (("Codex", [worker, nested, waiting, other, docs_child], 37, 52, 161, 4500),
                                                                 ("Claude", [lead], 24, 41, 47, 7360)):
@@ -62,12 +90,18 @@ def fixtures():
                           "fiveHour": {"percent": five, "resetAt": reset(minutes)},
                           "weekly": {"percent": weekly, "resetAt": reset(weekly_minutes)},
                           "limitsUpdatedAt": iso(0)})
+    if tree_space:
+        providers[0]["chats"] = extra + [other, docs_child]
     snapshot = {"generatedAt": iso(0), "enabledProviders": ["Codex", "Claude"], "providerPolicies": policy,
                 "providers": providers, "graph": {"revision": 1, "edges": {
                     "Claude:lead": None, "Codex:worker": "Claude:lead", "Codex:review": "Codex:worker",
                     "Codex:question": "Claude:lead", "Codex:docs": None, "Codex:docs-review": "Codex:docs"}}}
+    if tree_space:
+        snapshot["graph"]["edges"] = {"Claude:lead": None, "Codex:docs": None, "Codex:docs-review": "Codex:docs",
+                                       **{item["key"]: "Claude:lead" for item in extra}}
+    counts = {"Codex": math.ceil(models / 2), "Claude": models // 2}
     insights = []
-    for name, base, model in (("Codex", 120000, "gpt-6.1-terra"), ("Claude", 90000, "claude-opus-5-5")):
+    for name, base in (("Codex", 120000), ("Claude", 90000)):
         variation = [1.05, 1.32, .95, 1.27, 1.06, .86, 1.16, 1.45, 1.12, 1.0,
                      1.31, 1.12, .91, 1.22, 1.86, 1.14, 1.35, 1.05, 1.18, .96,
                      1.29, 1.07, 1.42, .94, 1.11, 1.82, 1.16, 1.37, .9, 1.24]
@@ -79,53 +113,173 @@ def fixtures():
             series.append({"date": date.isoformat(), "tokens": tokens, "apiEquivalentCost": cost})
         total = sum(point["tokens"] for point in series)
         cost = round(sum(point["apiEquivalentCost"] for point in series), 2) if name == "Claude" else None
+        names = MODEL_NAMES[name][:counts[name]]
+        weights = MODEL_SHARES[:len(names)]
+        scale = sum(weights)
+        model_rows = []
+        for model, weight in zip(names, weights):
+            share = weight / scale
+            model_rows.append({"name": model, "tokens": round(total * share),
+                               "apiEquivalentCost": round(cost * share, 2) if cost is not None else None})
         insights.append({"name": name, "totals": {"tokens": total, "apiEquivalentCost": cost,
-                         "costPartial": name == "Codex", "unpricedModels": [model] if name == "Codex" else [],
+                         "costPartial": name == "Codex", "unpricedModels": names if name == "Codex" else [],
                          "sessions": 24, "subagentsActive": 8, "activeHours": 35, "cacheHitRate": 78},
-                         "series": series, "models": [{"name": model, "tokens": total, "apiEquivalentCost": cost}],
+                         "series": series, "models": model_rows,
                          "limitPeaks": {"fiveHour": 68 if name == "Codex" else 83, "weekly": 52 if name == "Codex" else 37}})
     return {"/api/stats": snapshot, "/api/live": snapshot, "/api/insights": {"range": "30d", "providers": insights},
             "/api/provider-policy": policy, "/api/identity": {}, "/api/quota": {}, "/api/today": {},
-            "/api/limit-reset": {}, "/api/avatars": {}}
+            "/api/limit-reset": {}, "/api/avatars": {},
+            "/api/claude-collection": {"ok": True, "state": "off", "reason": "Not collecting Claude Code activity.", "restartRequired": False, "hooks": {"installed": 0}},
+            "/api/reset-action": reset_action(reset_continue, iso)}
+
+
+def reset_action(reset_continue, iso):
+    if not reset_continue:
+        return {"ok": True, "action": {"mode": "greet", "armed": False}, "threads": []}
+    titles = ["Refactor auth", "Implement token validation", "Review edge cases", "Update API docs", "Check examples",
+              "Plan the billing migration", "Fix flaky session tests", "Draft release notes", "Profile the runner"]
+    threads = [{"id": f"t{index}", "title": title, "status": "idle" if index % 3 else "running"}
+               for index, title in enumerate(titles)]
+    action = {"mode": "continue", "schemaVersion": 2, "armed": True, "threadIds": ["t0", "t2", "t4"],
+              "lastRun": {"at": iso(90), "targets": [{"threadId": "t0", "status": "queued"},
+                                                     {"threadId": "t2", "status": "queued"},
+                                                     {"threadId": "t4", "status": "skipped", "reason": "chat archived"}]}}
+    return {"ok": True, "action": action, "threads": threads}
+
+
+# Direct connection to loopback only: a system proxy must never see the app's payloads.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def live_base(port):
+    """Return the base URL of the running Branchglance app, or stop if it is not one."""
+    base = f"http://127.0.0.1:{port}"
+    try:
+        with OPENER.open(base + "/api/identity", timeout=5) as response:
+            identity = json.load(response)
+    except (URLError, OSError, ValueError) as error:
+        raise SystemExit(f"No running Branchglance app answered at {base} ({error}). Start the app or pass --live-port.")
+    if identity.get("product") != "Branchglance":
+        raise SystemExit(f"Port {port} is not Branchglance (identity: {identity.get('product')!r}).")
+    return base
+
+
+def live_get(base, raw_path):
+    """GET one whitelisted endpoint from the running app. Returns bytes, or None for anything else."""
+    if urlsplit(raw_path).path not in LIVE_ENDPOINTS:
+        return None
+    with OPENER.open(urllib.request.Request(base + raw_path, method="GET"), timeout=15) as response:
+        return response.read()
+
+
+def capture_payload(base, attempts=6):
+    """Fetch a compatible stats/live pair before starting the browser.
+
+    The app caches each endpoint separately, so a live snapshot can briefly trail the stats one;
+    retry until they line up instead of failing the capture.
+    """
+    for attempt in range(attempts):
+        try:
+            return _capture_payload_once(base)
+        except ValueError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
+
+
+def _capture_payload_once(base):
+    data = []
+    for path in ("/api/stats", "/api/live"):
+        started = time.monotonic()
+        payload = json.loads(live_get(base, path))
+        print(f"prefetch {path}: {(time.monotonic() - started)*1000:.0f} ms", flush=True)
+        data.append(payload)
+    stats, live = data
+    try:
+        stats_at = dt.datetime.fromisoformat(stats["generatedAt"].replace("Z", "+00:00"))
+        live_at = dt.datetime.fromisoformat(live["generatedAt"].replace("Z", "+00:00"))
+        if not isinstance(stats["providers"], list) or not isinstance(live["chats"], list):
+            raise ValueError("invalid lists")
+        if live_at < stats_at or live_at > dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=60):
+            raise ValueError("live timestamp is older than stats or in the future")
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"Cannot capture live snapshot: {error}") from error
+    return {"stats": stats, "live": live}
 
 
 class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, responses, **kwargs):
-        self.responses = responses
+    def __init__(self, *args, responses=None, live=None, capture=None, **kwargs):
+        self.responses = responses or {}
+        self.live = live
+        self.capture = capture
         super().__init__(*args, directory=str(STATIC), **kwargs)
 
     def do_GET(self):
         path = urlsplit(self.path).path
-        if path.startswith("/api/"):
-            if path not in self.responses:
-                self.send_error(404)
+        print(f"page request {self.path} at {time.monotonic():.3f}", flush=True)
+        if path == "/capture-ready":
+            if self.capture is None or self.capture.get("payload") is None:
+                self.send_error(400)
                 return
-            response = self.responses[path]
-            if path == "/api/insights" and parse_qs(urlsplit(self.path).query).get("range") == ["24h"]:
-                providers = []
-                for provider in response["providers"]:
-                    current, previous = provider["series"][-1], provider["series"][-2]
-                    totals = {**provider["totals"], "tokens": current["tokens"],
-                              "apiEquivalentCost": current["apiEquivalentCost"], "sessions": 12,
-                              "subagentsActive": 8, "activeHours": 7}
-                    models = [{**model, "tokens": current["tokens"], "apiEquivalentCost": current["apiEquivalentCost"]}
-                              for model in provider["models"]]
-                    providers.append({**provider, "totals": totals, "models": models,
-                                      "series": [current], "previous": previous})
-                response = {"range": "24h", "providers": providers}
-            data = json.dumps(response).encode()
-            content_type = "application/json"
+            self.capture["ready"] = True
+            print(f"live snapshot applied and rendered at {time.monotonic():.3f}", flush=True)
+            data, content_type = b"ok", "text/plain"
+        elif path.startswith("/api/"):
+            if self.live is not None:
+                data = live_get(self.live, self.path)
+                if data is None:
+                    self.send_error(404)
+                    return
+                content_type = "application/json"
+            else:
+                if path not in self.responses:
+                    self.send_error(404)
+                    return
+                response = self.responses[path]
+                requested = parse_qs(urlsplit(self.path).query).get("range", [None])[0]
+                if path == "/api/insights" and requested in ("7d", "30d", "all"):
+                    response = {**response, "range": requested}
+                if path == "/api/insights" and requested == "24h":
+                    providers = []
+                    for provider in response["providers"]:
+                        current, previous = provider["series"][-1], provider["series"][-2]
+                        totals = {**provider["totals"], "tokens": current["tokens"],
+                                  "apiEquivalentCost": current["apiEquivalentCost"], "sessions": 12,
+                                  "subagentsActive": 8, "activeHours": 7}
+                        models = [{**model, "tokens": current["tokens"], "apiEquivalentCost": current["apiEquivalentCost"]}
+                                  for model in provider["models"]]
+                        # Hourly points, like build_insights(range=24h): date is the local hour start.
+                        weights = [0.2 + abs(math.sin(hour / 3.0)) * (1.6 if 8 <= hour <= 20 else 0.4) for hour in range(24)]
+                        total_weight = sum(weights)
+                        start = dt.datetime.now().astimezone().replace(minute=0, second=0, microsecond=0) - dt.timedelta(hours=23)
+                        hourly = [{"date": (start + dt.timedelta(hours=hour)).isoformat(),
+                                   "tokens": round(current["tokens"] * weights[hour] / total_weight),
+                                   "apiEquivalentCost": (round(current["apiEquivalentCost"] * weights[hour] / total_weight, 4)
+                                                         if current["apiEquivalentCost"] is not None else None)}
+                                  for hour in range(24)]
+                        providers.append({**provider, "totals": totals, "models": models,
+                                          "series": hourly, "previous": previous})
+                    response = {"range": "24h", "providers": providers}
+                data = json.dumps(response).encode()
+                content_type = "application/json"
         elif path == "/screenshot-fixture.js":
             data = (HERE / "fixture.js").read_bytes()
             content_type = "application/javascript"
+        elif path == "/reset-frame.html":
+            data = (b'<!doctype html><style>html,body{margin:0;background:#0b0e15} '
+                    b'iframe{display:block;width:316px;height:352px;border:0}</style>'
+                    b'<iframe src="/reset_actions.html?embedded=1&amp;source=Codex"></iframe>')
+            content_type = "text/html; charset=utf-8"
         elif path == "/capture.html":
             data = (b'<!doctype html><style>html,body{margin:0;background:#000} '
                     b'iframe{display:block;width:328px;height:110px;border:0}</style>'
-                    b'<iframe src="/runway.html?review=1&amp;capture=collapsed"></iframe>')
+                    b'<iframe src="/runway.html?review=1&amp;capture=collapsed' + (b'&amp;live=1' if self.live else b'') + b'"></iframe>')
             content_type = "text/html; charset=utf-8"
         elif path == "/runway.html":
             html = (STATIC / "runway.html").read_text(encoding="utf-8")
-            data = html.replace("</body>", '<script src="/screenshot-fixture.js"></script></body>').encode()
+            payload = self.capture.get("payload") if self.capture else None
+            inline = ("<script>window.__captureLive=" + json.dumps(payload).replace("<", "\\u003c") + ";</script>") if payload else ""
+            data = html.replace("</body>", inline + '<script src="/screenshot-fixture.js"></script></body>').encode()
             content_type = "text/html; charset=utf-8"
         else:
             return super().do_GET()
@@ -153,29 +307,72 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--insights-only", action="store_true")
     parser.add_argument("--settings-only", action="store_true")
+    parser.add_argument("--menu-open", action="store_true", help="capture the tree with the overflow menu open")
+    parser.add_argument("--routing", choices=("codex", "claude", "both"), action="append",
+                        help="capture the routing alert state (repeatable): the widget tree after a quota crossing")
+    parser.add_argument("--insights-ranges", default="24h,30d",
+                        help="comma-separated: 24h,7d,30d,all (default 24h,30d)")
+    parser.add_argument("--models", type=int, default=2, help="fixture models per run (fixture mode only)")
+    parser.add_argument("--reset-continue", action="store_true",
+                        help="fixture mode: Codex may send, the reset frame opens in Continue mode with nine chats")
+    parser.add_argument("--tree-space", action="store_true", help="fixture mode: six children under one of two parents")
+    parser.add_argument("--live", action="store_true",
+                        help="serve the running Branchglance app's real GET payloads instead of fixtures")
+    parser.add_argument("--live-port", type=int, default=DEFAULT_LIVE_PORT)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     parser.add_argument("--prefix", default="")
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, responses=fixtures()))
+    if os.name == "nt":
+        # Headless Edge sometimes crashes on exit; children inherit this error mode,
+        # so Windows logs the crash instead of popping an Application Error dialog.
+        import ctypes
+        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
+    if args.live and (args.reset_continue or args.tree_space):
+        raise SystemExit("--reset-continue and --tree-space use fixtures; drop --live")
+    live = live_base(args.live_port) if args.live else None
+    ranges = [item.strip() for item in args.insights_ranges.split(",") if item.strip()]
+    capture = {"payload": None, "ready": False}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(
+        Handler, responses=None if live else fixtures(args.models, args.reset_continue, args.tree_space), live=live, capture=capture))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="branchglance-screenshots-") as profile:
-            captures = [("insights-24h", "insights-24h.png", 720, 608),
-                        ("insights-30d", "insights-30d.png", 720, 608)] if args.insights_only else [
-                        ("settings", "settings.png", 720, 608)] if args.settings_only else [
-                        ("collapsed", "widget-collapsed.png", 328, 110),
-                        ("tree", "tree-expanded.png", 560, 420),
-                        ("insights", "insights.png", 720, 608)]
+            if args.menu_open:
+                captures = [("tree&menu=1", "tree-menu-open.png", 560, 420)]
+            elif args.routing:
+                captures = [(f"tree&routing={kind}", f"routing-{kind}.png", 560, 420) for kind in args.routing]
+            elif args.insights_only:
+                captures = [(f"insights-{item}", f"insights-{item}.png", 720, 608) for item in ranges]
+            elif args.settings_only:
+                captures = [("settings", "settings.png", 720, 608), ("reset-frame", "reset-frame.png", 320, 354)]
+            else:
+                captures = [("collapsed", "widget-collapsed.png", 328, 110),
+                            ("tree", "tree-expanded.png", 560, 420),
+                            ("insights-24h", "insights.png", 720, 608)]
             for mode, filename, width, height in captures:
-                page = "capture.html" if mode == "collapsed" else f"runway.html?review=1&capture={mode}"
+                live_tree = bool(live and (mode == "collapsed" or mode.startswith("tree")))
+                capture["payload"] = capture_payload(live) if live_tree else None
+                capture["ready"] = False
+                page = {"collapsed": "capture.html", "reset-frame": "reset-frame.html"}.get(mode, f"runway.html?review=1&capture={mode}" + ("&live=1" if live else ""))
                 url = f"http://127.0.0.1:{server.server_port}/{page}"
-                subprocess.run([str(edge_path()), "--headless", "--disable-gpu", "--hide-scrollbars",
+                command = [str(edge_path()), "--headless", "--disable-gpu", "--hide-scrollbars",
                                 "--force-device-scale-factor=2", "--force-prefers-reduced-motion",
                                 "--no-first-run", "--no-default-browser-check", f"--user-data-dir={profile}",
                                 f"--window-size={width},{height}", "--virtual-time-budget=4000",
-                                f"--screenshot={args.output_dir / (args.prefix + filename)}", url], check=True, timeout=60)
+                                f"--screenshot={args.output_dir / (args.prefix + filename)}", url]
+                for attempt in range(2):
+                    # Headless Edge occasionally hangs on a page that polls the live app; one retry is enough.
+                    try:
+                        capture["ready"] = False
+                        subprocess.run(command, check=True, timeout=60)
+                        if live_tree and not capture["ready"]:
+                            raise RuntimeError("Live capture did not apply and render its snapshot")
+                        break
+                    except subprocess.TimeoutExpired:
+                        if attempt:
+                            raise
                 print(args.output_dir / (args.prefix + filename))
     finally:
         server.shutdown()

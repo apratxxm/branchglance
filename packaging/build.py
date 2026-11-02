@@ -323,6 +323,9 @@ def link_codex():
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
         raise SystemExit(self_test(sys.argv[2] if len(sys.argv) > 2 else None))
+    if len(sys.argv) > 1 and sys.argv[1] == "--statusline":
+        from token_tracker.claude_statusline import main
+        raise SystemExit(main())
     if len(sys.argv) > 1 and sys.argv[1] == "--claude-hook":
         raise SystemExit(hook())
     if len(sys.argv) > 1 and sys.argv[1] == "--link-codex":

@@ -212,6 +212,22 @@ const headerHover = { closest: selector => selector === ".titlebar" ? node(".tit
 const dispatchDocument = (type, event) => { for (const handler of documentListeners.get(type) || []) { handler(event); if (event.immediateStopped) break; } };
 const dispatchWindow = (type, event) => { for (const handler of windowListeners.get(type) || []) { handler(event); if (event.immediateStopped) break; } };
 T.setupNotch();
+// Menu visibility follows notch transitions and window focus; dashboard only dismisses outside its view.
+node("#toolbar-menu").hidden = true;
+T.toggleToolbarMenu(); assert.equal(node("#toolbar-menu").hidden, false);
+dispatchWindow("blur", {}); assert.equal(node("#toolbar-menu").hidden, true);
+T.state.searchOpen = false; T.state.popover = null; T.notch.manual = true; T.setNotch(false, true); T.toggleToolbarMenu();
+T.notch.hover = false; T.notch.inspecting = false; T.notch.manual = false; T.notch.keyboardInspecting = false; T.notch.autoExpanded = false; T.keepOpenState.value = false; documentRef.activeElement = null; T.setNotch(false, true);
+assert.equal(node("#toolbar-menu").hidden, true, "a notch mode change closes the menu");
+T.toggleToolbarMenu(); widgetListeners.get("pointerleave")(); fireTimer(T.notch.exitTimer);
+assert.equal(node("#toolbar-menu").hidden, true, "leaving the widget closes the menu even if its mode stays unchanged");
+const dashboardView = node("#dashboard-view");
+dashboardView.contains = target => Boolean(target?.insideDashboard);
+T.openDashboard();
+dispatchDocument("pointerdown", { target: { insideDashboard: true, closest: () => null } });
+assert.equal(T.dashboardState.open, true, "chart controls inside the dashboard stay open");
+dispatchDocument("pointerdown", { target: { closest: () => null } });
+assert.equal(T.dashboardState.open, false, "outside pointer closes the dashboard");
 assert.ok(widgetListeners.has("focusin"), "compact inspection also opens on keyboard focus");
 T.notch.active = 0; T.notch.hover = false; T.notch.qualifiedHover = false; T.notch.autoExpanded = false;
 T.notch.manual = false; T.notch.inspecting = false; T.state.searchOpen = false; T.keepOpenState.value = false;
@@ -406,6 +422,11 @@ T.render({ generatedAt: new Date(testNow - 60000).toISOString(), enabledProvider
 assert.equal(T.state.searchOpen, true); assert.equal(T.state.query, "preserved query");
 assert.equal(node("#chats-head").hidden, false); assert.equal(T.state.popover, safePopover);
 assert.equal(node("#chat-list").innerHTML, '<div class="empty">No matches</div>', "stale evidence cannot leave old chat rows on screen; a searched empty result stays quiet");
+
+// The empty compact tree always paints its empty state (never a blank panel), whether or not the tree was opened by hand.
+node("#chat-list").innerHTML = ""; T.notch.manual = false; T.notch.inspecting = false; T.state.query = ""; node("#chat-search").value = ""; T.state.searchOpen = false;
+T.render({ generatedAt: new Date(testNow).toISOString(), enabledProviders: ["Codex"], providers: [{ ...provider, chats: [] }] });
+assert.match(node("#chat-list").innerHTML, /<div class="empty tree-empty">No active chats<\/div>/, "an empty compact tree says so");
 
 // A compact refresh keeps its icon while pending, then clears busy state on either outcome.
 node("#popover").hidden = true; T.state.popover = null; T.state.searchOpen = false; T.state.query = "";

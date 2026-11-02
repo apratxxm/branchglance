@@ -245,7 +245,7 @@ def _runtime_restart_required(path: Path, consent: bool) -> tuple[bool, Any]:
         expected = provider_policy.public_policies(candidate)["generation"]
         effective = provider_policy.policy_for("Claude", candidate)
         return current != expected, effective
-    except Exception:
+    except (OSError, ValueError):
         return True, None
 
 

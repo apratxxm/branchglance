@@ -26,9 +26,10 @@
       <label class="search-label" for="search">Select chats <span id="selected-count">0 selected</span></label>
       <input id="search" type="search" placeholder="Search chats" autocomplete="off">
       <div id="threads" class="threads" aria-live="polite"></div>
+      <div id="pager" class="pager" hidden><button id="page-prev" class="quiet" type="button" aria-label="Previous chats">‹</button><span id="page-info" aria-live="polite"></span><button id="page-next" class="quiet" type="button" aria-label="Next chats">›</button></div>
     </section>
     <section id="last-run" class="last-run" hidden></section>
-    <p class="note">This is a one-shot action for the next genuine quota reset. Saving only arms it; it never sends immediately. A queued chat has not necessarily started.</p>
+    <p id="oneshot-note" class="note">This is a one-shot action for the next genuine quota reset. Saving only arms it; it never sends immediately. A queued chat has not necessarily started.</p>
     <p id="message" class="message" role="status" aria-live="polite"></p>
     <footer><button id="cancel" class="quiet" type="button">Cancel</button><button id="save" class="primary" type="button">Save action</button></footer>
   </main>

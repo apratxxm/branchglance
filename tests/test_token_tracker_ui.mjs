@@ -472,7 +472,7 @@ T.render(tree);
   T.setWindow(1);T.render(far);
   assert.match(node("#chat-list").innerHTML,/<div class="empty">Nothing in 1d<\/div>/);
   T.render(snap([]));
-  assert.match(node("#chat-list").innerHTML,/No Codex chats/);
+  assert.match(node("#chat-list").innerHTML,/<div class="empty tree-empty">No active chats<\/div>/);
   // The window survives a reload; bad values fall back to 1d.
   const reloaded={...context,window:{__TOKEN_TRACKER_TEST__:true}};
   vm.createContext(reloaded);vm.runInContext(app,reloaded);

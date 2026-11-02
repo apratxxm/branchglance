@@ -21,6 +21,7 @@ from typing import Any, Iterable
 
 from .codex_client import CodexAppServer, CodexUnavailable
 from .claude_cache import reset_info, usage_info
+from .claude_statusline import merge_usage
 
 CLAUDE_DISPLAY_USAGE_AGE_SECONDS = 600  # matches the widget's quota freshness (app.js resetView)
 from .provider_policy import POLICIES, policy_for, public_policies
@@ -246,48 +247,58 @@ def _walk(value: Any) -> Iterable[tuple[str, Any]]:
 
 
 CLAUDE_PRICING = {
-    "fable-5": (10, 1, 12.5, 20, 50),
-    "opus-5": (5, .5, 6.25, 10, 25), "opus-4.8": (5, .5, 6.25, 10, 25),
-    "sonnet-5": (2, .2, 2.5, 4, 10), "haiku-4.5": (1, .1, 1.25, 2, 5),
-    # Published 2026-10 rates; cache writes use the standard 1.25x/2x input multipliers.
-    # Haiku 5.5 doubles beyond 100K-token prompts, which per-response rows can't see.
-    "fable-5.1": (10, .25, 12.5, 20, 50), "opus-5.5": (4, .2, 5, 8, 20),
-    "sonnet-5.5": (2, .2, 2.5, 4, 10), "haiku-5.5": (.1, .01, .125, .2, .5),
+    # USD per 1M tokens: (input, cache hit/refresh, 5m cache write, 1h cache write, output).
+    # Source: https://platform.claude.com/docs/en/about-claude/pricing (checked 2026-11-02).
+    # Cache hits are 0.1x input except: Fable 5.1/Mythos 5.1 0.025x, Opus 5.5/Sonnet 5.5 0.05x.
+    # 1M context is standard price on 4.6+ except Haiku 5.5 (see HAIKU_5_5_LONG_PROMPT below).
+    "fable-5": (10, 1, 12.5, 20, 50),        # Claude Fable 5 (Mythos 5 shares this row)
+    "fable-5.1": (10, .25, 12.5, 20, 50),    # Claude Fable 5.1 (Mythos 5.1 shares this row)
+    "opus-5": (5, .5, 6.25, 10, 25),         # Claude Opus 5
+    "opus-5.5": (4, .2, 5, 8, 20),           # Claude Opus 5.5
+    "opus-4.8": (5, .5, 6.25, 10, 25),       # Claude Opus 4.8
+    "opus-4.7": (5, .5, 6.25, 10, 25),       # Claude Opus 4.7
+    "opus-4.6": (5, .5, 6.25, 10, 25),       # Claude Opus 4.6
+    "opus-4.5": (5, .5, 6.25, 10, 25),       # Claude Opus 4.5
+    "sonnet-5": (2, .2, 2.5, 4, 10),         # Claude Sonnet 5 ($2/$10 is the standard price since 2026-09-01)
+    "sonnet-5.5": (2, .1, 2.5, 4, 10),       # Claude Sonnet 5.5
+    "sonnet-4.6": (3, .3, 3.75, 6, 15),      # Claude Sonnet 4.6
+    "sonnet-4.5": (3, .3, 3.75, 6, 15),      # Claude Sonnet 4.5
+    "haiku-5.5": (.1, .01, .125, .2, .5),    # Claude Haiku 5.5, prompts up to 100K tokens
+    "haiku-4.5": (1, .1, 1.25, 2, 5),        # Claude Haiku 4.5
 }
+# Claude Haiku 5.5 prompts over 100K tokens (per request, all input tokens incl. cache).
+HAIKU_5_5_LONG_PROMPT = (.5, .05, .625, 1, 2.5)
 CODEX_PRICING = {
-    "gpt-6-astra": (10, 1, 50), "gpt-5.6-sol": (4, .4, 20),
-    "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2),
-    # Standard API rates, read 2026-10-29: https://developers.openai.com/api/docs/pricing
+    # USD per 1M tokens: (input, cached input, output).
+    # Source: https://developers.openai.com/api/docs/pricing (checked 2026-11-02, official OpenAI page).
+    "gpt-6-astra": (10, 1, 50),
     "gpt-6.1-sol": (2, .1, 10), "gpt-6.1-terra": (1, .05, 5), "gpt-6-luna": (.1, .01, .5),
-    # https://developers.openai.com/api/docs/models/gpt-6-sol (read 2026-10-29)
     "gpt-6-sol": (2, .2, 10),
+    "gpt-5.6-sol": (4, .4, 20), "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2),
+    "gpt-5.5": (5, .5, 30), "gpt-5.4": (2.5, .25, 15), "gpt-5.4-mini": (.75, .075, 4.5),
+    "gpt-5.3-codex": (1.75, .175, 14),
 }
-# Standard-tier long-prompt rule (OpenAI model page): a request whose input exceeds the
-# threshold is priced at the input/cache multiplier and output multiplier for the whole request.
-# Read 2026-10-29: https://developers.openai.com/api/docs/models/gpt-6.1-sol
-# https://developers.openai.com/api/docs/models/gpt-6.1-terra
-# https://developers.openai.com/api/docs/models/gpt-6-luna
-# https://developers.openai.com/api/docs/pricing?r44b=no (GPT-5.6 Sol)
+# Standard-tier long-prompt rule (official OpenAI pricing page, checked 2026-11-02): a request whose
+# input exceeds 272K tokens is priced at the input/cache multiplier and output multiplier for the
+# whole request. Rows with no long-context tier listed on that page are absent here.
 CODEX_LONG_CONTEXT = {name: (272_000, 2.0, 1.5) for name in
-                      ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol")}
+                      ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol",
+                       "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")}
 LONG_CONTEXT_SUFFIX = "|long-context"
-PRICE_BASIS = "Standard-tier list prices; Batch, Flex and Fast billing are not recorded locally"
+PRICE_BASIS = "Standard-tier list prices; Batch, Flex, Fast and data-residency billing are not recorded locally"
 
-# Exact provider model IDs that intentionally share the listed price rows. Keep this
-# explicit: substring matching makes unknown derived names look priced.
+# Explicit canonical ids (after _normalise_model_id strips provider prefixes, "[1m]", and dated
+# snapshot suffixes) that share a listed price row. Keep this explicit: substring matching makes
+# unknown derived names look priced.
 PRICE_MODEL_ALIASES = {
-    "claude-fable-5": "fable-5",
-    "claude-mythos-5": "fable-5",
-    "claude-opus-5": "opus-5",
-    "claude-opus-4-8": "opus-4.8",
-    "claude-sonnet-5": "sonnet-5",
-    "claude-haiku-4-5": "haiku-4.5",
-    "claude-haiku-4-5-20251001": "haiku-4.5",
-    "claude-fable-5-1": "fable-5.1",
-    "claude-mythos-5-1": "fable-5.1",
-    "claude-opus-5-5": "opus-5.5",
-    "claude-sonnet-5-5": "sonnet-5.5",
-    "claude-haiku-5-5": "haiku-5.5",
+    "gpt-5.6": "gpt-5.6-sol",  # OpenAI routes the bare alias to Sol (developers.openai.com/api/docs/models/gpt-5.6-sol, checked 2026-11-02)
+    "claude-fable-5": "fable-5", "claude-mythos-5": "fable-5",
+    "claude-fable-5-1": "fable-5.1", "claude-mythos-5-1": "fable-5.1",
+    "claude-opus-5": "opus-5", "claude-opus-5-5": "opus-5.5", "claude-opus-4-8": "opus-4.8",
+    "claude-opus-4-7": "opus-4.7", "claude-opus-4-6": "opus-4.6", "claude-opus-4-5": "opus-4.5",
+    "claude-sonnet-5": "sonnet-5", "claude-sonnet-5-5": "sonnet-5.5",
+    "claude-sonnet-4-6": "sonnet-4.6", "claude-sonnet-4-5": "sonnet-4.5",
+    "claude-haiku-5-5": "haiku-5.5", "claude-haiku-4-5": "haiku-4.5",
 }
 
 
@@ -2763,18 +2774,82 @@ def _activity_age(updated: Any, now: datetime | None = None) -> str:
     return f"{local_date.strftime('%b')} {local_date.day}"
 
 
-def _price_for(model: str | None, table: dict[str, tuple[float, ...]]) -> tuple[float, ...] | None:
+def _normalise_model_id(model: str | None) -> str:
+    """Canonical lower-case id: drops the long-context marker, "[1m]", provider prefixes and dated snapshots."""
     value = (model or "").strip().lower()
     if value.endswith(LONG_CONTEXT_SUFFIX):
         value = value[:-len(LONG_CONTEXT_SUFFIX)]
-    price_key = PRICE_MODEL_ALIASES.get(value, value)
+    if value.endswith("[1m]"):
+        value = value[:-len("[1m]")]
+    value = value.rsplit("/", 1)[-1]
+    value = re.sub(r"-\d{8}$", "", value)              # Claude snapshot, e.g. -20251001
+    value = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", value)  # OpenAI snapshot, e.g. -2026-03-05
+    return value
+
+
+def _price_for(model: str | None, table: dict[str, tuple[float, ...]]) -> tuple[float, ...] | None:
+    canonical = _normalise_model_id(model)
+    price_key = PRICE_MODEL_ALIASES.get(canonical, canonical)
     return next((rates for key, rates in table.items() if key.lower() == price_key), None)
 
 
+def _model_unpriced(model: str | None, table: dict[str, tuple[float, ...]]) -> bool:
+    """True when the id has no row in the table; the UI shows "no price" rather than a dash."""
+    return _price_for(model, table) is None
+
+
+# Rows whose listed base rate under-states some requests (see HAIKU_5_5_LONG_PROMPT).
+PRICE_ESTIMATE_LOW = {"haiku-5.5"}
+
+
+def _price_estimate(model: str | None, usage: dict[str, int] | None = None) -> str | None:
+    """"low" when the price row is an under-estimate for part of that model's usage, else None."""
+    canonical = _normalise_model_id(model)
+    price_key = PRICE_MODEL_ALIASES.get(canonical, canonical)
+    if price_key not in PRICE_ESTIMATE_LOW:
+        return None
+    if usage is not None and usage.get("sized_total_tokens", 0) >= usage.get("total_tokens", 0):
+        return None
+    return "low"
+
+
+def _claude_request_size_known(usage: dict[str, Any]) -> bool:
+    """Missing or malformed prompt counters cannot establish the pricing tier."""
+    def valid(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    if not all(valid(usage.get(key)) for key in ("input_tokens", "cache_read_input_tokens")):
+        return False
+    creation = usage.get("cache_creation")
+    if isinstance(creation, dict) and creation:
+        return all(valid(creation.get(key)) for key in
+                   ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"))
+    return valid(usage.get("cache_creation_input_tokens"))
+
+
+def _claude_request_pricing_fields(model: str, usage: dict[str, int], *, size_known: bool = True) -> dict[str, int]:
+    """Retain additive tier totals, so day/hour aggregates preserve request pricing."""
+    if _price_estimate(model) != "low" or not size_known:
+        return {}
+    fields = ("input_tokens", "cached_tokens", "cache_5m_tokens", "cache_1h_tokens", "output_tokens")
+    result = {"sized_total_tokens": usage["total_tokens"]}
+    if sum(usage[name] for name in fields[:-1]) > 100_000:
+        result.update({"long_prompt_" + name: usage[name] for name in fields})
+    return result
+
+
 def _claude_context_window(model: str | None) -> int | None:
-    value = "".join(char for char in (model or "").lower() if char.isalnum())
-    if any(key in value for key in ("fable5", "opus5", "opus48", "sonnet5")): return 1_000_000
-    if "haiku45" in value: return 200_000
+    """Context window for Claude models. Codex reports its own window per sample, so no table is needed there.
+
+    Every priced Claude family must resolve here (see tests/test_claude_widget_names.py).
+    """
+    # Exact provider IDs that share a priced row (e.g. mythos-5 -> fable-5) share its window.
+    canonical = _normalise_model_id(model)
+    aliased = PRICE_MODEL_ALIASES.get(canonical, canonical)
+    value = "".join(char for char in (aliased or "").lower() if char.isalnum())
+    # https://platform.claude.com/docs/en/build-with-claude/context-windows (checked 2026-11-02).
+    if any(key in value for key in ("fable5", "opus5", "opus48", "opus47", "opus46", "sonnet5", "sonnet46", "haiku5")): return 1_000_000
+    if any(key in value for key in ("opus45", "sonnet45", "haiku45")): return 200_000
     return None
 
 
@@ -2811,6 +2886,13 @@ def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], tabl
             write_5m = int(usage.get("cache_5m_tokens") or 0); write_1h = int(usage.get("cache_1h_tokens") or 0)
             cost += (input_tokens * rates[0] + cached * rates[1] + write_5m * rates[2] + write_1h * rates[3] + output * rates[4]) / 1_000_000
             savings += (cached * (rates[0] - rates[1]) - write_5m * (rates[2] - rates[0]) - write_1h * (rates[3] - rates[0])) / 1_000_000
+            if _price_estimate(model) == "low":
+                long = [int(usage.get("long_prompt_" + key) or 0) for key in
+                        ("input_tokens", "cached_tokens", "cache_5m_tokens", "cache_1h_tokens", "output_tokens")]
+                diff = [high - base for high, base in zip(HAIKU_5_5_LONG_PROMPT, rates)]
+                cost += sum(value * rate for value, rate in zip(long, diff)) / 1_000_000
+                savings += (long[1] * (diff[0] - diff[1]) - long[2] * (diff[2] - diff[0])
+                            - long[3] * (diff[3] - diff[0])) / 1_000_000
         else:
             cost += ((input_tokens - cached) * rates[0] + cached * rates[1] + output * rates[2]) / 1_000_000
             savings += cached * (rates[0] - rates[1]) / 1_000_000
@@ -2973,6 +3055,7 @@ class ClaudeDesktopProvider:
                 amount = input_tokens + output + read + write_5m + write_1h
                 values = {"input_tokens": input_tokens, "output_tokens": output, "cached_tokens": read, "cache_5m_tokens": write_5m, "cache_1h_tokens": write_1h, "total_tokens": amount}
                 for key, value in values.items(): totals[key] += value; models[model][key] += value
+                for key, value in _claude_request_pricing_fields(model, values, size_known=_claude_request_size_known(usage)).items(): models[model][key] += value
                 daily[local_date] += amount
                 session = sessions[row["session"]]; session["tokens"] += amount; session["turns"] += 1
                 session["dailyTokens"][local_date] += amount
@@ -3114,8 +3197,18 @@ class ClaudeDesktopProvider:
             "output": int(totals["output_tokens"]),
             **_costs(totals, transcript["models"], CLAUDE_PRICING, claude=True),
         }
-        deadlines = reset_info(self.root, samples)
-        reset_at = deadlines["fiveHour"] if deadlines["observedAt"] is not None else self._reset_at()
+        deadlines = merge_usage(usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS))
+        history_usage = usage
+        usage = {**usage, "fh": deadlines["fiveHourPercent"] if deadlines["fiveHourPercent"] is not None else (None if deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else usage.get("fh")), "sd": deadlines["weeklyPercent"] if deadlines["weeklyPercent"] is not None else (None if deadlines.get("_weeklySelected") or deadlines.get("lastKnownWeekly") else usage.get("sd"))}
+        merged_live = deadlines["fiveHourPercent"] is not None or deadlines["weeklyPercent"] is not None
+        history_live = any(_usage_percent(history_usage.get(short)) is not None and deadlines[field + "Percent"] is None
+                           and not deadlines.get("_" + field + "Selected") and not deadlines.get("lastKnown" + field[0].upper() + field[1:])
+                           for short, field in (("fh", "fiveHour"), ("sd", "weekly")))
+        merged_at = (datetime.fromtimestamp(deadlines["observedAt"], timezone.utc).isoformat()
+                     if merged_live and deadlines.get("observedAt") is not None else None)
+        history_at = _iso_from_ms(latest.get("t")) if history_live else None
+        limits_at = min(merged_at, history_at) if merged_at and history_at else (None if history_live and not history_at else merged_at or history_at)
+        reset_at = deadlines["fiveHour"] if deadlines["observedAt"] is not None or deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else self._reset_at()
         weekly_reset = deadlines["weekly"]
         return {
             "connected": True,
@@ -3134,8 +3227,7 @@ class ClaudeDesktopProvider:
             "trackingWindowDays": 31,
             "lifetimeTokens": int(totals["total_tokens"]),
             "lastSync": _iso_from_ms(latest.get("t")),
-            # Usage history is sampled separately from this snapshot build.
-            "limitsUpdatedAt": _iso_from_ms(latest.get("t")),
+            "limitsUpdatedAt": limits_at,
             "source": "Claude Desktop + Claude Code transcript telemetry",
         }
 
@@ -3151,20 +3243,55 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     _last_live: dict[str, dict[str, Any]] = {}
     _last_live_lock = threading.Lock()
 
-    def _newest_live(self, info: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+    def _newest_live(self, info: dict[str, Any], now: float | None = None,
+                     *, watermarks: bool = False) -> dict[str, Any]:
+        """Retain each window's identity, high-water usage and its observation time."""
         now = time.time() if now is None else now
         key = str(self.root)
+        result = dict(info)
+        fresh_times = []
         with self._last_live_lock:
-            last = self._last_live.get(key)
-            observed = info.get("observedAt")
-            has_percent = info.get("fiveHourPercent") is not None or info.get("weeklyPercent") is not None
-            if observed is not None and has_percent and (last is None or observed >= last["observedAt"]):
-                self._last_live[key] = dict(info)
-                return info
-            if last is not None and now - last["observedAt"] <= CLAUDE_DISPLAY_USAGE_AGE_SECONDS and (
-                    observed is None or observed < last["observedAt"] or not has_percent):
-                return dict(last)
-            return info
+            records = self._last_live.setdefault(key, {})
+            for field in ("fiveHour", "weekly"):
+                reset, used = info.get(field), info.get(field + "Percent")
+                observed = info.get("observedAt")
+                valid_reset = (isinstance(reset, (int, float)) and not isinstance(reset, bool)
+                               and math.isfinite(reset) and reset > 0)
+                valid_observed = (isinstance(observed, (int, float)) and not isinstance(observed, bool)
+                                  and math.isfinite(observed) and observed <= now + 60)
+                valid_used = (isinstance(used, (int, float)) and not isinstance(used, bool)
+                              and math.isfinite(used) and 0 <= used <= 100)
+                previous = records.get(field)
+                if valid_reset and valid_observed:
+                    candidate = {"resets_at": reset, "used_percentage": used if valid_used else None,
+                                 "receivedAt": observed}
+                    if previous is None or (reset > previous["resets_at"] + 60 and reset > now):
+                        records[field] = candidate
+                    elif abs(reset - previous["resets_at"]) <= 60 and valid_used:
+                        previous_used = previous["used_percentage"]
+                        if previous_used is None or used > previous_used:
+                            records[field] = candidate
+                        elif used == previous_used and observed > previous["receivedAt"]:
+                            # A newer response confirming the same usage keeps the meter fresh.
+                            records[field] = {**previous, "receivedAt": observed}
+                record = records.get(field)
+                if record is None:
+                    continue
+                if watermarks:
+                    result["_" + field + "Watermark"] = dict(record)
+                if record["resets_at"] <= now:
+                    result[field] = None
+                    result[field + "Percent"] = None
+                    result["lastKnown" + field[0].upper() + field[1:]] = record["resets_at"]
+                    continue
+                result[field] = record["resets_at"]
+                fresh = now - record["receivedAt"] <= CLAUDE_DISPLAY_USAGE_AGE_SECONDS
+                result[field + "Percent"] = record["used_percentage"] if fresh else None
+                if result[field + "Percent"] is not None:
+                    fresh_times.append(record["receivedAt"])
+            if fresh_times:
+                result["observedAt"] = min(fresh_times)
+        return result
 
     @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
@@ -3172,13 +3299,13 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
         usage = latest.get("u") or {}
         # Claude Desktop refetches usage only every few minutes, so a 90-second window
         # leaves the meters blank most of the time. Display accepts a response up to the
-        # widget's own 10-minute quota freshness; the greeter keeps the strict default.
+        # widget's own 10-minute quota freshness; the greeter remains at 90 seconds.
         info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
-        info = self._newest_live(info)
+        info = merge_usage(self._newest_live(info, watermarks=True))
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
-        five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else usage.get("fh")
-        weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else usage.get("sd")
-        reset_at = info["fiveHour"] if info["observedAt"] is not None else self._reset_at()
+        five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else (None if info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else usage.get("fh"))
+        weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else (None if info.get("_weeklySelected") or info.get("lastKnownWeekly") else usage.get("sd"))
+        reset_at = info["fiveHour"] if info["observedAt"] is not None or info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else self._reset_at()
         updated_at = datetime.fromtimestamp(info["observedAt"], timezone.utc).isoformat() if live else _iso_from_ms(latest.get("t"))
         return {
             "connected": True,

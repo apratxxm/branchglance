@@ -281,7 +281,7 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .layou
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-counts,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-counts{display:none;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{position:relative;z-index:1;order:1;flex:none;width:100%;height:30px;min-height:30px;display:flex;align-items:center;justify-content:flex-start;gap:1px;padding:0 4px;overflow:visible;background:#05070b;border-radius:5px 5px 0 0;box-shadow:inset 0 1px #292d3a,inset 1px 0 #292d3a,inset -1px 0 #292d3a,0 4px 0 #05070b;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{position:relative;z-index:1;order:1;flex:none;width:100%;height:30px;min-height:30px;display:flex;align-items:center;justify-content:flex-start;gap:1px;padding:0 4px;overflow:visible;background:#05070b;border-radius:5px 5px 0 0;box-shadow:0 4px 0 #05070b;}
 body.runway-refined.runway-compact:not(.phone) .compact-toolbar button{transition:transform var(--motion-fast) var(--ease-standard),opacity var(--motion-fast) var(--ease-standard),background-color var(--motion-source) var(--ease-standard),color var(--motion-source) var(--ease-standard);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{display:flex;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;height:30px;align-items:center;line-height:30px;margin:0;text-align:center;}
@@ -327,11 +327,11 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compa
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar{gap:1px;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;border-radius:5px;box-shadow:inset 0 0 0 1px var(--source-edge),inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;box-shadow:inset 0 1px var(--source-edge-strong),inset 1px 0 var(--source-edge),inset -1px 0 var(--source-edge-end),0 4px 0 #05070b,inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar #toolbar-clock,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;margin-left:auto;pointer-events:none;color:var(--green);}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar #toolbar-clock{order:1;flex:0 0 58px;width:58px;min-width:58px;max-width:58px;margin-left:auto;pointer-events:none;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) .compact-toolbar .window-controls,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar .window-controls{order:2;}
 body.runway-refined.runway-compact:not(.phone) .compact-clock,
-body.runway-refined.runway-compact:not(.phone) #compact-clock{color:var(--green);}
+body.runway-refined.runway-compact:not(.phone) #compact-clock{color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) #search-toggle{display:none!important;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .compact-toolbar{gap:1px;}
 body.runway-refined.runway-compact[data-notch-mode="controls"]:not(.phone) #widget-lock[aria-pressed="true"],
@@ -528,5 +528,95 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 /* Titles and actions determine row height rather than losing text. */
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.r-title,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{height:auto;overflow:visible;white-space:normal;text-overflow:clip;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{overflow:visible;white-space:normal;overflow-wrap:anywhere;text-wrap:balance;text-overflow:clip;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere;text-wrap:balance;text-overflow:ellipsis;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row:not(:has(.runway-activity)) .runway-refined-status{grid-row:1/3;align-self:center;}
+/* Single quiet line when the visible provider(s) have no chats: centred in the tree area, no icon or button. */
+.chat-list .empty.tree-empty{display:flex;align-items:center;justify-content:center;min-height:160px;padding:0 var(--gutter);margin:0;font-size:13px;font-weight:400;color:#8d93a8;}
+
+/* Routing alert: lives in the toolbar band after the clock and replaces the icon row while active,
+   so it covers no chat row and nothing below it moves. A provider dot (or two) plus one line of text; no box. */
+.routing-alert{display:none;flex:1 1 auto;min-width:0;align-items:center;justify-content:flex-start;gap:8px;height:30px;padding:0 2px 0 4px;color:var(--ink);font:500 12px/1 var(--sans);}
+.routing-alert[hidden]{display:none!important;}
+.routing-alert:not([hidden]){display:flex;}
+.compact-toolbar.has-routing-alert>*:not(#toolbar-clock):not(#routing-alert):not(.window-controls){display:none!important;}
+.routing-alert-dots{display:flex;flex:none;align-items:center;gap:4px;}
+.routing-dot{width:6px;height:6px;border-radius:50%;}
+.routing-dot.codex{background:#6c72ff;box-shadow:0 0 6px #7040ffcc;}
+.routing-dot.claude{background:var(--claude-accent,#e8813f);box-shadow:0 0 6px #e8813fbb;}
+.routing-alert-text{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.routing-alert-dismiss{flex:none;display:inline-grid;place-items:center;width:20px;height:22px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;}
+.routing-alert-dismiss:hover{color:var(--ink);background:#ffffff0b;}
+.routing-alert-dismiss:focus-visible{outline:2px solid var(--focus);outline-offset:1px;}
+.routing-alert-dismiss .ic{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.2;stroke-linecap:round;}
+
+/* ---- Quota bands: one grid for the 5-hour and weekly rows. Identical tracks, so bars, percentages and countdowns line up
+   across both rows and with the 12px content edge. "resets in" is stated once, under the period label. ---- */
+body.runway-refined.runway-compact:not(.phone) .resets{position:relative;}
+body.runway-refined.runway-compact:not(.phone) .resets::before,body.runway-refined.runway-compact:not(.phone) .weekly-resets::before{left:12px;top:5px;width:68px;height:14px;align-items:center;color:var(--ink);font:600 12px/14px var(--sans);}
+body.runway-refined.runway-compact:not(.phone) .resets::after,body.runway-refined.runway-compact:not(.phone) .weekly-resets::after{content:"resets in";position:absolute;z-index:2;left:12px;bottom:4px;color:var(--muted);font:450 10px/12px var(--sans);pointer-events:none;}
+body.runway-refined.runway-compact:not(.phone) #resets,body.runway-refined.runway-compact:not(.phone) .weekly-resets{box-sizing:border-box;grid-template-columns:68px minmax(0,1fr) minmax(0,1fr);column-gap:14px;padding:0 12px;}
+body.runway-refined.runway-compact:not(.phone) #resets[data-provider-count="1"],body.runway-refined.runway-compact:not(.phone) .weekly-resets[data-provider-count="1"]{grid-template-columns:68px minmax(0,1fr);}
+body.runway-refined.runway-compact:not(.phone) .rr{overflow:visible;display:grid;grid-template-columns:max-content max-content minmax(0,1fr) max-content;grid-template-rows:20px 4px;gap:2px 0;padding:0;height:30px;}
+body.runway-refined.runway-compact:not(.phone) .rr.provider-codex:has(.greet){padding-left:0;}
+body.runway-refined.runway-compact:not(.phone) .rr-provider{grid-column:1;grid-row:1;align-self:center;margin-right:5px;font:600 8.4px/20px var(--sans);white-space:nowrap;}
+body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-provider{color:#aaa1ff;}
+body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-provider{color:#f0a06e;}
+body.runway-refined.runway-compact:not(.phone) .rr-left{grid-column:2;grid-row:1;justify-content:flex-start;gap:4px;color:var(--ink);}
+body.runway-refined.runway-compact:not(.phone) .rr-left::before{content:"\00b7";color:var(--muted);margin-right:1px;}
+body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left{color:var(--ink);}
+body.runway-refined.runway-compact:not(.phone) .rr-left b{color:var(--ink);font:600 12px/18px var(--sans);font-variant-numeric:tabular-nums;}
+body.runway-refined.runway-compact:not(.phone) .rr-left i{display:inline;color:var(--muted);font:450 12px/18px var(--sans);font-style:normal;}
+body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{display:inline;font-size:12px;}
+body.runway-refined.runway-compact:not(.phone) .rr .rr-left.last-known b{color:var(--muted);}
+body.runway-refined.runway-compact:not(.phone) .rr-left.t-attn b{color:var(--orange);}
+body.runway-refined.runway-compact:not(.phone) .rr-left.t-err b{color:var(--red);}
+body.runway-refined.runway-compact:not(.phone) .rr-left:not(.t-attn):not(.t-err):not(.last-known) b{color:var(--green);}
+body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-err,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-err{color:var(--ink);}
+body.runway-refined.runway-compact:not(.phone) .rr-moment{grid-column:4;grid-row:1;justify-content:flex-end;}
+body.runway-refined.runway-compact:not(.phone) .rr-cd,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-cd,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-cd{width:auto;max-width:none;color:var(--ink);font:550 12px/20px var(--sans);font-variant-numeric:tabular-nums;text-align:right;}
+body.runway-refined.runway-compact:not(.phone) .rr-cd.t-attn{color:var(--orange);}
+body.runway-refined.runway-compact:not(.phone) .rr-cd:empty::before{content:"\2014";color:var(--muted);}
+body.runway-refined.runway-compact:not(.phone) .rr .meter{grid-column:1/-1;grid-row:2;height:4px;border-radius:4px;}
+body.runway-refined.runway-compact:not(.phone) .rr .greet{left:-13px;top:1px;}
+
+/* ---- Toolbar: lock, pin and Refresh left, window actions right; Settings and Move-monitor in the overflow menu ---- */
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-more{position:relative;flex:none;display:flex;align-items:center;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .updated-marker{flex:none;margin:0 6px;color:#d8b980;font:500 11px/16px var(--sans);white-space:nowrap;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .updated-marker[hidden]{display:none;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu{position:absolute;left:0;top:calc(100% + 4px);z-index:30;min-width:190px;display:flex;flex-direction:column;gap:1px;padding:4px;border-radius:8px;background:#0b0d14;box-shadow:0 10px 26px #000c;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu[hidden]{display:none;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #toolbar-settings,body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #monitor-toggle{position:relative;border:0;background:transparent;box-shadow:none;cursor:pointer;width:100%;min-width:0;max-width:none;height:28px;display:flex;align-items:center;justify-content:flex-start;gap:8px;padding:0 8px;border-radius:6px;color:var(--ink);font:500 12px/1 var(--sans);}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #monitor-toggle{padding-left:30px;font-size:12px;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #toolbar-settings{padding-left:30px;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #toolbar-settings::before{content:"";position:absolute;left:10px;top:9px;width:10px;height:10px;border:1.4px solid currentColor;border-radius:50%;box-shadow:0 0 0 2px #0b0d14,0 0 0 3px currentColor;opacity:.8;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #monitor-toggle::before{left:9px;top:10px;}
+body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu button:hover{background:#ffffff0b;}
+
+/* Narrow strip (the collapsed 328px widget): same grid, shorter words. */
+@media (max-width:460px){
+body.runway-refined.runway-compact:not(.phone) .resets::before,body.runway-refined.runway-compact:not(.phone) .weekly-resets::before{left:8px;width:46px;font-size:11px;}
+body.runway-refined.runway-compact:not(.phone) .resets::after,body.runway-refined.runway-compact:not(.phone) .weekly-resets::after{left:8px;font-size:9px;}
+body.runway-refined.runway-compact:not(.phone) #resets,body.runway-refined.runway-compact:not(.phone) .weekly-resets{grid-template-columns:46px minmax(0,1fr) minmax(0,1fr);column-gap:8px;padding:0 8px;}
+body.runway-refined.runway-compact:not(.phone) .rr-left::before,body.runway-refined.runway-compact:not(.phone) .rr-left:not(.last-known) i{display:none;}
+body.runway-refined.runway-compact:not(.phone) .rr-provider{margin-right:4px;font-size:7.7px;}
+body.runway-refined.runway-compact:not(.phone) .rr-cd:empty::before{content:"";}
+body.runway-refined.runway-compact:not(.phone) .rr-left b,body.runway-refined.runway-compact:not(.phone) .rr-cd{font-size:11px;}
+body.runway-refined.runway-compact:not(.phone) .rr-left i{font-size:10px;}
+body.runway-refined.runway-compact:not(.phone) .rr-left{gap:3px;}
+}
+
+body.runway-refined.runway-compact:not(.phone) #toolbar-clock,
+body.runway-refined.runway-compact:not(.phone) #compact-clock,
+body.runway-refined.runway-compact:not(.phone) .runway-run-time{color:var(--green);}
+body.runway-refined.runway-compact.data-stale:not(.phone) #toolbar-clock,
+body.runway-refined.runway-compact.data-stale:not(.phone) #compact-clock,
+body.runway-refined.runway-compact.data-stale:not(.phone) .runway-run-time{color:var(--muted);}
+
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-more button{border:0;background:transparent;color:var(--muted);font:500 12px/24px var(--sans);padding:0 0 0 48px;cursor:pointer;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-more [aria-disabled="true"]{display:none;}
+/* Subagent names one step smaller so typical names fit on one line; very long names still wrap, never truncate. */
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title .runway-agent-label{font-size:12px;line-height:16px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title .runway-model-name{font-size:11.5px;}
+/* Subagent names also take the timer column; the timer sits in the empty drive slot. Status and tokens stay aligned with the parent. */
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title{grid-column:1 / 3;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-timing{grid-column:4;justify-items:center;}

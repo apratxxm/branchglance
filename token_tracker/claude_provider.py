@@ -1,4 +1,4 @@
-"""Claude Code rows in the Codex row contract, sourced from hook events.
+﻿"""Claude Code rows in the Codex row contract, sourced from hook events.
 
 Execution (running / waiting / compacting / terminal) comes only from the hook
 event stream reduced by ``claude_events``. Transcripts supply identity, usage,
@@ -17,6 +17,7 @@ preview, descriptions, errors, tool payloads or paths are ever exposed.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat as stat_module
@@ -107,6 +108,101 @@ def _remembered_identity(key: str, title: str | None, model: str | None) -> tupl
         while len(_IDENTITY) > _IDENTITY_MAX:
             _IDENTITY.pop(next(iter(_IDENTITY)))
     return title, model
+
+
+_AGENT_DESCRIPTION_KIND = "claude-agent-descriptions"
+_AGENT_DESCRIPTION_NEEDLES = (b'"Agent"', b'"Task"', b"agentId")
+_AGENT_DESCRIPTION_MAX_CALLS = 512
+_AGENT_ID_RE = re.compile(r"agentId:\s*([A-Za-z0-9_-]{1,128})")
+
+
+def _tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(block.get("text", "")) for block in content if isinstance(block, dict))
+    return ""
+
+
+def _new_agent_description_state() -> dict[str, Any]:
+    return {"calls": {}, "result": {}}
+
+
+def _reduce_agent_descriptions(state: dict[str, Any], record: Any) -> None:
+    """Keep only Agent/Task tool descriptions and the agent ids their results report."""
+    if not isinstance(record, dict):
+        return
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return
+    calls, result = state["calls"], state["result"]
+    tool_result = record.get("toolUseResult")
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use" and block.get("name") in {"Agent", "Task"}:
+            tool_input = block.get("input")
+            description = tool_input.get("description") if isinstance(tool_input, dict) else None
+            if isinstance(block.get("id"), str) and isinstance(description, str):
+                calls[block["id"]] = description
+                while len(calls) > _AGENT_DESCRIPTION_MAX_CALLS:
+                    calls.pop(next(iter(calls)))
+        elif block.get("type") == "tool_result" and block.get("tool_use_id") in calls:
+            agent_id = tool_result.get("agentId") if isinstance(tool_result, dict) else None
+            if not isinstance(agent_id, str):
+                found = _AGENT_ID_RE.search(_tool_result_text(block.get("content")))
+                agent_id = found.group(1) if found else None
+            if agent_id:
+                result[agent_id] = calls[block["tool_use_id"]]
+                while len(result) > _AGENT_DESCRIPTION_MAX_CALLS:
+                    result.pop(next(iter(result)))
+
+
+def _agent_descriptions(parent: Path | None) -> dict[str, str]:
+    """Subagent id -> the Agent tool's `description`, read from the parent transcript.
+
+    Shares the incremental JSONL reader: only bytes appended since the last stat are
+    read, and only matching lines are decoded. Prompts and other text are never kept.
+    """
+    if parent is None:
+        return {}
+    from . import providers
+    state = providers._incremental_jsonl_reduce(
+        _AGENT_DESCRIPTION_KIND, parent, _new_agent_description_state, _reduce_agent_descriptions,
+        project=lambda state: {"result": dict(state["result"])}, unavailable={"result": {}},
+        needles=_AGENT_DESCRIPTION_NEEDLES)
+    result = state.get("result") if isinstance(state, dict) else None
+    return dict(result) if isinstance(result, dict) else {}
+
+
+_AGENT_META_KIND = "claude-agent-meta"
+_AGENT_META_MAX_BYTES = 64 * 1024
+_AGENT_META_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def _read_agent_meta_description(path: Path) -> str | None:
+    try:
+        if path.stat().st_size > _AGENT_META_MAX_BYTES:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None
+    description = data.get("description") if isinstance(data, dict) else None
+    return description if isinstance(description, str) else None
+
+
+def _agent_meta_description(parent: Path | None, agent_id: str) -> str | None:
+    """Subagent `description` from its own `agent-<id>.meta.json`, written when it starts.
+
+    Available while the subagent runs, before the parent's tool_result exists. The
+    file sits beside the subagent transcripts and is read through the path stat memo.
+    """
+    if parent is None or not _AGENT_META_ID_RE.fullmatch(agent_id):
+        return None
+    from . import providers
+    path = parent.with_suffix("") / "subagents" / f"agent-{agent_id}.meta.json"
+    return providers._file_memo(_AGENT_META_KIND, path, lambda: _read_agent_meta_description(path))
 
 
 def find_transcript(session_id: str, agent_id: str = "", root: Path | None = None) -> Path | None:
@@ -307,7 +403,14 @@ def _hook_row(entry: dict[str, Any], root_entry: dict[str, Any] | None, now: flo
                          executionObservedAt=None, executionSince=None, executionCompactionStartedAt=None,
                          executionTerminalAt=None, executionActivity=None, stateDetail=None)
         status = "unavailable"
-    title, model = _remembered_identity(f"{sid}:{aid or ''}", None if aid else row_title(transcript),
+    # Subagents are named by the Agent tool's description; the type stays as agentName.
+    described = None
+    if aid:
+        parent = find_transcript(sid, "", projects)
+        # Parent tool_use/tool_result first; the subagent's own meta.json while the result is pending.
+        described = (public_title(_agent_descriptions(parent).get(aid))
+                     or public_title(_agent_meta_description(parent, aid)))
+    title, model = _remembered_identity(f"{sid}:{aid or ''}", described if aid else row_title(transcript),
                                         public_model(transcript.get("model")) or public_model(state.get("model")))
     row: dict[str, Any] = {
         "id": sid if not aid else f"{sid}:{aid}",
@@ -470,14 +573,14 @@ def build_rows(now: float | None = None,
 # shared reader) into packed arrays so checkpoints stay small: one entry per
 # response id with its local day, model and five token counts. No text kept.
 TRACKING_DAYS = 31
-# v2 adds per-response epochs; older checkpoints lack them and are rebuilt.
-_USAGE_KIND = "claude-code-usage-v2"
+# v3 records whether prompt counters were complete; older checkpoints are rebuilt.
+_USAGE_KIND = "claude-code-usage-v3"
 _RECENT_IDS = 16
 
 
 def _new_usage_state() -> dict[str, Any]:
     return {"ids": array("Q"), "days": array("I"), "models": array("H"), "values": array("Q"),
-            "epochs": array("q"),
+            "epochs": array("q"), "sized": array("B"),
             "model_names": [], "recent": {}}
 
 
@@ -504,6 +607,7 @@ def _reduce_usage(state: dict[str, Any], item: Any) -> None:
     if not usage:
         return
     values = _usage_values(usage)
+    size_known = providers._claude_request_size_known(usage)
     if not any(values):
         return
     day = providers._local_date_from_timestamp(item.get("timestamp"))
@@ -523,6 +627,7 @@ def _reduce_usage(state: dict[str, Any], item: Any) -> None:
         base = index * 5
         for offset, value in enumerate(values):
             state["values"][base + offset] = max(state["values"][base + offset], value)
+        state["sized"][index] |= size_known
         return
     state["ids"].append(key)
     state["days"].append(date.fromisoformat(day).toordinal())
@@ -530,6 +635,7 @@ def _reduce_usage(state: dict[str, Any], item: Any) -> None:
     stamp = providers._timestamp_epoch(item.get("timestamp")) if item.get("timestamp") else None
     state["epochs"].append(int(stamp) if stamp else 0)
     state["values"].extend(values)
+    state["sized"].append(size_known)
     recent[key] = len(state["ids"]) - 1
     while len(recent) > _RECENT_IDS:
         recent.pop(next(iter(recent)))
@@ -630,6 +736,12 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
                 usage["subagentRequests"] += 1
             record = {"input_tokens": fields[0], "output_tokens": fields[1], "cached_tokens": fields[2],
                       "cache_5m_tokens": fields[3], "cache_1h_tokens": fields[4], "total_tokens": amount}
+            sized = state.get("sized")
+            pricing_fields = providers._claude_request_pricing_fields(
+                model, record, size_known=bool(sized is not None and index < len(sized) and sized[index]))
+            for name, value in pricing_fields.items():
+                bucket[name] = bucket.get(name, 0) + value
+            record.update(pricing_fields)
             _insight_add(insight_daily.setdefault(date.fromordinal(day).isoformat(), {}), model, record)
             epochs = state.get("epochs")
             epoch = epochs[index] if epochs is not None and index < len(epochs) else 0
