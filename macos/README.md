@@ -15,7 +15,7 @@ The Swift host in `Sources/` shows the same web UI as the Windows widget, in the
 `install` also adds `branchglance-statusline` in `runtime/bin`, the macOS form of `Branchglance.exe --statusline`. To have Claude Code pass its quota to Branchglance, set it as the status line in `~/.claude/settings.json`:
 
 ```json
-"statusLine": {"type": "command", "command": "~/Library/Application Support/Branchglance/runtime/bin/branchglance-statusline"}
+"statusLine": {"type": "command", "command": "\"$HOME/Library/Application Support/Branchglance/runtime/bin/branchglance-statusline\""}
 ```
 
 `install` keeps the previous app and tracker in `~/Library/Application Support/Branchglance/previous` for `rollback`. It also installs `bg-codex` in `runtime/bin` (see [the integration guide](../docs/INTEGRATION.md#use-bg-codex)).
