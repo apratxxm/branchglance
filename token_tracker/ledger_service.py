@@ -31,6 +31,7 @@ from .provider_policy import POLICIES, policy_for
 ENV_FLAG = "TOKEN_TRACKER_LEDGER"
 BUDGET_BYTES = 8 * 1024 * 1024
 LIVE_INTERVAL_SECONDS = 30.0
+STARTUP_DELAY_SECONDS = 60  # the first pass waits, so the widget's first live reads are not competing for CPU
 MIN_BACKFILL_PAUSE_SECONDS = 0.2
 BACKFILL_DUTY_MULTIPLIER = 4  # wait 4 x pass duration: the writer takes about 20% of one core while backfilling
 BACKOFF_START_SECONDS = 5.0
@@ -246,6 +247,8 @@ class LedgerService:
     def _run(self) -> None:
         backoff = BACKOFF_START_SECONDS
         try:
+            # The loop checks _stop itself, so a waiter that returns True here still lets the first pass run.
+            self._pause(STARTUP_DELAY_SECONDS)
             while not self._stop.is_set():
                 self._run_purges()
                 if self._stop.is_set():

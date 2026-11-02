@@ -17,7 +17,7 @@ from test_ledger_support import (  # ledger_guard is autouse
 from token_tracker import ledger_service
 from token_tracker import ledger_store as store
 from token_tracker.ledger import Ledger, LedgerUnavailable, read_summary
-from token_tracker.ledger_service import ENV_FLAG, LIVE_INTERVAL_SECONDS, LedgerService
+from token_tracker.ledger_service import ENV_FLAG, LIVE_INTERVAL_SECONDS, STARTUP_DELAY_SECONDS, LedgerService
 from token_tracker.ledger_ingest import path_key
 from token_tracker.provider_policy import ProviderPolicy
 
@@ -106,13 +106,14 @@ def test_unfinished_tail_waits_at_live_cadence_instead_of_spinning(tmp_path):
     def waiter(seconds):
         waits.append(seconds)
         states.append(holder["service"].health()["state"])
-        return len(waits) >= 4
+        return len(waits) >= 5
 
     service = LedgerService(data_dir=data, claude_root=claude, codex_root=codex, policies=policies_for(),
                             environ={ENV_FLAG: "1"}, waiter=waiter)
     holder["service"] = service
     service.start()
     service._thread.join(20)
+    assert waits.pop(0) == STARTUP_DELAY_SECONDS and states.pop(0) == "starting"
     assert waits[0] < LIVE_INTERVAL_SECONDS  # the first pass read a complete line: backfill cadence
     assert waits[1:] == [LIVE_INTERVAL_SECONDS] * 3
     assert states[1:] == ["live"] * 3
@@ -148,11 +149,12 @@ def test_exception_backs_off_exponentially_and_records_only_class_name(tmp_path)
 
     def waiter(seconds):
         waits.append(seconds)
-        return len(waits) >= 8
+        return len(waits) >= 9
 
     service, *_ = make_service(tmp_path, waiter=waiter, ledger_factory=lambda *a, **k: FlakyLedger())
     service.start()
     service._thread.join(20)
+    assert waits.pop(0) == STARTUP_DELAY_SECONDS
     assert waits == [5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0, 300.0]
     health = service.health()
     assert health["state"] == "error" and health["lastError"] == "DiskFailure"
@@ -168,11 +170,12 @@ def test_construction_failure_is_error_state_and_retries(tmp_path):
 
     def waiter(seconds):
         waits.append(seconds)
-        return len(waits) >= 3
+        return len(waits) >= 4
 
     service, *_ = make_service(tmp_path, waiter=waiter, ledger_factory=factory)
     service.start()
     service._thread.join(20)
+    assert waits.pop(0) == STARTUP_DELAY_SECONDS
     assert waits == [5.0, 10.0, 20.0]
     assert service.health()["state"] == "error"
     assert service.health()["lastError"] == "PermissionError"
@@ -195,7 +198,8 @@ def test_stop_returns_within_timeout_while_a_pass_is_running(tmp_path):
         def close(self):
             closed.append(True)
 
-    service, *_ = make_service(tmp_path, waiter=None, ledger_factory=lambda *a, **k: BlockingLedger())
+    # The startup delay elapses at once here; the pass itself is what this test stops.
+    service, *_ = make_service(tmp_path, waiter=lambda seconds: False, ledger_factory=lambda *a, **k: BlockingLedger())
     service.start()
     assert entered.wait(5)
     began = time.monotonic()
@@ -392,7 +396,7 @@ def test_hidden_but_collected_backlog_keeps_backfill_cadence(tmp_path):
     def waiter(seconds):
         waits.append(seconds)
         shown_pending.append(holder["service"].health()["pendingBytes"])
-        return len(waits) >= 3
+        return len(waits) >= 4
 
     service = LedgerService(data_dir=data, claude_root=claude, codex_root=codex,
                             policies=policies_for(claude_show=False), environ={ENV_FLAG: "1"},
@@ -400,5 +404,49 @@ def test_hidden_but_collected_backlog_keeps_backfill_cadence(tmp_path):
     holder["service"] = service
     service.start()
     service._thread.join(20)
+    assert waits.pop(0) == STARTUP_DELAY_SECONDS and shown_pending.pop(0) == 0
     assert all(seconds < LIVE_INTERVAL_SECONDS for seconds in waits)  # collected backlog is still being read
     assert shown_pending == [0, 0, 0]  # the public health never reports hidden backlog
+
+
+# ------------------------------------------------------------------ startup delay
+
+def test_first_pass_waits_the_startup_delay_before_reading(tmp_path):
+    events = []
+
+    class RecordingLedger:
+        def ingest(self, *args, **kwargs):
+            events.append("ingest")
+            return {"bytesRead": 0, "pendingBytes": 0, "filesVisited": 0}
+
+        def pending_bytes(self, show):
+            return 0
+
+        def close(self):
+            pass
+
+    def waiter(seconds):
+        events.append(seconds)
+        return len(events) >= 3
+
+    service, *_ = make_service(tmp_path, waiter=waiter, ledger_factory=lambda *a, **k: RecordingLedger())
+    service.start()
+    service._thread.join(10)
+    assert events[:2] == [STARTUP_DELAY_SECONDS, "ingest"]
+
+
+def test_stop_during_startup_delay_returns_at_once_without_a_pass(tmp_path):
+    built = []
+
+    def factory(*args, **kwargs):
+        built.append(1)
+        raise AssertionError("no writer may be built during the startup delay")
+
+    service, *_ = make_service(tmp_path, waiter=None, ledger_factory=factory)
+    service.start()
+    assert service._thread.is_alive()
+    began = time.monotonic()
+    service.stop(timeout=5)
+    assert time.monotonic() - began < 2
+    assert not service._thread.is_alive()
+    assert built == []

@@ -37,6 +37,7 @@ LIVE_REFRESH_TTL_SECONDS = 1.0
 LIVE_MAX_AGE_SECONDS = 4.0
 LIVE_COLD_WAIT_SECONDS = 0.35
 LIVE_RETRY_COOLDOWN_SECONDS = 1.0
+LIVE_BUILD_BUDGET_SECONDS = 1.5
 _CLAUDE_COLLECTION_LOCK = threading.Lock()
 _SETTINGS_TOKEN_LOCK = threading.Lock()
 _SETTINGS_TOKEN: str | None = None
@@ -187,6 +188,17 @@ def _log_live_failure(exc: Exception) -> None:
     logging.getLogger(__name__).warning("Live telemetry failed (%s)", error_type)
 
 
+def _live_complete(value: object) -> bool:
+    return not (isinstance(value, dict) and value.get("complete") is False)
+
+
+def _live_progressed(previous: object, value: dict) -> bool:
+    """A partial round makes progress when it leaves fewer chats awaiting detail."""
+    if not isinstance(previous, dict) or _live_complete(previous):
+        return True
+    return value.get("pendingChats", 0) < previous.get("pendingChats", 0)
+
+
 class LiveCache:
     """Keep slow live-provider work out of HTTP request threads."""
 
@@ -201,8 +213,12 @@ class LiveCache:
         self.retry_after = 0.0
 
     def _refresh(self) -> None:
+        with self.condition:
+            # Until a complete value exists, each round is budgeted; memoized chats make later rounds cheap.
+            previous = self.value
+            budget = None if previous is not None and _live_complete(previous) else LIVE_BUILD_BUDGET_SECONDS
         try:
-            value = live_state()
+            value = live_state() if budget is None else live_state(budget_seconds=budget)
             plain = json.dumps(value).encode("utf-8")
         except Exception as exc:
             _log_live_failure(exc)
@@ -225,6 +241,13 @@ class LiveCache:
             self.completed_at = time.monotonic()
             self.building = False
             self.retry_after = 0.0
+            if not _live_complete(value):
+                if _live_progressed(previous, value):
+                    # Keep building until complete; no caller or TTL is needed.
+                    self._start_refresh_locked(self.completed_at)
+                else:
+                    # No chat finished this round: back off; the next poll resumes after the cooldown.
+                    self.retry_after = self.completed_at + LIVE_RETRY_COOLDOWN_SECONDS
             self.condition.notify_all()
 
     def _start_refresh_locked(self, now: float) -> None:
