@@ -183,6 +183,10 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         // so the server finds the codex and claude CLIs the way a terminal does.
         if let path = loginShellPath() { env["PATH"] = path }
         env["BRANCHGLANCE_SETTINGS_TOKEN"] = settingsToken
+        // The Windows user sets TOKEN_TRACKER_CODEX_SEND; a Finder-launched app has no such
+        // environment, so the menu switch below grants it (and only it ever turns it on).
+        env.removeValue(forKey: "TOKEN_TRACKER_CODEX_SEND")
+        if UserDefaults.standard.bool(forKey: "codexSendAfterReset") { env["TOKEN_TRACKER_CODEX_SEND"] = "1" }
         env["BRANCHGLANCE_MACOS_HOST_SECRET"] = hex(key)
         env["BRANCHGLANCE_POLICY_FILE"] = env["BRANCHGLANCE_POLICY_FILE"] ?? NSHomeDirectory()
             + "/Library/Application Support/Branchglance/policy.json"
@@ -743,6 +747,11 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         artwork.state = UserDefaults.standard.bool(forKey: "downloadSpotifyArtwork") ? .on : .off
         artwork.toolTip = "Spotify only provides artwork as a web link; fetching it contacts Spotify's image server."
         menu.addItem(artwork)
+        let send = NSMenuItem(title: "Allow Codex Messages After Reset", action: #selector(toggleCodexSend(_:)), keyEquivalent: "")
+        send.target = self
+        send.state = UserDefaults.standard.bool(forKey: "codexSendAfterReset") ? .on : .off
+        send.toolTip = "Lets Settings turn on the greeting and \u{201C}continue\u{201D} for Codex chats after a limit resets."
+        menu.addItem(send)
         menu.addItem(.separator())
         menu.addItem(withTitle: "Reload", action: #selector(reload), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open in Browser", action: #selector(openInBrowser), keyEquivalent: "").target = self
@@ -814,6 +823,32 @@ final class Host: NSObject, NSApplicationDelegate, WKScriptMessageHandlerWithRep
         autoOpen.toggle()
         item.state = autoOpen ? .on : .off
         if !autoOpen { updateOpenState() }
+    }
+
+    @objc func toggleCodexSend(_ item: NSMenuItem) {
+        let enable = !UserDefaults.standard.bool(forKey: "codexSendAfterReset")
+        let alert = NSAlert()
+        alert.messageText = enable ? "Allow Codex messages after a reset?" : "Stop Codex messages after a reset?"
+        alert.informativeText = enable
+            ? "Branchglance may then send a greeting, or the message \u{201C}continue\u{201D}, to a Codex chat when its usage limit resets. Each action still has to be turned on in Settings. Branchglance restarts to apply this."
+            : "Branchglance restarts to apply this."
+        alert.addButton(withTitle: enable ? "Allow and Restart" : "Stop and Restart")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        UserDefaults.standard.set(enable, forKey: "codexSendAfterReset")
+        item.state = enable ? .on : .off
+        relaunch()
+    }
+
+    /// Start a fresh copy once this one has quit, so the server picks up the new environment.
+    func relaunch() {
+        let script = "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; open \"$0\""
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script, Bundle.main.bundlePath]
+        try? process.run()
+        NSApp.terminate(nil)
     }
 
     @objc func toggleLockSounds(_ item: NSMenuItem) {
