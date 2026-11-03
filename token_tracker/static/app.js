@@ -1622,10 +1622,12 @@ function runwayExit(el) {
 }
 // Resets the provider granted but the user has not spent yet; the soonest expiry leads the tooltip.
 function bankedResetView(banked) {
-  const count=safeNumber(banked?.available);if(!count||count<1)return {text:"",tip:""};
-  const items=Array.isArray(banked.items)?banked.items:[];
+  const reported=safeNumber(banked?.available);if(!reported||reported<1)return {text:"",tip:""};
+  // A cached or restored snapshot can outlive a reset's expiry, so expired entries are dropped here too.
+  const listed=Array.isArray(banked.items)?banked.items:[],items=listed.filter(item=>{const at=safeNumber(item?.expiresAt);return at==null||at*1000>Date.now();});
+  const count=Math.round(reported)-(listed.length-items.length);if(count<1)return {text:"",tip:""};
   const lines=items.map(item=>{const at=safeNumber(item?.expiresAt);return String(item?.title||"Limit reset")+(at?" · expires "+new Date(at*1000).toLocaleDateString([], {month:"short",day:"numeric"}):"");});
-  return {text:"↻ "+Math.round(count),tip:Math.round(count)+" banked reset"+(count===1?"":"s")+(lines.length?": "+lines.join("; "):"")};
+  return {text:"↻ "+count,tip:Math.round(count)+" banked reset"+(count===1?"":"s")+(lines.length?": "+lines.join("; "):"")};
 }
 function renderResets(providers) {
   const node=$("#resets"),weeklyNode=REFINED?$("#weekly-resets"):null;if(!node)return;
