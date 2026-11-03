@@ -36,6 +36,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, notchOpeningTimer:null, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
+const lastKnownFollowup={timer:null,attempts:0};
 const codexQuotaBootstrap={name:'Codex'};
 const quotaBootstrap={provider:codexQuotaBootstrap,providers:{Codex:codexQuotaBootstrap,Claude:{name:'Claude'}},metadata:null,fetchError:null,unsupported:false,samplePayload:null,sampleSequence:0};
 const quotaLoader={promise:null,sequence:0,retryAfter:0,retryMs:2000,unsupported:false};
@@ -1565,10 +1566,10 @@ function resetView(provider, key) {
   const quotaAt=provider._quotaWindowObservedAt&&Object.prototype.hasOwnProperty.call(provider._quotaWindowObservedAt,key)?provider._quotaWindowObservedAt[key]:provider.limitsUpdatedAt;
   // A sample stamped up to a minute ahead of this clock (clock skew, a paused page) counts as fresh, not as missing.
   const sampled=stamp(quotaAt),rawAge=sampled?Date.now()-sampled:null,age=rawAge!=null&&rawAge<0&&rawAge>=-60000?0:rawAge;
-  const measured=!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000);
+  const measured=item.lastKnown!==true&&(!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000));
   const observedParts=used!=null&&sampled&&age!=null&&age>=0?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const maxAge=key==="weekly"?7*86400000:86400000;
-  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0));
+  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>=0&&(item.lastKnown===true?(observedParts.target!=null&&observedParts.seconds>0):age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0)));
   const expired=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&observedParts.target!=null&&observedParts.seconds<=0);
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
@@ -2710,6 +2711,7 @@ function render(snapshot) {
   finally{state.sourceSwitching=priorSourceSwitching;}
   renderStrip(attentionItems(state.forest,limits));
   window.TokenTrackerDashboard?.setSnapshot?.(snapshot);
+  syncLastKnownFollowup();
   return true;
 }
 function renderLoading() {
@@ -2728,6 +2730,7 @@ function tick() {
   renderTitle(providers);renderResets(limits);renderChats(providers);renderAnalytics(state.snapshot);
   renderStrip(attentionItems(state.forest,limits));
   window.TokenTrackerDashboard?.setSnapshot?.(state.snapshot);
+  syncLastKnownFollowup();
 }
 function applyQuotaSamples(samples,sequence,providers,{requireDated=false}={}) {
   if(!samples||!Array.isArray(providers))return false;
@@ -2742,6 +2745,8 @@ function applyQuotaSamples(samples,sequence,providers,{requireDated=false}={}) {
     for(const [key,percentField,resetField] of [['fiveHour','five_hour_percent','reset_at'],['weekly','weekly_percent','weekly_reset_at']]){
       if(!Object.prototype.hasOwnProperty.call(sample,percentField))continue;
       const percent=sample[percentField];if(percent!==null&&safeNumber(percent)===null)continue;
+      const existing=provider[key];
+      if(percent===null&&existing?.lastKnown===true&&safeNumber(existing.resetAt)!==null&&Number(existing.resetAt)*1000>now)continue;
       const hasWindowTime=Object.prototype.hasOwnProperty.call(provider._quotaWindowObservedAt,key),observed=provider._quotaWindowObservedAt[key],statsAt=isoObservationTime(hasWindowTime?observed:provider.limitsUpdatedAt,now),prior=retained[key];
       const acceptedSequence=state.watcherAcceptedSequence.get(provider.name+':'+key)||0;
       if(checkedAt!==null){if(statsAt!==null&&checkedAt<=statsAt||prior?.at!=null&&checkedAt<=prior.at)continue;}
@@ -2749,6 +2754,8 @@ function applyQuotaSamples(samples,sequence,providers,{requireDated=false}={}) {
       if(percent===null){provider[key]=null;}
       else {
         const previous=provider[key]&&typeof provider[key]==='object'?provider[key]:{},next={...previous,percent:safeNumber(percent)};
+        if(previous.lastKnown===true){delete next.resetAt;delete next.reset;delete next.lastKnownResetAt;}
+        delete next.lastKnown;
         if(Object.prototype.hasOwnProperty.call(sample,resetField)){
           const reset=sample[resetField];if(safeNumber(reset)!==null)next.resetAt=safeNumber(reset);
         }
@@ -2795,7 +2802,11 @@ function reconcileSnapshotQuotas(snapshot,now=Date.now()){
       if(retained[key])candidates.push({value:retained[key].value,timestamp:retained[key].timestamp,at:retained[key].at});
       if(!candidates.length)continue;
       let selected=candidates[0];
-      for(const candidate of candidates.slice(1))if(candidate.at!==null&&(selected.at===null||candidate.at>selected.at))selected=candidate;
+      for(const candidate of candidates.slice(1)){
+        const fallback=selected.value?.lastKnown===true&&safeNumber(selected.value?.resetAt)!=null&&Number(selected.value.resetAt)*1000>now;
+        if(fallback&&safeNumber(candidate.value?.percent)===null)continue;
+        if(candidate.at!==null&&(selected.at===null||candidate.at>selected.at||candidate.at===selected.at&&selected.value?.lastKnown===true&&candidate.value?.lastKnown!==true&&safeNumber(candidate.value?.percent)!==null))selected=candidate;
+      }
       incoming[key]=copyQuotaValue(selected.value);
       selectedTimes[key]=selected;
       if(selected.at!==null&&(aggregateAt===null||selected.at>aggregateAt))aggregateAt=selected.at;
@@ -2884,6 +2895,13 @@ function loadWatcher(){
 /* ---------- network ---------- */
 const markOk = () => { state.lastOkAt=Date.now();state.failSince=null; };
 const markFail = () => { if(!state.failSince)state.failSince=Date.now(); };
+function syncLastKnownFollowup() {
+  const visible=state.snapshot&&limitProvidersFor(state.snapshot).some(provider=>["fiveHour","weekly"].some(key=>resetView(provider,key).lastKnown));
+  if(!visible){if(lastKnownFollowup.timer!=null)clearTimeout(lastKnownFollowup.timer);lastKnownFollowup.timer=null;lastKnownFollowup.attempts=0;return;}
+  if(document.hidden||lastKnownFollowup.timer!=null||lastKnownFollowup.attempts>=4)return;
+  const delay=2000*2**lastKnownFollowup.attempts++;
+  lastKnownFollowup.timer=setTimeout(()=>{lastKnownFollowup.timer=null;if(!document.hidden)void refresh();},delay);
+}
 function clearBootstrapRetry(reset=false) {
   if(state.bootstrapRetryTimer!=null)clearTimeout(state.bootstrapRetryTimer);
   state.bootstrapRetryTimer=null;
