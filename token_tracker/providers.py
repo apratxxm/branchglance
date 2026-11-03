@@ -236,6 +236,26 @@ def _usage_percent(value: Any) -> int | None:
         return None
 
 
+def _banked_resets(result: Any, now: float | None = None) -> dict[str, Any] | None:
+    """Unused limit resets the provider granted, or None when it reports none."""
+    block = result.get("rateLimitResetCredits") if isinstance(result, dict) else None
+    if not isinstance(block, dict) or not isinstance(block.get("credits"), list):
+        return None
+    now = time.time() if now is None else now
+    items = []
+    for credit in block["credits"]:
+        if not isinstance(credit, dict) or credit.get("status") != "available":
+            continue
+        expires = credit.get("expiresAt")
+        expires = expires if type(expires) in (int, float) else None
+        if expires is not None and expires <= now:
+            continue
+        title = " ".join(str(credit.get("title") or "Limit reset").split())[:60]
+        items.append({"title": title, "expiresAt": expires})
+    items.sort(key=lambda item: item["expiresAt"] if item["expiresAt"] is not None else float("inf"))
+    return {"available": len(items), "items": items[:5]}
+
+
 def _walk(value: Any) -> Iterable[tuple[str, Any]]:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -4493,6 +4513,7 @@ class CodexProvider:
                 "reset": _reset_label((rate.get("secondary") or {}).get("resetsAt")),
                 "resetAt": (rate.get("secondary") or {}).get("resetsAt"),
             }
+            banked = _banked_resets(snap.rate_limits)
             limits_updated_at = datetime.now(timezone.utc).isoformat()
             source = "Codex app server + local session telemetry"
         except CodexUnavailable:
@@ -4502,6 +4523,7 @@ class CodexProvider:
             chats = self._local_threads(session_paths=session_paths)
             five_hour = self._telemetry_limit(local.get("rate"), "primary")
             weekly = self._telemetry_limit(local.get("rate"), "secondary")
+            banked = None
             limits_updated_at = local.get("rateUpdatedAt")
             source = "Codex local session telemetry"
         try:
@@ -4551,6 +4573,7 @@ class CodexProvider:
             "accent": "#4a95e0",
             "fiveHour": five_hour,
             "weekly": weekly,
+            "bankedResets": banked,
             "cache": cache,
             "modelUsage": [
                 {"model": model, **usage}

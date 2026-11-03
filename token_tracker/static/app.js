@@ -1620,6 +1620,15 @@ function runwayExit(el) {
   el.addEventListener?.('animationend',finish);el.addEventListener?.('animationcancel',finish);
   setTimeout(()=>{if(el.isConnected)finish({animationName:'runway-row-exit'});},250);
 }
+// Resets the provider granted but the user has not spent yet; the soonest expiry leads the tooltip.
+function bankedResetView(banked) {
+  const reported=safeNumber(banked?.available);if(!reported||reported<1)return {text:"",tip:""};
+  // A cached or restored snapshot can outlive a reset's expiry, so expired entries are dropped here too.
+  const listed=Array.isArray(banked.items)?banked.items:[],items=listed.filter(item=>{const at=safeNumber(item?.expiresAt);return at==null||at*1000>Date.now();});
+  const count=Math.round(reported)-(listed.length-items.length);if(count<1)return {text:"",tip:""};
+  const lines=items.map(item=>{const at=safeNumber(item?.expiresAt);return String(item?.title||"Limit reset")+(at?" · expires "+new Date(at*1000).toLocaleDateString([], {month:"short",day:"numeric"}):"");});
+  return {text:"↻ "+count,tip:Math.round(count)+" banked reset"+(count===1?"":"s")+(lines.length?": "+lines.join("; "):"")};
+}
 function renderResets(providers) {
   const node=$("#resets"),weeklyNode=REFINED?$("#weekly-resets"):null;if(!node)return;
   const shape=providers.map(p=>p.name).join("|");
@@ -1630,7 +1639,7 @@ function renderResets(providers) {
       const id="r"+i+"-"+key,providerClass=p.name==="Claude"?"provider-claude":"provider-codex";
       return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span><span class="rr-provider" id="'+id+'-name">'+esc(p.name)+'</span>'+
         (key==="fiveHour"&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span><span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>\uFFFD</b><i>used</i></span>':'\uFFFD')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span>'+(key==="weekly"?'<span class="rr-banked" id="'+id+'-banked" hidden></span>':'')+'<span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>\uFFFD</b><i>used</i></span>':'\uFFFD')+'</span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">\uFFFD:\uFFFD</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("");
@@ -1648,6 +1657,7 @@ function renderResets(providers) {
     const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
+    else{const banked=$(id+"-banked"),view=bankedResetView(p.bankedResets);if(banked){if(banked.textContent!==view.text)banked.textContent=view.text;put(banked,"title",view.tip);attr(banked,"aria-label",view.tip);banked.hidden=!view.text;}}
   }));
   if(RUNWAY){renderGreeterStatus(providers);evaluateRoutingAlerts(providers);}
 }
@@ -3248,7 +3258,7 @@ window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCou
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.evaluateRoutingAlerts=evaluateRoutingAlerts;window.__tokenTrackerTest.routingStates=routingStates;window.__tokenTrackerTest.getRoutingAlert=()=>routingAlert;window.__tokenTrackerTest.getRoutingNotch=()=>notch;window.__tokenTrackerTest.dismissRoutingAlert=dismissRoutingAlert;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.evaluateRoutingAlerts=evaluateRoutingAlerts;window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.routingStates=routingStates;window.__tokenTrackerTest.getRoutingAlert=()=>routingAlert;window.__tokenTrackerTest.getRoutingNotch=()=>notch;window.__tokenTrackerTest.dismissRoutingAlert=dismissRoutingAlert;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   loadAvatars();
   document.addEventListener("click",handleClick);

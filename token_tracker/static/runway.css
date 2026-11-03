@@ -90,6 +90,8 @@ body:not(.phone) #widget-keep-open[aria-pressed="true"]{background:var(--source-
 .rr-moment{display:flex;align-items:center;min-height:22px;margin:1px 0 5px}
 .rr-cd{display:inline-block;width:min(100%,11ch);min-width:0;max-width:100%;color:var(--ink);font-size:19px;font-weight:500;letter-spacing:-.3px;line-height:1.1;white-space:nowrap;font-variant-numeric:tabular-nums}
 .rr-day,.rr-time,.rr-stale{display:none}
+.rr-banked{flex:none;color:var(--muted);font-size:11px;font-weight:500;white-space:nowrap;font-variant-numeric:tabular-nums}
+.rr-banked[hidden]{display:none}
 .rr-cd.unknown{font-size:17px;color:var(--muted);letter-spacing:-.3px}
 .meter{height:3px;background:#2b2b2b;border-radius:3px;overflow:hidden}
 .meter[aria-hidden="true"]{visibility:hidden}
