@@ -830,6 +830,19 @@ T.renderResets([provider]);
   Object.defineProperty(countdown,'textContent',{configurable:true,get(){return value;},set(next){writes++;value=next;}});
   T.renderResets([provider]);assert.equal(writes,0,'an unchanged quota countdown does not rewrite its DOM slot');
 }
+{
+  const expires=fixedNow/1000+30*86400;
+  assert.equal(T.bankedResetView(null).text,"");
+  assert.equal(T.bankedResetView({available:0,items:[]}).text,"");
+  const one=T.bankedResetView({available:1,items:[{title:"Full reset (Weekly + 5 hr)",expiresAt:expires}]});
+  assert.equal(one.text,"↻ 1");assert.match(one.tip,/^1 banked reset: Full reset \(Weekly \+ 5 hr\) · expires /);
+  assert.match(T.bankedResetView({available:2,items:[]}).tip,/^2 banked resets$/);
+  T.renderResets([{...provider,bankedResets:{available:1,items:[{title:"Full reset (Weekly + 5 hr)",expiresAt:expires}]}}]);
+  assert.equal(node('#r0-weekly-banked').textContent,"↻ 1");assert.equal(node('#r0-weekly-banked').hidden,false);
+  assert.match(node('#r0-weekly-banked').title,/banked reset/);
+  T.renderResets([provider]);
+  assert.equal(node('#r0-weekly-banked').hidden,true,'the badge hides when the provider reports no banked resets');
+}
 const verifiedWatcher={enabled:true,running:true,providers:{Codex:{nextGreetingAt:fixedNow/1000+100,lastTriggerAt:ago(2),lastVerifiedAt:ago(1),verificationEvidence:"usage_and_deadline"}}};
 assert.match(T.watcherTone(verifiedWatcher,"Codex").tip,/✓/);
 for(const verificationEvidence of ["stable_deadline","unknown",undefined]){
