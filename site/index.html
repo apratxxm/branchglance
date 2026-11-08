@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Branchglance</title>
 <meta name="description" content="A small always-on-top widget for Codex and Claude Code: every chat and subagent in one tree, the ones waiting on you, and how much of your 5-hour and weekly limits is left.">
-<meta name="theme-color" content="#0b0d12">
+<meta name="theme-color" content="#05070b">
 <meta property="og:title" content="Branchglance">
 <meta property="og:description" content="Every Codex and Claude Code chat in one tree. See which one is waiting on you, and how much limit is left.">
 <meta property="og:image" content="img/social-preview.png">
@@ -16,56 +16,65 @@
 <body>
 
 <!-- 5-hour band: the page opens the way the widget does. -->
-<header class="band band-top" aria-label="Site header">
+<header class="band band-top" aria-label="Current limits (illustrative)">
   <div class="band-inner">
     <div class="band-label"><b>5-hour</b><span>resets in</span></div>
     <div class="band-meter" data-src="codex">
       <div class="bm-head"><span><em class="pct" data-pct="37">37%</em> used</span><span class="cd" data-cd="9600">2h 40m</span></div>
-      <div class="meter"><i style="width:37%"></i></div>
+      <div class="meter"><i style="--w:37%"></i></div>
     </div>
     <div class="band-meter" data-src="claude">
-      <div class="bm-head"><span><em class="pct" data-pct="24">24%</em> used</span><span class="cd" data-cd="2818" data-sec>46m 58s</span></div>
-      <div class="meter"><i style="width:24%"></i></div>
+      <div class="bm-head"><span><em class="pct" data-pct="24">24%</em> used</span><span class="cd" data-cd="2818">46m 58s</span></div>
+      <div class="meter"><i style="--w:24%"></i></div>
     </div>
   </div>
-
-  <nav class="toolbar" aria-label="Primary">
-    <a class="tb-brand" href="#top" aria-label="Branchglance home">
-      <img src="img/mark-full.svg" alt="" width="22" height="19">
-      <span>Branchglance</span>
-    </a>
-    <div class="tb-counts" aria-hidden="true">
-      <span class="c-chat"><svg viewBox="0 0 20 20"><path d="M3.5 4.5h13v9h-8l-4 3v-3h-1z"/></svg><b id="n-chats">2</b></span>
-      <span class="c-agent"><svg viewBox="0 0 20 20"><path d="M5 3v9h10M15 3v14M5 12v5"/></svg><b id="n-agents">6</b></span>
-      <span class="c-wait"><b>!</b><b id="n-wait">1</b></span>
-    </div>
-    <div class="tb-links">
-      <a href="#features">Features</a>
-      <a href="#privacy">Privacy</a>
-      <a href="#install">Install</a>
-      <a href="https://github.com/apratxxm/branchglance" rel="noopener">GitHub</a>
-    </div>
-    <span class="tb-clock" id="clock" aria-hidden="true">9:39 PM</span>
-  </nav>
 </header>
+
+<nav class="toolbar" aria-label="Primary">
+  <a class="tb-brand" href="#top" aria-label="Branchglance home">
+    <img src="img/mark-full.svg" alt="" width="22" height="19">
+    <span>Branchglance</span>
+  </a>
+  <div class="tb-counts" aria-hidden="true">
+    <span class="c-chat"><svg viewBox="0 0 20 20"><path d="M3.5 4.5h13v9h-8l-4 3v-3h-1z"/></svg><b id="n-chats">2</b></span>
+    <span class="c-agent"><svg viewBox="0 0 20 20"><path d="M5 3v9h10M15 3v14M5 12v5"/></svg><b id="n-agents">6</b></span>
+    <span class="c-wait"><b>!</b><b id="n-wait">1</b></span>
+  </div>
+  <div class="tb-links">
+    <a href="#tour">Features</a>
+    <a href="#privacy">Privacy</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/apratxxm/branchglance" rel="noopener">GitHub</a>
+  </div>
+  <a class="tb-cta" href="#install">Install</a>
+  <span class="tb-clock" id="clock" aria-hidden="true">9:39 PM</span>
+</nav>
 
 <main id="top">
 
   <!-- Hero -->
   <section class="hero">
-    <p class="eyebrow"><span class="dot dot-green"></span>Alpha 0.1.0 · Windows · macOS from source · MIT</p>
-    <h1>Know which agent<br>is <span class="waiting-word">waiting on you.</span></h1>
-    <p class="lede">A small always-on-top widget for Codex and Claude Code. Every chat and subagent in one tree, the ones stuck on a question, and how much of your 5-hour and weekly limits is left.</p>
-    <div class="cta">
+    <p class="eyebrow" data-r><span class="dot dot-green"></span>Alpha 0.1.0 · Windows · macOS from source · MIT</p>
+    <h1 class="split" aria-label="Know which agent is waiting on you.">
+      <span class="line">Know which agent</span>
+      <span class="line">is <span class="waiting-word">waiting on you.</span></span>
+    </h1>
+    <p class="lede" data-r data-d="5">
+      A small always-on-top widget for
+      <span class="pchip codex"><i></i>Codex</span> and
+      <span class="pchip claude"><i></i>Claude Code</span>.
+      Every chat and subagent in one tree, the ones stuck on a question, and how much of your limits is left.
+    </p>
+    <div class="cta" data-r data-d="7">
       <a class="btn btn-primary" href="https://github.com/apratxxm/branchglance/releases">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v10m0 0-4-4m4 4 4-4M4 16h12"/></svg>
         Download for Windows
       </a>
       <a class="btn btn-ghost" href="#install">Build on macOS</a>
+      <span class="hand" aria-hidden="true"><svg viewBox="0 0 40 24"><path d="M38 4C26 2 12 6 6 18m0 0 1-8m-1 8 7-3"/></svg>it's live below</span>
     </div>
 
-    <!-- A working replica of the expanded tree, not a screenshot. -->
-    <figure class="widget" aria-label="Branchglance widget showing two chats and their subagents">
+    <figure class="widget" data-r data-d="9" aria-label="Branchglance widget showing two chats and their subagents">
       <div class="tree" id="tree">
         <div class="row parent claude" data-row="auth">
           <span class="node"></span>
@@ -120,174 +129,273 @@
     </figure>
   </section>
 
-  <!-- The problem, said plainly -->
-  <section class="prose-band">
-    <p class="big">
-      Three chats are running.
-      One <span class="tag t-done">finished</span> ten minutes ago.
-      One has been <span class="tag t-wait">waiting</span> on a yes or no since lunch.
-      Your weekly limit is at <span class="tag t-hot">81%</span> and you have no idea which chat did it.
-    </p>
-    <p class="big-after">Branchglance sits in the corner of your screen and keeps that straight, so you don't have to tab through every terminal to find out.</p>
+  <!-- Without / with -->
+  <section class="compare" aria-labelledby="compare-h">
+    <h2 id="compare-h" data-r>Stop checking each<br>terminal one by one</h2>
+    <div class="cmp-grid">
+      <article class="cmp cmp-without" data-r>
+        <p class="kicker">Without Branchglance</p>
+        <h3>Minutes lost to alt-tab</h3>
+        <ul class="cmp-list">
+          <li><span class="x"></span>Terminal one. Still running, probably.</li>
+          <li><span class="x"></span>Terminal two. Finished twenty minutes ago.</li>
+          <li><span class="x"></span>Terminal three. Asked you a question at lunch.</li>
+        </ul>
+        <p class="cmp-foot bad"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l2.5 2"/></svg>And the weekly limit runs out mid-task</p>
+      </article>
+      <article class="cmp cmp-with" data-r data-d="1">
+        <p class="kicker">With Branchglance</p>
+        <h3>Glance at the corner. <span class="kbds"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></span> for the rest.</h3>
+        <div class="cmp-stage" aria-hidden="true">
+          <div class="mini-strip">
+            <span class="ms-counts"><em class="g">2</em><em class="g">6</em><em class="y">!1</em></span>
+            <span class="ms-bands"><i class="b-codex" style="--w:37%"></i><i class="b-claude" style="--w:24%"></i></span>
+            <span class="ms-clock">1:27 PM</span>
+          </div>
+          <div class="mini-pop">
+            <div class="mp-row"><span class="state s-wait">Waiting</span><b>Update API docs</b><span class="mp-open">Open chat ↵</span></div>
+          </div>
+        </div>
+        <p class="cmp-foot good">Every chat, every subagent, both limits. One tree.</p>
+      </article>
+    </div>
   </section>
 
-  <!-- Features as specimens -->
-  <section class="features" id="features" aria-labelledby="features-h">
-    <div class="sec-head">
-      <p class="eyebrow">What it shows</p>
-      <h2 id="features-h">Six things, all of them at a glance.</h2>
+  <!-- Sticky scroll tour -->
+  <section class="tour" id="tour" aria-labelledby="tour-h" data-step="0">
+    <div class="tour-sticky">
+      <h2 id="tour-h" class="tour-h">Five things it does.<br>All of them at a glance.</h2>
+      <div class="tour-body">
+        <div class="tour-tabs" role="tablist" aria-label="Features">
+          <button role="tab" class="ttab" data-i="0" aria-selected="true" style="--ac:var(--codex-ink)">
+            <span class="ti"><svg viewBox="0 0 20 20"><path d="M5 3v14M5 7h6M5 13h6"/><circle cx="14" cy="7" r="2.2"/><circle cx="14" cy="13" r="2.2"/></svg></span>
+            <span class="tt"><b>One tree</b><span>Codex and Claude Code together</span></span><i class="tp"></i>
+          </button>
+          <button role="tab" class="ttab" data-i="1" aria-selected="false" style="--ac:var(--yellow)">
+            <span class="ti"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 6v5M10 13.6v.2"/></svg></span>
+            <span class="tt"><b>Needs you</b><span>Jump to the chat that's waiting</span></span><i class="tp"></i>
+          </button>
+          <button role="tab" class="ttab" data-i="2" aria-selected="false" style="--ac:var(--claude-ink)">
+            <span class="ti"><svg viewBox="0 0 20 20"><path d="M3 13a7 7 0 0 1 14 0"/><path d="M10 13l3.5-4"/></svg></span>
+            <span class="tt"><b>Limits</b><span>5-hour and weekly, side by side</span></span><i class="tp"></i>
+          </button>
+          <button role="tab" class="ttab" data-i="3" aria-selected="false" style="--ac:var(--blue)">
+            <span class="ti"><svg viewBox="0 0 20 20"><path d="M3 16h14M5 13V9M9 13V5M13 13v-3"/></svg></span>
+            <span class="tt"><b>Insights</b><span>Tokens, cost and peaks</span></span><i class="tp"></i>
+          </button>
+          <button role="tab" class="ttab" data-i="4" aria-selected="false" style="--ac:var(--green)">
+            <span class="ti"><svg viewBox="0 0 20 20"><rect x="3" y="7" width="14" height="6" rx="2"/></svg></span>
+            <span class="tt"><b>Out of the way</b><span>A strip until you need it</span></span><i class="tp"></i>
+          </button>
+        </div>
+
+        <div class="tour-stage">
+          <div class="panels">
+          <!-- 0: tree -->
+          <div class="panel" data-i="0" style="--ac:var(--codex-ink);--glow:var(--codex-glow)">
+            <h3><em>One tree</em> for every chat<br>and every subagent</h3>
+            <div class="screen p-tree" aria-hidden="true">
+              <div class="pt claude-p"><i></i><b>Plan migration</b><span class="m-claude">Sonnet 5.5</span><span class="st-run">Running</span></div>
+              <div class="pt kid"><i></i><b>Schema check</b><span class="m-claude">Haiku 5.5</span><span class="st-run">Running</span></div>
+              <div class="pt kid"><i></i><b>Backfill job</b><span class="m-codex">GPT-6.1 Sol</span><span class="tagc">Codex, from Claude</span></div>
+              <div class="pt kid fold"><i></i><span class="morebtn">+2 more</span></div>
+              <div class="pt codex-p"><i></i><b>Fix flaky tests</b><span class="m-codex">GPT-6.1 Terra</span><span class="st-run">Running</span></div>
+            </div>
+            <p class="cap">Codex jobs started from a Claude chat nest under that chat. Subagents past the first three fold behind <b>+N more</b>.</p>
+          </div>
+          <!-- 1: needs you -->
+          <div class="panel" data-i="1" style="--ac:var(--yellow);--glow:#f4a938">
+            <h3><em>Needs you.</em> Click the count,<br>open the exact chat</h3>
+            <div class="screen p-needs" aria-hidden="true">
+              <div class="pn-bar"><span class="g">2</span><span class="g">6</span><span class="pn-chip">! 2</span><span class="pn-cursor"></span></div>
+              <div class="pn-list">
+                <div class="pn-row dim"><span class="state s-run">Running</span><b>Refactor auth</b></div>
+                <div class="pn-row hit"><span class="state s-wait">Waiting</span><b>Test worker</b><span class="mp-open">Open ↵</span></div>
+                <div class="pn-row dim"><span class="state s-run">Running</span><b>API worker</b></div>
+                <div class="pn-row hit"><span class="state s-wait">Waiting</span><b>Update API docs</b><span class="mp-open">Open ↵</span></div>
+              </div>
+            </div>
+            <p class="cap">Waiting chats are marked in the tree and counted in the toolbar.</p>
+          </div>
+          <!-- 2: limits -->
+          <div class="panel" data-i="2" style="--ac:var(--claude-ink);--glow:var(--claude)">
+            <h3><em>Both limits</em>, with countdowns<br>you can trust</h3>
+            <div class="screen p-limits" aria-hidden="true">
+              <div class="pl"><span class="pl-n"><i class="dc"></i>Codex · 5-hour</span><span class="pl-t">2h 40m</span><span class="pl-p">37%</span><div class="meter"><i style="--w:37%"></i></div></div>
+              <div class="pl claude"><span class="pl-n"><i class="dl"></i>Claude · 5-hour</span><span class="pl-t">46m</span><span class="pl-p">24%</span><div class="meter"><i style="--w:24%"></i></div></div>
+              <div class="pl claude zero"><span class="pl-n"><i class="dl"></i>Claude · weekly</span><span class="pl-t"><span class="z1">0:00 · awaiting reading</span><span class="z2">Reset confirmed</span></span><span class="pl-p"><span class="z1">96%</span><span class="z2">0%</span></span><div class="meter"><i></i></div></div>
+            </div>
+            <p class="cap">A countdown reaching zero is never treated as a reset until a fresh reading confirms it.</p>
+          </div>
+          <!-- 3: insights -->
+          <div class="panel" data-i="3" style="--ac:var(--blue);--glow:var(--codex-bar)">
+            <h3><em>Insights</em> on what each<br>provider actually cost</h3>
+            <div class="screen p-ins" aria-hidden="true">
+              <div class="pi-top"><span class="money" data-count="742.40">$0</span><span class="est">API-equivalent · 30 days</span></div>
+              <svg viewBox="0 0 400 110" preserveAspectRatio="none">
+                <path class="a-claude" d="M0 92 C30 100 60 102 90 100 S150 98 180 85 S220 30 250 28 S290 80 310 82 S340 60 360 22 S390 70 400 12 V110 H0Z"/>
+                <path class="l-claude draw" pathLength="1" d="M0 92 C30 100 60 102 90 100 S150 98 180 85 S220 30 250 28 S290 80 310 82 S340 60 360 22 S390 70 400 12"/>
+                <path class="a-codex" d="M0 96 C40 104 80 104 120 102 S170 92 200 94 S240 84 270 92 S320 88 350 90 S385 92 400 80 V110 H0Z"/>
+                <path class="l-codex draw" pathLength="1" d="M0 96 C40 104 80 104 120 102 S170 92 200 94 S240 84 270 92 S320 88 350 90 S385 92 400 80"/>
+              </svg>
+              <div class="pi-models">
+                <span><i class="dl"></i>Opus 5.5<b>$511</b></span>
+                <span><i class="dc"></i>GPT-6.1 Sol<b>$135</b></span>
+                <span><i class="dq"></i>Unpriced<b>listed</b></span>
+              </div>
+            </div>
+            <p class="cap">24 hours, 7 days, 30 days or all time. Unpriced models are listed, not guessed.</p>
+          </div>
+          <!-- 4: strip -->
+          <div class="panel" data-i="4" style="--ac:var(--green);--glow:#1fae6e">
+            <h3><em>Out of the way</em><br>until you want it</h3>
+            <div class="screen p-strip" aria-hidden="true">
+              <div class="ps-win">
+                <div class="ps-band"><span>5-hour</span><i style="--w:37%"></i><i class="cl" style="--w:24%"></i></div>
+                <div class="ps-bar"><span class="g">2</span><span class="g">6</span><span class="y">!1</span><span class="ps-clock">1:27 PM</span></div>
+                <div class="ps-tree">
+                  <div><i></i>Refactor auth</div>
+                  <div class="k"><i></i>Test worker</div>
+                  <div class="k"><i class="w"></i>Update API docs</div>
+                </div>
+                <div class="ps-band"><span>Weekly</span><i style="--w:52%"></i><i class="cl" style="--w:41%"></i></div>
+              </div>
+              <div class="ps-keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd></div>
+            </div>
+            <p class="cap">On Windows it collapses to a strip with a clock and limit bands. Hover to open the tree.</p>
+          </div>
+          </div>
+          <div class="stage-cta">
+            <a class="btn btn-ink" href="#install">Install Branchglance, it's free</a>
+            <a class="btn btn-ghost sm" href="https://github.com/apratxxm/branchglance/blob/master/docs/GUIDE.md">Walkthrough →</a>
+          </div>
+        </div>
+      </div>
     </div>
+  </section>
 
-    <div class="grid">
-      <article class="spec span-2">
-        <div class="spec-copy">
-          <h3>One tree for both providers</h3>
-          <p>Codex chats and their subagents, Claude Code sessions and theirs, and Codex jobs started from a Claude chat, nested under the chat that started them.</p>
-        </div>
-        <div class="spec-ui mini-tree" aria-hidden="true">
-          <div class="mt mt-p"><i></i><b>Plan migration</b><span class="m-claude">Sonnet 5.5</span></div>
-          <div class="mt mt-c"><i></i><b>Schema check</b><span class="m-codex">GPT-6.1 Terra</span></div>
-          <div class="mt mt-c"><i></i><b>Backfill script</b><span class="m-codex">GPT-6.1 Sol</span></div>
-          <div class="mt mt-c mt-more"><i></i><span>+2 more</span></div>
-        </div>
+  <!-- Small features -->
+  <section class="more" aria-labelledby="more-h">
+    <h2 id="more-h" data-r>And the small things<br>that save a click</h2>
+    <div class="cards">
+      <article class="card" data-r data-d="0" style="--ac:var(--yellow)">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx='9' cy='9' r='5'/><path d='m13 13 4 4'/></svg></span>
+        <h3>Search with filters</h3><p><code>is:needs</code> gives you a queue to answer</p>
       </article>
-
-      <article class="spec">
-        <div class="spec-copy">
-          <h3>Needs you</h3>
-          <p>Chats waiting for input are marked and counted in the toolbar. Click the count to jump to them, then open the exact chat.</p>
-        </div>
-        <div class="spec-ui needs" aria-hidden="true">
-          <span class="chip-wait"><b>!</b> 1</span>
-          <span class="arrow">→</span>
-          <span class="needs-row"><span class="state s-wait">Waiting</span> Update API docs</span>
-        </div>
+      <article class="card" data-r data-d="1" style="--ac:var(--codex-ink)">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><path d='M5 4v12M5 8h5M5 13h5'/><path d='M13 8h3M13 13h3'/></svg></span>
+        <h3>Subagents fold away</h3><p>Past three, they fold behind +N more</p>
       </article>
-
-      <article class="spec">
-        <div class="spec-copy">
-          <h3>Limits side by side</h3>
-          <p>5-hour and weekly usage for Codex and Claude, with reset countdowns. A countdown reaching zero is not a reset until a fresh reading confirms it.</p>
-        </div>
-        <div class="spec-ui limits" aria-hidden="true">
-          <div class="lim codex"><span>Codex</span><div class="meter"><i style="width:52%"></i></div><b>3d 2h</b></div>
-          <div class="lim claude"><span>Claude</span><div class="meter"><i style="width:41%"></i></div><b>5d 2h</b></div>
-          <div class="lim zero"><span>Codex</span><div class="meter"><i style="width:96%"></i></div><b class="unconfirmed">0:00 · unconfirmed</b></div>
-        </div>
+      <article class="card" data-r data-d="2" style="--ac:var(--green)">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><path d='M4 10h12M11 5l5 5-5 5'/></svg></span>
+        <h3>Open the exact chat</h3><p>Jump from the tree straight into it</p>
       </article>
-
-      <article class="spec span-2 insights">
-        <div class="spec-copy">
-          <h3>Insights</h3>
-          <p>Token and cost totals, provider shares, plan multiples, model breakdowns, hourly and daily charts, and limit peaks, over 24 hours, 7 days, 30 days or all time. Unpriced models are listed, not guessed.</p>
-        </div>
-        <div class="spec-ui chart" aria-hidden="true">
-          <div class="chart-top">
-            <span class="money">$742<small>.40</small></span>
-            <span class="est">estimated · 30d</span>
-          </div>
-          <svg viewBox="0 0 400 120" preserveAspectRatio="none">
-            <path class="a-claude" d="M0 100 C30 110 60 112 90 110 S150 108 180 95 S220 40 250 38 S290 90 310 92 S340 70 360 30 S390 80 400 20 V120 H0Z"/>
-            <path class="l-claude" d="M0 100 C30 110 60 112 90 110 S150 108 180 95 S220 40 250 38 S290 90 310 92 S340 70 360 30 S390 80 400 20"/>
-            <path class="a-codex" d="M0 104 C40 112 80 112 120 110 S170 100 200 102 S240 92 270 100 S320 96 350 98 S385 100 400 88 V120 H0Z"/>
-            <path class="l-codex" d="M0 104 C40 112 80 112 120 110 S170 100 200 102 S240 92 270 100 S320 96 350 98 S385 100 400 88"/>
-          </svg>
-          <div class="split"><i class="sc" style="flex:24"></i><i class="sl" style="flex:76"></i></div>
-        </div>
+      <article class="card" data-r data-d="3" style="--ac:var(--claude-ink)">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x='3' y='5' width='14' height='10' rx='2'/><path d='M7 18h6'/></svg></span>
+        <h3>Move between displays</h3><p>Monitor sends it to the next screen</p>
       </article>
-
-      <article class="spec">
-        <div class="spec-copy">
-          <h3>Out of the way</h3>
-          <p>On Windows it collapses to a strip with a clock and limit bands. Hover, or press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd>, to open the tree.</p>
-        </div>
-        <div class="spec-ui strip" aria-hidden="true">
-          <div class="strip-bar">
-            <span class="sb-counts"><em class="g">2</em><em class="g">6</em><em class="y">!1</em></span>
-            <span class="sb-clock">1:27 PM</span>
-          </div>
-        </div>
+      <article class="card" data-r data-d="0" style="--ac:var(--blue)">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x='5' y='9' width='10' height='8' rx='2'/><path d='M7 9V7a3 3 0 0 1 6 0v2'/></svg></span>
+        <h3>Lock in place</h3><p>Pin its position so it stays put</p>
       </article>
-
-      <article class="spec span-2">
-        <div class="spec-copy">
-          <h3>Observed, not guessed</h3>
-          <p>A status appears only when there is evidence for it. Missing data shows as unknown. A parent link appears only when it can be proven.</p>
-        </div>
-        <div class="spec-ui observed" aria-hidden="true">
-          <div><span class="state s-run">Running</span><small>hook event · 2s ago</small></div>
-          <div><span class="state s-unk">Unknown</span><small>no reading yet</small></div>
-        </div>
+      <article class="card" data-r data-d="1" style="--ac:#c39bff">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><path d='M4 15V8M8 15V5M12 15v-4M16 15V9'/></svg></span>
+        <h3>Usage by work</h3><p>Optional ledger, saved usage per project</p>
+      </article>
+      <article class="card" data-r data-d="2" style="--ac:var(--red)">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><path d='M5 6h10M8 6V4h4v2M6 6l1 11h6l1-11'/></svg></span>
+        <h3>Delete per provider</h3><p>Clear one provider's saved history</p>
+      </article>
+      <article class="card" data-r data-d="3" style="--ac:var(--quiet)">
+        <span class="ci"><svg viewBox="0 0 20 20" aria-hidden="true"><path d='M4 10a6 6 0 1 0 2-4.5'/><path d='M4 4v3h3'/></svg></span>
+        <h3>One-step rollback</h3><p><code>--rollback</code> restores the last release</p>
       </article>
     </div>
   </section>
 
   <!-- Privacy -->
   <section class="privacy" id="privacy" aria-labelledby="privacy-h">
-    <div class="sec-head">
-      <p class="eyebrow">Local and opt-in</p>
-      <h2 id="privacy-h">It reads status, not your work.</h2>
-      <p class="sub">Everything runs on your machine. Claude collection is off until you turn it on in Settings, and turning it off removes only the hooks Branchglance added.</p>
+    <div class="pv-head" data-r>
+      <p class="kicker">Local and opt-in</p>
+      <h2 id="privacy-h">It reads status,<br>not your work.</h2>
     </div>
-    <div class="ledger">
-      <div class="col">
-        <h3><span class="dot dot-green"></span>Reads</h3>
-        <ul>
-          <li>Which chats and subagents exist, and how they nest</li>
-          <li>Running, waiting and finished states</li>
-          <li>Token counts, cache rates and model names</li>
-          <li>5-hour and weekly limit readings</li>
-        </ul>
+    <p class="pv-statement" data-r>
+      Branchglance runs on your machine. <mark>Claude collection is off until you turn it on</mark>, and turning it off removes only the hooks Branchglance added. Hook events carry metadata, <mark>not prompts, tool inputs or outputs, full paths or chat titles.</mark>
+    </p>
+  </section>
+
+  <!-- FAQ -->
+  <section class="faq" id="faq" aria-labelledby="faq-h">
+    <h2 id="faq-h" data-r>Questions, answered</h2>
+    <div class="faq-list" data-r>
+      <div class="qa">
+        <h3><button aria-expanded="true" aria-controls="qa0" id="qb0">Does Branchglance send my data anywhere?<span class="qx" aria-hidden="true"></span></button></h3>
+        <div class="qa-a" id="qa0" role="region" aria-labelledby="qb0"><p>No. It reads local files only: Codex session data, Claude Code transcripts and hook events, and Claude Desktop's usage cache. <mark>There is no account, server or telemetry.</mark> The one opt-in exception is reset greetings, which run the provider's own CLI.</p></div>
       </div>
-      <div class="col">
-        <h3><span class="dot dot-red"></span>Never collects</h3>
-        <ul>
-          <li>Your prompts</li>
-          <li>Tool inputs or outputs</li>
-          <li>Full file paths</li>
-          <li>Chat titles from hook events</li>
-        </ul>
+      <div class="qa">
+        <h3><button aria-expanded="false" aria-controls="qa1" id="qb1">What does Claude collection gather?<span class="qx" aria-hidden="true"></span></button></h3>
+        <div class="qa-a" id="qa1" role="region" aria-labelledby="qb1" hidden><p>It is off until you enable it in Settings. Hook events contain metadata such as identifiers, model, tool category and state, <mark>not prompts, tool inputs or outputs, full paths or chat titles.</mark></p></div>
+      </div>
+      <div class="qa">
+        <h3><button aria-expanded="false" aria-controls="qa2" id="qb2">Does it change my Claude Code settings.json?<span class="qx" aria-hidden="true"></span></button></h3>
+        <div class="qa-a" id="qa2" role="region" aria-labelledby="qb2" hidden><p>Only if you turn on Claude tracking. It backs up <code>settings.json</code> and adds its own hooks. <mark>Disabling tracking or uninstalling removes only those hooks.</mark></p></div>
+      </div>
+      <div class="qa">
+        <h3><button aria-expanded="false" aria-controls="qa3" id="qb3">Do I need Claude Desktop?<span class="qx" aria-hidden="true"></span></button></h3>
+        <div class="qa-a" id="qa3" role="region" aria-labelledby="qb3" hidden><p>No. Codex needs to be signed in for Codex chats and limits. Claude Code is optional, and Claude Desktop is only used for Claude limits.</p></div>
+      </div>
+      <div class="qa">
+        <h3><button aria-expanded="false" aria-controls="qa4" id="qb4">Which platforms does it run on?<span class="qx" aria-hidden="true"></span></button></h3>
+        <div class="qa-a" id="qa4" role="region" aria-labelledby="qb4" hidden><p>64-bit Windows 10 (build 19041) or Windows 11 has an installer. macOS builds from source with <code>./macos/build.sh install</code>.</p></div>
+      </div>
+      <div class="qa">
+        <h3><button aria-expanded="false" aria-controls="qa5" id="qb5">Why does Windows warn when I run the installer?<span class="qx" aria-hidden="true"></span></button></h3>
+        <div class="qa-a" id="qa5" role="region" aria-labelledby="qb5" hidden><p>Alpha builds are not code-signed yet, so SmartScreen may warn on first run. <mark>Compare the SHA-256 hash with the <code>.sha256</code> file</mark> published next to each download.</p></div>
+      </div>
+      <div class="qa">
+        <h3><button aria-expanded="false" aria-controls="qa6" id="qb6">How do I uninstall it?<span class="qx" aria-hidden="true"></span></button></h3>
+        <div class="qa-a" id="qa6" role="region" aria-labelledby="qb6" hidden><p>Settings, Apps, Installed apps, Branchglance. Your settings and history in <code>%LOCALAPPDATA%\Branchglance</code> are kept.</p></div>
       </div>
     </div>
   </section>
 
   <!-- Install -->
   <section class="install" id="install" aria-labelledby="install-h">
-    <div class="sec-head">
-      <p class="eyebrow">Install</p>
-      <h2 id="install-h">Two minutes on Windows. One script on macOS.</h2>
-    </div>
+    <div class="cta-card">
+      <h2 id="install-h" data-r>Stop alt-tabbing<br>to check on agents.</h2>
+      <p class="cta-sub" data-r>Two minutes on Windows. One script on macOS.</p>
 
-    <div class="tabs" role="tablist" aria-label="Platform">
-      <button role="tab" id="tab-win" aria-controls="pane-win" aria-selected="true">Windows</button>
-      <button role="tab" id="tab-mac" aria-controls="pane-mac" aria-selected="false" tabindex="-1">macOS</button>
-    </div>
-
-    <div class="pane" id="pane-win" role="tabpanel" aria-labelledby="tab-win">
-      <ol class="steps">
-        <li><b>Download</b> <code>BranchglanceSetup.exe</code> from the <a href="https://github.com/apratxxm/branchglance/releases">releases page</a>. Alpha builds are pre-releases.</li>
-        <li><b>Run it</b> from File Explorer as your normal user, not as administrator.</li>
-        <li><b>Open</b> Branchglance from the Start menu.</li>
-      </ol>
-      <div class="code">
-        <div class="code-head"><span>PowerShell · verify the download</span><button class="copy" data-copy="win-code">Copy</button></div>
-        <pre id="win-code">Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256</pre>
+      <div class="tabs" role="tablist" aria-label="Platform" data-r>
+        <button role="tab" id="tab-win" aria-controls="pane-win" aria-selected="true">Windows</button>
+        <button role="tab" id="tab-mac" aria-controls="pane-mac" aria-selected="false" tabindex="-1">macOS</button>
       </div>
-      <p class="fine">Needs 64-bit Windows 10 (19041) or 11, WebView2 and .NET Framework 4.8, which ship with current Windows. Alpha builds aren't code-signed yet, so SmartScreen may warn on first run.</p>
-    </div>
 
-    <div class="pane" id="pane-mac" role="tabpanel" aria-labelledby="tab-mac" hidden>
-      <ol class="steps">
-        <li><b>Install</b> Python 3 and the Xcode command line tools.</li>
-        <li><b>Build</b> from a checkout. The script installs the notch app in <code>/Applications</code>.</li>
-      </ol>
-      <div class="code">
-        <div class="code-head"><span>Terminal</span><button class="copy" data-copy="mac-code">Copy</button></div>
-        <pre id="mac-code">git clone https://github.com/apratxxm/branchglance.git
+      <div class="pane" id="pane-win" role="tabpanel" aria-labelledby="tab-win">
+        <ol class="steps">
+          <li>Download <code>BranchglanceSetup.exe</code> from <a href="https://github.com/apratxxm/branchglance/releases">releases</a></li>
+          <li>Run it as your normal user, not as administrator</li>
+          <li>Open Branchglance from the Start menu</li>
+        </ol>
+        <div class="code">
+          <div class="code-head"><span>PowerShell · verify the download</span><button class="copy" data-copy="win-code">Copy</button></div>
+          <pre id="win-code">Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256</pre>
+        </div>
+        <a class="btn btn-primary" href="https://github.com/apratxxm/branchglance/releases">Download for Windows</a>
+      </div>
+
+      <div class="pane" id="pane-mac" role="tabpanel" aria-labelledby="tab-mac" hidden>
+        <ol class="steps">
+          <li>Install Python 3 and the Xcode command line tools</li>
+          <li>Build from a checkout. It installs the notch app in <code>/Applications</code></li>
+        </ol>
+        <div class="code">
+          <div class="code-head"><span>Terminal</span><button class="copy" data-copy="mac-code">Copy</button></div>
+          <pre id="mac-code">git clone https://github.com/apratxxm/branchglance.git
 cd branchglance
 ./macos/build.sh install</pre>
+        </div>
+        <a class="btn btn-ghost" href="https://github.com/apratxxm/branchglance/blob/master/macos/README.md">macOS guide →</a>
       </div>
-      <p class="fine">Builds without a Developer ID are signed locally for the machine that built them. See the <a href="https://github.com/apratxxm/branchglance/blob/master/macos/README.md">macOS guide</a> for rollback and uninstall.</p>
     </div>
   </section>
 
@@ -299,11 +407,11 @@ cd branchglance
     <div class="band-label"><b>Weekly</b><span>resets in</span></div>
     <div class="band-meter" data-src="codex">
       <div class="bm-head"><span><em class="pct" data-pct="52">52%</em> used</span><span class="cd">3d 2h</span></div>
-      <div class="meter"><i style="width:52%"></i></div>
+      <div class="meter"><i style="--w:52%"></i></div>
     </div>
     <div class="band-meter" data-src="claude">
       <div class="bm-head"><span><em class="pct" data-pct="41">41%</em> used</span><span class="cd">5d 2h</span></div>
-      <div class="meter"><i style="width:41%"></i></div>
+      <div class="meter"><i style="--w:41%"></i></div>
     </div>
   </div>
   <div class="foot">
@@ -316,6 +424,7 @@ cd branchglance
     </span>
     <span class="foot-note">Not affiliated with OpenAI or Anthropic.</span>
   </div>
+  <div class="wordmark" aria-hidden="true">branchglance</div>
 </footer>
 
 <script src="main.js" defer></script>
