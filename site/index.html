@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Branchglance</title>
+<meta name="description" content="A small always-on-top widget for Codex and Claude Code: every chat and subagent in one tree, the ones waiting on you, and how much of your 5-hour and weekly limits is left.">
+<meta name="theme-color" content="#0b0d12">
+<meta property="og:title" content="Branchglance">
+<meta property="og:description" content="Every Codex and Claude Code chat in one tree. See which one is waiting on you, and how much limit is left.">
+<meta property="og:image" content="img/social-preview.png">
+<link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/Inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- 5-hour band: the page opens the way the widget does. -->
+<header class="band band-top" aria-label="Site header">
+  <div class="band-inner">
+    <div class="band-label"><b>5-hour</b><span>resets in</span></div>
+    <div class="band-meter" data-src="codex">
+      <div class="bm-head"><span><em class="pct" data-pct="37">37%</em> used</span><span class="cd" data-cd="9600">2h 40m</span></div>
+      <div class="meter"><i style="width:37%"></i></div>
+    </div>
+    <div class="band-meter" data-src="claude">
+      <div class="bm-head"><span><em class="pct" data-pct="24">24%</em> used</span><span class="cd" data-cd="2818" data-sec>46m 58s</span></div>
+      <div class="meter"><i style="width:24%"></i></div>
+    </div>
+  </div>
+
+  <nav class="toolbar" aria-label="Primary">
+    <a class="tb-brand" href="#top" aria-label="Branchglance home">
+      <img src="img/mark-full.svg" alt="" width="22" height="19">
+      <span>Branchglance</span>
+    </a>
+    <div class="tb-counts" aria-hidden="true">
+      <span class="c-chat"><svg viewBox="0 0 20 20"><path d="M3.5 4.5h13v9h-8l-4 3v-3h-1z"/></svg><b id="n-chats">2</b></span>
+      <span class="c-agent"><svg viewBox="0 0 20 20"><path d="M5 3v9h10M15 3v14M5 12v5"/></svg><b id="n-agents">6</b></span>
+      <span class="c-wait"><b>!</b><b id="n-wait">1</b></span>
+    </div>
+    <div class="tb-links">
+      <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/apratxxm/branchglance" rel="noopener">GitHub</a>
+    </div>
+    <span class="tb-clock" id="clock" aria-hidden="true">9:39 PM</span>
+  </nav>
+</header>
+
+<main id="top">
+
+  <!-- Hero -->
+  <section class="hero">
+    <p class="eyebrow"><span class="dot dot-green"></span>Alpha 0.1.0 · Windows · macOS from source · MIT</p>
+    <h1>Know which agent<br>is <span class="waiting-word">waiting on you.</span></h1>
+    <p class="lede">A small always-on-top widget for Codex and Claude Code. Every chat and subagent in one tree, the ones stuck on a question, and how much of your 5-hour and weekly limits is left.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/apratxxm/branchglance/releases">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v10m0 0-4-4m4 4 4-4M4 16h12"/></svg>
+        Download for Windows
+      </a>
+      <a class="btn btn-ghost" href="#install">Build on macOS</a>
+    </div>
+
+    <!-- A working replica of the expanded tree, not a screenshot. -->
+    <figure class="widget" aria-label="Branchglance widget showing two chats and their subagents">
+      <div class="tree" id="tree">
+        <div class="row parent claude" data-row="auth">
+          <span class="node"></span>
+          <div class="t"><b>Refactor auth</b><span class="model m-claude">Opus 5.5</span></div>
+          <div class="age" data-age="3360">56m</div>
+          <div class="st"><span class="state s-run">Running</span><span class="act">Checking data</span></div>
+          <div class="path">C: acme-api</div>
+          <div class="tok"><b><span data-tok="132">132K</span>/272K</b><span>Cache 93%</span></div>
+        </div>
+        <div class="row child" data-row="test">
+          <span class="node"></span>
+          <div class="t"><b>Test worker</b><span class="model m-codex">GPT-6.1 Terra</span></div>
+          <div class="age"></div>
+          <div class="st"><span class="state s-run">Running</span><span class="act">Running tests</span></div>
+          <div class="path mono-num" data-age="254">4:14</div>
+          <div class="tok"><b><span data-tok="79">79K</span>/200K</b><span>Cache 61%</span></div>
+        </div>
+        <div class="row child" data-row="api">
+          <span class="node"></span>
+          <div class="t"><b>API worker</b><span class="model m-codex">GPT-6.1 Terra</span></div>
+          <div class="age"></div>
+          <div class="st"><span class="state s-run">Running</span><span class="act">Editing file</span></div>
+          <div class="path" data-age="2820">47m</div>
+          <div class="tok"><b><span class="hot" data-tok="188">188K</span>/200K</b><span>Cache 76%</span></div>
+        </div>
+        <div class="row child deep" data-row="review">
+          <span class="node"></span>
+          <div class="t"><b>Review worker</b><span class="model m-codex">GPT-6.1 Sol</span></div>
+          <div class="age"></div>
+          <div class="st"><span class="state s-run">Running</span><span class="act">Running checks</span></div>
+          <div class="path" data-age="1080">18m</div>
+          <div class="tok"><b><span data-tok="41">41K</span>/200K</b><span>Cache 97%</span></div>
+        </div>
+        <div class="row parent codex" data-row="docs">
+          <span class="node"></span>
+          <div class="t"><b>Update API docs</b><span class="model m-codex">GPT-6.1 Sol</span></div>
+          <div class="age" data-age="1080">18m</div>
+          <div class="st"><span class="state s-wait">Waiting</span><span class="act">Asked a question</span></div>
+          <div class="path">C: docs-site</div>
+          <div class="tok"><b><span data-tok="86">86K</span>/272K</b><span>Cache 88%</span></div>
+        </div>
+        <div class="row child last" data-row="docrev">
+          <span class="node"></span>
+          <div class="t"><b>Docs reviewer</b><span class="model m-codex">GPT-6.1 Terra</span></div>
+          <div class="age"></div>
+          <div class="st"><span class="state s-run">Running</span><span class="act">Reading files</span></div>
+          <div class="path" data-age="254">4:14</div>
+          <div class="tok"><b><span data-tok="54">54K</span>/200K</b><span>Cache 71%</span></div>
+        </div>
+      </div>
+      <figcaption>Illustrative data. The tree updates live from your local Codex and Claude Code sessions.</figcaption>
+    </figure>
+  </section>
+
+  <!-- The problem, said plainly -->
+  <section class="prose-band">
+    <p class="big">
+      Three chats are running.
+      One <span class="tag t-done">finished</span> ten minutes ago.
+      One has been <span class="tag t-wait">waiting</span> on a yes or no since lunch.
+      Your weekly limit is at <span class="tag t-hot">81%</span> and you have no idea which chat did it.
+    </p>
+    <p class="big-after">Branchglance sits in the corner of your screen and keeps that straight, so you don't have to tab through every terminal to find out.</p>
+  </section>
+
+  <!-- Features as specimens -->
+  <section class="features" id="features" aria-labelledby="features-h">
+    <div class="sec-head">
+      <p class="eyebrow">What it shows</p>
+      <h2 id="features-h">Six things, all of them at a glance.</h2>
+    </div>
+
+    <div class="grid">
+      <article class="spec span-2">
+        <div class="spec-copy">
+          <h3>One tree for both providers</h3>
+          <p>Codex chats and their subagents, Claude Code sessions and theirs, and Codex jobs started from a Claude chat, nested under the chat that started them.</p>
+        </div>
+        <div class="spec-ui mini-tree" aria-hidden="true">
+          <div class="mt mt-p"><i></i><b>Plan migration</b><span class="m-claude">Sonnet 5.5</span></div>
+          <div class="mt mt-c"><i></i><b>Schema check</b><span class="m-codex">GPT-6.1 Terra</span></div>
+          <div class="mt mt-c"><i></i><b>Backfill script</b><span class="m-codex">GPT-6.1 Sol</span></div>
+          <div class="mt mt-c mt-more"><i></i><span>+2 more</span></div>
+        </div>
+      </article>
+
+      <article class="spec">
+        <div class="spec-copy">
+          <h3>Needs you</h3>
+          <p>Chats waiting for input are marked and counted in the toolbar. Click the count to jump to them, then open the exact chat.</p>
+        </div>
+        <div class="spec-ui needs" aria-hidden="true">
+          <span class="chip-wait"><b>!</b> 1</span>
+          <span class="arrow">→</span>
+          <span class="needs-row"><span class="state s-wait">Waiting</span> Update API docs</span>
+        </div>
+      </article>
+
+      <article class="spec">
+        <div class="spec-copy">
+          <h3>Limits side by side</h3>
+          <p>5-hour and weekly usage for Codex and Claude, with reset countdowns. A countdown reaching zero is not a reset until a fresh reading confirms it.</p>
+        </div>
+        <div class="spec-ui limits" aria-hidden="true">
+          <div class="lim codex"><span>Codex</span><div class="meter"><i style="width:52%"></i></div><b>3d 2h</b></div>
+          <div class="lim claude"><span>Claude</span><div class="meter"><i style="width:41%"></i></div><b>5d 2h</b></div>
+          <div class="lim zero"><span>Codex</span><div class="meter"><i style="width:96%"></i></div><b class="unconfirmed">0:00 · unconfirmed</b></div>
+        </div>
+      </article>
+
+      <article class="spec span-2 insights">
+        <div class="spec-copy">
+          <h3>Insights</h3>
+          <p>Token and cost totals, provider shares, plan multiples, model breakdowns, hourly and daily charts, and limit peaks, over 24 hours, 7 days, 30 days or all time. Unpriced models are listed, not guessed.</p>
+        </div>
+        <div class="spec-ui chart" aria-hidden="true">
+          <div class="chart-top">
+            <span class="money">$742<small>.40</small></span>
+            <span class="est">estimated · 30d</span>
+          </div>
+          <svg viewBox="0 0 400 120" preserveAspectRatio="none">
+            <path class="a-claude" d="M0 100 C30 110 60 112 90 110 S150 108 180 95 S220 40 250 38 S290 90 310 92 S340 70 360 30 S390 80 400 20 V120 H0Z"/>
+            <path class="l-claude" d="M0 100 C30 110 60 112 90 110 S150 108 180 95 S220 40 250 38 S290 90 310 92 S340 70 360 30 S390 80 400 20"/>
+            <path class="a-codex" d="M0 104 C40 112 80 112 120 110 S170 100 200 102 S240 92 270 100 S320 96 350 98 S385 100 400 88 V120 H0Z"/>
+            <path class="l-codex" d="M0 104 C40 112 80 112 120 110 S170 100 200 102 S240 92 270 100 S320 96 350 98 S385 100 400 88"/>
+          </svg>
+          <div class="split"><i class="sc" style="flex:24"></i><i class="sl" style="flex:76"></i></div>
+        </div>
+      </article>
+
+      <article class="spec">
+        <div class="spec-copy">
+          <h3>Out of the way</h3>
+          <p>On Windows it collapses to a strip with a clock and limit bands. Hover, or press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>T</kbd>, to open the tree.</p>
+        </div>
+        <div class="spec-ui strip" aria-hidden="true">
+          <div class="strip-bar">
+            <span class="sb-counts"><em class="g">2</em><em class="g">6</em><em class="y">!1</em></span>
+            <span class="sb-clock">1:27 PM</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="spec span-2">
+        <div class="spec-copy">
+          <h3>Observed, not guessed</h3>
+          <p>A status appears only when there is evidence for it. Missing data shows as unknown. A parent link appears only when it can be proven.</p>
+        </div>
+        <div class="spec-ui observed" aria-hidden="true">
+          <div><span class="state s-run">Running</span><small>hook event · 2s ago</small></div>
+          <div><span class="state s-unk">Unknown</span><small>no reading yet</small></div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- Privacy -->
+  <section class="privacy" id="privacy" aria-labelledby="privacy-h">
+    <div class="sec-head">
+      <p class="eyebrow">Local and opt-in</p>
+      <h2 id="privacy-h">It reads status, not your work.</h2>
+      <p class="sub">Everything runs on your machine. Claude collection is off until you turn it on in Settings, and turning it off removes only the hooks Branchglance added.</p>
+    </div>
+    <div class="ledger">
+      <div class="col">
+        <h3><span class="dot dot-green"></span>Reads</h3>
+        <ul>
+          <li>Which chats and subagents exist, and how they nest</li>
+          <li>Running, waiting and finished states</li>
+          <li>Token counts, cache rates and model names</li>
+          <li>5-hour and weekly limit readings</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3><span class="dot dot-red"></span>Never collects</h3>
+        <ul>
+          <li>Your prompts</li>
+          <li>Tool inputs or outputs</li>
+          <li>Full file paths</li>
+          <li>Chat titles from hook events</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="install" id="install" aria-labelledby="install-h">
+    <div class="sec-head">
+      <p class="eyebrow">Install</p>
+      <h2 id="install-h">Two minutes on Windows. One script on macOS.</h2>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Platform">
+      <button role="tab" id="tab-win" aria-controls="pane-win" aria-selected="true">Windows</button>
+      <button role="tab" id="tab-mac" aria-controls="pane-mac" aria-selected="false" tabindex="-1">macOS</button>
+    </div>
+
+    <div class="pane" id="pane-win" role="tabpanel" aria-labelledby="tab-win">
+      <ol class="steps">
+        <li><b>Download</b> <code>BranchglanceSetup.exe</code> from the <a href="https://github.com/apratxxm/branchglance/releases">releases page</a>. Alpha builds are pre-releases.</li>
+        <li><b>Run it</b> from File Explorer as your normal user, not as administrator.</li>
+        <li><b>Open</b> Branchglance from the Start menu.</li>
+      </ol>
+      <div class="code">
+        <div class="code-head"><span>PowerShell · verify the download</span><button class="copy" data-copy="win-code">Copy</button></div>
+        <pre id="win-code">Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256</pre>
+      </div>
+      <p class="fine">Needs 64-bit Windows 10 (19041) or 11, WebView2 and .NET Framework 4.8, which ship with current Windows. Alpha builds aren't code-signed yet, so SmartScreen may warn on first run.</p>
+    </div>
+
+    <div class="pane" id="pane-mac" role="tabpanel" aria-labelledby="tab-mac" hidden>
+      <ol class="steps">
+        <li><b>Install</b> Python 3 and the Xcode command line tools.</li>
+        <li><b>Build</b> from a checkout. The script installs the notch app in <code>/Applications</code>.</li>
+      </ol>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" data-copy="mac-code">Copy</button></div>
+        <pre id="mac-code">git clone https://github.com/apratxxm/branchglance.git
+cd branchglance
+./macos/build.sh install</pre>
+      </div>
+      <p class="fine">Builds without a Developer ID are signed locally for the machine that built them. See the <a href="https://github.com/apratxxm/branchglance/blob/master/macos/README.md">macOS guide</a> for rollback and uninstall.</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- Weekly band: the page closes the way the widget does. -->
+<footer class="band band-bottom">
+  <div class="band-inner">
+    <div class="band-label"><b>Weekly</b><span>resets in</span></div>
+    <div class="band-meter" data-src="codex">
+      <div class="bm-head"><span><em class="pct" data-pct="52">52%</em> used</span><span class="cd">3d 2h</span></div>
+      <div class="meter"><i style="width:52%"></i></div>
+    </div>
+    <div class="band-meter" data-src="claude">
+      <div class="bm-head"><span><em class="pct" data-pct="41">41%</em> used</span><span class="cd">5d 2h</span></div>
+      <div class="meter"><i style="width:41%"></i></div>
+    </div>
+  </div>
+  <div class="foot">
+    <span class="foot-brand"><img src="img/mark-full.svg" alt="" width="18" height="16"> Branchglance</span>
+    <span class="foot-links">
+      <a href="https://github.com/apratxxm/branchglance">Source</a>
+      <a href="https://github.com/apratxxm/branchglance/blob/master/docs/GUIDE.md">Walkthrough</a>
+      <a href="https://github.com/apratxxm/branchglance/blob/master/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/apratxxm/branchglance/blob/master/LICENSE">MIT License</a>
+    </span>
+    <span class="foot-note">Not affiliated with OpenAI or Anthropic.</span>
+  </div>
+</footer>
+
+<script src="main.js" defer></script>
+</body>
+</html>
