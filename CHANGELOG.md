@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Opt-in Claude greetings keep the five-hour window rolling. Branchglance reads the limits Claude Code prints for each greeting and runs `claude auth status` locally to check the account; it never reads Claude credentials.
+
 ## 0.1.0 (alpha) - 2026-11-03
 
 ### Added

@@ -18,6 +18,7 @@ from . import product
 
 MAX_BYTES = 65536
 FILENAME = "claude-statusline.json"
+CLI_FILENAME = "claude-cli-limits.json"
 WINDOWS = ("five_hour", "seven_day")
 DURATIONS = {"five_hour": 18000, "seven_day": 604800}
 SKEW = 300
@@ -156,7 +157,7 @@ def parse(payload, now=None):
     return result
 
 
-def read(path, now=None, max_age=None):
+def read(path, now=None, max_age=None, *, source="claude-statusline", include_org=False):
     path = Path(os.path.abspath(path))
     now = time.time() if now is None else now
     try:
@@ -165,7 +166,9 @@ def read(path, now=None, max_age=None):
         if len(raw) > MAX_BYTES:
             return {}
         data = json.loads(raw)
-        if not isinstance(data, dict) or data.get("source") != "claude-statusline":
+        if not isinstance(data, dict) or data.get("source") != source:
+            return {}
+        if source == "claude-cli" and (not isinstance(data.get("orgId"), str) or not data["orgId"]):
             return {}
         result = {}
         for name in WINDOWS:
@@ -178,13 +181,19 @@ def read(path, now=None, max_age=None):
             if received > now + 60 or (max_age is not None and now - received > max_age):
                 continue
             result[name] = {"used_percentage": used, "resets_at": reset, "receivedAt": received}
+        if include_org and source == "claude-cli" and result:
+            result["orgId"] = data["orgId"]
         return result
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return {}
 
 
-def write(windows, root=None, now=None, deadline=None):
+def write(windows, root=None, now=None, deadline=None, *, filename=FILENAME, source="claude-statusline", org_id=None):
     """Serialize writers using a verified, non-following lock handle."""
+    if (filename, source) not in ((FILENAME, "claude-statusline"), (CLI_FILENAME, "claude-cli")):
+        raise ValueError("unsupported Claude sample store")
+    if source == "claude-cli" and (not isinstance(org_id, str) or not org_id):
+        raise ValueError("CLI sample requires an organization")
     root = Path(os.path.abspath(root if root is not None else product.state_root()))
     now = time.time() if now is None else now
     checked = {}
@@ -201,7 +210,7 @@ def write(windows, root=None, now=None, deadline=None):
     windows = checked
     deadline = time.monotonic() + DEADLINE_SECONDS if deadline is None else deadline
     with _guard_directories(root, create=True):
-        with _open_checked(root / "claude-statusline.lock", write=True, create=True) as lock:
+        with _open_checked(root / ("claude-cli-limits.lock" if source == "claude-cli" else "claude-statusline.lock"), write=True, create=True) as lock:
             while True:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("statusline deadline")
@@ -219,7 +228,7 @@ def write(windows, root=None, now=None, deadline=None):
             try:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("statusline deadline")
-                _write_locked(windows, root, now)
+                _write_locked(windows, root, now, filename=filename, source=source, org_id=org_id)
             finally:
                 if os.name == "nt":
                     lock.seek(0)
@@ -228,16 +237,20 @@ def write(windows, root=None, now=None, deadline=None):
                     fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def _write_locked(windows, root=None, now=None):
+def _write_locked(windows, root=None, now=None, *, filename=FILENAME, source="claude-statusline", org_id=None):
     now = time.time() if now is None else now
     root = Path(root) if root is not None else product.state_root()
-    path = root / FILENAME
-    previous = read(path, now)
+    path = root / filename
+    previous = read(path, now, source=source, include_org=source == "claude-cli")
+    if source == "claude-cli" and previous.pop("orgId", None) != org_id:
+        previous = {}
     windows = {name: dict(value) for name, value in windows.items() if name in WINDOWS}
     for name, old in previous.items():
         windows.setdefault(name, old)
     for name, current in windows.items():
         old = previous.get(name)
+        if source == "claude-cli":
+            continue
         if old and abs(old["resets_at"] - current["resets_at"]) <= 60:
             if old["used_percentage"] >= current["used_percentage"]:
                 windows[name] = old
@@ -251,7 +264,7 @@ def _write_locked(windows, root=None, now=None):
             _check_path(Path(temp), directory=False)
             if not os.path.samestat(os.fstat(file.fileno()), os.lstat(temp)):
                 raise OSError("temporary file changed")
-            json.dump({"source": "claude-statusline", **windows}, file, separators=(",", ":"), allow_nan=False)
+            json.dump({"source": source, **({"orgId": org_id} if source == "claude-cli" else {}), **windows}, file, separators=(",", ":"), allow_nan=False)
         _check_path(path, allow_missing=True, directory=False)
         _check_path(Path(temp), directory=False)
         os.replace(temp, path)
@@ -337,10 +350,13 @@ def choose(a, b, now):
     return a if a["resets_at"] > b["resets_at"] else b
 
 
-def merge_usage(desktop, paths=None, now=None, max_age=600):
+def merge_usage(desktop, paths=None, now=None, max_age=600, *, org_id=None, cli_path=None):
     now = time.time() if now is None else now
     result = dict(desktop)
     samples = [read(path, now=now) for path in (sample_paths() if paths is None else paths)]
+    cli = read(cli_path or product.state_root() / CLI_FILENAME, now=now, source="claude-cli", include_org=True)
+    if cli and (not org_id or cli.get("orgId") == org_id):
+        samples.append(cli)
     selected_times = []
     for name, key in (("five_hour", "fiveHour"), ("seven_day", "weekly")):
         reset, used, observed = desktop.get(key), desktop.get(key + "Percent"), desktop.get("observedAt")

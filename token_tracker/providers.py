@@ -3221,7 +3221,7 @@ class ClaudeDesktopProvider:
             "output": int(totals["output_tokens"]),
             **_costs(totals, transcript["models"], CLAUDE_PRICING, claude=True),
         }
-        deadlines = merge_usage(usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS))
+        deadlines = merge_usage(usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS), org_id=samples[-1].get("org") if samples else None)
         history_usage = usage
         usage = {**usage, "fh": deadlines["fiveHourPercent"] if deadlines["fiveHourPercent"] is not None else (None if deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else usage.get("fh")), "sd": deadlines["weeklyPercent"] if deadlines["weeklyPercent"] is not None else (None if deadlines.get("_weeklySelected") or deadlines.get("lastKnownWeekly") else usage.get("sd"))}
         merged_live = deadlines["fiveHourPercent"] is not None or deadlines["weeklyPercent"] is not None
@@ -3266,6 +3266,34 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     # usage response and find only an older one. Never step back to it.
     _last_live: dict[str, dict[str, Any]] = {}
     _last_live_lock = threading.Lock()
+    _auth_cache: tuple[float, str | None] | None = None
+    _auth_cache_lock = threading.Lock()
+
+    def __init__(self, local_app_data: str | None = None, *, auth_status=None, monotonic=None) -> None:
+        super().__init__(local_app_data)
+        self._auth_status = auth_status
+        self._auth_clock = monotonic or time.monotonic
+
+    def _current_cli_org(self, cwd: Path) -> str | None:
+        with ClaudeLimitsProvider._auth_cache_lock:
+            now = self._auth_clock()
+            cached = ClaudeLimitsProvider._auth_cache
+            if cached is not None and 0 <= now - cached[0] < 300:
+                return cached[1]
+            try:
+                if self._auth_status is None:
+                    # Local import avoids the providers / limit_reset import cycle.
+                    from .limit_reset import _claude_auth_status
+                    auth = _claude_auth_status(cwd)
+                else:
+                    auth = self._auth_status(cwd)
+                org = auth.get("orgId") if isinstance(auth, dict) and auth.get("ok") is True else None
+                if not isinstance(org, str) or not org.strip():
+                    org = None
+            except Exception:
+                org = None
+            ClaudeLimitsProvider._auth_cache = (self._auth_clock(), org)
+            return org
 
     def _newest_live(self, info: dict[str, Any], now: float | None = None,
                      *, watermarks: bool = False) -> dict[str, Any]:
@@ -3319,13 +3347,32 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
 
     @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
-        samples, latest = self._usage()
+        try:
+            samples, latest = self._usage()
+            missing = None
+        except (OSError, ValueError, RuntimeError, AttributeError, TypeError, KeyError, IndexError) as exc:
+            # Without Desktop history, limits Claude Code printed for a greeting can still show.
+            samples, latest, missing = [], {}, exc
         usage = latest.get("u") or {}
         # Claude Desktop refetches usage only every few minutes, so a 90-second window
         # leaves the meters blank most of the time. Display accepts a response up to the
         # widget's own 10-minute quota freshness; the greeter remains at 90 seconds.
         info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
-        info = merge_usage(self._newest_live(info, watermarks=True))
+        org = samples[-1].get("org") if samples else None
+        if not org:
+            from . import claude_statusline, product
+            state_root = product.state_root()
+            cli = claude_statusline.read(state_root / claude_statusline.CLI_FILENAME,
+                                         max_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS,
+                                         source="claude-cli", include_org=True)
+            org = self._current_cli_org(state_root) if cli else None
+            # A truthy non-string sentinel excludes the CLI sample without an
+            # authenticated organization, while keeping status-line samples.
+            if not org:
+                org = object()
+        info = merge_usage(self._newest_live(info, watermarks=True), org_id=org)
+        if missing is not None and not (info.get("_fiveHourSelected") or info.get("_weeklySelected")):
+            raise missing
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
         five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else (None if info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else usage.get("fh"))
         weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else (None if info.get("_weeklySelected") or info.get("lastKnownWeekly") else usage.get("sd"))

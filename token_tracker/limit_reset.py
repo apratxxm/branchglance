@@ -22,6 +22,7 @@ from . import product
 from .codex_client import CodexAppServer, CodexUnavailable
 from .providers import ClaudeDesktopProvider, _usage_percent
 from .claude_cache import usage_info
+from . import claude_statusline
 from .reset_actions import ResetActionDispatcher, default_action
 from .provider_policy import POLICIES, ProviderPolicy, ProviderPolicyError, policy_for
 
@@ -181,17 +182,29 @@ class LimitSample:
     weekly_reset_at: int | float | None = None
 
 
+def _claude_desktop_data(now: float | None = None, max_usage_age: float | None = None, expected_org_id: str | None = None):
+    try:
+        provider = ClaudeDesktopProvider()
+        samples, _ = provider._usage()
+        org = samples[-1].get("org") if samples else None
+        if expected_org_id is not None and org != expected_org_id:
+            return org, {}
+        kwargs = {} if now is None else {"now": now, "max_usage_age": max_usage_age}
+        return org, usage_info(provider.root, samples, **kwargs)
+    except (OSError, ValueError, TypeError, AttributeError, RuntimeError, IndexError, KeyError):
+        return None, {"fiveHour": None, "weekly": None, "fiveHourPercent": None, "weeklyPercent": None, "observedAt": None}
+
+
 def claude_limit_sample() -> LimitSample:
-    provider = ClaudeDesktopProvider()
-    samples, latest = provider._usage()
-    usage = usage_info(provider.root, samples)
+    org, desktop = _claude_desktop_data()
+    usage = claude_statusline.merge_usage(desktop, org_id=org, max_age=90)
     observed_at = float(usage.get("observedAt") or 0)
     return LimitSample(
         _usage_percent(usage.get("fiveHourPercent")),
         _usage_percent(usage.get("weeklyPercent")),
         observed_at,
-        usage["fiveHour"],
-        usage["weekly"],
+        usage["fiveHour"] or usage.get("lastKnownFiveHour"),
+        usage["weekly"] or usage.get("lastKnownWeekly"),
     )
 
 
@@ -424,20 +437,115 @@ def send_codex_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | N
     )
 
 
-def send_claude_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | None = None) -> dict[str, Any]:
-    policy_for("Claude", policies).require("greet")
+_CLAUDE_ENV_BLOCK = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+_CLAUDE_OUTPUT_CAP = 256 * 1024
+
+
+def _claude_process(command: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
+    env = {key: value for key, value in os.environ.items() if key.upper() not in _CLAUDE_ENV_BLOCK}
+    env["NO_COLOR"] = "1"
+    try:
+        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=env)
+    except OSError:
+        return {"started": False, "error": "Claude Code CLI could not be started"}
+    chunks: list[bytes] = []
+    def drain() -> None:
+        remaining = _CLAUDE_OUTPUT_CAP
+        while True:
+            chunk = process.stdout.read(8192)
+            if not chunk:
+                break
+            if remaining:
+                chunks.append(chunk[:remaining])
+                remaining -= min(remaining, len(chunk))
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    try:
+        code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        reader.join(timeout=2)
+        return {"started": True, "error": "Claude Code CLI timed out", "data": b"".join(chunks)}
+    reader.join(timeout=2)
+    return {"started": True, "returnCode": code, "data": b"".join(chunks)}
+
+
+def _claude_auth_status(cwd: Path) -> dict[str, Any]:
     executable = _find_executable("claude")
     if not executable:
         return {"ok": False, "error": "Claude Code CLI is not installed"}
-    return _run_command(
+    result = _claude_process([executable, "auth", "status", "--json"], cwd, 15)
+    try:
+        data = json.loads(result.get("data", b""))
+        org = data.get("orgId")
+        valid = (result.get("returnCode") == 0 and data.get("loggedIn") is True
+                 and data.get("authMethod") == "claude.ai" and data.get("apiProvider") == "firstParty"
+                 and isinstance(org, str) and bool(org.strip()))
+    except (ValueError, TypeError, AttributeError):
+        valid = False
+    if not valid:
+        return {"ok": False, "error": "Claude Code subscription sign-in required"}
+    return {"ok": True, "orgId": org}
+
+
+def send_claude_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | None = None, expected_org_id: str | None = None) -> dict[str, Any]:
+    policy_for("Claude", policies).require("greet")
+    auth = _claude_auth_status(cwd)
+    if not auth.get("ok"):
+        return {**auth, "preSendFailure": True}
+    if expected_org_id is not None and auth.get("orgId") != expected_org_id:
+        return {"ok": False, "error": "Claude Code subscription sign-in changed", "preSendFailure": True}
+    executable = _find_executable("claude")
+    if not executable:
+        return {"ok": False, "error": "Claude Code CLI is not installed", "preSendFailure": True}
+    result = _claude_process(
         [
             executable, "--print", "Reply with exactly: Hi", "--model", CLAUDE_GREETING_MODEL,
             "--effort", "low", "--max-turns", "1", "--permission-mode", "plan",
             "--tools", "", "--no-session-persistence", "--disable-slash-commands",
             "--setting-sources", "", "--strict-mcp-config", "--system-prompt", "Reply briefly.",
+            "--output-format", "stream-json", "--verbose",
         ],
-        cwd,
+        cwd, 180,
     )
+    if not result.get("started"):
+        return {"ok": False, "error": result.get("error"), "preSendFailure": True}
+    auth_source = None
+    windows = None
+    final = None
+    for line in result.get("data", b"").splitlines():
+        try:
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                auth_source = event.get("apiKeySource")
+            elif event.get("type") == "rate_limit_event" and isinstance(event.get("rate_limit_info"), dict):
+                windows = event["rate_limit_info"].get("unifiedWindows")
+            elif event.get("type") == "result":
+                final = event
+        except (ValueError, TypeError):
+            continue
+    now = time.time()
+    converted = {}
+    if isinstance(windows, dict):
+        for name, value in windows.items():
+            if name not in claude_statusline.WINDOWS or not isinstance(value, dict):
+                continue
+            utilization = value.get("utilization")
+            if claude_statusline._number(utilization) and 0 <= utilization <= 1:
+                converted[name] = {"used_percentage": utilization * 100, "resets_at": value.get("resetsAt")}
+    limits = claude_statusline.parse({"rate_limits": converted}, now=now)
+    subscription = auth_source == "none"
+    not_subscription = auth_source is not None and not subscription
+    ok = subscription and result.get("returnCode") == 0 and final is not None and final.get("is_error") is False
+    explicit_failure = final is not None and (final.get("is_error") is True or (result.get("returnCode") is not None and result.get("returnCode") != 0))
+    outcome = "uncertain" if auth_source is None else "completed" if ok else "failed" if explicit_failure else "uncertain"
+    return {"ok": ok, "returnCode": result.get("returnCode"), "output": "Claude greeting completed" if ok else "Claude greeting failed or was unverified",
+            "delivered": final is not None, "authSource": auth_source, "orgId": auth["orgId"],
+            "limits": limits if subscription else {}, "outcome": outcome, "failureKind": "not_subscription" if not_subscription else None}
 
 
 class LimitResetService:
@@ -462,6 +570,7 @@ class LimitResetService:
         cwd: Path | None = None,
         enabled: bool | None = None,
         clock: Callable[[], float] | None = None,
+        monotonic: Callable[[], float] | None = None,
         list_candidates: Callable[..., list[dict[str, Any]]] | None = None,
         inspect_target: Callable[[str], dict[str, Any]] | None = None,
         queue_continue: Callable[[str], dict[str, Any]] | None = None,
@@ -500,6 +609,7 @@ class LimitResetService:
         self.enabled = (enabled if enabled is not None else
                         any(policy.send for policy in self.policies.values()))
         self._clock = clock or time.time
+        self._monotonic = monotonic or time.monotonic
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -511,6 +621,16 @@ class LimitResetService:
         self._persistence_errors: dict[str, str] = {}
         self._sending: set[str] = set()
         self._state = self._load_state()
+        claude_state = self._state.get("providers", {}).get("Claude", {})
+        mono_now = self._monotonic()
+        saved_cycles = claude_state.get("consumedCycles") or {}
+        self._claude_cycle_mono = {key: mono_now for key in saved_cycles} if isinstance(saved_cycles, dict) else {}
+        saved_intent = claude_state.get("dispatchIntent")
+        if isinstance(saved_intent, dict) and isinstance(saved_intent.get("cycleKey"), str):
+            self._claude_cycle_mono[saved_intent["cycleKey"]] = mono_now
+        self._claude_bootstrap_mono = mono_now if isinstance(claude_state.get("lastBootstrapAt"), (int, float)) else None
+        self._claude_deadline_mono: dict[str, float] = {}
+        self._claude_last_wall = None
         if not isinstance(self._state.get("resetAction"), dict):
             self._state["resetAction"] = default_action()
         self._reset_actions = ResetActionDispatcher(
@@ -704,6 +824,9 @@ class LimitResetService:
         policy.require("collect")
         if not (policy.allows("greet") or policy.allows("continue")):
             self._record_collected_status(name, sample)
+            return
+        if name == "Claude" and policy.allows("greet") and self.senders.get(name) is not None:
+            self._check_claude_keepalive(sample)
             return
         if name == "Codex":
             with self._lock:
@@ -935,6 +1058,201 @@ class LimitResetService:
             )
             self._save_state()
             self._sending.discard(name)
+
+    def _claude_account_sample(self, org_id: str, now: float) -> LimitSample:
+        """Only account-bound CLI and matching Desktop data can drive sends."""
+        desktop_org, desktop = _claude_desktop_data(now=now, max_usage_age=604800, expected_org_id=org_id)
+        if desktop_org != org_id:
+            desktop = {}
+        cli = claude_statusline.read(self.state_path.parent / claude_statusline.CLI_FILENAME, now=now,
+                                    source="claude-cli", include_org=True)
+        if cli.get("orgId") != org_id:
+            cli = {}
+        deadlines = [_epoch_seconds(desktop.get("fiveHour") or desktop.get("lastKnownFiveHour")) if _valid_quota_percent(desktop.get("fiveHourPercent")) is not None else None]
+        five = cli.get("five_hour") or {}
+        deadlines.append(_epoch_seconds(five.get("resets_at")))
+        valid = [x for x in deadlines if x is not None and math.isfinite(x)]
+        weekly = None
+        desktop_weekly_reset = _epoch_seconds(desktop.get("weekly"))
+        desktop_weekly_percent = _valid_quota_percent(desktop.get("weeklyPercent"))
+        best_weekly = None
+        if desktop_weekly_reset is not None and desktop_weekly_reset > now and desktop_weekly_percent is not None:
+            best_weekly = {"resets_at": desktop_weekly_reset, "used_percentage": desktop_weekly_percent, "receivedAt": desktop.get("observedAt") or now}
+        cw = cli.get("seven_day") or {}
+        if cw.get("resets_at", 0) > now:
+            best_weekly = claude_statusline.choose(best_weekly, cw, now)
+        if best_weekly:
+            weekly = best_weekly["used_percentage"]
+        return LimitSample(None, weekly, now, max(valid) if valid else None)
+
+    def _check_claude_keepalive(self, sample: LimitSample) -> None:
+        name = "Claude"
+        with self._lock:
+            if name in self._sending:
+                return
+            state = self._provider_state(name)
+            state["lastStatus"] = {**asdict(sample), "checkedAt": _claude_checked_at(sample, self._now_iso())}
+            intent = state.get("dispatchIntent")
+            if isinstance(intent, dict) and intent.get("cycleKey"):
+                state.setdefault("consumedCycles", {})[intent["cycleKey"]] = intent.get("at")
+                state["dispatchIntent"] = None
+                self._record(name, "dispatch_recovered", cycleKey=intent["cycleKey"])
+                if not self._save_state():
+                    return
+            now = self._clock()
+            mono = self._monotonic()
+            if self._claude_last_wall is not None and now < self._claude_last_wall:
+                self._claude_cycle_mono = {key: mono for key in state.get("consumedCycles", {})}
+                if state.get("lastBootstrapAt") is not None:
+                    self._claude_bootstrap_mono = mono
+            self._claude_last_wall = now
+            if now < float(state.get("retryAfter") or 0):
+                return
+            self._sending.add(name)
+        try:
+            cached = getattr(self, "_claude_auth_cache", None)
+            if state.get("needsLogin") and state.get("lastFailureKind") == "not_subscription":
+                cached = None
+            # Each check starts a CLI process, so the cached result only schedules sends.
+            auth = cached[1] if cached and now - cached[0] < 1800 else _claude_auth_status(self.cwd)
+            if not auth.get("ok"):
+                with self._lock:
+                    self._record_failure(name, state, auth, now)
+                    self._save_state()
+                return
+            self._claude_auth_cache = (now, auth)
+            org = auth["orgId"]
+            evidence = self._claude_account_sample(org, now)
+            with self._lock:
+                if state.get("claudeOrgId") != org:
+                    state["claudeOrgId"] = org
+                    state["claudeDeadline"] = None
+                    state["lastFailureKind"] = None
+                state["needsLogin"] = False
+                if state.get("lastFailureKind") == "not_subscription":
+                    state["lastFailureKind"] = None
+                deadline = _epoch_seconds(evidence.reset_at)
+                old = _epoch_seconds(state.get("claudeDeadline"))
+                if old is not None and math.isfinite(old):
+                    deadline = max(deadline, old) if deadline else old
+                if deadline is not None:
+                    state["claudeDeadline"] = deadline
+                    deadline_key = f"claude:{deadline}"
+                    if now < deadline + 30:
+                        target = mono + deadline + 30 - now
+                        self._claude_deadline_mono[deadline_key] = max(target, self._claude_deadline_mono.get(deadline_key, target))
+                    if state.get("nextGreetingAt") != deadline:
+                        state["nextGreetingAt"] = deadline
+                        self._record(name, "keepalive_scheduled", nextGreetingAt=deadline)
+                weekly = _valid_quota_percent(evidence.weekly_percent)
+                if weekly is not None and weekly >= WEEKLY_EXHAUSTED_PERCENT:
+                    self._save_state()
+                    return
+                if deadline is not None and now < deadline + 30:
+                    self._save_state()
+                    return
+                consumed = state.setdefault("consumedCycles", {})
+                cycle = f"claude:{deadline}" if deadline is not None else None
+                deadline_cycle = cycle
+                if cycle and mono < self._claude_deadline_mono.get(cycle, mono):
+                    self._save_state()
+                    return
+                last_dispatch = consumed.get(cycle) if cycle else None
+                bootstrap = cycle is None or cycle in consumed
+                if bootstrap:
+                    if cycle is not None and (not isinstance(last_dispatch, (int, float)) or now - last_dispatch < ROLLING_WINDOW_SECONDS):
+                        self._save_state()
+                        return
+                    if cycle is not None and mono - self._claude_cycle_mono.setdefault(cycle, mono) < ROLLING_WINDOW_SECONDS:
+                        self._save_state()
+                        return
+                    last_bootstrap = state.get("lastBootstrapAt")
+                    if isinstance(last_bootstrap, (int, float)) and now - last_bootstrap < ROLLING_WINDOW_SECONDS:
+                        self._save_state()
+                        return
+                    if self._claude_bootstrap_mono is not None and mono - self._claude_bootstrap_mono < ROLLING_WINDOW_SECONDS:
+                        self._save_state()
+                        return
+                    cycle = f"claude:bootstrap:{now}"
+                # Old cycle keys only guard against resends; a week is plenty.
+                for key in [key for key, at in consumed.items() if key != deadline_cycle and isinstance(at, (int, float)) and now - at > 604800 and mono - self._claude_cycle_mono.setdefault(key, mono) > 604800]:
+                    del consumed[key]
+                    self._claude_cycle_mono.pop(key, None)
+            # The cached account can schedule, but never authorize a send. The
+            # CLI check runs unlocked; this provider stays reserved in _sending.
+            fresh_auth = _claude_auth_status(self.cwd)
+            with self._lock:
+                if not fresh_auth.get("ok") or fresh_auth.get("orgId") != org:
+                    self._claude_auth_cache = None
+                    failure = fresh_auth if not fresh_auth.get("ok") else {"error": "Claude Code subscription sign-in changed"}
+                    self._record_failure(name, state, failure, now)
+                    self._save_state()
+                    return
+                previous_bootstrap = state.get("lastBootstrapAt")
+                state["dispatchIntent"] = {"cycleKey": cycle, "at": now}
+                if bootstrap:
+                    state["lastBootstrapAt"] = now
+                if not self._save_state():
+                    state["dispatchIntent"] = None
+                    state["lastBootstrapAt"] = previous_bootstrap
+                    return
+                previous_mono = self._claude_bootstrap_mono
+                self._claude_cycle_mono[cycle] = self._monotonic()
+                if bootstrap:
+                    self._claude_bootstrap_mono = self._claude_cycle_mono[cycle]
+                if bootstrap:
+                    self._record(name, "bootstrap_send", cycleKey=cycle)
+                self._record(name, "send_started", cycleKey=cycle)
+            try:
+                sender = self.senders.get(name)
+                if sender is None:
+                    result = {"ok": False, "error": "Claude greeting sender is unavailable", "preSendFailure": True}
+                elif sender is send_claude_greeting:
+                    result = sender(self.cwd, policies=self.policies, expected_org_id=org)
+                else:
+                    result = sender(self.cwd)
+                if not isinstance(result, dict):
+                    result = {"ok": False, "error": "Claude greeting outcome is uncertain"}
+            except Exception:
+                result = {"ok": False, "error": "Claude greeting outcome is uncertain"}
+            with self._lock:
+                state["dispatchIntent"] = None
+                if result.get("preSendFailure"):
+                    self._claude_cycle_mono.pop(cycle, None)
+                    if bootstrap:
+                        state["lastBootstrapAt"] = previous_bootstrap
+                        self._claude_bootstrap_mono = previous_mono
+                    self._record_failure(name, state, result, now)
+                else:
+                    consumed[cycle] = now
+                    if result.get("failureKind") == "not_subscription" or (result.get("orgId") and result["orgId"] != org):
+                        state.update({"needsLogin": True, "lastFailureKind": "not_subscription", "lastError": "Claude Code is not using a Claude subscription sign-in", "retryAfter": now + AUTH_RETRY_SECONDS})
+                        self._record(name, "send_failed", failureKind="not_subscription", needsLogin=True)
+                    else:
+                        limits = result.get("limits") if isinstance(result.get("limits"), dict) else {}
+                        if limits and result.get("orgId") == org:
+                            try:
+                                claude_statusline.write(limits, self.state_path.parent, now=self._clock(), filename=claude_statusline.CLI_FILENAME, source="claude-cli", org_id=org)
+                            except (OSError, TimeoutError, ValueError):
+                                limits = {}
+                        new_deadline = _epoch_seconds((limits.get("five_hour") or {}).get("resets_at"))
+                        outcome = result.get("outcome") or ("completed" if result.get("ok") else "uncertain")
+                        if outcome == "completed":
+                            state.update({"lastTriggerAt": self._now_iso(), "lastError": None, "retryAfter": 0})
+                            self._record(name, "greeting_sent", cycleKey=cycle)
+                        else:
+                            category = "cli_error" if outcome == "failed" else "delivery_unknown"
+                            state["lastError"] = state.get("lastError") or ("Claude greeting failed" if outcome == "failed" else "Claude greeting delivery is uncertain")
+                            self._record(name, "greeting_failed" if outcome == "failed" else "greeting_uncertain", cycleKey=cycle, failureKind=category)
+                        if new_deadline and new_deadline > self._clock() and (deadline is None or new_deadline > deadline):
+                            state.update({"claudeDeadline": new_deadline, "nextGreetingAt": new_deadline})
+                            self._record(name, "greeting_verified", nextGreetingAt=new_deadline)
+                        else:
+                            self._record(name, "greeting_unverified", cycleKey=cycle)
+                self._save_state()
+        finally:
+            with self._lock:
+                self._sending.discard(name)
 
     def _check_codex_keepalive(self, name: str, sample: LimitSample) -> None:
         """Send at every observed Codex deadline and verify the next window."""
