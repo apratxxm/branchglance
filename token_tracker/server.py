@@ -925,7 +925,7 @@ class FastClaudeLimits:
             from .providers import ClaudeLimitsProvider
             provider = ClaudeLimitsProvider()
             history = provider.root / "plan-usage-history.json"
-            if history.stat().st_size > self.MAX_USAGE_HISTORY_BYTES:
+            if history.exists() and history.stat().st_size > self.MAX_USAGE_HISTORY_BYTES:
                 return None
             limits = provider.snapshot()
             if not isinstance(limits, dict):
@@ -1221,12 +1221,21 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)[:120]})
             return
         if parsed.path == "/api/avatars":
+            if not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return
+            if not _codex_allows("collect"):
+                self._send_json({"avatars": []})
+                return
             # Codex's own subagent avatars, read from the local app install (cached per version).
             from .codex_avatars import codex_avatars
             from .limit_reset import _runtime_dir
             self._send_json({"avatars": codex_avatars(_runtime_dir())})
             return
         if parsed.path == "/api/limit-reset":
+            if not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
                 return

@@ -2948,8 +2948,8 @@ class ClaudeDesktopProvider:
     def _usage(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         path = self.root / "plan-usage-history.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        samples = data.get("samples") or []
-        if not samples:
+        samples = data.get("samples") if isinstance(data, dict) else None
+        if not isinstance(samples, list) or not samples or any(not isinstance(sample, dict) for sample in samples):
             raise RuntimeError("Claude usage history is empty")
         latest_org = samples[-1].get("org")
         own = [sample for sample in samples if sample.get("org") == latest_org]
@@ -3353,7 +3353,9 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
         except (OSError, ValueError, RuntimeError, AttributeError, TypeError, KeyError, IndexError) as exc:
             # Without Desktop history, limits Claude Code printed for a greeting can still show.
             samples, latest, missing = [], {}, exc
-        usage = latest.get("u") or {}
+        usage = latest.get("u")
+        if not isinstance(usage, dict):
+            usage = {}
         # Claude Desktop refetches usage only every few minutes, so a 90-second window
         # leaves the meters blank most of the time. Display accepts a response up to the
         # widget's own 10-minute quota freshness; the greeter remains at 90 seconds.

@@ -399,3 +399,29 @@ def test_withdrawn_continue_policy_disarms_but_keeps_selection():
     assert dispatcher.get()["armed"] is False
     assert state["ledger"] == {"cycles": [{"cycleId": "old"}]}
     assert queued == []
+
+
+def test_retained_selection_and_baseline_cannot_override_action():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    h.dispatcher.list_candidates = lambda *, limit: []
+    h.dispatcher.configure("continue", [ONE], baseline={"mode": "greet", "armed": False, "threadIds": [], "ledger": {}, "armedAt": 42})
+    assert h.state["mode"] == "continue" and h.state["armed"] and h.state["threadIds"] == [ONE]
+    assert h.state["armedAt"] == 42 and h.state["ledger"] == {"cycles": []}
+    with pytest.raises(ValueError):
+        h.dispatcher.configure("continue", [TWO])
+    h.inspection[ONE] = {"exists": False, "archived": False}
+    with pytest.raises(ValueError):
+        h.dispatcher.configure("continue", [ONE])
+
+
+def test_candidate_typeerror_is_not_retried():
+    h = Harness()
+    calls = []
+    def broken(*, limit):
+        calls.append(limit)
+        raise TypeError("internal error")
+    h.dispatcher.list_candidates = broken
+    with pytest.raises(RuntimeError):
+        h.dispatcher.configure("continue", [ONE])
+    assert calls == [100]

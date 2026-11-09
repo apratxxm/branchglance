@@ -2622,10 +2622,10 @@ function watcherPopoverHTML(name) {
   const watcher=state.watcher,w=watcher?.providers?.[name];
   if(!watcher||!w)return (RUNWAY?'':'<dl class="pop-facts"><dt>phase</dt><dd>unavailable</dd></dl>')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
   const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
-  const phase=!watcher.enabled?"off":!watcher.running?"stopped":PHASES[w.phase]||w.phase||(RUNWAY?"":"watching");
+  const phase=!watcher.enabled?"off":!watcher.running?"stopped":esc(PHASES[w.phase]||w.phase||(RUNWAY?"":"watching"));
   const err=watcher.persistenceError||w.lastPollError||w.lastError;
   if(RUNWAY){const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';}
-  return '<dl class="pop-facts"><dt>phase</dt><dd>'+esc(phase)+'</dd><dt>next</dt><dd>'+(next?dayWord(next*1000)+" "+clock(next*1000):"—")+'</dd>'+
+  return '<dl class="pop-facts"><dt>phase</dt><dd>'+phase+'</dd><dt>next</dt><dd>'+(next?dayWord(next*1000)+" "+clock(next*1000):"—")+'</dd>'+
     '<dt>last</dt><dd>'+(last?clock(last)+(verified?' <span class="t-live">✓ verified</span>':" unverified"):"—")+'</dd><dt>fails</dt><dd'+(w.failedAttempts?' class="t-err"':'')+'>'+(w.failedAttempts||0)+'</dd>'+
     (err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>'+
     (err&&watcher.logPath?'<button class="ghost" data-action="copy" data-copy="'+esc(watcher.logPath)+'">'+ICON.copy+ICON.check+'log</button>':'')+

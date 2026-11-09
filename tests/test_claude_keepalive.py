@@ -380,3 +380,38 @@ def test_widget_no_fresh_cli_does_not_call_auth(widget_cli, tmp_path, monkeypatc
     provider = providers.ClaudeLimitsProvider(str(local), auth_status=lambda cwd: pytest.fail("auth must not run"))
     with pytest.raises(FileNotFoundError):
         provider.snapshot()
+
+
+def test_auth_cache_expires_despite_two_second_polls(setup, monkeypatch):
+    clock, _, evidence, service = setup
+    evidence["deadline"] = NOW + 10000
+    org = ["org-a"]
+    calls = []
+    monkeypatch.setattr(lr, "_claude_auth_status", lambda cwd: calls.append(org[0]) or {"ok": True, "orgId": org[0]})
+    watcher = service()
+    for _ in range(900):
+        poll(watcher)
+        clock.now += 2
+        clock.mono += 2
+    org[0] = "org-b"
+    poll(watcher)
+    assert calls == ["org-a", "org-b"]
+    assert watcher._state["providers"]["Claude"]["claudeOrgId"] == "org-b"
+
+
+@pytest.mark.parametrize("bad_usage", ["bad", [1], 1])
+def test_malformed_desktop_usage_with_partial_cli_falls_back(tmp_path, monkeypatch, bad_usage):
+    import time
+    from token_tracker import providers, product, claude_statusline as sl
+    now = time.time()
+    local = tmp_path / "local"
+    provider = providers.ClaudeLimitsProvider(str(local), auth_status=lambda cwd: {"ok": True, "orgId": "org-a"})
+    provider.root = tmp_path / "desktop"
+    provider.root.mkdir(parents=True)
+    (provider.root / "plan-usage-history.json").write_text(json.dumps({"samples": [{"org": "org-a", "u": bad_usage}]}))
+    monkeypatch.setattr(product, "state_root", lambda: tmp_path)
+    monkeypatch.setattr(sl, "sample_paths", lambda: [])
+    monkeypatch.setattr(providers.ClaudeLimitsProvider, "_last_live", {})
+    sl.write({"five_hour": {"used_percentage": 12, "resets_at": now + 600, "receivedAt": now}}, tmp_path, now=now, filename=sl.CLI_FILENAME, source="claude-cli", org_id="org-a")
+    result = provider.snapshot()
+    assert result["fiveHour"]["percent"] == 12 and result["weekly"]["percent"] is None

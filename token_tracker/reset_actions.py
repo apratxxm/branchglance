@@ -127,8 +127,6 @@ class ResetActionDispatcher:
                 raise RuntimeError("Codex chat discovery is unavailable")
             try:
                 candidates = self.list_candidates(limit=100)
-            except TypeError:
-                candidates = self.list_candidates(100)
             except Exception as exc:
                 raise RuntimeError("could not verify selected Codex chats") from exc
             by_id = {
@@ -137,6 +135,13 @@ class ResetActionDispatcher:
             }
             for thread_id in ids:
                 row = by_id.get(thread_id)
+                if row is None and thread_id in (self.action_state().get("threadIds") or []):
+                    try:
+                        info = self.inspect_target(thread_id) if self.inspect_target else None
+                    except Exception as exc:
+                        raise RuntimeError("could not verify selected Codex chats") from exc
+                    if isinstance(info, dict) and info.get("exists") is True and info.get("archived") is False:
+                        continue
                 if row is None or row.get("archived") is True or row.get("status") == "archived":
                     raise ValueError(f"selected Codex chat does not exist or is archived: {thread_id}")
 
@@ -153,7 +158,8 @@ class ResetActionDispatcher:
             "ledger": previous.get("ledger", {"cycles": []}),
         })
         if mode == "continue":
-            state.update(copy.deepcopy(baseline or {}))
+            state.update({key: copy.deepcopy(value) for key, value in (baseline or {}).items()
+                          if key in {"armedAt", "previousSample", "frozenDeadline", "sawBlocked", "cycleId"}})
         if not self.save():
             state.clear()
             state.update(previous)

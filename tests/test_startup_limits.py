@@ -220,3 +220,12 @@ def test_expired_retained_window_cannot_block_fresh_null(monkeypatch):
         assert "lastKnown" not in result["fiveHour"]
         assert result["weekly"]["percent"] == 55 and "lastKnown" not in result["weekly"]
         assert "fiveHour" not in cache.retained and "weekly" in cache.retained
+
+
+def test_fast_claude_load_without_history_calls_snapshot(tmp_path, monkeypatch):
+    class Provider:
+        root = tmp_path
+        def snapshot(self):
+            return {"name": "Claude", "fiveHour": {"percent": 12}}
+    monkeypatch.setattr(providers, "ClaudeLimitsProvider", Provider)
+    assert server.FastClaudeLimits()._load()["fiveHour"]["percent"] == 12

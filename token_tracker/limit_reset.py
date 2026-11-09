@@ -1114,13 +1114,16 @@ class LimitResetService:
             if state.get("needsLogin") and state.get("lastFailureKind") == "not_subscription":
                 cached = None
             # Each check starts a CLI process, so the cached result only schedules sends.
-            auth = cached[1] if cached and now - cached[0] < 1800 else _claude_auth_status(self.cwd)
+            if cached and 0 <= mono - cached[0] < 1800:
+                auth = cached[1]
+            else:
+                auth = _claude_auth_status(self.cwd)
+                self._claude_auth_cache = (self._monotonic(), auth)
             if not auth.get("ok"):
                 with self._lock:
                     self._record_failure(name, state, auth, now)
                     self._save_state()
                 return
-            self._claude_auth_cache = (now, auth)
             org = auth["orgId"]
             evidence = self._claude_account_sample(org, now)
             with self._lock:

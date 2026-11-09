@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 HASH_MODULUS = 2147483647
@@ -22,6 +23,8 @@ _ANCHOR = re.compile(rb"=\[\{dark:([A-Za-z_$][\w$]*),light:([A-Za-z_$][\w$]*)\}(
 _PAIR = re.compile(rb"\{dark:([A-Za-z_$][\w$]*),light:([A-Za-z_$][\w$]*)\}")
 _LOCK = threading.Lock()
 _MEMO: dict[str, list[str]] = {}
+_DISCOVERY_TTL = 300
+_DISCOVERY: tuple[float, Path | None] | None = None
 
 
 def avatar_index(seed: str, count: int) -> int:
@@ -105,11 +108,17 @@ def _extract(asar: Path) -> list[str]:
 
 def codex_avatars(cache_dir: Path) -> list[str]:
     """Cached by the installed app's folder name (its version)."""
-    asar = _codex_asar()
-    if asar is None:
-        return []
-    version = asar.parent.parent.parent.name
+    global _DISCOVERY
     with _LOCK:
+        now = time.monotonic()
+        if _DISCOVERY is None or not 0 <= now - _DISCOVERY[0] < _DISCOVERY_TTL:
+            asar = _codex_asar()
+            _DISCOVERY = (time.monotonic(), asar)
+        else:
+            asar = _DISCOVERY[1]
+        if asar is None:
+            return []
+        version = asar.parent.parent.parent.name
         if version in _MEMO:
             return _MEMO[version]
         cache = cache_dir / "codex-avatars.json"
@@ -122,7 +131,7 @@ def codex_avatars(cache_dir: Path) -> list[str]:
             pass
         try:
             avatars = _extract(asar)
-        except OSError:
+        except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError, RecursionError):
             avatars = []
         if avatars:
             try:

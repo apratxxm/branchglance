@@ -413,6 +413,11 @@ T.render(tree);
   assert.doesNotMatch(node("#strip").innerHTML,/ over"/);
   assert.match(node("#strip").innerHTML,/aria-expanded="true"/);
   T.state.stripOpen=false;
+  T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:'<img src=x onerror=alert(1)>',lastTriggerAt:fixedNow/1000,lastVerifiedAt:fixedNow/1000,verificationEvidence:'usage_and_deadline'}}};
+  const phaseMarkup=T.watcherPopoverHTML("Codex");
+  assert.match(phaseMarkup,/&lt;img/);
+  assert.doesNotMatch(phaseMarkup,/<img/);
+  assert.match(phaseMarkup,/<span class="t-live">/);
   // Watcher failure only when not an auth problem.
   T.state.failSince=null;
   T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:"keepalive_scheduled",failedAttempts:2,lastError:"greeting not verified",nextRetryAt:new Date(2026,8,23,2,50).getTime()/1000}}};
