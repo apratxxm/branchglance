@@ -158,7 +158,7 @@ def _open(parent, name: str, access: int, share: int):
     a = _api()
     ctypes = a["ctypes"]
     encoded = name.encode("utf-16-le", "surrogatepass")  # UNICODE_STRING counts bytes, not characters
-    if len(encoded) > 65534:
+    if len(encoded) > 65532:  # MaximumLength = Length + 2 must fit a USHORT
         raise WalkError(f"Name too long to open safely: {name[:80]}...")
     buf = ctypes.create_string_buffer(encoded, len(encoded) + 2)
     us = a["US"](len(encoded), len(encoded) + 2, ctypes.cast(buf, ctypes.c_void_p))
