@@ -43,14 +43,17 @@ HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { 
         using (var s = BranchglanceLauncher.CreateProtectedFile(path)) s.Write(bytes, 0, bytes.Length);
         var second = BranchglanceLauncher.TryConsumeRelaunchRequest(a[1], "not_redirected", a[2]);
         Console.Write((first != null) + "|" + (second == null) + "|" + File.Exists(path)); return 0; }
+    if (a[0] == "consume-many") {  // consume-many <state> <root>... : one line per root
+        foreach (var r in a.Skip(2)) { var q = BranchglanceLauncher.TryConsumeRelaunchRequest(r, "not_redirected", a[1]); Console.WriteLine(q == null ? "null" : string.Join(",", q.Arguments)); }
+        return 0; }
     if (a[0] == "forge") {
-        // forge <signRoot> <state> <lifetimeSeconds> <good|bad> <extraField|-> <padding> argv...
+        // forge <signRoot> <state> <lifetimeSeconds> <good|bad> <extraField|-> <padding> <fileRoot> argv...
         BranchglanceLauncher.WriteRelaunchRequest(a[1], new[] { "--background" }, a[2]);
         string dir = Path.Combine(a[2], ".branchglance-relaunch");
         foreach (var f in Directory.GetFiles(dir, ".relaunch-*.json")) File.Delete(f);
         byte[] key = File.ReadAllBytes(Path.Combine(dir, "relaunch.key"));
         string id = Guid.NewGuid().ToString("N"); long expires = (long)(DateTime.UtcNow - new DateTime(1970,1,1)).TotalSeconds + long.Parse(a[3]);
-        string[] argv = a.Skip(7).ToArray(); if (int.Parse(a[6]) > 0) argv = argv.Concat(new[] { new string('x', int.Parse(a[6])) }).ToArray();
+        string[] argv = a.Skip(8).ToArray(); if (int.Parse(a[6]) > 0) argv = argv.Concat(new[] { new string('x', int.Parse(a[6])) }).ToArray();
         var ms = new MemoryStream(); Action<string> put = v => { var d = System.Text.Encoding.UTF8.GetBytes(v); ms.Write(new[] { (byte)(d.Length >> 24), (byte)(d.Length >> 16), (byte)(d.Length >> 8), (byte)d.Length }, 0, 4); ms.Write(d, 0, d.Length); };
         put("branchglance-relaunch-v1"); put(System.Security.Principal.WindowsIdentity.GetCurrent().User.Value);
         put(Path.GetFullPath(a[1]).TrimEnd('\\').ToUpperInvariant()); put(id); put(expires.ToString()); put(argv.Length.ToString()); foreach (var x in argv) put(x);
@@ -59,7 +62,8 @@ HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { 
         var record = new System.Collections.Generic.Dictionary<string, object> { { "schemaVersion", 2 }, { "id", id }, { "expires", expires }, { "argv", argv }, { "mac", mac } };
         if (a[5] != "-") record[a[5]] = 1;
         var json = System.Text.Encoding.UTF8.GetBytes(new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = 1 << 28 }.Serialize(record));
-        string file = Path.Combine(dir, ".relaunch-" + id + ".json");
+        var shaNs = System.Security.Cryptography.SHA256.Create(); string ns = BitConverter.ToString(shaNs.ComputeHash(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(a[7]).TrimEnd('\\').ToUpperInvariant()))).Replace("-", "").ToLowerInvariant().Substring(0, 32);
+        string file = Path.Combine(dir, ".relaunch-" + ns + "-" + id + ".json");
         using (var s = BranchglanceLauncher.CreateProtectedFile(file)) s.Write(json, 0, json.Length);
         Console.Write(file); return 0; }
     if (a[0] == "mac") { Console.Write(BranchglanceLauncher.ControlMac(a[1], a[2], a.Skip(3).ToArray())); return 0; }
@@ -579,8 +583,8 @@ def _consume(harness, root, state):
     return result.stdout
 
 
-def _forge(harness, root, state, lifetime="30", mac="good", field="-", padding="0", *argv):
-    result = _probe(harness, ["forge", str(root), str(state), lifetime, mac, field, padding, *argv])
+def _forge(harness, root, state, lifetime="30", mac="good", field="-", padding="0", *argv, file_root=None):
+    result = _probe(harness, ["forge", str(root), str(state), lifetime, mac, field, padding, str(file_root or root), *argv])
     assert result.returncode == 0, result.stderr
     return Path(result.stdout)
 
@@ -622,7 +626,7 @@ def test_forged_mac_is_rejected_and_discarded(launcher, tmp_path):
 
 def test_request_signed_for_another_install_root_is_rejected(launcher, tmp_path):
     harness, root, state = _relaunch(launcher, tmp_path)
-    _forge(harness, tmp_path / "other-install", state, "30", "good", "-", "0", "--background")
+    _forge(harness, tmp_path / "other-install", state, "30", "good", "-", "0", "--background", file_root=root)
     assert _consume(harness, root, state) == "null"
 
 
@@ -683,3 +687,32 @@ def test_state_directory_with_inheriting_dacl_or_junction_is_refused(launcher, t
     assert link.returncode == 0
     assert _probe(harness, ["write", str(root), str(state), "--background"]).returncode == 1
     assert not list(target.iterdir())
+
+
+def test_two_installs_under_one_state_base_never_consume_each_others_requests(launcher, tmp_path):
+    _folder, harness = launcher
+    state = tmp_path / "state"
+    roots = [tmp_path / "install-a", tmp_path / "install-b"]
+    for order in (roots, roots[::-1]):
+        for index, root in enumerate(roots):
+            assert _probe(harness, ["write", str(root), str(state), "--install-handoff", TOKEN + str(index), "--background"]).returncode == 0
+        for root in order:  # each root sees only its own request, in either consumption order
+            index = roots.index(root)
+            assert _consume(harness, root, state) == f"ok|--install-handoff,{TOKEN}{index},--background"
+            assert _consume(harness, root, state) == "null"
+    # A request for the other install is neither claimed nor deleted by this one.
+    other = Path(_probe(harness, ["write", str(roots[1]), str(state), "--background"]).stdout)
+    assert _consume(harness, roots[0], state) == "null" and other.exists()
+    assert _consume(harness, roots[1], state) == "ok|--background" and not other.exists()
+
+
+def test_two_installs_consuming_concurrently_keep_exact_arguments(launcher, tmp_path):
+    _folder, harness = launcher
+    state = tmp_path / "state"
+    roots = [tmp_path / f"install-{n}" for n in range(4)]
+    for index, root in enumerate(roots):
+        assert _probe(harness, ["write", str(root), str(state), "--install-handoff", TOKEN + str(index)]).returncode == 0
+    procs = [subprocess.Popen([str(harness), "consume", str(root), str(state)], stdout=subprocess.PIPE, text=True) for root in roots]
+    outputs = [p.communicate(timeout=30)[0] for p in procs]
+    assert outputs == [f"ok|--install-handoff,{TOKEN}{index}" for index in range(4)]
+    assert [_consume(harness, root, state) for root in roots] == ["null"] * 4

@@ -357,3 +357,56 @@ def test_recovery_with_junctioned_install_root_keeps_everything(tmp_path):
     assert sorted(p.name for p in root.iterdir()) == before
     assert (root / "install-journal.json").exists()
     assert ReleaseOps(root).recover() == "rolled-back"  # the genuine path still recovers
+
+
+# ---------------------------------------------------------------- non-BMP names, listed-but-unopenable entries
+
+ASTRAL = "\U0001F600"
+
+
+def test_non_bmp_named_files_delete_and_prefix_colliding_names_stay_distinct(tmp_path):
+    root = tmp_path / "owned"
+    root.mkdir()
+    names = ["x", "x" + ASTRAL, ASTRAL, ASTRAL + "x", "x" + ASTRAL + ASTRAL]
+    for name in names:
+        (root / name).write_text(name, encoding="utf-8")
+    (root / ("d" + ASTRAL)).mkdir()
+    (root / ("d" + ASTRAL) / "inner.txt").write_text("i", encoding="utf-8")
+    remove_plain_tree(root)
+    assert not root.exists()
+
+
+def test_remove_known_file_with_non_bmp_name_only_removes_that_file(tmp_path):
+    from branchglance_installer.core import _remove_known_file
+    root = tmp_path / "owned"
+    root.mkdir()
+    (root / "tool").write_text("a", encoding="utf-8")
+    (root / ("tool" + ASTRAL)).write_text("b", encoding="utf-8")
+    assert _remove_known_file(root / ("tool" + ASTRAL)) is True
+    assert (root / "tool").exists() and not (root / ("tool" + ASTRAL)).exists()
+
+
+def test_non_bmp_named_junction_aborts_before_any_ordinary_file_is_deleted(tmp_path):
+    root, sentinel = _tree(tmp_path)
+    _junction(root / ("link" + ASTRAL), sentinel.parent)
+    with pytest.raises(SafetyError, match="Reparse point refused"):
+        remove_plain_tree(root)
+    assert (root / "a.txt").exists() and (root / "sub" / "b.txt").exists() and sentinel.exists()
+
+
+def test_overlong_name_is_refused(tmp_path):
+    with pytest.raises(handles.WalkError, match="too long"):
+        handles._open(None, "x" * 40000, 0x80, 7)
+
+
+def test_listed_entry_that_cannot_be_opened_is_not_treated_as_absent(tmp_path, monkeypatch):
+    root, sentinel = _tree(tmp_path)
+    real = handles._open_child
+
+    def hide(parent, name, display, **kw):
+        return None if name == "a.txt" else real(parent, name, display, **kw)  # still listed, "not found"
+
+    monkeypatch.setattr(handles, "_open_child", hide)
+    with pytest.raises(SafetyError, match="not proven absent"):
+        remove_plain_tree(root)
+    assert (root / "a.txt").exists() and (root / "sub" / "b.txt").exists()

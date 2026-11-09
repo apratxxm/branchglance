@@ -426,6 +426,13 @@ public static class BranchglanceLauncher
         stream.Write(data, 0, data.Length);
     }
 
+    // Request files are namespaced per installation (hex SHA-256 of the normalised root), so one
+    // install never enumerates, claims or deletes another install's requests. The root stays in the MAC.
+    static string RequestNamespace(string root)
+    {
+        using (var sha = SHA256.Create()) return Hex(sha.ComputeHash(Encoding.UTF8.GetBytes(NormalizeRoot(root)))).Substring(0, 32);
+    }
+
     static string NormalizeRoot(string root) { return Path.GetFullPath(root).TrimEnd('\\').ToUpperInvariant(); }
 
     // Canonical, length-prefixed MAC input. Unknown or reordered fields cannot collide.
@@ -495,7 +502,7 @@ public static class BranchglanceLauncher
 #endif
             byte[] bytes = Encoding.UTF8.GetBytes(Json.Serialize(record));
             if (bytes.Length > RelaunchRequestLimit) throw new InvalidDataException("Relaunch arguments exceed the request limit");
-            string path = Path.Combine(store.Path, ".relaunch-" + id + ".json");
+            string path = Path.Combine(store.Path, ".relaunch-" + RequestNamespace(root) + "-" + id + ".json");
             string temp = Path.Combine(store.Path, ".tmp-" + id);
             using (FileStream stream = CreateProtectedFile(temp)) { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
             File.Move(temp, path); // consumers only look at the final name, so they never see a partial file
@@ -545,6 +552,7 @@ public static class BranchglanceLauncher
     static RelaunchRequest ConsumeRelaunchRequest(string root, string stateBase)
     {
         string mutexName = RequestMutexName(root);
+        string ns = RequestNamespace(root);
         using (var mutex = new Mutex(false, mutexName))
         {
             bool held = false;
@@ -559,13 +567,13 @@ public static class BranchglanceLauncher
                     foreach (string stale in Directory.GetFiles(store.Path, ".used-*"))
                         try { if (File.GetCreationTimeUtc(stale).Ticks < staleBefore) File.Delete(stale); } catch { }
                     var candidates = new List<string>();
-                    foreach (string path in Directory.GetFiles(store.Path, ".relaunch-*.json"))
-                        if (Regex.IsMatch(Path.GetFileName(path), @"\A\.relaunch-[0-9a-f]{32}\.json\z")) candidates.Add(path);
+                    foreach (string path in Directory.GetFiles(store.Path, ".relaunch-" + ns + "-*.json"))
+                        if (Regex.IsMatch(Path.GetFileName(path), @"\A\.relaunch-" + ns + @"-[0-9a-f]{32}\.json\z")) candidates.Add(path);
                     candidates.Sort((a, b) => File.GetCreationTimeUtc(a).CompareTo(File.GetCreationTimeUtc(b))); // oldest first
                     foreach (string path in candidates)
                     {
                         string file = Path.GetFileName(path);
-                        string id = file.Substring(".relaunch-".Length, 32);
+                        string id = file.Substring(".relaunch-".Length + ns.Length + 1, 32);
                         string claim = Path.Combine(store.Path, ".claim-" + id + "-" + Guid.NewGuid().ToString("N"));
                         try
                         {

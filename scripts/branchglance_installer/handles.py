@@ -29,7 +29,10 @@ Design
   A sharing violation (for example a running executable) aborts; it is never retried by name.
 - Entries that disappear mid-walk (name not found) are skipped. Entries that appear mid-walk
   are handled by re-listing a directory until it is empty (bounded passes); a directory that
-  keeps refilling fails closed.
+  keeps refilling fails closed. A listed name that cannot be opened counts as vanished only if
+  a fresh listing no longer contains it; otherwise the walk fails closed (never skipped).
+- Names are passed as UTF-16 bytes (UNICODE_STRING.Length is a byte count), so characters
+  outside the BMP (two code units) are opened exactly; names over 65534 bytes are refused.
 - A pre-scan walks the whole tree first and aborts on any reparse point before anything is
   deleted; the delete pass re-checks every object it opens and compares its file ID to the
   scan, so an object swapped between scan and delete aborts.
@@ -154,8 +157,11 @@ def _open(parent, name: str, access: int, share: int):
     """Open one object (single component when parent is a handle). Returns (status, handle)."""
     a = _api()
     ctypes = a["ctypes"]
-    buf = ctypes.create_unicode_buffer(name)
-    us = a["US"](len(name) * 2, len(name) * 2 + 2, ctypes.cast(buf, ctypes.c_void_p))
+    encoded = name.encode("utf-16-le", "surrogatepass")  # UNICODE_STRING counts bytes, not characters
+    if len(encoded) > 65534:
+        raise WalkError(f"Name too long to open safely: {name[:80]}...")
+    buf = ctypes.create_string_buffer(encoded, len(encoded) + 2)
+    us = a["US"](len(encoded), len(encoded) + 2, ctypes.cast(buf, ctypes.c_void_p))
     oa = a["OA"](ctypes.sizeof(a["OA"]), parent, ctypes.pointer(us), 0x40, None, None)
     handle, iosb = ctypes.c_void_p(), a["IOSB"]()
     status = a["nt"].NtCreateFile(ctypes.byref(handle), access, ctypes.byref(oa), ctypes.byref(iosb), None, 0,
@@ -243,11 +249,18 @@ def _open_child(parent, name: str, display: str, *, access: int, share: int, lis
     return handle
 
 
+def _confirm_gone(dirh, name: str, display: str) -> None:
+    """A listed name that cannot be opened is 'vanished' only if a fresh listing agrees."""
+    if name in _list(dirh, display):
+        raise WalkError(f"Listed entry cannot be opened (not proven absent): {display}; retained")
+
+
 def _scan(dirh, display: str, ids: dict) -> None:
     for name in _list(dirh, display):
         child = os.path.join(display, name)
         handle = _open_child(dirh, name, child, access=0, share=SHARE_READ | SHARE_WRITE | SHARE_DELETE, listing=True)
         if handle is None:
+            _confirm_gone(dirh, name, child)
             continue
         try:
             attrs, fid = _identity(handle, child)
@@ -266,7 +279,8 @@ def _delete_dir(dirh, display: str, ids: dict) -> None:
             child = os.path.join(display, name)
             handle = _open_child(dirh, name, child, access=DELETE, share=SHARE_READ | SHARE_WRITE, listing=True)
             if handle is None:
-                continue  # vanished mid-walk
+                _confirm_gone(dirh, name, child)  # vanished mid-walk
+                continue
             try:
                 attrs, fid = _identity(handle, child)
                 if attrs & ATTR_REPARSE:
