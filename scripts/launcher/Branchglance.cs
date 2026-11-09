@@ -16,6 +16,9 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
 
 public static class BranchglanceLauncher
 {
@@ -64,7 +67,9 @@ public static class BranchglanceLauncher
         public string Id;
         public string[] Arguments;
         public bool Guard;
+#if TEST
         public string TestReport;
+#endif
     }
 
     static void LauncherLog(string message)
@@ -238,24 +243,306 @@ public static class BranchglanceLauncher
             return "Local\\Branchglance-Relaunch-" + Hex(sha.ComputeHash(Encoding.UTF8.GetBytes(Path.GetFullPath(root).ToUpperInvariant()))).Substring(0, 32);
     }
 
-    static string WriteRelaunchRequest(string root, string[] argv, string testReport = null)
+    // ---- Authenticated relaunch requests (redirected AppData -> Explorer-launched launcher) ----
+    //
+    // The redirected launcher cannot hand argv to the Explorer-launched one through a path under
+    // its (virtualised) LocalAppData, and the install root is not a trust boundary. Both sides
+    // therefore use one per-user state directory under the user profile (not AppData):
+    //   <UserProfile>\.branchglance-relaunch
+    // It is opened without following links, and its owner and DACL are verified on the held handle
+    // (protected DACL: current user and SYSTEM only). It holds a per-user random key (created once,
+    // published by rename) and one file per request. A request carries an HMAC-SHA256 over a
+    // length-prefixed encoding of: the domain string, the user SID, the install root, the request ID,
+    // the expiry and the forwarded argv. The consumer claims a request by renaming it, then reads it
+    // through a verified handle opened delete-on-close, so a request is used once. HMAC does not
+    // defend against a process that can read the key or replace the launcher; that is out of scope.
+    const string RelaunchDomain = "branchglance-relaunch-v1";
+    const string RelaunchDirectoryName = ".branchglance-relaunch";
+    const string RelaunchKeyName = "relaunch.key";
+    const int RelaunchKeyLength = 32;
+    const int RelaunchMaxLifetimeSeconds = 60;
+    const int RelaunchMaxArguments = 8;
+    const uint GENERIC_READ = 0x80000000, DELETE_ACCESS = 0x00010000, READ_CONTROL = 0x00020000, FILE_READ_ATTRIBUTES = 0x80;
+    const uint OPEN_EXISTING = 3, FILE_FLAG_BACKUP_SEMANTICS = 0x02000000, FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000, FILE_FLAG_DELETE_ON_CLOSE = 0x04000000;
+
+    [StructLayout(LayoutKind.Sequential)] struct BY_HANDLE_FILE_INFORMATION
     {
-        string id = Guid.NewGuid().ToString("N");
-        string path = Path.Combine(root, ".relaunch-" + id + ".json");
-        var record = new Dictionary<string, object> {
-            { "schemaVersion", 1 }, { "id", id }, { "argv", argv }, { "hops", 1 },
-            { "created", DateTime.UtcNow.Ticks }, { "expires", (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds + 30 },
-            { "guard", true }
-        };
-        if (testReport != null) record["testReport"] = testReport;
-        byte[] bytes = Encoding.UTF8.GetBytes(Json.Serialize(record));
-        if (bytes.Length > RelaunchRequestLimit) throw new InvalidDataException("Relaunch arguments exceed the request limit");
-        using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-        { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
-        return path;
+        public uint FileAttributes;
+        public uint CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh;
+        public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr attributes, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool GetFileInformationByHandle(SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION info);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool GetKernelObjectSecurity(SafeFileHandle handle, uint information, byte[] descriptor, uint length, out uint needed);
+
+    static SecurityIdentifier CurrentUserSid() { return WindowsIdentity.GetCurrent().User; }
+    static SecurityIdentifier SystemSid() { return new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null); }
+
+    // Tests point both sides at a disposable base. Release builds always use the user profile.
+    static string TestStateBase()
+    {
+#if TEST
+        string overridden = Environment.GetEnvironmentVariable("BRANCHGLANCE_RELAUNCH_STATE_BASE");
+        if (!String.IsNullOrEmpty(overridden)) return overridden;
+#endif
+        return null;
     }
 
-    static RelaunchRequest ConsumeRelaunchRequest(string root)
+    public static string DefaultRelaunchStateBase() { return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); }
+
+    // Open one object without following a final-component link.
+    static SafeFileHandle OpenNoFollow(string path, uint access, uint share, uint extraFlags)
+    {
+        SafeFileHandle handle = CreateFileW(path, access, share, IntPtr.Zero, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | extraFlags, IntPtr.Zero);
+        if (handle.IsInvalid) { int error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new System.ComponentModel.Win32Exception(error, "Cannot open " + path); }
+        return handle;
+    }
+
+    static long VerifyProtectedObject(SafeFileHandle handle, bool directory, string label)
+    {
+        BY_HANDLE_FILE_INFORMATION info;
+        if (!GetFileInformationByHandle(handle, out info)) throw new IOException("Cannot inspect " + label);
+        var attributes = (FileAttributes)info.FileAttributes;
+        if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException(label + " is a reparse point");
+        if (((attributes & FileAttributes.Directory) != 0) != directory) throw new IOException(label + " has the wrong type");
+        uint needed;
+        GetKernelObjectSecurity(handle, 5, null, 0, out needed); // OWNER | DACL
+        if (needed == 0 || needed > 65536) throw new IOException("Cannot read the security descriptor of " + label);
+        var bytes = new byte[needed];
+        if (!GetKernelObjectSecurity(handle, 5, bytes, needed, out needed)) throw new IOException("Cannot read the security descriptor of " + label);
+        var descriptor = new RawSecurityDescriptor(bytes, 0);
+        SecurityIdentifier user = CurrentUserSid(), system = SystemSid();
+        if (descriptor.Owner == null || !descriptor.Owner.Equals(user)) throw new IOException(label + " is not owned by the current user");
+        if ((descriptor.ControlFlags & ControlFlags.DiscretionaryAclProtected) == 0) throw new IOException(label + " has an inheriting DACL");
+        RawAcl acl = descriptor.DiscretionaryAcl;
+        if (acl == null || acl.Count == 0 || acl.Count > 2) throw new IOException(label + " has an unexpected DACL");
+        bool hasUser = false;
+        foreach (GenericAce entry in acl)
+        {
+            var ace = entry as CommonAce;
+            if (ace == null || ace.AceType != AceType.AccessAllowed) throw new IOException(label + " has an unexpected access entry");
+            if (ace.SecurityIdentifier.Equals(user)) hasUser = true;
+            else if (!ace.SecurityIdentifier.Equals(system)) throw new IOException(label + " grants access to another principal");
+        }
+        if (!hasUser) throw new IOException(label + " does not grant the current user access");
+        return ((long)info.FileSizeHigh << 32) | info.FileSizeLow;
+    }
+
+    static DirectorySecurity ProtectedDirectorySecurity()
+    {
+        var security = new DirectorySecurity();
+        SecurityIdentifier user = CurrentUserSid();
+        security.SetOwner(user);
+        security.SetAccessRuleProtection(true, false);
+        foreach (SecurityIdentifier sid in new[] { user, SystemSid() })
+            security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
+        return security;
+    }
+
+    /// Creates a new file that is born with the protected user+SYSTEM DACL (no window with a weaker one).
+    public static FileStream CreateProtectedFile(string path)
+    {
+        var security = new FileSecurity();
+        SecurityIdentifier user = CurrentUserSid();
+        security.SetOwner(user);
+        security.SetAccessRuleProtection(true, false);
+        foreach (SecurityIdentifier sid in new[] { user, SystemSid() })
+            security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl, AccessControlType.Allow));
+        var stream = new FileStream(path, FileMode.CreateNew, FileSystemRights.Write | FileSystemRights.ReadPermissions,
+            FileShare.None, 4096, FileOptions.WriteThrough, security);
+        try { VerifyProtectedObject(stream.SafeFileHandle, false, "new relaunch file"); return stream; }
+        catch { stream.Dispose(); throw; }
+    }
+
+    sealed class RelaunchStore : IDisposable
+    {
+        public string Path;
+        SafeFileHandle held;
+        public void Dispose() { if (held != null) held.Dispose(); }
+
+        // Opens (and, for the producer, creates) the per-user directory and verifies it on the held
+        // handle. The handle is shared READ|WRITE only, so the directory cannot be renamed or replaced
+        // while it is held. Returns null when it does not exist and create is false.
+        public static RelaunchStore Open(string stateBase, bool create)
+        {
+            string path = System.IO.Path.Combine(stateBase, RelaunchDirectoryName);
+            if (!Directory.Exists(path))
+            {
+                if (!create) return null;
+                try { Directory.CreateDirectory(path, ProtectedDirectorySecurity()); } catch (IOException) { }
+            }
+            SafeFileHandle handle = OpenNoFollow(path, FILE_READ_ATTRIBUTES | READ_CONTROL, 3, 0);
+            try { VerifyProtectedObject(handle, true, "relaunch directory"); }
+            catch { handle.Dispose(); throw; }
+            return new RelaunchStore { Path = path, held = handle };
+        }
+
+        // Reads exactly what a verified, link-free file holds (bounded), through one handle.
+        public static byte[] ReadVerified(string file, int limit, bool exactLimit)
+        {
+            using (SafeFileHandle handle = OpenNoFollow(file, GENERIC_READ | READ_CONTROL, 5, 0))
+            {
+                long length = VerifyProtectedObject(handle, false, System.IO.Path.GetFileName(file));
+                if (length > limit || (exactLimit && length != limit)) throw new InvalidDataException("Unexpected size: " + System.IO.Path.GetFileName(file));
+                var bytes = new byte[length];
+                using (var stream = new FileStream(handle, FileAccess.Read, 1, false))
+                {
+                    int read = 0;
+                    while (read < bytes.Length) { int count = stream.Read(bytes, read, bytes.Length - read); if (count <= 0) throw new EndOfStreamException(); read += count; }
+                }
+                return bytes;
+            }
+        }
+
+        // Per-user key, created once. Written under a temporary name, then published by a rename that
+        // cannot replace, so no reader sees a partial key and two creators cannot disagree.
+        public byte[] Key(bool create)
+        {
+            string keyPath = System.IO.Path.Combine(Path, RelaunchKeyName);
+            if (!File.Exists(keyPath))
+            {
+                if (!create) return null;
+                string temp = System.IO.Path.Combine(Path, ".key-" + Guid.NewGuid().ToString("N"));
+                var key = new byte[RelaunchKeyLength];
+                using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(key);
+                using (FileStream stream = CreateProtectedFile(temp)) { stream.Write(key, 0, key.Length); stream.Flush(true); }
+                try { File.Move(temp, keyPath); }
+                catch (IOException) { try { File.Delete(temp); } catch { } }
+            }
+            return ReadVerified(keyPath, RelaunchKeyLength, true);
+        }
+    }
+
+    static void AppendField(MemoryStream stream, string value)
+    {
+        byte[] data = Encoding.UTF8.GetBytes(value ?? "");
+        stream.WriteByte((byte)(data.Length >> 24)); stream.WriteByte((byte)(data.Length >> 16));
+        stream.WriteByte((byte)(data.Length >> 8)); stream.WriteByte((byte)data.Length);
+        stream.Write(data, 0, data.Length);
+    }
+
+    static string NormalizeRoot(string root) { return Path.GetFullPath(root).TrimEnd('\\').ToUpperInvariant(); }
+
+    // Canonical, length-prefixed MAC input. Unknown or reordered fields cannot collide.
+    static byte[] RelaunchCanonical(string root, string id, long expires, IList<string> argv, string extraField)
+    {
+        using (var stream = new MemoryStream())
+        {
+            AppendField(stream, RelaunchDomain);
+            AppendField(stream, CurrentUserSid().Value);
+            AppendField(stream, NormalizeRoot(root));
+            AppendField(stream, id);
+            AppendField(stream, expires.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AppendField(stream, argv.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            foreach (string item in argv) AppendField(stream, item);
+#if TEST
+            AppendField(stream, extraField);
+#endif
+            return stream.ToArray();
+        }
+    }
+
+    static string RelaunchMac(byte[] key, string root, string id, long expires, IList<string> argv, string extraField)
+    {
+        using (var hmac = new HMACSHA256(key)) return Hex(hmac.ComputeHash(RelaunchCanonical(root, id, expires, argv, extraField)));
+    }
+
+    static long UnixNow() { return (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds; }
+
+    /// The forwarded argv must be a subset of the launcher's real CLI (token_tracker.widget.main):
+    /// --background, --recenter, --redirect-relaunch and --install-handoff <hex token>, each once.
+    public static bool RelaunchArgumentsAllowed(IList<string> args)
+    {
+        if (args == null || args.Count > RelaunchMaxArguments) return false;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < args.Count; i++)
+        {
+            string arg = args[i];
+            if (arg == null || !seen.Add(arg.StartsWith("--install-handoff", StringComparison.Ordinal) ? "--install-handoff" : arg)) return false;
+            if (arg == "--background" || arg == "--recenter" || arg == "--redirect-relaunch") continue;
+            if (arg == "--install-handoff" && i + 1 < args.Count && Regex.IsMatch(args[i + 1], @"\A[0-9a-f]{12,64}\z")) { i++; continue; }
+            return false;
+        }
+        return true;
+    }
+
+    /// Writes one authenticated request into the per-user directory and returns its path.
+    /// argv is validated against the supported CLI first.
+    public static string WriteRelaunchRequest(string root, string[] argv, string stateBase = null)
+    {
+        if (!RelaunchArgumentsAllowed(argv)) throw new InvalidDataException("Unsupported launcher arguments cannot be relayed");
+        return WriteRelaunchCore(root, argv, stateBase, 30, null);
+    }
+
+    static string WriteRelaunchCore(string root, string[] argv, string stateBase, int lifetimeSeconds, string extraField)
+    {
+        string id = Guid.NewGuid().ToString("N");
+        long expires = UnixNow() + lifetimeSeconds;
+        using (RelaunchStore store = RelaunchStore.Open(stateBase ?? DefaultRelaunchStateBase(), true))
+        {
+            byte[] key = store.Key(true);
+            var record = new Dictionary<string, object> {
+                { "schemaVersion", 2 }, { "id", id }, { "expires", expires }, { "argv", argv },
+                { "mac", RelaunchMac(key, root, id, expires, argv, extraField) }
+            };
+#if TEST
+            if (extraField != null) record["testReport"] = extraField;
+#endif
+            byte[] bytes = Encoding.UTF8.GetBytes(Json.Serialize(record));
+            if (bytes.Length > RelaunchRequestLimit) throw new InvalidDataException("Relaunch arguments exceed the request limit");
+            string path = Path.Combine(store.Path, ".relaunch-" + id + ".json");
+            string temp = Path.Combine(store.Path, ".tmp-" + id);
+            using (FileStream stream = CreateProtectedFile(temp)) { stream.Write(bytes, 0, bytes.Length); stream.Flush(true); }
+            File.Move(temp, path); // consumers only look at the final name, so they never see a partial file
+            return path;
+        }
+    }
+
+    // Validates one claimed request. Returns null (and the claim is deleted on close) for anything
+    // forged, malformed, oversize, expired, replayed or carrying unsupported arguments.
+    static RelaunchRequest ValidateClaim(RelaunchStore store, string claimPath, string id, string root, byte[] key)
+    {
+        byte[] bytes = RelaunchStore.ReadVerified(claimPath, RelaunchRequestLimit, false);
+        var record = Object(Json.DeserializeObject(Encoding.UTF8.GetString(bytes)), "relaunch request");
+        var allowed = new HashSet<string> { "schemaVersion", "id", "expires", "argv", "mac" };
+#if TEST
+        allowed.Add("testReport");
+#endif
+        foreach (string name in record.Keys) if (!allowed.Contains(name)) throw new InvalidDataException("Unknown relaunch field: " + name);
+        object schema, expiry, rawArgs, mac;
+        if (!record.TryGetValue("schemaVersion", out schema) || !(schema is int) || (int)schema != 2
+            || !record.TryGetValue("expires", out expiry) || !(expiry is long || expiry is int)
+            || !record.TryGetValue("argv", out rawArgs) || !(rawArgs is object[])
+            || !record.TryGetValue("mac", out mac) || !(mac is string)
+            || !String.Equals(GetString(record, "id"), id, StringComparison.Ordinal)) throw new InvalidDataException("Malformed relaunch request");
+        object[] items = (object[])rawArgs;
+        var args = new List<string>();
+        foreach (object item in items) { if (!(item is string)) throw new InvalidDataException("Malformed relaunch argv"); args.Add((string)item); }
+        string extraField = null;
+#if TEST
+        if (record.ContainsKey("testReport")) extraField = record["testReport"] as string;
+#endif
+        long expires = Convert.ToInt64(expiry);
+        if (!FixedTimeEquals((string)mac, RelaunchMac(key, root, id, expires, args, extraField))) throw new InvalidDataException("Relaunch request failed authentication");
+        long now = UnixNow();
+        if (expires <= now || expires > now + RelaunchMaxLifetimeSeconds) throw new InvalidDataException("Relaunch request is expired or its expiry is out of bounds");
+        if (!RelaunchArgumentsAllowed(args)) throw new InvalidDataException("Relaunch request carries unsupported arguments");
+        // Replay guard: a used-ID marker outlives the request within its (<= 60 s) validity.
+        try { using (CreateProtectedFile(Path.Combine(store.Path, ".used-" + id))) { } }
+        catch (IOException) { throw new InvalidDataException("Relaunch request was already used"); }
+        var request = new RelaunchRequest { Id = id, Arguments = args.ToArray() };
+#if TEST
+        request.TestReport = extraField;
+#endif
+        return request;
+    }
+
+    static RelaunchRequest ConsumeRelaunchRequest(string root, string stateBase)
     {
         string mutexName = RequestMutexName(root);
         using (var mutex = new Mutex(false, mutexName))
@@ -263,59 +550,58 @@ public static class BranchglanceLauncher
             bool held = false;
             try { try { held = mutex.WaitOne(750); } catch (AbandonedMutexException) { held = true; }
                 if (!held) throw new TimeoutException("Relaunch request lock is busy");
-                var valid = new List<Tuple<long, string, RelaunchRequest>>();
-                foreach (string path in Directory.GetFiles(root, ".relaunch-*.json"))
+                using (RelaunchStore store = RelaunchStore.Open(stateBase ?? DefaultRelaunchStateBase(), false))
                 {
-                    string file = Path.GetFileName(path);
-                    Match match = Regex.Match(file, @"\A\.relaunch-([0-9a-f]{32})\.json\z");
-                    if (!match.Success) continue;
-                    try
+                    if (store == null) return null;
+                    byte[] key = store.Key(false);
+                    if (key == null) return null;
+                    long staleBefore = DateTime.UtcNow.AddMinutes(-10).Ticks;
+                    foreach (string stale in Directory.GetFiles(store.Path, ".used-*"))
+                        try { if (File.GetCreationTimeUtc(stale).Ticks < staleBefore) File.Delete(stale); } catch { }
+                    var candidates = new List<string>();
+                    foreach (string path in Directory.GetFiles(store.Path, ".relaunch-*.json"))
+                        if (Regex.IsMatch(Path.GetFileName(path), @"\A\.relaunch-[0-9a-f]{32}\.json\z")) candidates.Add(path);
+                    candidates.Sort((a, b) => File.GetCreationTimeUtc(a).CompareTo(File.GetCreationTimeUtc(b))); // oldest first
+                    foreach (string path in candidates)
                     {
-                        var attrs = File.GetAttributes(path);
-                        var info = new FileInfo(path);
-                        if ((attrs & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0 || info.Length > RelaunchRequestLimit) continue;
-                        var record = Object(Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)), "relaunch request");
-                        string id = GetString(record, "id");
-                        if (!String.Equals(id, match.Groups[1].Value, StringComparison.Ordinal)) continue;
-                        object schema, expiry, created, guard, rawArgs, hops;
-                        if (!record.TryGetValue("schemaVersion", out schema) || !(schema is int) || (int)schema != 1
-                            || !record.TryGetValue("expires", out expiry) || !(expiry is long || expiry is int)
-                            || !record.TryGetValue("created", out created) || !(created is long || created is int)
-                            || !record.TryGetValue("guard", out guard) || !(guard is bool) || !(bool)guard
-                            || !record.TryGetValue("hops", out hops) || !(hops is int) || (int)hops != 1
-                            || !record.TryGetValue("argv", out rawArgs) || !(rawArgs is object[])) continue;
-                        long expiryValue = Convert.ToInt64(expiry);
-                        object[] items = (object[])rawArgs;
-                        if (items.Length > 64) continue;
-                        var args = new List<string>();
-                        foreach (object item in items) { if (!(item is string)) { args.Clear(); break; } args.Add((string)item); }
-                        if (args.Count != items.Length || String.Join("", args.ToArray()).Length > 8192) continue;
-                        if (expiryValue <= (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds) { File.Delete(path); continue; }
-                        string report = record.ContainsKey("testReport") && record["testReport"] is string ? (string)record["testReport"] : null;
-                        valid.Add(Tuple.Create(Convert.ToInt64(created), path, new RelaunchRequest { Id=id, Arguments=args.ToArray(), Guard=true, TestReport=report }));
+                        string file = Path.GetFileName(path);
+                        string id = file.Substring(".relaunch-".Length, 32);
+                        string claim = Path.Combine(store.Path, ".claim-" + id + "-" + Guid.NewGuid().ToString("N"));
+                        try
+                        {
+                            FileAttributes attributes = File.GetAttributes(path);
+                            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) continue;
+                            File.Move(path, claim); // atomic claim: only one consumer wins this name
+                        }
+                        catch (IOException) { continue; }
+                        catch (UnauthorizedAccessException) { continue; }
+                        RelaunchRequest request = null;
+                        try
+                        {
+                            // Delete-on-close: the claimed file is gone once this handle closes, valid or not.
+                            using (SafeFileHandle deleter = OpenNoFollow(claim, DELETE_ACCESS | READ_CONTROL | FILE_READ_ATTRIBUTES, 7, FILE_FLAG_DELETE_ON_CLOSE))
+                                request = ValidateClaimWhileHeld(store, claim, id, root, key);
+                        }
+                        catch (Exception e) { LauncherLog("Rejected relaunch request " + file + ": " + e.Message); }
+                        if (request != null) return request;
                     }
-                    catch (FileNotFoundException) { }
-                    catch (DirectoryNotFoundException) { }
-                    catch (Exception e) { LauncherLog("Ignoring foreign relaunch request " + file + ": " + e.Message); }
+                    return null;
                 }
-                if (valid.Count == 0) return null;
-                // Explorer cannot carry an ID. Consume the oldest valid request under this short mutex.
-                valid.Sort((left, right) => left.Item1.CompareTo(right.Item1));
-                var selected = valid[0];
-                File.Delete(selected.Item2); // one-use: delete before forwarding argv
-                return selected.Item3;
             }
             finally { if (held) mutex.ReleaseMutex(); }
         }
     }
+
+    static RelaunchRequest ValidateClaimWhileHeld(RelaunchStore store, string claim, string id, string root, byte[] key)
+    { return ValidateClaim(store, claim, id, root, key); }
 
     // Shared by Main and the harness: redirected/unknown probes never consume
     // another process's request and therefore never receive an appdata-ok token.
     public static bool MayConsumeRelaunchRequest(string appDataState)
     { return String.Equals(appDataState, "not_redirected", StringComparison.Ordinal); }
 
-    public static RelaunchRequest TryConsumeRelaunchRequest(string root, string appDataState)
-    { return MayConsumeRelaunchRequest(appDataState) ? ConsumeRelaunchRequest(root) : null; }
+    public static RelaunchRequest TryConsumeRelaunchRequest(string root, string appDataState, string stateBase = null)
+    { return MayConsumeRelaunchRequest(appDataState) ? ConsumeRelaunchRequest(root, stateBase) : null; }
 
     static Dictionary<string, object> Object(object value, string label)
     {
@@ -547,18 +833,20 @@ public static class BranchglanceLauncher
             Console.WriteLine(state + " " + elapsed.ToString() + "ms");
             return state == "redirected" ? 10 : state == "unknown" ? 11 : 0;
         }
+#if TEST
         if (args.Length == 2 && args[0] == "--explorer-roundtrip-test")
         {
             try
             {
                 string[] expected = { "--install-handoff", "a1b2c3d4e5f6", "--background", "--recenter" };
-                WriteRelaunchRequest(root, expected, args[1]);
+                WriteRelaunchCore(root, expected, TestStateBase(), 30, args[1]);
                 string own = Process.GetCurrentProcess().MainModule.FileName;
                 var explorerTest = Process.Start(new ProcessStartInfo("explorer.exe", Quote(own)) { UseShellExecute = true });
                 return explorerTest == null ? 1 : 0;
             }
             catch (Exception e) { LauncherLog("Explorer round-trip test failed to start: " + e.Message); return 1; }
         }
+#endif
         try
         {
             string ownPath = Process.GetCurrentProcess().MainModule.FileName;
@@ -569,22 +857,24 @@ public static class BranchglanceLauncher
             string appDataState = ProbeAppData(local, out probeMilliseconds);
             if (appDataState == "redirected")
             {
-                WriteRelaunchRequest(root, launchArgs);
+                WriteRelaunchRequest(root, launchArgs, TestStateBase());
                 Process explorer = Process.Start(new ProcessStartInfo("explorer.exe", Quote(ownPath)) { UseShellExecute = true });
                 if (explorer == null) throw new InvalidOperationException("Explorer did not accept the launcher request");
                 return 0;
             }
             if (args.Length == 0 && MayConsumeRelaunchRequest(appDataState))
             {
-                request = TryConsumeRelaunchRequest(root, appDataState);
+                request = TryConsumeRelaunchRequest(root, appDataState, TestStateBase());
                 if (request != null)
                 {
+#if TEST
                     if (request.TestReport != null)
                     {
                         File.WriteAllText(request.TestReport, Json.Serialize(new Dictionary<string, object> {
                             { "id", request.Id }, { "argv", request.Arguments } }), new UTF8Encoding(false));
                         return 0;
                     }
+#endif
                     launchArgs = request.Arguments;
                 }
             }
