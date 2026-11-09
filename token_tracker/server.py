@@ -322,6 +322,7 @@ def _live_encodings(header: str) -> tuple[bool, bool]:
 
 class SnapshotCache:
     RETRY_COOLDOWN_SECONDS = 5.0
+    REQUEST_TIMEOUT_SECONDS = 10.0
     PERSISTED_SCHEMA_VERSION = 1
     PERSISTED_MAX_BYTES = 32 * 1024 * 1024
     PERSISTED_KEY_NAME = "snapshot-cache.key"
@@ -354,6 +355,8 @@ class SnapshotCache:
         self._last_build_error: Exception | None = None
         self._attempt = 0
         self._completed_attempt = 0
+        # Future identity changes must increment this before accepting samples.
+        self._publication_epoch = 0
 
     @property
     def compatibility(self) -> str | None:
@@ -387,6 +390,7 @@ class SnapshotCache:
     @value.setter
     def value(self, value) -> None:
         with self.condition:
+            self._publication_epoch += 1
             self._value = copy.deepcopy(value)
             self._trusted_value = copy.deepcopy(value)
             self._restored = False
@@ -619,8 +623,10 @@ class SnapshotCache:
         except OSError as exc:
             logging.getLogger(__name__).warning("Snapshot cache persistence failed (%s)", type(exc).__name__)
 
-    def _record_failure_locked(self, exc: Exception, *, worker_start: bool = False) -> None:
-        self.building = False
+    def _record_failure_locked(self, exc: Exception, *, worker_start: bool = False,
+                               clear_owner: bool = True) -> None:
+        if clear_owner:
+            self.building = False
         self.retry_after = time.monotonic() + self.RETRY_COOLDOWN_SECONDS
         self.last_failure_at = self._utc_now()
         self.last_failure_category = self._failure_category(exc, worker_start=worker_start)
@@ -639,6 +645,7 @@ class SnapshotCache:
                       or self.last_failure_category is not None),
             "lastFailureAt": self.last_failure_at,
             "lastFailureCategory": self.last_failure_category,
+            "identityGeneration": None,
         }
 
     @staticmethod
@@ -705,58 +712,74 @@ class SnapshotCache:
         return self._value, self._metadata_locked(time.monotonic()), self._restored
 
     def _build(self, *, background: bool = False, attempt: int | None = None):
+        # A worker owns the build until it actually exits, even if every caller
+        # has timed out. Publication failures must release waiters as well.
         try:
-            value = copy.deepcopy(build_snapshot())
-            if not isinstance(value, dict):
-                raise TypeError("snapshot builder returned a non-object")
-        except Exception as exc:
             with self.condition:
-                if attempt is not None:
-                    self._attempt = max(self._attempt, attempt)
-                self._record_failure_locked(exc)
+                publication_epoch = self._publication_epoch
+            self._ensure_restored()
+            with self.condition:
                 self.condition.notify_all()
-            if background:
-                logging.getLogger(__name__).warning("Snapshot refresh failed (%s)", type(exc).__name__)
-                return None
-            raise
+            return self._build_inner(background=background, attempt=attempt, publication_epoch=publication_epoch)
+        except BaseException as exc:
+            with self.condition:
+                self._record_failure_locked(exc, clear_owner=False)
+            logging.getLogger(__name__).warning("Snapshot refresh failed (%s)", type(exc).__name__)
+        finally:
+            with self.condition:
+                self.building = False
+                self.condition.notify_all()
+
+    def _build_inner(self, *, background: bool = False, attempt: int | None = None,
+                     publication_epoch: int = 0):
+        value = copy.deepcopy(build_snapshot())
+        if not isinstance(value, dict):
+            raise TypeError("snapshot builder returned a non-object")
+        trusted = copy.deepcopy(value)
         built_at = self._utc_now()
         _record_insights_peaks(value)
         with self.condition:
             published_at = time.monotonic()
             generation = self.generation + 1
-        with self.condition:
-            display = copy.deepcopy(value)
-            if self._value is not None:
-                prior = self._egress(self._value, {}, restored=self._restored)
-                previous = {p.get("name"): p for p in prior.get("providers", []) if isinstance(p, dict)}
-                for provider in display.get("providers", []):
-                    old = previous.get(provider.get("name"), {})
-                    for field in ("fiveHour", "weekly"):
-                        current, saved = provider.get(field), old.get(field)
-                        if (not isinstance(current, dict) or current.get("percent") is None) and isinstance(saved, dict) and saved.get("lastKnown"):
-                            provider[field] = copy.deepcopy(saved)
-                            times = provider.setdefault("_quotaWindowObservedAt", {})
-                            times[field] = (old.get("_quotaWindowObservedAt") or {}).get(field, old.get("limitsUpdatedAt"))
-        if self._persistable(value):
+            if publication_epoch != self._publication_epoch:
+                raise RuntimeError("snapshot publication superseded")
+            prior_value, prior_restored = self._value, self._restored
+        display = copy.deepcopy(value)
+        if prior_value is not None:
+            prior = self._egress(prior_value, {}, restored=prior_restored)
+            previous = {p.get("name"): p for p in prior.get("providers", []) if isinstance(p, dict)}
+            for provider in display.get("providers", []):
+                old = previous.get(provider.get("name"), {})
+                for field in ("fiveHour", "weekly"):
+                    current, saved = provider.get(field), old.get(field)
+                    if (not isinstance(current, dict) or current.get("percent") is None) and isinstance(saved, dict) and saved.get("lastKnown"):
+                        provider[field] = copy.deepcopy(saved)
+                        times = provider.setdefault("_quotaWindowObservedAt", {})
+                        times[field] = (old.get("_quotaWindowObservedAt") or {}).get(field, old.get("limitsUpdatedAt"))
+        persisted = self._persistable(value)
+        if persisted:
             self._write_persisted(display, generation, built_at)
         with self.condition:
-            self._value = display
-            self._trusted_value = copy.deepcopy(value)
-            self._at = published_at
-            self.generation = generation
-            self.built_at = built_at
-            self._restored = False
-            self._restored_age = 0.0
-            self._restored_at = 0.0
-            self.building = False
-            self.retry_after = 0.0
-            self.last_failure_at = None
-            self.last_failure_category = None
-            self._last_build_error = None
-            self._completed_attempt = attempt if attempt is not None else self._attempt
-            selected = self._selected_locked()
-            self.condition.notify_all()
-        return self._egress(selected[0], selected[1], restored=selected[2])
+            superseded = publication_epoch != self._publication_epoch
+            if not superseded:
+                self._value = display
+                self._trusted_value = trusted
+                self._at = published_at
+                self.generation = generation
+                self.built_at = built_at
+                self._restored = False
+                self._restored_age = 0.0
+                self._restored_at = 0.0
+                self.retry_after = 0.0
+                self.last_failure_at = None
+                self.last_failure_category = None
+                self._last_build_error = None
+                self._completed_attempt = attempt if attempt is not None else self._attempt
+        if superseded:
+            if persisted:
+                self._delete_persisted()
+            raise RuntimeError("snapshot publication superseded")
+        return None
 
     def _start_background_locked(self) -> None:
         self._attempt += 1
@@ -770,7 +793,7 @@ class SnapshotCache:
             self.condition.notify_all()
 
     def get(self, force: bool = False, background: bool = False):
-        self._ensure_restored()
+        deadline = time.monotonic() + self.REQUEST_TIMEOUT_SECONDS
         with self.condition:
             while True:
                 now = time.monotonic()
@@ -799,7 +822,14 @@ class SnapshotCache:
                 if self.building:
                     request_generation = self.generation
                     request_attempt = self._attempt
-                    self.condition.wait()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        selected = self._selected_locked()
+                        metadata = dict(selected[1], stale=True, staleReason="request_timeout",
+                                        identityGeneration=None)
+                        selected = (selected[0], metadata, True)
+                        break
+                    self.condition.wait(remaining)
                     if self.generation != request_generation:
                         selected = self._selected_locked()
                         break
@@ -819,19 +849,17 @@ class SnapshotCache:
                         raise self._last_build_error
                     raise RuntimeError("snapshot temporarily unavailable")
 
-                self.building = True
-                self._attempt += 1
-                attempt = self._attempt
-                break
+                self._start_background_locked()
+                if not self.building and self._last_build_error is not None:
+                    raise self._last_build_error
+                continue
 
         if "selected" in locals():
             return self._egress(selected[0], selected[1], restored=selected[2])
-        # Never hold the cache lock while provider work performs disk or app IO.
-        return self._build(attempt=attempt)
+        return None
 
     def get_background(self, force: bool = False):
         """Return cached data immediately, or start a cold build and return no snapshot."""
-        self._ensure_restored()
         with self.condition:
             now = time.monotonic()
             if self._value is not None:
@@ -842,7 +870,11 @@ class SnapshotCache:
             else:
                 if not self.building and now >= self.retry_after:
                     self._start_background_locked()
-                return None
+                if self._restore_pending:
+                    self.condition.wait_for(lambda: not self._restore_pending, timeout=0.1)
+                if self._value is None:
+                    return None
+                selected = self._selected_locked()
         return self._egress(selected[0], selected[1], restored=selected[2])
 
 
@@ -1603,15 +1635,12 @@ def queue_codex_message(thread: str, message: str) -> None:
     if not _codex_queue_allowed():
         from .provider_policy import ProviderPolicyError
         raise ProviderPolicyError("explicit Codex SEND consent is required to queue messages")
-    executable = shutil.which("codex")
+    from .codex_client import resolve_codex, run_contained_codex
+    executable = resolve_codex()
     if not executable:
         raise FileNotFoundError("codex")
-    result = subprocess.run(
-        [executable, "queue", "--thread", thread, "--message", message],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        timeout=QUEUE_TIMEOUT_SECONDS, check=False,
-        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
-    )
+    result = run_contained_codex(executable, ["queue", "--thread", thread, "--message", message],
+                                 timeout=QUEUE_TIMEOUT_SECONDS)
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, result.args)
 
@@ -1621,6 +1650,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
+    from .claude_hook import start_event_retention
+    start_event_retention()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     print(f"Token Tracker running at {url}")

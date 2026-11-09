@@ -62,7 +62,7 @@ def _package_manager(root: Path, lexical_root: Path) -> str:
     return "NPM"
 
 
-def resolve_codex() -> CodexExecutable | None:
+def resolve_codex(executable: str | None = None) -> CodexExecutable | None:
     """Resolve an absolute native Codex executable without searching cwd."""
     cwd = Path.cwd().resolve()
 
@@ -76,6 +76,27 @@ def resolve_codex() -> CodexExecutable | None:
             return resolved
         except (OSError, RuntimeError):
             return None
+
+    if executable is not None:
+        path = Path(executable)
+        # An override is a native executable, never a shell script or shim.
+        if path.suffix.lower() in {".cmd", ".bat", ".ps1"} or (os.name == "nt" and path.suffix.lower() != ".exe"):
+            return None
+        found = safe(path)
+        if found is None or found.suffix.lower() in {".cmd", ".bat", ".ps1"}:
+            return None
+        if os.name == "nt" and found.suffix.lower() != ".exe":
+            return None
+        for ancestor in found.parents:
+            root = (ancestor.parent / "codex" if ancestor.name.startswith("codex-win32-")
+                    else ancestor)
+            if safe(root / "bin" / "codex.js") is not None:
+                try:
+                    canonical_root = root.resolve(strict=True)
+                    return CodexExecutable(str(found), str(canonical_root), _package_manager(canonical_root, root))
+                except (OSError, RuntimeError):
+                    return None
+        return CodexExecutable(str(found))
 
     machine = platform.machine().lower()
     targets = {"arm64": ("arm64", "aarch64-pc-windows-msvc"), "aarch64": ("arm64", "aarch64-pc-windows-msvc"),
@@ -92,7 +113,7 @@ def resolve_codex() -> CodexExecutable | None:
         except (OSError, RuntimeError):
             continue
         found = safe(directory / "codex.exe")
-        if found:
+        if found and found.suffix.lower() == ".exe":
             return CodexExecutable(str(found))
         # Only recognize the npm package layout beside an npm shim; never run it.
         if not target:
@@ -126,7 +147,7 @@ def resolve_codex() -> CodexExecutable | None:
             vendor = canonical_root / "vendor"
         if vendor is not None:
             found = safe(vendor / triple / "bin" / "codex.exe")
-            if found:
+            if found and found.suffix.lower() == ".exe":
                 return CodexExecutable(str(found), str(canonical_root), _package_manager(canonical_root, root))
 
     local = os.environ.get("LOCALAPPDATA", "")
@@ -137,13 +158,157 @@ def resolve_codex() -> CodexExecutable | None:
     candidates.append(Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
     for candidate in candidates:
         found = safe(candidate)
-        if found:
+        if found and found.suffix.lower() == ".exe":
             return CodexExecutable(str(found))
     return None
 
 
 class CodexUnavailable(RuntimeError):
     pass
+
+
+class CodexNotStarted(OSError):
+    """The child did not execute and therefore could not deliver a message."""
+
+
+def run_contained_codex(resolved: CodexExecutable, args: list[str], *, timeout: float,
+                        cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """Run a short delivery inside a kill-on-close job before it can execute."""
+    command = [resolved.path, *args]
+    started = False
+
+    def mark_started() -> None:
+        nonlocal started
+        started = True
+
+    try:
+        return _run_contained_codex(resolved, args, timeout=timeout, cwd=cwd, env=env,
+                                    mark_started=mark_started)
+    except subprocess.TimeoutExpired as exc:
+        if not started:
+            raise CodexNotStarted(str(exc)) from exc
+        raise
+    except Exception as exc:
+        if started:
+            raise subprocess.TimeoutExpired(command, timeout) from exc
+        raise CodexNotStarted(str(exc)) from exc
+
+
+def _run_contained_codex(resolved: CodexExecutable, args: list[str], *, timeout: float,
+                         cwd: Path | None, env: dict[str, str] | None,
+                         mark_started: Any) -> subprocess.CompletedProcess:
+    command = [resolved.path, *args]
+    child_env = resolved.environment() or os.environ.copy()
+    if env:
+        child_env.update(env)
+    if os.name != "nt":
+        proc = subprocess.Popen(command, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False)
+        mark_started()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+    import ctypes
+    from ctypes import wintypes as wt
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in
+                    ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                     "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class BASIC_LIMIT(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wt.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wt.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wt.DWORD), ("SchedulingClass", wt.DWORD)]
+
+    class EXTENDED_LIMIT(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BASIC_LIMIT), ("IoInfo", IO_COUNTERS),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wt.HANDLE
+    kernel.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    kernel.SetInformationJobObject.restype = wt.BOOL
+    kernel.AssignProcessToJobObject.argtypes = [wt.HANDLE, wt.HANDLE]
+    kernel.AssignProcessToJobObject.restype = wt.BOOL
+    kernel.CloseHandle.argtypes = [wt.HANDLE]
+    kernel.CloseHandle.restype = wt.BOOL
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [wt.HANDLE]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    job = kernel.CreateJobObjectW(None, None)  # default security attributes: non-inheritable
+    if not job:
+        raise OSError(ctypes.get_last_error(), "could not create containment job")
+    proc = None
+    reader = None
+    result: list[tuple[str, str]] = []
+    drain_errors: list[Exception] = []
+    try:
+        limits = EXTENDED_LIMIT()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise OSError(ctypes.get_last_error(), "could not configure containment job")
+        proc = subprocess.Popen(command, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False,
+                                close_fds=True, creationflags=0x00000004 | subprocess.CREATE_NO_WINDOW)
+        if not kernel.AssignProcessToJobObject(job, int(proc._handle)):
+            raise OSError(ctypes.get_last_error(), "could not assign containment job")
+        # A resume error may occur after execution begins; classify it as unknown.
+        mark_started()
+        if ntdll.NtResumeProcess(int(proc._handle)) != 0:
+            raise OSError("could not resume contained process")
+
+        def communicate() -> None:
+            try:
+                result.append(proc.communicate())
+            except Exception as exc:
+                drain_errors.append(exc)
+
+        reader = threading.Thread(target=communicate, daemon=True)
+        reader.start()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kernel.CloseHandle(job)
+            job = None
+            reader.join(2.0)
+            raise subprocess.TimeoutExpired(command, timeout)
+        # Closing the job also terminates descendants which kept pipes open.
+        kernel.CloseHandle(job)
+        job = None
+        reader.join(2.0)
+        if reader.is_alive() or drain_errors or not result:
+            raise subprocess.TimeoutExpired(command, timeout)
+        stdout, stderr = result[0]
+        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+    finally:
+        if job:
+            kernel.CloseHandle(job)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2.0)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if proc is not None and reader is None:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+
 
 
 # thread/list defaults to interactive sources only, which hides `codex exec`
@@ -164,7 +329,7 @@ class CodexAppServer:
     """Small JSON-RPC client for the signed-in local Codex app server."""
 
     def __init__(self, executable: str | None = None, timeout: int = 5) -> None:
-        resolved = CodexExecutable(executable) if executable else resolve_codex()
+        resolved = resolve_codex(executable)
         self.executable = resolved.path if resolved else None
         self._executable_env = resolved.environment() if resolved else None
         self.timeout = timeout

@@ -144,6 +144,62 @@ def test_failed_claim_persistence_prevents_external_queue():
     assert not h.queue_calls
 
 
+def test_crash_between_targets_preserves_consumed_batch_without_replay():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE, TWO])
+    def interrupted(thread_id):
+        h.queue_calls.append(thread_id)
+        if thread_id == TWO:
+            raise KeyboardInterrupt()
+        return {"status": "queued"}
+    h.dispatcher.queue_continue = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        h.dispatcher.dispatch("codex:crash")
+    durable = copy.deepcopy(h.saved[-1])
+    assert durable["armed"] is False
+    assert durable["finalizePending"]["targets"] == [ONE, TWO]
+    assert durable["ledger"]["cycles"][-1]["targets"][1]["status"] == "unknown"
+    h.state.clear()
+    h.state.update(durable)
+    h.dispatcher = h.make_dispatcher()
+    assert h.dispatcher.dispatch("codex:crash") is None
+    assert h.queue_calls == [ONE, TWO]
+
+
+def test_final_save_failure_does_not_rearm_consumed_generation():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    durable = []
+    calls = [0]
+    def save():
+        calls[0] += 1
+        if calls[0] == 3:
+            return False
+        durable.append(copy.deepcopy(h.state))
+        return True
+    h.dispatcher.save = save
+    result = h.dispatcher.dispatch("codex:final-save")
+    assert result["targets"][0]["status"] == "queued"
+    assert durable[-1]["armed"] is False
+    h.state.clear()
+    h.state.update(durable[-1])
+    h.dispatcher = h.make_dispatcher()
+    assert h.dispatcher.dispatch("codex:final-save") is None
+    assert h.queue_calls == [ONE]
+
+
+def test_result_commit_does_not_disarm_new_arm():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    def rearm(_thread_id):
+        h.dispatcher.configure("continue", [TWO])
+        return {"status": "queued"}
+    h.dispatcher.queue_continue = rearm
+    h.dispatcher.dispatch("codex:old")
+    assert h.state["armed"] is True
+    assert h.state["threadIds"] == [TWO]
+
+
 def trigger_service(tmp_path, now=T0):
     return LimitResetService(
         sources={}, senders={}, state_path=tmp_path / "trigger-state.json",

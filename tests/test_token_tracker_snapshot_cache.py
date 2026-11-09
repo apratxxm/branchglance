@@ -23,6 +23,98 @@ def _wait_idle(cache: server.SnapshotCache) -> None:
         assert cache.condition.wait_for(lambda: not cache.building, timeout=2)
 
 
+def test_timed_out_requests_do_not_replace_blocked_builder(monkeypatch):
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def build():
+        calls.append(1)
+        started.set()
+        release.wait(2)
+        return {"providers": []}
+
+    monkeypatch.setattr(server, "build_snapshot", build)
+    try:
+        assert cache.get() is None
+        assert started.is_set()
+        assert cache.get() is None
+        assert calls == [1]
+        assert cache.building
+    finally:
+        release.set()
+        _wait_idle(cache)
+
+
+def test_publication_error_releases_waiters(monkeypatch):
+    cache = server.SnapshotCache()
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": []})
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: (_ for _ in ()).throw(ValueError("publication")))
+    with pytest.raises(ValueError, match="publication"):
+        cache.get()
+    assert not cache.building
+    assert cache.last_failure_category == "invalid_snapshot"
+
+
+def test_superseded_builder_cannot_replace_newer_snapshot(monkeypatch):
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    started, release = threading.Event(), threading.Event()
+    def build():
+        started.set()
+        release.wait(2)
+        return {"providers": [], "marker": "old"}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    assert cache.get() is None
+    assert started.is_set()
+    cache.value = {"providers": [], "marker": "new"}
+    release.set()
+    _wait_idle(cache)
+    assert cache.value["marker"] == "new"
+
+
+def test_timeout_returns_stale_snapshot_and_disables_restored_actions(monkeypatch):
+    cache = server.SnapshotCache(ttl=0)
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    cache.value = {"providers": [{"name": "Codex", "chats": [{"id": "x", "status": "running"}]}]}
+    started, release = threading.Event(), threading.Event()
+    def build():
+        started.set()
+        release.wait(2)
+        return {"providers": []}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    try:
+        result = cache.get(force=True)
+        assert started.is_set()
+        assert result["snapshotCache"]["stale"] is True
+        assert result["snapshotCache"]["staleReason"] == "request_timeout"
+        assert result["snapshotCache"]["identityGeneration"] is None
+        assert result["providers"][0]["chats"][0]["status"] == "unknown"
+    finally:
+        release.set()
+        _wait_idle(cache)
+
+
+def test_blocked_publication_does_not_hold_request_lock(monkeypatch):
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": []})
+    def block(_value):
+        started.set()
+        release.wait(2)
+    monkeypatch.setattr(server, "_record_insights_peaks", block)
+    try:
+        assert cache.get() is None
+        assert started.is_set()
+        assert cache.get() is None
+        assert cache.building
+    finally:
+        release.set()
+        _wait_idle(cache)
+
+
 def test_concurrent_forced_builds_publish_one_generation(monkeypatch):
     cache = server.SnapshotCache()
     started, release = threading.Event(), threading.Event()
@@ -46,7 +138,7 @@ def test_concurrent_forced_builds_publish_one_generation(monkeypatch):
         nonlocal waiting_count
         with waiting_lock:
             waiting_count += 1
-            if waiting_count == waiter_count:
+            if waiting_count == waiter_count + 1:
                 waiting.set()
         return original_wait(timeout)
 
@@ -107,6 +199,7 @@ def test_background_failure_keeps_last_good_generation_and_marks_stale(monkeypat
         "stale": True,
         "lastFailureAt": failed["snapshotCache"]["lastFailureAt"],
         "lastFailureCategory": "io_error",
+        "identityGeneration": None,
     }
     assert "private path" not in repr(failed)
     assert cache.generation == 1 and cache.at == 100.0

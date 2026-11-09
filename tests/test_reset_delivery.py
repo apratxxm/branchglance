@@ -95,6 +95,7 @@ def _projection(monkeypatch, *, status="idle", question=None, question_ids=None,
 
 def test_read_thread_uses_persistent_initialized_rpc(monkeypatch):
     fake = FakeAppServer()
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: fake)
     client = codex_client.CodexAppServer(executable="codex")
 
@@ -115,6 +116,7 @@ def test_read_thread_uses_persistent_initialized_rpc(monkeypatch):
 
 def test_list_threads_is_bounded_and_rejects_oversized_limit(monkeypatch):
     fake = FakeAppServer()
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: fake)
     client = codex_client.CodexAppServer(executable="codex")
 
@@ -351,36 +353,41 @@ def test_metadata_without_name_column_passes_real_dispatch_boundary(tmp_path, mo
     assert isinstance(state["lastRun"]["at"], float)
 
 
-def test_queue_continue_uses_exact_message_without_context_overrides():
+def test_queue_continue_uses_exact_message_without_context_overrides(monkeypatch):
     calls = []
 
     def runner(*args, **kwargs):
         calls.append((args, kwargs))
         return type("Result", (), {"returncode": 0})()
 
-    assert reset_delivery.queue_continue(THREAD, executable="codex.exe", runner=runner,
+    monkeypatch.setattr(reset_delivery, "resolve_codex", lambda _: codex_client.CodexExecutable("codex.exe"))
+    monkeypatch.setattr(reset_delivery, "run_contained_codex", runner)
+    assert reset_delivery.queue_continue(THREAD, executable="codex.exe",
                                         policies=TEST_POLICIES) == {"status": "queued"}
     args, kwargs = calls[0]
-    assert args[0] == ["codex.exe", "queue", "--thread", THREAD, "--message", "continue"]
-    assert kwargs["shell"] is False
-    assert "--model" not in args[0]
-    assert "--sandbox" not in args[0]
+    assert args[0].path == "codex.exe"
+    assert args[1] == ["queue", "--thread", THREAD, "--message", "continue"]
+    assert "--model" not in args[1]
+    assert "--sandbox" not in args[1]
 
 
-def test_queue_timeout_is_unknown_without_retry_and_failure_is_rejected():
+def test_queue_timeout_is_unknown_without_retry_and_failure_is_rejected(monkeypatch):
     calls = []
 
     def timeout(*args, **kwargs):
         calls.append(args)
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    result = reset_delivery.queue_continue(THREAD, executable="codex.exe", runner=timeout,
+    monkeypatch.setattr(reset_delivery, "resolve_codex", lambda _: codex_client.CodexExecutable("codex.exe"))
+    monkeypatch.setattr(reset_delivery, "run_contained_codex", timeout)
+    result = reset_delivery.queue_continue(THREAD, executable="codex.exe",
                                            policies=TEST_POLICIES)
     assert result["status"] == "unknown"
     assert len(calls) == 1
 
+    monkeypatch.setattr(reset_delivery, "run_contained_codex", lambda *args, **kwargs: type("Result", (), {"returncode": 1})())
     rejected = reset_delivery.queue_continue(
-        THREAD, executable="codex.exe", runner=lambda *args, **kwargs: type("Result", (), {"returncode": 1})(),
+        THREAD, executable="codex.exe",
         policies=TEST_POLICIES,
     )
     assert rejected["status"] == "rejected"
@@ -388,12 +395,13 @@ def test_queue_timeout_is_unknown_without_retry_and_failure_is_rejected():
 
 def test_missing_cli_and_invalid_id_never_invoke_runner(monkeypatch):
     called = []
-    monkeypatch.setattr(reset_delivery.shutil, "which", lambda command: None)
-    assert reset_delivery.queue_continue(THREAD, runner=lambda *a, **k: called.append(a),
+    monkeypatch.setattr(reset_delivery, "resolve_codex", lambda _: None)
+    monkeypatch.setattr(reset_delivery, "run_contained_codex", lambda *a, **k: called.append(a))
+    assert reset_delivery.queue_continue(THREAD,
                                          policies=TEST_POLICIES) == {
         "status": "rejected", "error": "Codex CLI is unavailable"
     }
-    assert reset_delivery.queue_continue("not-a-thread", executable="codex.exe", runner=lambda *a, **k: called.append(a))["status"] == "rejected"
+    assert reset_delivery.queue_continue("not-a-thread", executable="codex.exe")["status"] == "rejected"
     assert called == []
 
 
@@ -404,11 +412,12 @@ def test_hidden_or_uncollected_candidates_are_denied_before_metadata_read(monkey
         reset_delivery.list_candidates(policies=denied)
 
 
-def test_queue_requires_explicit_send_capability_before_runner():
+def test_queue_requires_explicit_send_capability_before_runner(monkeypatch):
     called = []
     denied = load_policies({})
+    monkeypatch.setattr(reset_delivery, "run_contained_codex", lambda *args, **kwargs: called.append(args))
     result = reset_delivery.queue_continue(
-        THREAD, executable="codex.exe", runner=lambda *args, **kwargs: called.append(args), policies=denied,
+        THREAD, executable="codex.exe", policies=denied,
     )
     assert result["status"] == "rejected"
     assert called == []
@@ -416,7 +425,7 @@ def test_queue_requires_explicit_send_capability_before_runner():
 
 def test_denied_queue_does_not_discover_executable(monkeypatch):
     discovered = []
-    monkeypatch.setattr(reset_delivery.shutil, "which", lambda name: discovered.append(name))
+    monkeypatch.setattr(reset_delivery, "resolve_codex", lambda name: discovered.append(name))
     result = reset_delivery.queue_continue(THREAD, policies=load_policies({}))
     assert result["status"] == "rejected"
     assert discovered == []

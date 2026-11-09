@@ -845,7 +845,7 @@ def test_out_of_order_hook_arrival_never_links_the_wrong_session(arrival):
         assert linked == [sids["a"]]
 
 
-def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, tmp_path):
+def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, tmp_path, request):
     """Reproduces the served case: the live Claude provider must emit insight data, and that
     data must survive snapshot persistence and restore so the Insights reader sees sessions,
     models, cost, cache and active hours."""
@@ -882,7 +882,13 @@ def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, 
     monkeypatch.setattr(server, "build_snapshot", lambda: copy.deepcopy(snapshot))
     path = tmp_path / "stats-snapshot.json"
     server.SnapshotCache(persist_path=path, compatibility="test")._build()
-    restored = server.SnapshotCache(persist_path=path, compatibility="test").get()
+    restored_cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    def finish_refresh():
+        # Finish before monkeypatch restores the process-wide provider functions.
+        with restored_cache.condition:
+            assert restored_cache.condition.wait_for(lambda: not restored_cache.building, timeout=10)
+    request.addfinalizer(finish_refresh)
+    restored = restored_cache.get()
     assert restored is not None and restored["snapshotCache"]["stale"] is True
 
     result = insights.build_insights(

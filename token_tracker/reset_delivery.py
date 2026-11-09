@@ -3,17 +3,16 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from collections.abc import Mapping
 
 from . import providers
-from .codex_client import CodexAppServer, CodexUnavailable
+from .codex_client import CodexAppServer, CodexUnavailable, resolve_codex, run_contained_codex
 from .provider_policy import POLICIES, ProviderPolicy, ProviderPolicyError, policy_for
 
 
@@ -231,7 +230,6 @@ def queue_continue(
     thread_id: str,
     *,
     executable: str | None = None,
-    runner: Callable[..., Any] = subprocess.run,
     policies: Mapping[str, ProviderPolicy] | None = None,
 ) -> dict[str, Any]:
     """Queue the exact user message `continue`; this does not confirm execution."""
@@ -241,21 +239,12 @@ def queue_continue(
         policy_for("Codex", POLICIES if policies is None else policies).require("continue")
     except ProviderPolicyError as exc:
         return {"status": "rejected", "error": str(exc)}
-    executable = executable or shutil.which("codex")
-    if not executable:
+    resolved = resolve_codex(executable)
+    if not resolved:
         return {"status": "rejected", "error": "Codex CLI is unavailable"}
-    flags = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     try:
-        result = runner(
-            [executable, "queue", "--thread", thread_id, "--message", "continue"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=QUEUE_TIMEOUT_SECONDS,
-            check=False,
-            shell=False,
-            **flags,
-        )
+        result = run_contained_codex(resolved, ["queue", "--thread", thread_id, "--message", "continue"],
+                                     timeout=QUEUE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         return {"status": "unknown", "error": "queue status unknown; check the Codex task"}
     except OSError:

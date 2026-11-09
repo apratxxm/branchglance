@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -19,7 +20,7 @@ from typing import Any, Callable
 from collections.abc import Mapping
 
 from . import product
-from .codex_client import CodexAppServer, CodexUnavailable
+from .codex_client import CodexAppServer, CodexNotStarted, CodexUnavailable, resolve_codex, run_contained_codex
 from .providers import ClaudeDesktopProvider, _usage_percent
 from .claude_cache import usage_info
 from . import claude_statusline
@@ -423,18 +424,28 @@ def _run_command(command: list[str], cwd: Path, timeout: int = 180) -> dict[str,
 
 def send_codex_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | None = None) -> dict[str, Any]:
     policy_for("Codex", policies).require("greet")
-    executable = _find_executable("codex")
+    try:
+        executable = resolve_codex()
+    except OSError as exc:
+        return {"ok": False, "outcome": "not_started", "error": str(exc)}
     if not executable:
-        return {"ok": False, "error": "Codex CLI is not installed"}
-    return _run_command(
-        [
-            executable, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+        return {"ok": False, "outcome": "not_started", "error": "Codex CLI is not installed"}
+    try:
+        completed = run_contained_codex(
+            executable, [
+            "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
             "--skip-git-repo-check", "--sandbox", "read-only", "--model", CODEX_GREETING_MODEL,
             "--config", 'model_reasoning_effort="low"', "--config", 'model_verbosity="low"',
             "--cd", str(cwd), "Reply with exactly: hey",
         ],
-        cwd,
-    )
+            cwd=cwd, timeout=180, env={"NO_COLOR": "1"},
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "outcome": "unknown", "error": "greeting delivery is unknown"}
+    except CodexNotStarted as exc:
+        return {"ok": False, "outcome": "not_started", "error": str(exc)}
+    output = (completed.stdout or completed.stderr or "").strip()
+    return {"ok": completed.returncode == 0, "returnCode": completed.returncode, "output": output[-300:]}
 
 
 _CLAUDE_ENV_BLOCK = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
@@ -641,6 +652,7 @@ class LimitResetService:
             clock=self._clock,
             save=self._save_state,
             action_state=lambda: self._state.setdefault("resetAction", default_action()),
+            lock=self._lock,
         )
         self._load_events()
         for event in self._events:
@@ -658,6 +670,7 @@ class LimitResetService:
             return self._reset_actions.get()
 
     def configure_reset_action(self, mode: str, thread_ids: list[str]) -> dict[str, Any]:
+        validated_ids = self._reset_actions.validate_configuration(mode, thread_ids)
         with self._lock:
             if mode == "continue":
                 policy_for("Codex", self.policies).require("continue")
@@ -703,7 +716,7 @@ class LimitResetService:
                     ),
                     "cycleId": cycle_id,
                 }
-            return self._reset_actions.configure(mode, thread_ids, baseline=baseline)
+            return self._reset_actions.configure(mode, thread_ids, baseline=baseline, validated_ids=validated_ids)
 
     _PROVIDER_DEFAULTS: dict[str, Any] = {
         # original keys
@@ -744,19 +757,58 @@ class LimitResetService:
             return {"providers": {}}
 
     def _save_state(self) -> bool:
-        if not self._persistence_ready():
-            return False
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.state_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(self._state, indent=2, sort_keys=True), encoding="utf-8")
-            os.replace(temporary, self.state_path)
-        except OSError as exc:
-            self._persistence_failed("state", exc)
-            return False
-        else:
-            self._persistence_succeeded("state")
-            return True
+        with self._lock:
+            if "Codex" not in self._sending:
+                self._reconcile_codex_finalization()
+            if not self._persistence_ready():
+                return False
+            temporary = None
+            fd = None
+            try:
+                self.state_path.parent.mkdir(parents=True, exist_ok=True)
+                fd, temporary = tempfile.mkstemp(prefix=self.state_path.name + ".", suffix=".tmp", dir=self.state_path.parent)
+                stream = os.fdopen(fd, "w", encoding="utf-8")
+                fd = None  # the stream now owns the descriptor
+                with stream:
+                    json.dump(self._state, stream, indent=2, sort_keys=True)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.state_path)
+                temporary = None
+            except OSError as exc:
+                self._persistence_failed("state", exc)
+                return False
+            else:
+                self._persistence_succeeded("state")
+                return True
+            finally:
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
+
+    def _reconcile_codex_finalization(self) -> None:
+        action = self._state.get("resetAction")
+        if isinstance(action, dict):
+            pending = action.get("finalizePending")
+            if isinstance(pending, dict):
+                if action.get("armGeneration") == pending.get("armGeneration"):
+                    action["armed"] = False
+                action.pop("finalizePending", None)
+        state = self._state.get("providers", {}).get("Codex", {})
+        pending = state.get("greetingIntent") if isinstance(state, dict) else None
+        if isinstance(pending, dict):
+            if state.get("greetingGeneration") == pending.get("generation"):
+                state["armed"] = False
+                state["lastError"] = "greeting delivery is unknown"
+                state["lastGreetingOutcome"] = "unknown"
+            state.pop("greetingIntent", None)
 
     def _persistence_ready(self) -> bool:
         return self._clock() >= self._persistence_retry_at
@@ -804,6 +856,7 @@ class LimitResetService:
 
     def _arm(self, name: str, state: dict[str, Any], sample: LimitSample, *, rearmed: bool) -> None:
         state.update({
+            "greetingGeneration": str(uuid.uuid4()),
             "armed": True, "exhaustedAt": self._now_iso(), "exhaustedSampleAt": sample.observed_at,
             "resetObservedAt": None, "resetObservedSampleAt": None, "resetObservedPercent": None,
         })
@@ -830,6 +883,8 @@ class LimitResetService:
             return
         if name == "Codex":
             with self._lock:
+                if name not in self._sending:
+                    self._reconcile_codex_finalization()
                 action = self._state.setdefault("resetAction", default_action())
                 if action.get("mode") == "continue" and not action.get("armed"):
                     self._record_collected_status(name, sample)
@@ -899,11 +954,22 @@ class LimitResetService:
                 self._save_state()
                 return
             state["lastAttemptAt"] = self._now_iso()
-            self._save_state()
-
             self._sending.add(name)
+            greeting_generation = None
+            if name == "Codex":
+                greeting_generation = state.get("greetingGeneration") or str(uuid.uuid4())
+                state["greetingGeneration"] = greeting_generation
+                state["armed"] = False
+                state["greetingIntent"] = {"generation": greeting_generation, "cycle": state.get("exhaustedAt")}
+            saved = self._save_state()
+            if name == "Codex" and not saved:
+                state["armed"] = True
+                state.pop("greetingIntent", None)
+                self._sending.discard(name)
+                return
         # CLI startup/network waits must not block the status endpoint or another
         # provider. Reserve this provider while the lock is released.
+        sender = None
         try:
             policy_for(name, self.policies).require("greet")
             sender = self.senders.get(name)
@@ -913,10 +979,22 @@ class LimitResetService:
                 result = sender(self.cwd, policies=self.policies)
             else:
                 result = sender(self.cwd)
-        except Exception as exc:  # scheduler must survive command failures
-            result = {"ok": False, "error": str(exc)}
+        except subprocess.TimeoutExpired as exc:
+            result = {"ok": False, "outcome": "unknown", "error": str(exc)}
+        except Exception as exc:  # injected senders raise only before starting a child
+            result = {"ok": False, "outcome": "unknown" if sender is send_codex_greeting else "not_started",
+                      "error": str(exc)}
         with self._lock:
             self._sending.discard(name)
+            if name == "Codex" and state.get("greetingGeneration") != greeting_generation:
+                return
+            if name == "Codex":
+                state.pop("greetingIntent", None)
+                state["lastGreetingOutcome"] = ("completed" if isinstance(result, dict) and result.get("ok") else
+                                                "not_started" if isinstance(result, dict) and result.get("outcome") in {"not_started", "rejected"}
+                                                else "unknown")
+                if state["lastGreetingOutcome"] == "not_started":
+                    state["armed"] = True
             if not isinstance(result, dict):
                 result = {"ok": False, "error": "greeting sender returned no result"}
             if result.get("ok"):
@@ -1031,9 +1109,10 @@ class LimitResetService:
             ]}
         with self._lock:
             action = self._state.setdefault("resetAction", default_action())
-            # Any batch that entered dispatch is consumed even if a callback
-            # failed. This prevents fallback greetings and polling retries.
-            action.update({"mode": "continue", "armed": False, "oneShot": True})
+            generation = run.get("armGeneration") if run else None
+            if not generation or action.get("armGeneration") != generation:
+                self._sending.discard(name)
+                return
             if run:
                 action["lastRun"] = run
             state = self._provider_state(name)
@@ -1263,6 +1342,7 @@ class LimitResetService:
         with self._lock:
             if name in self._sending:
                 return
+            self._reconcile_codex_finalization()
             action = self._state.setdefault("resetAction", default_action())
             if action.get("mode") == "continue" and action.get("armed"):
                 state = self._provider_state(name)
@@ -1471,15 +1551,36 @@ class LimitResetService:
                 self._save_state()
                 return
 
+            cycle_key = str(next_at)
+            if (state.get("lastConsumedGreetingCycle") == cycle_key
+                    and state.get("lastGreetingOutcome") not in {"completed", "not_started", "rejected"}):
+                self._save_state()
+                return
+
+            greeting_generation = (state.get("greetingGeneration")
+                                   if state.get("lastGreetingOutcome") == "not_started"
+                                   and state.get("releasedGreetingCycle") == cycle_key else None) or str(uuid.uuid4())
+            previous_consumed_cycle = state.get("lastConsumedGreetingCycle")
             state.update({
                 "lastAttemptAt": self._now_iso(),
                 "preSendResetAt": scheduled or next_at,
                 "preSendPercent": sample.five_hour_percent,
+                "greetingGeneration": greeting_generation,
+                "greetingIntent": {"generation": greeting_generation, "cycle": cycle_key},
+                "lastConsumedGreetingCycle": cycle_key,
             })
             self._record(name, "send_started", scheduledResetAt=scheduled or next_at)
-            self._save_state()
             self._sending.add(name)
+            if not self._save_state():
+                state.pop("greetingIntent", None)
+                if previous_consumed_cycle is None:
+                    state.pop("lastConsumedGreetingCycle", None)
+                else:
+                    state["lastConsumedGreetingCycle"] = previous_consumed_cycle
+                self._sending.discard(name)
+                return
 
+        sender = None
         try:
             policy_for(name, self.policies).require("greet")
             sender = self.senders.get(name)
@@ -1489,11 +1590,28 @@ class LimitResetService:
                 result = sender(self.cwd, policies=self.policies)
             else:
                 result = sender(self.cwd)
-        except Exception as exc:  # scheduler must survive command failures
-            result = {"ok": False, "error": str(exc)}
+        except subprocess.TimeoutExpired as exc:
+            result = {"ok": False, "outcome": "unknown", "error": str(exc)}
+        except Exception as exc:  # injected senders raise only before starting a child
+            result = {"ok": False, "outcome": "unknown" if sender is send_codex_greeting else "not_started",
+                      "error": str(exc)}
 
         with self._lock:
             self._sending.discard(name)
+            if state.get("greetingGeneration") != greeting_generation:
+                return
+            state.pop("greetingIntent", None)
+            state["lastGreetingOutcome"] = ("completed" if isinstance(result, dict) and result.get("ok") else
+                                            "not_started" if isinstance(result, dict) and result.get("outcome") in {"not_started", "rejected"}
+                                            else "unknown")
+            if state["lastGreetingOutcome"] == "not_started":
+                state["releasedGreetingCycle"] = cycle_key
+                if previous_consumed_cycle is None:
+                    state.pop("lastConsumedGreetingCycle", None)
+                else:
+                    state["lastConsumedGreetingCycle"] = previous_consumed_cycle
+            else:
+                state.pop("releasedGreetingCycle", None)
             if not isinstance(result, dict):
                 result = {"ok": False, "error": "greeting sender returned no result"}
             if result.get("ok"):
@@ -1517,7 +1635,7 @@ class LimitResetService:
                 )
             else:
                 state["awaitingVerification"] = False
-                state["nextGreetingAt"] = self._clock()
+                state["nextGreetingAt"] = next_at
                 self._record_failure(name, state, result, self._clock())
             self._save_state()
 

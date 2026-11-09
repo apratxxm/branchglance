@@ -975,6 +975,7 @@ class WidgetApp:
         if self._recenter_on_start:
             self._remember_notch_placement()
             self._persist_widget_lock()
+        # One widget-owned service is the sole state writer; Handler shares it.
         self.limit_reset = LimitResetService(
             list_candidates=reset_delivery.list_candidates,
             inspect_target=reset_delivery.inspect_target,
@@ -1578,6 +1579,8 @@ class WidgetApp:
                     time.sleep(BIND_RETRY_DELAY)
         if self.server is None:
             return False
+        from .claude_hook import start_event_retention
+        start_event_retention()
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         # The first transcript scan is the slow cold path; build it before the page asks.
         threading.Thread(target=_warm_snapshot, name="token-snapshot-warmup", daemon=True).start()

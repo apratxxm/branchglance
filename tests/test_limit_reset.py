@@ -54,7 +54,12 @@ class Sender:
     def __call__(self, _cwd: Path) -> dict:
         self.calls += 1
         index = min(self.calls - 1, len(self.results) - 1)
-        return self.results[index]
+        result = dict(self.results[index])
+        # Scripted failures model a confirmed pre-delivery rejection unless
+        # a test explicitly requests an ambiguous outcome.
+        if result.get("ok") is False:
+            result.setdefault("outcome", "rejected")
+        return result
 
 
 @pytest.fixture(autouse=True)
@@ -99,6 +104,121 @@ def names(tmp_path: Path) -> list[str]:
 
 def provider(watcher: LimitResetService, name: str) -> dict:
     return watcher.status()["providers"][name]
+
+
+def test_interrupted_codex_greeting_is_consumed_across_restart(tmp_path):
+    clock = Clock()
+    calls = []
+    def interrupted(_cwd):
+        calls.append("started")
+        raise KeyboardInterrupt()
+    watcher = make(tmp_path, clock, Codex=interrupted)
+    deadline = T0 + 20
+    watcher.check_provider("Codex", LimitSample(20, 20, T0, deadline))
+    clock.advance(20)
+    with pytest.raises(KeyboardInterrupt):
+        watcher.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
+    persisted = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    assert persisted["providers"]["Codex"]["greetingIntent"]["cycle"] == str(deadline)
+    sender = Sender()
+    restarted = make(tmp_path, clock, Codex=sender)
+    restarted.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
+    assert calls == ["started"]
+    assert sender.calls == 0
+    assert restarted._state["providers"]["Codex"]["lastGreetingOutcome"] == "unknown"
+
+
+def test_unknown_codex_greeting_is_not_retried(tmp_path):
+    clock = Clock()
+    sender = Sender({"ok": False, "outcome": "unknown", "error": "timed out"})
+    watcher = make(tmp_path, clock, Codex=sender)
+    deadline = T0 + 20
+    watcher.check_provider("Codex", LimitSample(20, 20, T0, deadline))
+    clock.advance(20)
+    watcher.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
+    clock.advance(RETRY_SECONDS + 1)
+    watcher.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
+    assert sender.calls == 1
+
+
+def test_started_sender_timeout_is_unknown_and_never_retried(tmp_path):
+    import subprocess
+    clock = Clock()
+    calls = []
+    def started_then_timeout(_cwd):
+        calls.append("started")
+        raise subprocess.TimeoutExpired("codex", 180)
+    watcher = make(tmp_path, clock, Codex=started_then_timeout)
+    watcher.check_provider("Codex", LimitSample(100, 10, T0))
+    generation = watcher._state["providers"]["Codex"]["greetingGeneration"]
+    watcher.check_provider("Codex", LimitSample(0, 10, T0 + 60))
+    assert watcher._state["providers"]["Codex"]["lastGreetingOutcome"] == "unknown"
+    assert watcher._state["providers"]["Codex"]["armed"] is False
+    assert watcher._state["providers"]["Codex"]["greetingGeneration"] == generation
+    clock.advance(RETRY_SECONDS + 1)
+    watcher.check_provider("Codex", LimitSample(0, 10, T0 + 120))
+    assert calls == ["started"]
+
+
+def test_prestart_sender_failure_preserves_arm_generation(tmp_path):
+    def not_started(_cwd):
+        raise RuntimeError("spawn failed")
+    watcher = make(tmp_path, Codex=not_started)
+    watcher.check_provider("Codex", LimitSample(100, 10, T0))
+    generation = watcher._state["providers"]["Codex"]["greetingGeneration"]
+    watcher.check_provider("Codex", LimitSample(0, 10, T0 + 60))
+    state = watcher._state["providers"]["Codex"]
+    assert state["lastGreetingOutcome"] == "not_started"
+    assert state["armed"] is True
+    assert state["greetingGeneration"] == generation
+
+
+def test_scheduled_not_started_retry_keeps_same_generation(tmp_path):
+    clock = Clock()
+    sender = Sender({"ok": False, "outcome": "not_started", "error": "spawn failed"}, {"ok": True})
+    watcher = make(tmp_path, clock, Codex=sender)
+    deadline = T0 + 20
+    watcher.check_provider("Codex", LimitSample(20, 20, T0, deadline))
+    clock.advance(20)
+    watcher.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
+    state = watcher._state["providers"]["Codex"]
+    generation = state["greetingGeneration"]
+    assert state["lastGreetingOutcome"] == "not_started"
+    clock.advance(RETRY_SECONDS + 1)
+    watcher.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
+    assert sender.calls == 2
+    assert state["greetingGeneration"] == generation
+
+
+def test_codex_greeting_exposes_start_phase_without_parsing_error_text(tmp_path, monkeypatch):
+    from token_tracker.codex_client import CodexExecutable, CodexNotStarted
+    import subprocess
+    monkeypatch.setattr(limit_reset, "resolve_codex", lambda: CodexExecutable("codex.exe"))
+    def fail_before(*_args, **_kwargs):
+        raise CodexNotStarted("timed out")
+    monkeypatch.setattr(limit_reset, "run_contained_codex", fail_before)
+    assert limit_reset.send_codex_greeting(tmp_path, policies=TEST_POLICIES)["outcome"] == "not_started"
+    def fail_after(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("codex", 1)
+    monkeypatch.setattr(limit_reset, "run_contained_codex", fail_after)
+    assert limit_reset.send_codex_greeting(tmp_path, policies=TEST_POLICIES)["outcome"] == "unknown"
+
+
+def test_contained_runner_separates_prestart_and_started_failures(monkeypatch):
+    from token_tracker import codex_client
+    import subprocess
+    executable = codex_client.CodexExecutable("codex.exe")
+    def fail_before(*_args, **_kwargs):
+        raise OSError("same error")
+    monkeypatch.setattr(codex_client, "_run_contained_codex", fail_before)
+    with pytest.raises(codex_client.CodexNotStarted):
+        codex_client.run_contained_codex(executable, [], timeout=1)
+    def fail_after(*_args, mark_started, **_kwargs):
+        mark_started()
+        raise OSError("same error")
+    monkeypatch.setattr(codex_client, "_run_contained_codex", fail_after)
+    with pytest.raises(subprocess.TimeoutExpired):
+        codex_client.run_contained_codex(executable, [], timeout=1)
 
 
 # --- arming and reset observation -------------------------------------------------
@@ -574,15 +694,10 @@ def test_state_write_failure_keeps_watcher_polling_and_surfaces_reset(tmp_path, 
     clock = Clock()
     sender = Sender()
     watcher = make(tmp_path, clock, Claude=sender)
-    real_write_text = Path.write_text
-    state_path = watcher.state_path
+    def fail_state_write(*args, **kwargs):
+        raise OSError(28, "No space left on device")
 
-    def fail_state_write(path, *args, **kwargs):
-        if path == state_path.with_suffix(".tmp"):
-            raise OSError(28, "No space left on device")
-        return real_write_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "write_text", fail_state_write)
+    monkeypatch.setattr(limit_reset.tempfile, "mkstemp", fail_state_write)
     watcher.check_provider("Claude", LimitSample(100, 10, T0))
     watcher.check_provider("Claude", LimitSample(0, 10, T0 + 60))
 
@@ -595,15 +710,43 @@ def test_state_write_failure_keeps_watcher_polling_and_surfaces_reset(tmp_path, 
 
     # The failed disk stays on a bounded retry cadence despite 2-second polling.
     attempts = 0
-    def count_failed_state_write(path, *args, **kwargs):
+    def count_failed_state_write(*args, **kwargs):
         nonlocal attempts
-        if path == state_path.with_suffix(".tmp"):
-            attempts += 1
-            raise OSError(28, "No space left on device")
-        return real_write_text(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "write_text", count_failed_state_write)
+        attempts += 1
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(limit_reset.tempfile, "mkstemp", count_failed_state_write)
     watcher.check_provider("Claude", LimitSample(0, 10, T0 + 61))
     assert attempts == 0
+
+
+def test_state_replace_failure_cleans_unique_temporary_file(tmp_path, monkeypatch):
+    watcher = make(tmp_path)
+    def fail_replace(_source, _target):
+        raise OSError("replacement failed")
+    monkeypatch.setattr(limit_reset.os, "replace", fail_replace)
+    assert watcher._save_state() is False
+    assert not list(tmp_path.glob("state.json.*.tmp"))
+    assert "replacement failed" in watcher.status()["persistenceError"]
+
+
+@pytest.mark.parametrize("step", ["mkstemp", "fdopen", "write", "fsync", "replace"])
+def test_state_save_reports_each_io_failure(tmp_path, monkeypatch, step):
+    watcher = make(tmp_path)
+    def enospc(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+    if step == "mkstemp":
+        monkeypatch.setattr(limit_reset.tempfile, "mkstemp", enospc)
+    elif step == "fdopen":
+        monkeypatch.setattr(limit_reset.os, "fdopen", enospc)
+    elif step == "write":
+        monkeypatch.setattr(limit_reset.json, "dump", enospc)
+    elif step == "fsync":
+        monkeypatch.setattr(limit_reset.os, "fsync", enospc)
+    else:
+        monkeypatch.setattr(limit_reset.os, "replace", enospc)
+    assert watcher._save_state() is False
+    assert "No space left on device" in watcher.status()["persistenceError"]
+    assert not list(tmp_path.glob("state.json.*.tmp"))
 
 
 def test_event_log_write_failure_is_reported_and_does_not_raise(tmp_path, monkeypatch):
@@ -626,15 +769,23 @@ def test_reset_watcher_thread_survives_enospc(tmp_path, monkeypatch):
     import threading
 
     sampled = threading.Event()
+    write_failed = threading.Event()
     watcher = LimitResetService(
         sources={"Claude": lambda: (sampled.set() or LimitSample(20, 10, T0))},
         senders={}, state_path=tmp_path / "state.json", log_path=tmp_path / "events.jsonl",
         enabled=True, clock=Clock(),
     )
-    monkeypatch.setattr(Path, "write_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+    real_replace = limit_reset.os.replace
+    def fail_replace(_source, _target):
+        if Path(_target) != watcher.state_path:
+            return real_replace(_source, _target)
+        write_failed.set()
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(limit_reset.os, "replace", fail_replace)
     try:
         watcher.start()
         assert sampled.wait(2)
+        assert write_failed.wait(2)
         assert watcher.status()["running"] is True
         assert watcher.status()["persistenceError"] is not None
     finally:
@@ -731,8 +882,13 @@ def test_failure_output_is_redacted_and_truncated(tmp_path):
 
 
 def test_greeting_commands_use_low_cost_models_without_tools(monkeypatch, tmp_path):
+    from token_tracker.codex_client import CodexExecutable
     seen = []
     monkeypatch.setattr(limit_reset, "_find_executable", lambda name: f"{name}.exe")
+    monkeypatch.setattr(limit_reset, "resolve_codex", lambda: CodexExecutable("codex.exe"))
+    monkeypatch.setattr(limit_reset, "run_contained_codex", lambda executable, command, **kwargs:
+                        seen.append(([executable.path, *command], kwargs["cwd"])) or
+                        type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})())
     monkeypatch.setattr(limit_reset, "_claude_process", lambda command, cwd, timeout: seen.append((command, cwd)) or {"started": True, "returnCode": 0, "data": b'{"type":"system","subtype":"init","apiKeySource":"none"}\n{"type":"result","is_error":false}'})
     monkeypatch.setattr(
         limit_reset, "_run_command",

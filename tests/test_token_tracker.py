@@ -975,7 +975,7 @@ def test_http_health_stats_and_force_refresh(monkeypatch):
         assert first["generatedAt"] == "now"
         metadata = first["snapshotCache"]
         assert set(metadata) == {"generation", "builtAt", "ageSeconds", "building", "stale",
-                                 "lastFailureAt", "lastFailureCategory"}
+                                 "lastFailureAt", "lastFailureCategory", "identityGeneration"}
         assert metadata["generation"] == 1 and metadata["building"] is False and metadata["stale"] is False
         assert metadata["builtAt"] and metadata["ageSeconds"] >= 0
         assert metadata["lastFailureAt"] is None and metadata["lastFailureCategory"] is None
@@ -3229,6 +3229,7 @@ class _FakeAppServer:
 def test_codex_thread_list_requests_exec_sources_and_falls_back(monkeypatch, reject):
     from token_tracker import codex_client
     fake = _FakeAppServer(reject_source_kinds=reject)
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: fake)
     snap = codex_client.CodexAppServer(executable="codex").snapshot()
     assert "exec" in fake.thread_params[0]["sourceKinds"] and "vscode" in fake.thread_params[0]["sourceKinds"]
@@ -3242,6 +3243,7 @@ def test_codex_thread_list_requests_exec_sources_and_falls_back(monkeypatch, rej
 def test_codex_persistent_rate_limit_reader_reuses_initialized_process(monkeypatch):
     from token_tracker import codex_client
     fake = _FakeAppServer()
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     launches = []
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: launches.append(args) or fake)
     client = codex_client.CodexAppServer(executable="codex")
@@ -3258,6 +3260,7 @@ def test_codex_persistent_rate_limit_reader_reuses_initialized_process(monkeypat
 def test_codex_initialize_uses_product_identity(monkeypatch, persistent):
     from token_tracker import codex_client, product
     fake = _FakeAppServer()
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: fake)
     monkeypatch.setattr(product, "VERSION", "1.0.0-test")
     client = codex_client.CodexAppServer(executable="codex")
@@ -5193,18 +5196,19 @@ def test_question_option_queue_is_same_origin_validated_and_labeled_queued(monke
 
 
 def test_queue_codex_message_uses_noninteractive_bounded_cli(monkeypatch):
+    from token_tracker import codex_client
     calls = []
     policies = dict(provider_policy.POLICIES)
     policies["Codex"] = replace(policies["Codex"], send=True, send_origin="provider_env")
     monkeypatch.setattr(provider_policy, "POLICIES", MappingProxyType(policies))
-    monkeypatch.setattr(server.shutil, "which", lambda command: r"C:\\Codex\\codex.exe")
-    monkeypatch.setattr(server.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)) or type("Result", (), {"returncode": 0})())
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda: codex_client.CodexExecutable(r"C:\\Codex\\codex.exe"))
+    monkeypatch.setattr(codex_client, "run_contained_codex", lambda *args, **kwargs: calls.append((args, kwargs)) or type("Result", (), {"returncode": 0})())
     thread = "01a0cad8-0000-7000-8000-000000000001"
     server.queue_codex_message(thread, "hello")
     args, kwargs = calls[0]
-    assert args[0] == [r"C:\\Codex\\codex.exe", "queue", "--thread", thread, "--message", "hello"]
+    assert args[0].path == r"C:\\Codex\\codex.exe"
+    assert args[1] == ["queue", "--thread", thread, "--message", "hello"]
     assert kwargs["timeout"] == server.QUEUE_TIMEOUT_SECONDS
-    assert kwargs["stdin"] is server.subprocess.DEVNULL
 
 
 def test_open_endpoint_accepts_only_thread_ids():
