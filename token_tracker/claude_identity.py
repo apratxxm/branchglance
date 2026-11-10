@@ -40,6 +40,9 @@ class IdentityAuthority:
         self._credential_key: object = None
         self._passive_key: object = None
         self._identity: Identity | None = None
+        # Last consistent (generation, identity) pair, replaced atomically under
+        # the lock so a reader that finds the lock busy can serve it unlocked.
+        self._published: tuple[str, Identity | None] = (self._generation, None)
         self._state_path = state_path
         self._clock = clock
         self._history: tuple[str, float] | None = None
@@ -47,6 +50,7 @@ class IdentityAuthority:
     def _advance(self) -> None:
         self._generation = uuid.uuid4().hex
         self._identity = None
+        self._published = (self._generation, None)
 
     def credential_changed(self, key: object) -> str:
         with self._lock:
@@ -72,6 +76,7 @@ class IdentityAuthority:
             if self._identity and (self._identity.account_uuid, self._identity.org_id) != (account_uuid, org_id):
                 self._advance()
             self._identity = Identity(account_uuid, org_id, self._generation, label, fingerprint, changed_at)
+            self._published = (self._generation, self._identity)
             return self._identity
 
     def refresh_passive(self, path: Path | None = None, *, other: tuple[str, str] | None = None) -> Identity | None:
@@ -156,7 +161,9 @@ class IdentityAuthority:
 
     def capture_nonblocking(self) -> tuple[str | None, Identity | None]:
         if not self._lock.acquire(blocking=False):
-            return None, None
+            # Busy (e.g. snapshot publication holds guard()): a busy lock is not
+            # an account change, so serve the last consistent pair.
+            return self._published
         try:
             return self._generation, self._identity
         finally:

@@ -160,3 +160,27 @@ def test_corrupt_huge_changed_at_is_replaced(tmp_path):
     identity = IdentityAuthority(state, clock=lambda: 123).refresh_passive(account)
     assert identity is not None and identity.changed_at == 123
     assert json.loads(state.read_text())["changedAt"] == 123
+
+
+def test_busy_lock_serves_last_identity_instead_of_reporting_a_change(tmp_path):
+    import threading
+    authority = IdentityAuthority()
+    generation = authority.credential_changed((str(tmp_path / "a"), "token-a"))
+    bound = authority.bind(generation, "account-a", "org")
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        with authority.guard(generation):
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target=hold)
+    worker.start()
+    try:
+        assert held.wait(5)
+        assert authority.capture_nonblocking() == (generation, bound)
+    finally:
+        release.set()
+        worker.join(5)
+    changed = authority.credential_changed((str(tmp_path / "b"), "token-b"))
+    assert authority.capture_nonblocking() == (changed, None)

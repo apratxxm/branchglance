@@ -689,9 +689,16 @@ class LimitResetService:
             if "Claude" in self._sending:
                 raise RuntimeError("Claude greeting is in progress")
             state = self._provider_state("Claude")
+            # Archive the previous account (and drop its caches) before binding,
+            # even if keepalive has not noticed the switch yet; otherwise A's
+            # cycles would be bound to B and lost from history.
+            changed = self._claude_disarm_changed(state, identity)
             before = copy.deepcopy(state)
             history = state.get("claudeAccountCycles") or {}
-            saved = history.get(identity.fingerprint, {}) if state.get("accountChanged") and isinstance(history, dict) else {"cycles": state.get("consumedCycles") or {}, "bootstrap": state.get("lastBootstrapAt")}
+            if changed:
+                saved = history.get(identity.fingerprint, {}) if isinstance(history, dict) else {}
+            else:
+                saved = {"cycles": state.get("consumedCycles") or {}, "bootstrap": state.get("lastBootstrapAt")}
             state.update(claudeIdentityFingerprint=identity.fingerprint,
                          claudeIdentityGeneration=identity.generation,
                          accountChanged=False, armed=True, lastError=None, retryAfter=0,

@@ -279,6 +279,31 @@ def test_interrupted_delivery_stays_claimed_across_account_round_trip(tmp_path, 
     assert "cycle-1" in state["consumedCycles"]
 
 
+def test_rearm_before_keepalive_notices_switch_archives_previous_account(tmp_path, monkeypatch):
+    from token_tracker import claude_identity
+    account = tmp_path / ".claude.json"
+    def write_account(account_id):
+        account.write_text(json.dumps({"oauthAccount": {"accountUuid": account_id, "organizationUuid": "org-a"}}))
+    clock = Clock()
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json", clock=clock)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(account))
+    watcher = lr.LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json", log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True, clock=clock, monotonic=clock.monotonic, policies=POLICIES)
+    write_account("a")
+    watcher.rearm_claude_greeting()
+    state = watcher._provider_state("Claude")
+    state["consumedCycles"] = {"cycle-a": clock.now}
+    watcher._claude_auth_cache = object()
+    # Switch to B and re-arm without any poll noticing the change first.
+    write_account("b")
+    watcher.rearm_claude_greeting()
+    assert state["claudeIdentityFingerprint"] == claude_identity.account_fingerprint("b", "org-a")
+    assert state["consumedCycles"] == {}
+    assert watcher._claude_auth_cache is None
+    write_account("a")
+    watcher.rearm_claude_greeting()
+    assert state["consumedCycles"] == {"cycle-a": clock.now}
+
+
 def test_missing_desktop_keeps_cli_evidence(tmp_path, monkeypatch):
     from token_tracker import claude_statusline as sl, product
     import time
