@@ -1,6 +1,16 @@
 import json
+import os
 
-from token_tracker.claude_identity import IdentityAuthority, account_path, read_passive_account
+import pytest
+
+from token_tracker.claude_identity import IdentityAuthority, account_path, read_passive_account, desktop_matches
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO regression")
+def test_passive_identity_rejects_fifo_without_writer(tmp_path):
+    path = tmp_path / "account-fifo"
+    os.mkfifo(path)
+    assert read_passive_account(path) is None
 
 
 def test_identity_epoch_fences_switch_rotation_and_restart(tmp_path):
@@ -94,3 +104,50 @@ def test_passive_refresh_does_not_erase_credential_epoch(tmp_path):
 def test_configured_account_path(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     assert account_path() == tmp_path / ".claude.json"
+
+
+def test_same_account_restart_rebinds_fingerprint_and_change_time(tmp_path):
+    from token_tracker import claude_statusline
+    account = tmp_path / ".claude.json"
+    state = tmp_path / "identity.json"
+    account.write_text(json.dumps({"oauthAccount": {"accountUuid": "account-a", "organizationUuid": "org-a"}}))
+    first = IdentityAuthority(state, clock=lambda: 100).refresh_passive(account)
+    windows = {"five_hour": {"used_percentage": 12, "resets_at": 2000, "receivedAt": 1000}}
+    claude_statusline.write(windows, tmp_path, now=1000, filename=claude_statusline.CLI_FILENAME,
+                            source="claude-cli", org_id="org-a", identity_fingerprint=first.fingerprint)
+    second = IdentityAuthority(state, clock=lambda: 200).refresh_passive(account)
+    assert first.fingerprint == second.fingerprint and second.changed_at == 100
+    assert first.generation != second.generation
+    assert "account-a" not in state.read_text() and "org-a" not in state.read_text()
+    cli = claude_statusline.read(tmp_path / claude_statusline.CLI_FILENAME, now=1000,
+                                 source="claude-cli", include_org=True)
+    assert claude_statusline.merge_usage({"fiveHour": None, "weekly": None, "fiveHourPercent": None,
+                                         "weeklyPercent": None, "observedAt": None}, [], now=1000,
+                                        org_id="org-a", cli_path=tmp_path / claude_statusline.CLI_FILENAME,
+                                        identity_generation=second.generation, identity_fingerprint=second.fingerprint)["fiveHourPercent"] == 12
+    assert cli["identityFingerprint"] == second.fingerprint
+
+
+def test_account_switch_restart_rejects_old_fingerprint(tmp_path):
+    from token_tracker import claude_statusline
+    account, state = tmp_path / ".claude.json", tmp_path / "identity.json"
+    account.write_text(json.dumps({"oauthAccount": {"accountUuid": "a", "organizationUuid": "org"}}))
+    first = IdentityAuthority(state, clock=lambda: 100).refresh_passive(account)
+    claude_statusline.write({"five_hour": {"used_percentage": 12, "resets_at": 2000, "receivedAt": 1000}},
+                            tmp_path, now=1000, filename=claude_statusline.CLI_FILENAME,
+                            source="claude-cli", org_id="org", identity_fingerprint=first.fingerprint)
+    account.write_text(json.dumps({"oauthAccount": {"accountUuid": "b", "organizationUuid": "org"}}))
+    second = IdentityAuthority(state, clock=lambda: 200).refresh_passive(account)
+    assert first.fingerprint != second.fingerprint and second.changed_at == 200
+    cli = claude_statusline.read(tmp_path / claude_statusline.CLI_FILENAME, now=1000,
+                                 source="claude-cli", include_org=True)
+    assert cli["identityFingerprint"] != second.fingerprint
+
+
+def test_desktop_observation_must_follow_account_change(tmp_path):
+    account = tmp_path / ".claude.json"
+    account.write_text(json.dumps({"oauthAccount": {"accountUuid": "a", "organizationUuid": "org"}}))
+    identity = IdentityAuthority(tmp_path / "identity.json", clock=lambda: 200).refresh_passive(account)
+    assert not desktop_matches(identity, "org", 199)
+    assert desktop_matches(identity, "org", 200)
+    assert not desktop_matches(identity, "other", 201)

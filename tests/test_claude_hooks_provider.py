@@ -665,6 +665,34 @@ def test_parent_title_tracks_t3_rename_and_survives_missing_source(world):
     assert world.rows()[SID]["title"] == "Renamed T3 title"
 
 
+def test_t3_deep_invalid_cursor_is_skipped(world):
+    database = world.tmp / "t3.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE projection_threads (thread_id TEXT, title TEXT, deleted_at TEXT, archived_at TEXT)")
+        db.execute("CREATE TABLE provider_session_runtime (thread_id TEXT, provider_name TEXT, resume_cursor_json TEXT)")
+        db.execute("INSERT INTO projection_threads VALUES ('deep', 'ignored', NULL, NULL)")
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("deep", "claudeAgent", "[" * 1500 + "]" * 1500))
+    world.transcript(SID, [{"type": "ai-title", "aiTitle": "Transcript"}, user(NOW - 5)])
+    world.hooks([ev(NOW - 5, "UserPromptSubmit")])
+    assert world.rows()[SID]["title"] == "Transcript"
+
+
+def test_t3_ambiguous_binding_evicts_cached_title(world):
+    database = world.tmp / "t3.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE projection_threads (thread_id TEXT, title TEXT, deleted_at TEXT, archived_at TEXT)")
+        db.execute("CREATE TABLE provider_session_runtime (thread_id TEXT, provider_name TEXT, resume_cursor_json TEXT)")
+        db.execute("INSERT INTO projection_threads VALUES ('one', 'T3 title', NULL, NULL)")
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("one", "claudeAgent", json.dumps({"resume": SID})))
+    world.transcript(SID, [{"type": "ai-title", "aiTitle": "Transcript"}, user(NOW - 5)])
+    world.hooks([ev(NOW - 5, "UserPromptSubmit")])
+    assert world.rows()[SID]["title"] == "T3 title"
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO projection_threads VALUES ('two', 'Other', NULL, NULL)")
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("two", "claudeAgent", json.dumps({"resume": SID})))
+    assert world.rows()[SID]["title"] == "Transcript"
+
+
 def test_question_survives_the_permission_events_claude_sends_after_it(world):
     """Claude sends AskUserQuestion, then PermissionRequest and a permission_prompt Notification for the same wait."""
     ask = {"type": "tool_use", "id": "toolu_q1", "name": "AskUserQuestion",

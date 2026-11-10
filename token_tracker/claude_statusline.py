@@ -206,8 +206,11 @@ def read(path, now=None, max_age=None, *, source="claude-statusline", include_or
         data = json.loads(raw)
         if not isinstance(data, dict) or data.get("source") != source:
             return {}
-        if source == "claude-cli" and (not isinstance(data.get("orgId"), str) or not data["orgId"].strip()):
-            return {}
+        if source == "claude-cli":
+            fingerprint = data.get("identityFingerprint")
+            if (not isinstance(fingerprint, str) or len(fingerprint) != 64
+                    or any(c not in "0123456789abcdef" for c in fingerprint)):
+                return {}  # Legacy generation-free samples cannot be rebound safely.
         result = {}
         for name in WINDOWS:
             window = data.get(name)
@@ -220,18 +223,22 @@ def read(path, now=None, max_age=None, *, source="claude-statusline", include_or
                 continue
             result[name] = {"used_percentage": used, "resets_at": reset, "receivedAt": received}
         if include_org and source == "claude-cli" and result:
-            result["orgId"] = data["orgId"]
+            result["identityFingerprint"] = data["identityFingerprint"]
+            result["identityGeneration"] = data.get("identityGeneration")
         return result
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return {}
 
 
-def write(windows, root=None, now=None, deadline=None, *, filename=FILENAME, source="claude-statusline", org_id=None):
+def write(windows, root=None, now=None, deadline=None, *, filename=FILENAME, source="claude-statusline", org_id=None, identity_generation=None, identity_fingerprint=None):
     """Serialize writers using a verified, non-following lock handle."""
     if (filename, source) not in ((FILENAME, "claude-statusline"), (CLI_FILENAME, "claude-cli")):
         raise ValueError("unsupported Claude sample store")
     if source == "claude-cli" and (not isinstance(org_id, str) or not org_id.strip()):
         raise ValueError("CLI sample requires an organization")
+    if source == "claude-cli" and (not isinstance(identity_fingerprint, str) or len(identity_fingerprint) != 64
+                                    or any(c not in "0123456789abcdef" for c in identity_fingerprint)):
+        raise ValueError("CLI sample requires an account fingerprint")
     root = Path(os.path.abspath(root if root is not None else product.state_root()))
     now = time.time() if now is None else now
     checked = {}
@@ -266,7 +273,7 @@ def write(windows, root=None, now=None, deadline=None, *, filename=FILENAME, sou
             try:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("statusline deadline")
-                _write_locked(windows, root, now, filename=filename, source=source, org_id=org_id)
+                _write_locked(windows, root, now, filename=filename, source=source, org_id=org_id, identity_generation=identity_generation, identity_fingerprint=identity_fingerprint)
             finally:
                 if os.name == "nt":
                     lock.seek(0)
@@ -275,13 +282,16 @@ def write(windows, root=None, now=None, deadline=None, *, filename=FILENAME, sou
                     fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def _write_locked(windows, root=None, now=None, *, filename=FILENAME, source="claude-statusline", org_id=None):
+def _write_locked(windows, root=None, now=None, *, filename=FILENAME, source="claude-statusline", org_id=None, identity_generation=None, identity_fingerprint=None):
     now = time.time() if now is None else now
     root = Path(root) if root is not None else product.state_root()
     path = root / filename
     previous = read(path, now, source=source, include_org=source == "claude-cli")
-    if source == "claude-cli" and previous.pop("orgId", None) != org_id:
-        previous = {}
+    if source == "claude-cli":
+        old_fingerprint = previous.pop("identityFingerprint", None)
+        previous.pop("identityGeneration", None)
+        if old_fingerprint != identity_fingerprint:
+            previous = {}
     windows = {name: dict(value) for name, value in windows.items() if name in WINDOWS}
     for name, old in previous.items():
         windows.setdefault(name, old)
@@ -302,7 +312,7 @@ def _write_locked(windows, root=None, now=None, *, filename=FILENAME, source="cl
             _check_path(Path(temp), directory=False)
             if not os.path.samestat(os.fstat(file.fileno()), os.lstat(temp)):
                 raise OSError("temporary file changed")
-            json.dump({"source": source, **({"orgId": org_id} if source == "claude-cli" else {}), **windows}, file, separators=(",", ":"), allow_nan=False)
+            json.dump({"source": source, **({"identityFingerprint": identity_fingerprint} if source == "claude-cli" else {}), **windows}, file, separators=(",", ":"), allow_nan=False)
         _check_path(path, allow_missing=True, directory=False)
         _check_path(Path(temp), directory=False)
         os.replace(temp, path)
@@ -388,12 +398,14 @@ def choose(a, b, now):
     return a if a["resets_at"] > b["resets_at"] else b
 
 
-def merge_usage(desktop, paths=None, now=None, max_age=600, *, org_id=None, cli_path=None):
+def merge_usage(desktop, paths=None, now=None, max_age=600, *, org_id=None, cli_path=None, identity_generation=None, identity_fingerprint=None):
     now = time.time() if now is None else now
     result = dict(desktop)
     samples = [read(path, now=now) for path in (sample_paths() if paths is None else paths)]
     cli = read(cli_path or product.state_root() / CLI_FILENAME, now=now, source="claude-cli", include_org=True)
-    if cli and isinstance(org_id, str) and org_id.strip() and cli.get("orgId") == org_id:
+    if (cli and isinstance(org_id, str) and org_id.strip() and isinstance(identity_generation, str)
+            and identity_generation and isinstance(identity_fingerprint, str)
+            and cli.get("identityFingerprint") == identity_fingerprint):
         samples.append(cli)
     selected_times = []
     for name, key in (("five_hour", "fiveHour"), ("seven_day", "weekly")):

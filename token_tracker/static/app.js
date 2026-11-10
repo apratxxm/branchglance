@@ -1566,10 +1566,11 @@ function resetView(provider, key) {
   const quotaAt=provider._quotaWindowObservedAt&&Object.prototype.hasOwnProperty.call(provider._quotaWindowObservedAt,key)?provider._quotaWindowObservedAt[key]:provider.limitsUpdatedAt;
   // A sample stamped up to a minute ahead of this clock (clock skew, a paused page) counts as fresh, not as missing.
   const sampled=stamp(quotaAt),rawAge=sampled?Date.now()-sampled:null,age=rawAge!=null&&rawAge<0&&rawAge>=-60000?0:rawAge;
-  const measured=item.lastKnown!==true&&(!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000));
+  const unverified=provider.name==="Claude"&&provider.identityVerified!==true;
+  const measured=!unverified&&item.lastKnown!==true&&(!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000));
   const observedParts=used!=null&&sampled&&age!=null&&age>=0?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const maxAge=key==="weekly"?7*86400000:86400000;
-  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>=0&&(item.lastKnown===true?(observedParts.target!=null&&observedParts.seconds>0):age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0)));
+  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>=0&&(unverified?age<maxAge:item.lastKnown===true?(observedParts.target!=null&&observedParts.seconds>0):age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0)));
   const expired=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&observedParts.target!=null&&observedParts.seconds<=0);
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
@@ -1581,7 +1582,7 @@ function resetView(provider, key) {
     tone:shownUsed==null||lastKnown?"":RUNWAY?(shownUsed>80?"err":shownUsed>50?"attn":""):shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
     // Keep the last-known age beside each independently rendered quota value.
     stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
-    tip:RUNWAY?(lastKnown?"Last reported by "+(provider.name==="Claude"?"Claude Desktop":provider.name)+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014")};
+    tip:(provider.name==="Claude"&&provider.identityVerified!==true?"Account unverified · ":provider.name==="Claude"&&provider.identityLabel?provider.identityLabel+" · ":"")+(RUNWAY?(lastKnown?"Last reported by "+(provider.name==="Claude"?"Claude Desktop":provider.name)+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"))};
 }
 function clearRunwayArrival(el) {
   if(!el)return;
@@ -2747,6 +2748,7 @@ function applyQuotaSamples(samples,sequence,providers,{requireDated=false}={}) {
   let changed=false;const now=Date.now();
   for(const provider of providers) {
     const sample=samples[provider.name]?.lastStatus;if(!sample)continue;
+    if(provider.name==='Claude'&&(!provider.identityVerified||!provider.identityGeneration||sample.identity_generation!==provider.identityGeneration))continue;
     const hasCheckedAt=sample.checkedAt!==undefined&&sample.checkedAt!==null&&sample.checkedAt!=='';
     const checkedAt=hasCheckedAt?isoObservationTime(sample.checkedAt,now):null;
     if(hasCheckedAt&&checkedAt===null||requireDated&&checkedAt===null)continue;
@@ -2802,6 +2804,11 @@ function reconcileSnapshotQuotas(snapshot,now=Date.now()){
   const currentProviders=state.snapshot?.providers||[];
   for(const incoming of snapshot.providers){
     const current=currentProviders.find(provider=>provider.name===incoming.name),retained=watcherAcceptedQuota.get(incoming.name)||{};
+    if(incoming.name==='Claude'&&(!incoming.identityVerified||!incoming.identityGeneration||current?.identityGeneration!==incoming.identityGeneration)){
+      watcherAcceptedQuota.delete('Claude');
+      state.watcherAcceptedSequence.delete('Claude:fiveHour');state.watcherAcceptedSequence.delete('Claude:weekly');
+      continue;
+    }
     const selectedTimes={};let aggregateAt=null;
     for(const key of ['fiveHour','weekly']){
       const candidates=[];

@@ -3296,10 +3296,10 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
             return org
 
     def _newest_live(self, info: dict[str, Any], now: float | None = None,
-                     *, watermarks: bool = False) -> dict[str, Any]:
+                     *, watermarks: bool = False, identity_generation: object = None) -> dict[str, Any]:
         """Retain each window's identity, high-water usage and its observation time."""
         now = time.time() if now is None else now
-        key = str(self.root)
+        key = (str(self.root), identity_generation)
         result = dict(info)
         fresh_times = []
         with self._last_live_lock:
@@ -3347,6 +3347,8 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
 
     @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
+        from . import claude_identity
+        identity = claude_identity.current_identity()
         try:
             samples, latest = self._usage()
             missing = None
@@ -3361,19 +3363,25 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
         # widget's own 10-minute quota freshness; the greeter remains at 90 seconds.
         info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
         org = samples[-1].get("org") if samples else None
-        if not org:
-            from . import claude_statusline, product
-            state_root = product.state_root()
-            cli = claude_statusline.read(state_root / claude_statusline.CLI_FILENAME,
-                                         max_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS,
-                                         source="claude-cli", include_org=True)
-            org = self._current_cli_org(state_root) if cli else None
-            # A truthy non-string sentinel excludes the CLI sample without an
-            # authenticated organization, while keeping status-line samples.
-            if not org:
-                org = object()
-        info = merge_usage(self._newest_live(info, watermarks=True), org_id=org)
-        if missing is not None and not (info.get("_fiveHourSelected") or info.get("_weeklySelected")):
+        from . import claude_statusline, product
+        epoch = identity.generation if identity else None
+        cli = claude_statusline.read(product.state_root() / claude_statusline.CLI_FILENAME,
+                                     max_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS,
+                                     source="claude-cli", include_org=True)
+        cli_verified = claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint"))
+        desktop_verified = claude_identity.desktop_matches(identity, org, info.get("observedAt"))
+        verified = bool(identity and (not org or org == identity.org_id) and (cli_verified or desktop_verified))
+        if verified and not desktop_verified:
+            usage = {}
+            info = usage_info(self.root, [], max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
+        # Unbound statusline samples may be displayed as historical, but cannot
+        # become current-account evidence merely by being read after a switch.
+        info = merge_usage(self._newest_live(info, watermarks=True, identity_generation=(epoch, org, verified)),
+                           paths=[] if verified else None, org_id=identity.org_id if identity else None,
+                           identity_generation=epoch, identity_fingerprint=identity.fingerprint if identity else None)
+        fresh_identity = claude_identity.current_identity()
+        verified = bool(verified and fresh_identity and fresh_identity.generation == epoch)
+        if missing is not None and info.get("fiveHourPercent") is None and info.get("weeklyPercent") is None:
             raise missing
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
         five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else (None if info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else usage.get("fh"))
@@ -3393,6 +3401,8 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
             "chats": [],
             "activity": [],
             "limitsUpdatedAt": updated_at,
+            "identityGeneration": epoch if verified else None,
+            "identityVerified": verified,
             "source": "Claude Desktop local quota cache (limits only)",
         }
 

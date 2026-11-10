@@ -71,13 +71,16 @@ def empty_desktop():
 
 def test_cli_store_is_bound_to_desktop_org(tmp_path):
     windows = statusline.parse(sample(22), now=1000)
+    fingerprint = "a" * 64
     statusline.write(windows, tmp_path, now=1000, filename=statusline.CLI_FILENAME,
-                     source="claude-cli", org_id="org-a")
+                     source="claude-cli", org_id="org-a", identity_generation="epoch-a", identity_fingerprint=fingerprint)
     cli_path = tmp_path / statusline.CLI_FILENAME
-    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-a", cli_path=cli_path)["fiveHourPercent"] == 22
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-a", cli_path=cli_path, identity_generation="epoch-a", identity_fingerprint=fingerprint)["fiveHourPercent"] == 22
     assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-b", cli_path=cli_path)["fiveHourPercent"] is None
     assert statusline.merge_usage(empty_desktop(), [], now=1000, cli_path=cli_path)["fiveHourPercent"] is None
     assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id=" ", cli_path=cli_path)["fiveHourPercent"] is None
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-a", cli_path=cli_path, identity_generation="epoch-b", identity_fingerprint=fingerprint)["fiveHourPercent"] == 22
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-b", cli_path=cli_path, identity_generation="epoch-a", identity_fingerprint="b" * 64)["fiveHourPercent"] is None
 
 
 def test_parser_schema_and_reset_edges():

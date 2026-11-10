@@ -25,8 +25,10 @@ TEST_POLICIES = load_policies({
 
 @pytest.fixture(autouse=True)
 def explicit_fake_provider_policy(monkeypatch):
+    from token_tracker import claude_identity
     monkeypatch.setattr(limit_reset, "POLICIES", TEST_POLICIES)
     monkeypatch.setattr(reset_actions, "POLICIES", TEST_POLICIES)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("account", "org", "generation"))
 
 
 class Harness:
@@ -65,6 +67,18 @@ class Harness:
     def queue(self, thread_id):
         self.queue_calls.append(thread_id)
         return self.queue_results.get(thread_id, {"status": "queued"})
+
+
+@pytest.mark.parametrize("current_generation", ["epoch-b", None, "epoch-a"])
+def test_codex_continuation_does_not_depend_on_claude_identity(current_generation, monkeypatch):
+    from token_tracker import claude_identity
+    h = Harness()
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: (
+        claude_identity.Identity("account", "org", current_generation) if current_generation else None))
+    h.dispatcher.configure("continue", [ONE], baseline={"identityGeneration": "epoch-a"})
+    run = h.dispatcher.dispatch("cycle")
+    assert run["targets"][0]["status"] == "queued"
+    assert h.queue_calls == [ONE]
 
 
 def test_greeting_default_and_getter_are_copy_isolated():
@@ -471,6 +485,34 @@ def test_limit_service_persists_selection_and_respects_quota_gate(tmp_path):
     watcher.check_provider("Codex", LimitSample(0, 20, h.now, h.now + 5 * 60 * 60))
     assert queued == [ONE]
     assert watcher.get_reset_action()["armed"] is False
+
+
+def test_service_retry_keeps_original_observation_cycle(tmp_path, monkeypatch):
+    from token_tracker import claude_identity
+    identity = claude_identity.Identity("account", "org", "generation")
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
+    h = Harness()
+    calls = []
+    def queue(thread_id):
+        calls.append(thread_id)
+        return {"status": "not_started" if calls == [ONE, TWO] else "queued"}
+    watcher = LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json",
+                               log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True,
+                               clock=lambda: h.now, policies=TEST_POLICIES,
+                               list_candidates=h.dispatcher.list_candidates,
+                               inspect_target=h.dispatcher.inspect_target, queue_continue=queue)
+    watcher._provider_state("Codex")["lastStatus"] = {"five_hour_percent": 0, "weekly_percent": 100,
+        "observed_at": h.now, "reset_at": None}
+    watcher.configure_reset_action("continue", [ONE, TWO])
+    original_cycle = watcher._state["resetAction"]["cycleId"]
+    h.now += 1
+    watcher.check_provider("Codex", LimitSample(0, 20, h.now))
+    assert calls == [ONE, TWO]
+    assert watcher._state["resetAction"]["cycleId"] == original_cycle
+    h.now += 901
+    watcher.check_provider("Codex", LimitSample(50, 20, h.now, h.now + 500))
+    assert calls == [ONE, TWO, TWO]
+    assert watcher._state["resetAction"]["cycleId"] == original_cycle
 
 
 def test_legacy_armed_selection_migrates_unarmed_and_preserves_delivery_ledger():

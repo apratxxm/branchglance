@@ -679,8 +679,18 @@ class SnapshotCache:
         if value is None:
             return None
         result = copy.deepcopy(value)
+        from . import claude_identity
+        identity = claude_identity.current_identity()
+        metadata = dict(metadata)
         for provider in result.get("providers", []):
             if isinstance(provider, dict):
+                if provider.get("name") == "Claude":
+                    verified = bool(identity and not restored and provider.get("identityVerified") is True
+                                    and provider.get("identityGeneration") == identity.generation)
+                    provider["identityVerified"] = verified
+                    provider["identityLabel"] = identity.label if verified else "Account unverified"
+                    if verified:
+                        metadata["identityGeneration"] = identity.generation
                 times = provider.get("_quotaWindowObservedAt")
                 times = times if isinstance(times, dict) else {}
                 for field in ("fiveHour", "weekly"):
@@ -746,6 +756,9 @@ class SnapshotCache:
 
     def _build_inner(self, *, background: bool = False, attempt: int | None = None,
                      publication_epoch: int = 0):
+        from . import claude_identity
+        identity = claude_identity.current_identity()
+        identity_generation = identity.generation if identity else None
         value = copy.deepcopy(build_snapshot())
         if not isinstance(value, dict):
             raise TypeError("snapshot builder returned a non-object")
@@ -763,16 +776,25 @@ class SnapshotCache:
             previous = {p.get("name"): p for p in prior.get("providers", []) if isinstance(p, dict)}
             for provider in display.get("providers", []):
                 old = previous.get(provider.get("name"), {})
+                if provider.get("name") == "Claude" and (
+                        not provider.get("identityVerified") or not old.get("identityVerified")
+                        or provider.get("identityGeneration") != old.get("identityGeneration")):
+                    continue
                 for field in ("fiveHour", "weekly"):
                     current, saved = provider.get(field), old.get(field)
                     if (not isinstance(current, dict) or current.get("percent") is None) and isinstance(saved, dict) and saved.get("lastKnown"):
                         provider[field] = copy.deepcopy(saved)
                         times = provider.setdefault("_quotaWindowObservedAt", {})
                         times[field] = (old.get("_quotaWindowObservedAt") or {}).get(field, old.get("limitsUpdatedAt"))
-        with self._publication_lock:
+        latest_identity = claude_identity.current_identity()
+        if (latest_identity.generation if latest_identity else None) != identity_generation:
+            raise RuntimeError("Claude identity changed during snapshot build")
+        with self._publication_lock, claude_identity.AUTHORITY.guard(identity_generation) as guarded_identity:
             with self.condition:
                 if publication_epoch != self._publication_epoch:
                     raise RuntimeError("snapshot publication superseded")
+            if identity_generation is not None and guarded_identity is None:
+                raise RuntimeError("Claude identity changed during snapshot publication")
             _record_insights_peaks(value)
             if self._persistable(value):
                 self._write_persisted(display, generation, built_at)
@@ -841,7 +863,7 @@ class SnapshotCache:
                         selected = (selected[0], metadata, True)
                         break
                     self.condition.wait(remaining)
-                    if self.generation != request_generation:
+                    if self.generation != request_generation and (not force or not self.building):
                         selected = self._selected_locked()
                         break
                     if self._completed_attempt >= request_attempt and self._last_build_error is not None:
@@ -899,7 +921,14 @@ def _record_insights_peaks(snapshot: dict) -> None:
     """Sample limit peaks on every snapshot refresh; the store itself is owner-gated."""
     try:
         from . import insights
-        insights.record_limit_peaks(snapshot, allowed_names=_insights_allowed_names())
+        from . import claude_identity
+        _, identity = claude_identity.AUTHORITY.capture()
+        safe = copy.deepcopy(snapshot)
+        safe["providers"] = [p for p in safe.get("providers", []) if isinstance(p, dict) and
+                             (p.get("name") != "Claude" or
+                             (identity and p.get("identityVerified") is True
+                              and p.get("identityGeneration") == identity.generation))]
+        insights.record_limit_peaks(safe, allowed_names=_insights_allowed_names())
     except Exception:
         return
 
@@ -941,6 +970,7 @@ class FastClaudeLimits:
         self.at = 0.0
         self.loading = False
         self.retained = {}
+        self.identity_generation = None
 
     def _prune_retained_locked(self):
         now = time.time()
@@ -973,7 +1003,14 @@ class FastClaudeLimits:
             limits = provider.snapshot()
             if not isinstance(limits, dict):
                 return None
+            from . import claude_identity
+            identity = claude_identity.current_identity()
+            if not (identity and limits.get("identityVerified") is True
+                    and limits.get("identityGeneration") == identity.generation):
+                return None
             with self.condition:
+                if self.identity_generation != identity.generation:
+                    return None
                 self.value = copy.deepcopy(limits)
                 self.at = time.monotonic()
                 self._remember_locked(limits)
@@ -987,6 +1024,17 @@ class FastClaudeLimits:
 
     def overlay(self, snapshot: dict, *, owned: bool = False) -> dict:
         """Overlay quota data, copying unless the caller owns its snapshot."""
+        from . import claude_identity
+        identity = claude_identity.current_identity()
+        epoch = identity.generation if identity else None
+        with self.condition:
+            if self.identity_generation != epoch:
+                self.identity_generation = epoch
+                self.value = None
+                self.at = 0.0
+                self.retained.clear()
+        if identity is None:
+            return snapshot
         restored = any(p.get("name") == "Claude" and p.get("stale") is True
                        for p in snapshot.get("providers", []) if isinstance(p, dict))
         from .provider_policy import POLICIES, policy_for
@@ -1039,6 +1087,15 @@ class FastClaudeLimits:
         result = snapshot if owned else copy.deepcopy(snapshot)
         for provider in result.get("providers", []):
             if isinstance(provider, dict) and provider.get("name") == "Claude":
+                if provider.get("identityGeneration") != epoch or provider.get("identityVerified") is not True:
+                    provider["fiveHour"] = copy.deepcopy(limits.get("fiveHour"))
+                    provider["weekly"] = copy.deepcopy(limits.get("weekly"))
+                    provider["limitsUpdatedAt"] = limits.get("limitsUpdatedAt")
+                    provider.pop("_quotaWindowObservedAt", None)
+                    provider["identityGeneration"] = epoch
+                    provider["identityVerified"] = True
+                    provider["identityLabel"] = identity.label
+                    break
                 previous_at = provider.get("limitsUpdatedAt")
                 with self.condition:
                     self._prune_retained_locked()
@@ -1189,6 +1246,14 @@ class Handler(SimpleHTTPRequestHandler):
             snapshot = {**snapshot, "providers": [
                 {k: v for k, v in provider.items() if k != "_insightsData"} if isinstance(provider, dict) else provider
                 for provider in snapshot.get("providers") or []]}
+            from . import claude_identity
+            identity = claude_identity.current_identity()
+            for provider in snapshot["providers"]:
+                if isinstance(provider, dict) and provider.get("name") == "Claude":
+                    verified = bool(identity and provider.get("identityVerified") is True
+                                    and provider.get("identityGeneration") == identity.generation)
+                    provider["identityVerified"] = verified
+                    provider["identityLabel"] = identity.label if verified else "Account unverified"
             self._send_json(snapshot)
             return
         if parsed.path == "/api/insights":

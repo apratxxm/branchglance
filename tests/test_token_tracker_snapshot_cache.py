@@ -656,7 +656,10 @@ def test_unavailable_provider_does_not_replace_cached_snapshot(monkeypatch, tmp_
 
 
 def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
-    from token_tracker import provider_policy, providers
+    from token_tracker import provider_policy, providers, claude_identity
+
+    identity = claude_identity.Identity("account", "org", "epoch", "Account")
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
 
     class EnabledClaude:
         def allows(self, action):
@@ -667,7 +670,8 @@ def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
 
     def limits_snapshot():
         calls.append(1)
-        return {"fiveHour": {"percent": 17}, "weekly": {"percent": 8},
+        return {"identityVerified": True, "identityGeneration": "epoch",
+                "fiveHour": {"percent": 17}, "weekly": {"percent": 8},
                 "limitsUpdatedAt": "observed", "chats": []}
 
     class FakeLimitsProvider:
@@ -788,3 +792,16 @@ def test_lazy_restore_never_overwrites_a_fresh_build(monkeypatch, tmp_path):
     restore()
     assert cache.value is not None
     assert cache.value["providers"][0]["chats"][0]["status"] == "idle"
+
+
+def test_claude_snapshot_identity_must_match_at_egress(monkeypatch):
+    from token_tracker import claude_identity
+    from token_tracker.server import SnapshotCache
+    provider = {"name": "Claude", "identityVerified": True, "identityGeneration": "a",
+                "fiveHour": {"percent": 20}, "weekly": {"percent": 10}}
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("acct", "org", "a", "Account"))
+    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is True
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("acct2", "org", "b"))
+    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is False
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: None)
+    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is False

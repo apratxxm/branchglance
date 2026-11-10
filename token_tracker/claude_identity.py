@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import os
 import stat
+import tempfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -18,6 +22,8 @@ class Identity:
     org_id: str
     generation: str
     label: str = field(default="", repr=False, compare=False)
+    fingerprint: str = ""
+    changed_at: float = 0.0
 
 
 class IdentityAuthority:
@@ -27,13 +33,16 @@ class IdentityAuthority:
     historical until verified again. The credential key is internal only.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, state_path=None, *, clock=time.time) -> None:
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._generation = uuid.uuid4().hex
         self._credential_key: object = None
         self._passive_key: object = None
         self._identity: Identity | None = None
+        self._state_path = state_path
+        self._clock = clock
+        self._history: tuple[str, float] | None = None
 
     def _advance(self) -> None:
         self._generation = uuid.uuid4().hex
@@ -54,7 +63,7 @@ class IdentityAuthority:
             self._advance()
             return self._generation
 
-    def bind(self, generation: str, account_uuid: str, org_id: str, label: str = "") -> Identity | None:
+    def bind(self, generation: str, account_uuid: str, org_id: str, label: str = "", *, fingerprint: str = "", changed_at: float = 0.0) -> Identity | None:
         if not all(isinstance(value, str) and value.strip() for value in (account_uuid, org_id)):
             return None
         with self._lock:
@@ -62,7 +71,7 @@ class IdentityAuthority:
                 return None
             if self._identity and (self._identity.account_uuid, self._identity.org_id) != (account_uuid, org_id):
                 self._advance()
-            self._identity = Identity(account_uuid, org_id, self._generation, label)
+            self._identity = Identity(account_uuid, org_id, self._generation, label, fingerprint, changed_at)
             return self._identity
 
     def refresh_passive(self, path: Path | None = None, *, other: tuple[str, str] | None = None) -> Identity | None:
@@ -81,8 +90,58 @@ class IdentityAuthority:
                 self._set_passive_key(("unavailable", os.path.abspath(path)))
                 return None
             account_id, org_id, label = account
+            fingerprint = account_fingerprint(account_id, org_id)
+            # Fence old work as soon as the account change is observed, before
+            # durable I/O can delay publication of the new identity.
             epoch = self._set_passive_key(("passive", os.path.abspath(path), account_id, org_id))
-            return self.bind(epoch, account_id, org_id, label)
+            try:
+                changed_at = self._account_changed_at(fingerprint)
+            except (OSError, ValueError, TypeError):
+                self._set_passive_key(("unavailable", os.path.abspath(path)))
+                return None
+            return self.bind(epoch, account_id, org_id, label, fingerprint=fingerprint, changed_at=changed_at)
+
+    def _account_changed_at(self, fingerprint: str) -> float:
+        from . import claude_statusline
+        state_path = self._state_path() if callable(self._state_path) else self._state_path
+        previous = self._history
+        if previous is None and state_path is not None:
+            try:
+                with claude_statusline._guard_directories(Path(state_path).parent), claude_statusline._open_checked(Path(state_path)) as stream:
+                    raw = stream.read(4097)
+                document = json.loads(raw) if len(raw) <= 4096 else None
+                stamp = document.get("changedAt") if isinstance(document, dict) else None
+                saved = document.get("fingerprint") if isinstance(document, dict) else None
+                if (isinstance(saved, str) and len(saved) == 64 and all(c in "0123456789abcdef" for c in saved)
+                        and type(stamp) in (int, float) and math.isfinite(stamp) and 0 <= stamp <= self._clock()):
+                    previous = (saved, float(stamp))
+            except (OSError, ValueError, TypeError, RecursionError):
+                previous = None
+        if previous and previous[0] == fingerprint:
+            self._history = previous
+            return previous[1]
+        now = self._clock()
+        if state_path is not None:
+            path = Path(state_path)
+            with claude_statusline._guard_directories(path.parent, create=True):
+                claude_statusline._check_path(path, allow_missing=True, directory=False)
+                temp = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".identity-", delete=False) as stream:
+                        temp = stream.name
+                        json.dump({"fingerprint": fingerprint, "changedAt": now}, stream, separators=(",", ":"))
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temp, path)
+                    temp = None
+                finally:
+                    if temp:
+                        try:
+                            os.unlink(temp)
+                        except OSError:
+                            pass
+        self._history = (fingerprint, now)
+        return now
 
     def _set_passive_key(self, key: object) -> str:
         with self._lock:
@@ -101,7 +160,41 @@ class IdentityAuthority:
             yield self._identity if generation == self._generation else None
 
 
-AUTHORITY = IdentityAuthority()
+def account_fingerprint(account_uuid: str, org_id: str) -> str:
+    payload = json.dumps([account_uuid, org_id], ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _identity_state_path() -> Path:
+    from . import product
+    return product.state_root() / "claude-identity.json"
+
+
+AUTHORITY = IdentityAuthority(state_path=_identity_state_path)
+
+
+def current_identity() -> Identity | None:
+    """Refresh the passive account before accepting data or authorizing work."""
+    return AUTHORITY.refresh_passive()
+
+
+def matches(identity: Identity | None, generation: object, org_id: object) -> bool:
+    return (identity is not None and isinstance(generation, str) and bool(generation)
+            and generation == identity.generation and isinstance(org_id, str)
+            and bool(org_id.strip()) and org_id == identity.org_id)
+
+
+def matches_fingerprint(identity: Identity | None, fingerprint: object) -> bool:
+    return bool(identity and identity.fingerprint and isinstance(fingerprint, str)
+                and fingerprint == identity.fingerprint)
+
+
+def desktop_matches(identity: Identity | None, org_id: object, observed_at: object) -> bool:
+    # Desktop exposes org only: another user in that org on this machine can
+    # still produce this record; this limitation is explicitly accepted.
+    return bool(identity and org_id == identity.org_id and isinstance(org_id, str) and org_id
+                and type(observed_at) in (int, float) and math.isfinite(observed_at)
+                and observed_at >= identity.changed_at)
 
 
 def account_path() -> Path:
@@ -137,7 +230,7 @@ def read_passive_account(path: Path) -> tuple[str, str, str] | None:
                 for component in parts[1:-1]:
                     parent = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
                     fds.append(parent)
-                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
                 with os.fdopen(fd, "rb") as stream:
                     info = os.fstat(stream.fileno())
                     if not stat.S_ISREG(info.st_mode):

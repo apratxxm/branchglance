@@ -63,11 +63,14 @@ class Sender:
 
 @pytest.fixture(autouse=True)
 def no_real_cli(monkeypatch):
+    from token_tracker import claude_identity
+    fingerprint = claude_identity.account_fingerprint("test-account", "test-org")
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("test-account", "test-org", "test-generation", "", fingerprint, 0))
     def forbidden(*_args, **_kwargs):
         raise AssertionError("tests must never run a real CLI")
 
     monkeypatch.setattr(limit_reset, "_claude_auth_status", lambda cwd: {"ok": True, "orgId": "test-org"})
-    monkeypatch.setattr(limit_reset.LimitResetService, "_claude_account_sample", lambda self, org, now: LimitSample(None, None, now))
+    monkeypatch.setattr(limit_reset.LimitResetService, "_claude_account_sample", lambda self, org, now: LimitSample(None, None, now, identity_generation="test-generation"))
     monkeypatch.setattr(limit_reset, "_run_command", forbidden)
     monkeypatch.setattr(limit_reset.subprocess, "run", forbidden)
 
@@ -137,6 +140,17 @@ def test_unknown_codex_greeting_is_not_retried(tmp_path):
     watcher.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
     clock.advance(RETRY_SECONDS + 1)
     watcher.check_provider("Codex", LimitSample(0, 20, clock(), deadline))
+    assert sender.calls == 1
+
+
+def test_codex_greeting_does_not_require_claude_identity(tmp_path, monkeypatch):
+    from token_tracker import claude_identity
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: None)
+    clock, sender = Clock(), Sender()
+    watcher = make(tmp_path, clock, Codex=sender)
+    watcher.check_provider("Codex", LimitSample(20, 20, T0, T0 + 20))
+    clock.advance(20)
+    watcher.check_provider("Codex", LimitSample(0, 20, clock(), T0 + 20))
     assert sender.calls == 1
 
 

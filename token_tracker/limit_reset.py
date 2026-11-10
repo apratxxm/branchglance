@@ -23,7 +23,7 @@ from . import product
 from .codex_client import CodexAppServer, CodexNotStarted, CodexUnavailable, resolve_codex, run_contained_codex
 from .providers import ClaudeDesktopProvider, _usage_percent
 from .claude_cache import usage_info
-from . import claude_statusline
+from . import claude_statusline, claude_identity
 from .reset_actions import ResetActionDispatcher, default_action
 from .provider_policy import POLICIES, ProviderPolicy, ProviderPolicyError, policy_for
 
@@ -181,6 +181,7 @@ class LimitSample:
     observed_at: float
     reset_at: int | float | None = None
     weekly_reset_at: int | float | None = None
+    identity_generation: str | None = None
 
 
 def _claude_desktop_data(now: float | None = None, max_usage_age: float | None = None, expected_org_id: str | None = None):
@@ -197,8 +198,24 @@ def _claude_desktop_data(now: float | None = None, max_usage_age: float | None =
 
 
 def claude_limit_sample() -> LimitSample:
+    identity = claude_identity.current_identity()
     org, desktop = _claude_desktop_data()
-    usage = claude_statusline.merge_usage(desktop, org_id=org, max_age=90)
+    if identity and org is None:
+        org = identity.org_id
+    cli = claude_statusline.read(product.state_root() / claude_statusline.CLI_FILENAME,
+                                 source="claude-cli", include_org=True, max_age=90)
+    desktop_verified = claude_identity.desktop_matches(identity, org, desktop.get("observedAt"))
+    cli_verified = bool(identity and org == identity.org_id
+                        and claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint")))
+    generation = identity.generation if identity and (desktop_verified or cli_verified) else None
+    empty = {"fiveHour": None, "weekly": None, "fiveHourPercent": None,
+             "weeklyPercent": None, "observedAt": None}
+    usage = claude_statusline.merge_usage(desktop if desktop_verified else empty, paths=[], org_id=org, max_age=90,
+                                         identity_generation=generation,
+                                         identity_fingerprint=identity.fingerprint if identity else None)
+    latest = claude_identity.current_identity()
+    if not latest or latest.generation != generation:
+        generation = None
     observed_at = float(usage.get("observedAt") or 0)
     return LimitSample(
         _usage_percent(usage.get("fiveHourPercent")),
@@ -206,6 +223,7 @@ def claude_limit_sample() -> LimitSample:
         observed_at,
         usage["fiveHour"] or usage.get("lastKnownFiveHour"),
         usage["weekly"] or usage.get("lastKnownWeekly"),
+        generation,
     )
 
 
@@ -501,7 +519,7 @@ def _claude_auth_status(cwd: Path) -> dict[str, Any]:
     return {"ok": True, "orgId": org}
 
 
-def send_claude_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | None = None, expected_org_id: str | None = None) -> dict[str, Any]:
+def send_claude_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | None = None, expected_org_id: str | None = None, expected_identity_generation: str | None = None) -> dict[str, Any]:
     policy_for("Claude", policies).require("greet")
     auth = _claude_auth_status(cwd)
     if not auth.get("ok"):
@@ -511,6 +529,10 @@ def send_claude_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | 
     executable = _find_executable("claude")
     if not executable:
         return {"ok": False, "error": "Claude Code CLI is not installed", "preSendFailure": True}
+    if expected_identity_generation is not None:
+        identity = claude_identity.current_identity()
+        if not identity or identity.generation != expected_identity_generation:
+            return {"ok": False, "outcome": "not_started", "error": "Claude account identity changed", "preSendFailure": True}
     result = _claude_process(
         [
             executable, "--print", "Reply with exactly: Hi", "--model", CLAUDE_GREETING_MODEL,
@@ -752,8 +774,12 @@ class LimitResetService:
     def _load_state(self) -> dict[str, Any]:
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                claude = (data.get("providers") or {}).get("Claude")
+                if isinstance(claude, dict):
+                    claude.pop("claudeOrgId", None)
             return data if isinstance(data, dict) else {"providers": {}}
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, AttributeError):
             return {"providers": {}}
 
     def _save_state(self) -> bool:
@@ -854,12 +880,14 @@ class LimitResetService:
         else:
             self._persistence_succeeded("event log")
 
-    def _arm(self, name: str, state: dict[str, Any], sample: LimitSample, *, rearmed: bool) -> None:
+    def _arm(self, name: str, state: dict[str, Any], sample: LimitSample, *, rearmed: bool, identity_generation: str | None = None) -> None:
         state.update({
             "greetingGeneration": str(uuid.uuid4()),
             "armed": True, "exhaustedAt": self._now_iso(), "exhaustedSampleAt": sample.observed_at,
             "resetObservedAt": None, "resetObservedSampleAt": None, "resetObservedPercent": None,
         })
+        if name == "Claude":
+            state["greetingIdentityGeneration"] = identity_generation
         if not rearmed:
             state.update({"lastError": None, "retryAfter": 0})
         details: dict[str, Any] = {
@@ -875,11 +903,17 @@ class LimitResetService:
             return
         policy = policy_for(name, self.policies)
         policy.require("collect")
+        identity = claude_identity.current_identity() if name == "Claude" else None
         if not (policy.allows("greet") or policy.allows("continue")):
             self._record_collected_status(name, sample)
             return
         if name == "Claude" and policy.allows("greet") and self.senders.get(name) is not None:
             self._check_claude_keepalive(sample)
+            return
+        if name == "Claude" and (not identity or sample.identity_generation != identity.generation):
+            # Preserve status and persistence diagnostics, but never turn an
+            # unbound observation into a reset or an armed action.
+            self._record_collected_status(name, sample)
             return
         if name == "Codex":
             with self._lock:
@@ -897,6 +931,7 @@ class LimitResetService:
             with self._lock:
                 state = self._provider_state(name)
                 keepalive_known = any((
+                    action.get("mode") == "continue" and action.get("armed"),
                     _epoch_seconds(sample.reset_at),
                     _epoch_seconds(state.get("nextGreetingAt")),
                     state.get("awaitingVerification"),
@@ -919,11 +954,11 @@ class LimitResetService:
             sample_is_new = sample.observed_at > float(state.get("exhaustedSampleAt") or 0)
             if five >= EXHAUSTED_PERCENT:
                 if not state["armed"]:
-                    self._arm(name, state, sample, rearmed=False)
+                    self._arm(name, state, sample, rearmed=False, identity_generation=identity.generation if identity else None)
                 elif state.get("resetObservedAt") and sample_is_new:
                     # The greeting never went out and the new window is exhausted
                     # again: start a fresh cycle so the next reset is observed anew.
-                    self._arm(name, state, sample, rearmed=True)
+                    self._arm(name, state, sample, rearmed=True, identity_generation=identity.generation if identity else None)
                 self._save_state()
                 return
             # Only a *new* sample showing a real drop counts as a reset. A scheduled
@@ -973,6 +1008,9 @@ class LimitResetService:
         not_started = False
         try:
             policy_for(name, self.policies).require("greet")
+            rechecked = claude_identity.current_identity() if name == "Claude" else None
+            if name == "Claude" and (not rechecked or rechecked.generation != state.get("greetingIdentityGeneration")):
+                raise CodexNotStarted("Claude account identity changed or is unavailable")
             sender = self.senders.get(name)
             if sender is None:
                 raise ProviderPolicyError("greeting sender is unavailable")
@@ -1061,6 +1099,15 @@ class LimitResetService:
         saw_blocked = bool(action.get("sawBlocked")) or five >= EXHAUSTED_PERCENT or weekly >= WEEKLY_EXHAUSTED_PERCENT
         action["sawBlocked"] = saw_blocked
         available = five < EXHAUSTED_PERCENT and weekly < WEEKLY_EXHAUSTED_PERCENT
+        current_sample = {
+            "fiveHourPercent": sample.five_hour_percent,
+            "weeklyPercent": sample.weekly_percent,
+            "observedAt": sample.observed_at,
+            "resetAt": sample.reset_at,
+        }
+        if action.get("retryPending"):
+            action["previousSample"] = current_sample
+            return available and now >= float(action.get("retryAfter") or 0)
         # If the user armed before any usable sample arrived, pin the first
         # active window deadline once. Never promote a zero-usage synthetic
         # rolling deadline into a frozen cycle target.
@@ -1069,19 +1116,9 @@ class LimitResetService:
                 and math.isfinite(observed) and observed >= armed_at):
             action["frozenDeadline"] = current_reset
             action["cycleId"] = f"deadline:{current_reset:.3f}"
-        current_sample = {
-            "fiveHourPercent": sample.five_hour_percent,
-            "weeklyPercent": sample.weekly_percent,
-            "observedAt": sample.observed_at,
-            "resetAt": sample.reset_at,
-        }
         if not available:
             action["previousSample"] = current_sample
             return False
-
-        if action.get("retryPending"):
-            action["previousSample"] = current_sample
-            return now >= float(action.get("retryAfter") or 0)
 
         # A manual/weekly reset can restore allowance without the five-hour
         # counter reaching zero. The last observed blocked sample proves it.
@@ -1151,13 +1188,21 @@ class LimitResetService:
 
     def _claude_account_sample(self, org_id: str, now: float) -> LimitSample:
         """Only account-bound CLI and matching Desktop data can drive sends."""
+        identity = claude_identity.current_identity()
+        if not identity or identity.org_id != org_id:
+            return LimitSample(None, None, now)
+        generation = identity.generation
         desktop_org, desktop = _claude_desktop_data(now=now, max_usage_age=604800, expected_org_id=org_id)
-        if desktop_org != org_id:
+        if desktop_org and desktop_org != org_id:
+            return LimitSample(None, None, now)
+        if not claude_identity.desktop_matches(identity, desktop_org, desktop.get("observedAt")):
             desktop = {}
         cli = claude_statusline.read(self.state_path.parent / claude_statusline.CLI_FILENAME, now=now,
                                     source="claude-cli", include_org=True)
-        if cli.get("orgId") != org_id:
+        if not claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint")):
             cli = {}
+        if not desktop and not cli:
+            return LimitSample(None, None, now)
         deadlines = [_epoch_seconds(desktop.get("fiveHour") or desktop.get("lastKnownFiveHour")) if _valid_quota_percent(desktop.get("fiveHourPercent")) is not None else None]
         five = cli.get("five_hour") or {}
         deadlines.append(_epoch_seconds(five.get("resets_at")))
@@ -1173,7 +1218,10 @@ class LimitResetService:
             best_weekly = claude_statusline.choose(best_weekly, cw, now)
         if best_weekly:
             weekly = best_weekly["used_percentage"]
-        return LimitSample(None, weekly, now, max(valid) if valid else None)
+        current = claude_identity.current_identity()
+        if not current or current.generation != generation:
+            return LimitSample(None, None, now)
+        return LimitSample(None, weekly, now, max(valid) if valid else None, identity_generation=generation)
 
     def _check_claude_keepalive(self, sample: LimitSample) -> None:
         name = "Claude"
@@ -1215,10 +1263,23 @@ class LimitResetService:
                     self._save_state()
                 return
             org = auth["orgId"]
+            identity = claude_identity.current_identity()
+            if not identity or identity.org_id != org:
+                return
+            identity_generation = identity.generation
             evidence = self._claude_account_sample(org, now)
+            current = claude_identity.current_identity()
+            if not current or current.generation != identity_generation or evidence.identity_generation != identity_generation:
+                return
             with self._lock:
-                if state.get("claudeOrgId") != org:
-                    state["claudeOrgId"] = org
+                if state.get("claudeIdentityFingerprint") not in (None, identity.fingerprint):
+                    state["lastError"] = "Claude account identity changed; greeting was not started"
+                    self._save_state()
+                    return
+                if state.get("claudeIdentityFingerprint") != identity.fingerprint:
+                    state.pop("claudeOrgId", None)
+                    state["claudeIdentityFingerprint"] = identity.fingerprint
+                    state["claudeIdentityGeneration"] = identity_generation
                     state["claudeDeadline"] = None
                     state["lastFailureKind"] = None
                 state["needsLogin"] = False
@@ -1274,8 +1335,10 @@ class LimitResetService:
             # The cached account can schedule, but never authorize a send. The
             # CLI check runs unlocked; this provider stays reserved in _sending.
             fresh_auth = _claude_auth_status(self.cwd)
+            fresh_identity = claude_identity.current_identity()
             with self._lock:
-                if not fresh_auth.get("ok") or fresh_auth.get("orgId") != org:
+                if (not fresh_auth.get("ok") or fresh_auth.get("orgId") != org
+                        or not fresh_identity or fresh_identity.generation != identity_generation):
                     self._claude_auth_cache = None
                     failure = fresh_auth if not fresh_auth.get("ok") else {"error": "Claude Code subscription sign-in changed"}
                     self._record_failure(name, state, failure, now)
@@ -1298,16 +1361,21 @@ class LimitResetService:
                 self._record(name, "send_started", cycleKey=cycle)
             try:
                 sender = self.senders.get(name)
-                if sender is None:
+                rechecked = claude_identity.current_identity()
+                if not rechecked or rechecked.generation != identity_generation:
+                    result = {"ok": False, "outcome": "not_started", "error": "Claude account identity changed", "preSendFailure": True}
+                elif sender is None:
                     result = {"ok": False, "error": "Claude greeting sender is unavailable", "preSendFailure": True}
                 elif sender is send_claude_greeting:
-                    result = sender(self.cwd, policies=self.policies, expected_org_id=org)
+                    result = sender(self.cwd, policies=self.policies, expected_org_id=org,
+                                    expected_identity_generation=identity_generation)
                 else:
                     result = sender(self.cwd)
                 if not isinstance(result, dict):
                     result = {"ok": False, "error": "Claude greeting outcome is uncertain"}
             except Exception:
                 result = {"ok": False, "error": "Claude greeting outcome is uncertain"}
+            final_identity = claude_identity.current_identity()
             with self._lock:
                 state["dispatchIntent"] = None
                 if result.get("preSendFailure"):
@@ -1323,11 +1391,13 @@ class LimitResetService:
                         self._record(name, "send_failed", failureKind="not_subscription", needsLogin=True)
                     else:
                         limits = result.get("limits") if isinstance(result.get("limits"), dict) else {}
-                        if limits and result.get("orgId") == org:
+                        if limits and result.get("orgId") == org and final_identity and final_identity.generation == identity_generation:
                             try:
-                                claude_statusline.write(limits, self.state_path.parent, now=self._clock(), filename=claude_statusline.CLI_FILENAME, source="claude-cli", org_id=org)
+                                claude_statusline.write(limits, self.state_path.parent, now=self._clock(), filename=claude_statusline.CLI_FILENAME, source="claude-cli", org_id=org, identity_generation=identity_generation, identity_fingerprint=identity.fingerprint)
                             except (OSError, TimeoutError, ValueError):
                                 limits = {}
+                        else:
+                            limits = {}
                         new_deadline = _epoch_seconds((limits.get("five_hour") or {}).get("resets_at"))
                         outcome = result.get("outcome") or ("completed" if result.get("ok") else "uncertain")
                         if outcome == "completed":
