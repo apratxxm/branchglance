@@ -1249,6 +1249,7 @@ def apply_exact_links(
                 row["runCreated"] = str(process_created)
                 row["runVerified"] = True
                 row.pop("runBindingUnresolved", None)
+                seen_live_runs.add(run_key)
             continue
         if row.get("runBindingUnresolved") or id(row) in native_rows:
             continue

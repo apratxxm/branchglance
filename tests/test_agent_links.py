@@ -1157,3 +1157,32 @@ def test_known_folder_lookup_disables_package_redirection(monkeypatch):
                         else Ole() if name == "ole32" else real(name, **kw))
     assert str(agent_links._known_local_app_data()) == r"C:\Users\someone\AppData\Local"
     assert seen == [agent_links.KF_FLAG_NO_PACKAGE_REDIRECTION] and seen[0] == 0x10000
+
+
+def test_current_run_is_not_retained_again_when_its_claude_parent_leaves_the_list(monkeypatch):
+    # R6: the row's own run must appear exactly once after its Claude session ages out.
+    from pathlib import Path
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: True)
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    record = {"thread_id": thread, "codex_pid": 22, "codex_created": 123, "claude_session_id": sid,
+              "first_seen": 1, "last_seen": 199, "verified_at": 199, "method": "receipt"}
+
+    def poll(claude, now):
+        monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", now - 1)
+        providers = [{"name": "Claude", "chats": claude},
+                     {"name": "Codex", "chats": [{"id": thread, "source": "exec", "status": "running",
+                                                  "executionStatus": "running", "runPid": 22, "runCreated": "123"}]}]
+        agent_links.apply_exact_links(
+            providers, now=now, registry_path=Path("unused"), permission_check=lambda _: True,
+            registry_reader=lambda _: [dict(record)], registry_writer=lambda *a, **k: True, hooks=lambda: {},
+            process_table_reader=lambda: {}, receipts_reader=lambda _: [], verify=lambda *_: True,
+            scan=lambda **k: pytest.fail("scan must not run"))
+        return providers[1]["chats"]
+
+    first = poll([{"id": sid}], 200)
+    assert [row.get("parentId") for row in first] == [sid]
+    second = poll([], 201)
+    assert len(second) == 1
+    assert second[0]["runPid"] == 22 and second[0].get("parentId") is None
+    assert second[0]["status"] == "running"
