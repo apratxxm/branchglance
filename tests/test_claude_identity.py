@@ -246,3 +246,15 @@ def test_claude_code_usage_requires_the_selected_account_in_the_same_read(tmp_pa
     _code_usage_config(config, org="org-b")  # switched org; the cache still names the account
     assert read_claude_code_usage(identity, config, now=OBSERVED + 100) == {}
     assert read_claude_code_usage(None, config, now=OBSERVED + 100) == {}
+
+
+def test_claude_code_usage_fetched_before_the_selection_changed_is_ignored(tmp_path):
+    from token_tracker.claude_identity import read_claude_code_usage
+    config = tmp_path / ".claude.json"
+    # Same account, new org: the cache still names the account but predates the switch.
+    _code_usage_config(config, org="org-b", fetched_ms=(OBSERVED - 30) * 1000)
+    identity = _code_usage_identity(tmp_path, config)
+    assert identity.changed_at == OBSERVED
+    assert read_claude_code_usage(identity, config, now=OBSERVED + 100) == {}
+    _code_usage_config(config, org="org-b", fetched_ms=(OBSERVED + 20) * 1000)
+    assert read_claude_code_usage(identity, config, now=OBSERVED + 100)["five_hour"]["used_percentage"] == 30

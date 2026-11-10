@@ -5542,7 +5542,8 @@ def test_claude_limits_come_from_claude_code_cache_without_desktop(tmp_path, mon
                 "seven_day": {"utilization": 45, "resets_at": iso(now + 86400)}}},
         }), encoding="utf-8")
     write("acct-a")
-    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json")
+    # The account was selected before Claude Code's last usage fetch.
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json", clock=lambda: now - 120)
     monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(config))
     provider = ClaudeLimitsProvider(str(tmp_path / "no-desktop"))
     snapshot = provider.snapshot()

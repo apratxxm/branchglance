@@ -237,8 +237,7 @@ def read_claude_code_usage(identity: Identity | None, path: Path | None = None, 
     Every Claude Code surface (CLI, IDE, Agent SDK) refreshes this cache while it
     runs, so it works without a status line. The cache names its account, and the
     selected account in the same document must be the verified identity. The cache
-    does not name an organization; the selected organization in the same read is
-    taken as its organization.
+    names no organization, so a fetch older than the current selection is ignored.
     """
     from . import claude_statusline
     if identity is None:
@@ -259,6 +258,10 @@ def read_claude_code_usage(identity: Identity | None, path: Path | None = None, 
     observed = fetched / 1000
     now = time.time() if now is None else now
     if observed > now + 60:
+        return {}
+    if observed < identity.changed_at:
+        # Fetched before this account/org became selected (the cache names no org),
+        # so it is not current evidence; wait for Claude Code's next fetch.
         return {}
     windows = claude_statusline.parse_live_usage(cached.get("utilization"), observed_at=observed)
     return {name: {"used_percentage": window["used_percentage"], "resets_at": window["resets_at"], "receivedAt": observed}
