@@ -758,7 +758,7 @@ const fmt = value => safeNumber(value) == null ? "—" : compact.format(Number(v
 const money = value => { const n=safeNumber(value); return n==null ? "—" : "$"+(n>=1000 ? compact.format(n) : n>=100 ? Math.round(n) : n.toFixed(n>=10?1:2)); };
 const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[char]);
 const stamp = value => typeof value==="number" ? (value<1e12?value*1000:value) : Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
-const keyOf = chat => chat.provider + ":" + chat.id;
+const keyOf = chat => chat.provider + ":" + chat.id + (chat.provider==='Codex'&&chat.retainedRun===true&&Number.isSafeInteger(chat.runPid)&&chat.runPid>0&&typeof chat.runCreated==='string'&&/^[0-9]+$/.test(chat.runCreated)?':run:'+chat.runPid+':'+chat.runCreated:'');
 const treeParentKey = chat => Object.prototype.hasOwnProperty.call(chat||{},"treeParentKey") ? (typeof chat.treeParentKey==="string"&&chat.treeParentKey?chat.treeParentKey:null) : chat?.parentId!=null ? chat.provider+":"+chat.parentId : null;
 const hasTreeParent = chat => Boolean(treeParentKey(chat));
 const pad2 = n => String(n).padStart(2,"0");
@@ -916,7 +916,7 @@ function runwayRecentlyUnavailable(chat) {
   const age=Date.now()-stamp(chat.lastValidAt),prior=normalizeStatus(chat.previousStatus);
   return age>=0&&age<=150000&&['running','compacting','needs-input','quiet'].includes(prior);
 }
-const runwayVisibleActive=chat=>runwayCurrentEvidenceFresh()&&(runwayActive(chat)||runwayRecentlyUnavailable(chat));
+const runwayVisibleActive=chat=>chat.retainedRun===true&&Date.now()-stamp(chat.stoppedAt)<900000||runwayCurrentEvidenceFresh()&&(chat.runBindingUnresolved===true||runwayActive(chat)||runwayRecentlyUnavailable(chat));
 function runwayCounts(forest) {
   const roots=forest.roots.filter(chat=>!state.hiddenChats.has(chat.key));
   const unique=new Map(roots.flatMap(chat=>[chat,...chat.descendants]).map(chat=>[chat.key,chat]));
@@ -1153,7 +1153,7 @@ function limitProvidersFor(snapshot) {
   });
 }
 function snapshotParentKey(provider, raw, edges=null) {
-  const key=typeof raw.key==="string"&&raw.key===provider.name+":"+raw.id?raw.key:provider.name+":"+raw.id;
+  const key=keyOf({...raw,provider:provider.name});
   const nativeParent=raw.parentId!=null?provider.name+":"+raw.parentId:null;
   const rowParent=typeof raw.parentKey==="string"&&raw.parentKey?raw.parentKey:null;
   const localRowParent=rowParent?.startsWith(provider.name+":")?rowParent:null;
@@ -1262,7 +1262,7 @@ function visibleRoots(forest, days=state.windowDays) {
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(runwayVisibleActive)||(REFINED&&COMPACT&&chat.descendants.some(runwayActionable)))&&matches;
+      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||(REFINED&&COMPACT&&chat.descendants.some(runwayActionable)))&&matches;
   });
   const keep=chat=>query.active ? [chat,...chat.descendants].some(c=>matchesQuery(c,query)) : state.pins.has(chat.key)||(RUNWAY&&state.showHidden&&state.hiddenChats.has(chat.key))||inWindow(chat,days);
   return byLatest.filter(chat=>(!RUNWAY||state.showHidden||!state.hiddenChats.has(chat.key))&&keep(chat));
@@ -1301,6 +1301,10 @@ const STALE_AFTER_MS=60000;
 const dataIsStale=()=>Boolean(RUNWAY&&state.lastOkAt&&Date.now()-state.lastOkAt>=STALE_AFTER_MS);
 const clockNow=()=>dataIsStale()?state.lastOkAt:Date.now();
 function runInfo(chat) {
+  if(RUNWAY&&chat.retainedRun===true){
+    const start=stamp(chat.activeRunStartedAt||chat.runStartedAt||chat.executionSince),end=stamp(chat.stoppedAt);
+    return start&&end>=start?{live:false,seconds:(end-start)/1000}:null;
+  }
   const execution=RUNWAY?runwayExecutionView(chat):null;
   if(execution){
     const start=stamp(chat.executionSince),now=clockNow();
@@ -1802,7 +1806,7 @@ function glyphHTML(st) { return '<i class="g g-'+st.glyph+' t-'+st.tone+(st.key=
 function runwayContextPair(chat) {
   const tokens=safeNumber(chat.contextTokens),windowSize=safeNumber(chat.contextWindow),observed=stamp(chat.contextObservedAt),compacted=stamp(chat.compactionStartedAt);
   // A known window must be positive; an unknown window keeps the recorded tokens (shown as "tokens / —").
-  const valid=Boolean(runwayCurrentEvidenceFresh()&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&chat.model&&chat.contextModel===chat.model&&observed&&observed<=Date.now()&&(windowSize==null||windowSize>0)&&tokens!=null&&(!compacted||observed>=compacted));
+  const valid=Boolean((runwayCurrentEvidenceFresh()||chat.retainedRun===true)&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&chat.model&&chat.contextModel===chat.model&&observed&&observed<=Date.now()&&(windowSize==null||windowSize>0)&&tokens!=null&&(!compacted||observed>=compacted));
   return {tokens:valid?tokens:null,windowSize:valid?windowSize:null,observed:valid?observed:null};
 }
 function runwayContextDelta(chat,pair=runwayContextPair(chat)) {
@@ -1931,6 +1935,7 @@ function rowHTML(chat) {
 
 /* ---------- stat strip (section N) ---------- */
 function runwayStateElapsed(chat) {
+  if(chat.retainedRun===true){const run=runInfo(chat);return run?runSpan(run.seconds):'—';}
   const execution=runwayExecutionView(chat);
   const status=runwayEffectiveStatus(chat);
   const waiting=runwayWaiting(chat);
@@ -2023,14 +2028,14 @@ function runwayTitle(chat,agent=false) {
   return runwayCapTitle(title||chat.title)||'Untitled';
 }
 function runwayTelemetryHTML(chat,agent=false) {
-  const currentEvidence=runwayCurrentEvidenceFresh();
+  const currentEvidence=runwayCurrentEvidenceFresh()||chat.retainedRun===true;
   const st=ownState(chat);
   const childWaiting=(chat.descendants||[]).some(runwayWaiting),childRunning=(chat.descendants||[]).some(runwayRunning);
   const ownCurrent=runwayWaiting(chat)||runwayRunning(chat)||(!runwayTerminated(chat)&&recentFail(chat));
   const effectiveStatus=runwayEffectiveStatus(chat);
   const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
   const statusUnavailable=!currentEvidence||((chat.status==='unknown'||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
-  const status=statusUnavailable?'':runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
+  const status=chat.retainedRun===true&&chat.stateDetail==='stopped'?'Stopped':statusUnavailable?'':runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
   const modelText=runwayModelLabel(chat);
   const modelChanged=runwayModelRecentlyChanged(chat);
   const modelEvent=state.modelVersions.get(chat.key||[chat.provider,chat.id].join(':'))?.highlightEventAt;
@@ -2070,7 +2075,7 @@ function runwayTelemetryHTML(chat,agent=false) {
     const visibleStatus=COMPACT&&status==='Agents running'?'Agents active':status;
      const stateContent=status?((status==='Waiting'&&waitingTarget?stateIcon+'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">Waiting</button>':stateIcon+'<span class="runway-state-word"'+(visibleStatus!==status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+esc(visibleStatus)+'</span>')):'';
     const treeAnchor='<span data-runway-slot="tree-anchor" class="runway-name-status runway-refined-tree-anchor t-'+tone+'" aria-hidden="true">'+(status?runwayStatusDot(status,tone):'')+'</span>';
-    const elapsedTarget=ownCurrent?chat:waitingTarget;
+    const elapsedTarget=ownCurrent||chat.retainedRun===true?chat:waitingTarget;
     const elapsed=currentEvidence&&elapsedTarget&&!statusUnavailable?runwayStateElapsed(elapsedTarget):'';
     const request=chat.lastRequest||chat.latestRequest||{},input=safeNumber(request.input),cached=safeNumber(request.cached);
     const cachePercent=currentEvidence&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&input>0&&cached!=null?Math.round(cached*100/input):null;
@@ -2141,7 +2146,7 @@ const sortAgents = agents => [...agents].sort((a,b)=>(isAsking(b)-isAsking(a))||
 const isWorking = a => agentLive(a)||isAsking(a);
 // Auto-review/guardian sessions are internal bookkeeping; surface them only when they need a reply.
 const runwayActionable = a => runwayCurrentEvidenceFresh()&&!runwayTerminated(a)&&(runwayWaiting(a)||recentFail(a)||runwayEffectiveStatus(a)==='failed');
-const isVisibleAgent = a => RUNWAY?(runwayVisibleActive(a)||(REFINED&&COMPACT&&runwayActionable(a))):isAutoReview(a)?isAsking(a):isWorking(a);
+const isVisibleAgent = a => RUNWAY?(a.retainedRun===true||runwayVisibleActive(a)||(REFINED&&COMPACT&&runwayActionable(a))):isAutoReview(a)?isAsking(a):isWorking(a);
 function trayState(chat) {
   return chat.descendants.some(isVisibleAgent)?"active":"resting";
 }
@@ -2161,8 +2166,52 @@ function denseRowEntry(agent) {
     html:'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span>'+(stats.tokens==null&&!stats.tools?'<span class="s s-time">'+esc(modelLabel(agent))+'</span>':'<span class="s s-tok"><b>'+fmt(stats.tokens)+'</b> <i>tok</i></span>'+filesHTML(stats)+'<span class="s s-time">'+(stats.run==null?"—":"ran "+runSpan(stats.run))+'</span>')};
 }
 const runwayMorePage=new Map();
+let runwayGlobalPage=0,runwayGlobalPlan=null;
+function runwayBudgetPages(roots,budget){
+  const rows=[],parents=new Map();
+  function collect(row,parent=null){parents.set(row.key,parent);if(parent===null||isVisibleAgent(row))rows.push(row);for(const child of row.children||[])collect(child,row);}
+  roots.forEach(root=>collect(root));
+  const all=new Set();for(const row of rows){let node=row;while(node){all.add(node.key);node=parents.get(node.key);}}
+  if(all.size<=budget)return {pages:[all],overflow:false};
+  const pages=[],collapsed=new Map();let page=new Set(),count=0,overflow=false;
+  for(const row of rows){
+    const path=[];let node=row;while(node){path.unshift(node.key);node=parents.get(node.key);}
+    let visible=path;
+    if(path.length>budget-1&&path.length>3){
+      const middle=path.slice(1,-2),key='__ancestors:'+path[0]+':'+path[path.length-2];
+      collapsed.set(key,{keys:middle,root:path[0],parent:path[path.length-2]});
+      visible=[path[0],key,...path.slice(-2)];
+    }
+    if(visible.length>Math.max(0,budget-1)){overflow=true;visible=visible.slice(-Math.max(0,budget-1));}
+    const missing=visible.filter(key=>!page.has(key));
+    if(page.size&&(count>=3||page.size+missing.length>budget-1)){pages.push(page);page=new Set();count=0;}
+    visible.forEach(key=>page.add(key));count++;
+  }
+  if(page.size)pages.push(page);
+  return {pages,overflow,collapsed};
+}
+function runwayGlobalPagerHTML(){
+  if(!runwayGlobalPlan||runwayGlobalPlan.last<1)return '';
+  return '<div class="runway-more runway-global-pager"><button type="button" data-action="runway-global-prev" aria-label="Previous jobs" aria-disabled="'+(runwayGlobalPage===0)+'">←</button><button type="button" data-action="runway-global-next" aria-label="Next jobs">'+(runwayGlobalPage+1)+' / '+(runwayGlobalPlan.last+1)+' →</button></div>';
+}
 function trayEntries(chat, query) {
-  const agents=RUNWAY?chat.descendants.filter(isVisibleAgent):sortAgents(chat.descendants.filter(isVisibleAgent));
+  const allDescendants=chat.descendants||[],needed=new Set(allDescendants.filter(isVisibleAgent).map(a=>a.key));
+  if(RUNWAY){const byKey=new Map(allDescendants.map(a=>[a.key,a]));for(const key of [...needed]){let row=byKey.get(key),seen=new Set();while(row){const parent=treeParentKey(row);if(!parent||seen.has(parent)||!byKey.has(parent))break;seen.add(parent);needed.add(parent);row=byKey.get(parent);}}}
+  const agents=RUNWAY?allDescendants.filter(a=>needed.has(a.key)):sortAgents(allDescendants.filter(isVisibleAgent));
+  if(RUNWAY&&runwayGlobalPlan){
+    const allowed=runwayGlobalPlan.keys;
+    const entries=[];
+    for(const a of agents.filter(a=>allowed.has(a.key))){
+      for(const [key,group] of runwayGlobalPlan.collapsed||[]){
+        if(allowed.has(key)&&group.root===chat.key&&group.parent===a.key){
+          const titles=group.keys.map(k=>allDescendants.find(item=>item.key===k)).filter(Boolean).map(item=>runwayTitle(item,true)).join(' → ');
+          entries.push({key,cls:'ag runway-agent runway-ancestor-summary',attrs:{title:titles,tabindex:'0','aria-label':titles},html:'<span>+'+group.keys.length+' ancestors</span>'});
+        }
+      }
+      entries.push(agentRowEntry(a,query,treeParentKey(a),a.depth));
+    }
+    return entries;
+  }
   agents.forEach(a=>{if(state.agentLive.get(a.key)!==agentStats(a).live)noteLiveness(a,agentStats(a).live);});
   if(RUNWAY&&REFINED&&COMPACT){
     // Reparent visible agents across inactive nodes without changing forest order.
@@ -2405,7 +2454,21 @@ function selectSourceForNewWork(items) {
 function renderChats(providers) {
   scheduleNotchSize();
   const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
-  const roots=visibleRoots(forest),query=parseQuery(state.query);
+  let roots=visibleRoots(forest);const query=parseQuery(state.query);
+  runwayGlobalPlan=null;
+  if(RUNWAY&&REFINED&&COMPACT){
+    const list=$('#chat-list'),top=list?.getBoundingClientRect?.().top,height=Number(window.innerHeight);
+    if(Number.isFinite(top)&&Number.isFinite(height)&&height>top){
+      const rowHeight=list?.querySelector?.('.runway-refined-row')?.getBoundingClientRect?.().height||32;
+      const budget=Math.max(1,Math.floor((height-top)/Math.max(1,rowHeight)));
+      const plan=runwayBudgetPages(roots,budget);
+      if(plan.pages.length>1||plan.collapsed?.size){
+        runwayGlobalPage=Math.min(runwayGlobalPage,plan.pages.length-1);
+        runwayGlobalPlan={keys:plan.pages[runwayGlobalPage],last:plan.pages.length-1,collapsed:plan.collapsed};
+        roots=roots.filter(root=>runwayGlobalPlan.keys.has(root.key));
+      }
+    }
+  }
   if(RUNWAY&&state.rosterQuery!==state.query){state.agentSearchClosed.clear();state.rosterQuery=state.query;}
   state.forest=forest;
   if(RUNWAY&&state.popover?.dataset?.action==='runway-question'&&!runwayCurrentEvidenceFresh())closePopover({restoreFocus:true});
@@ -2439,7 +2502,7 @@ function renderChats(providers) {
       if(evidenceFresh)for(const item of workItems)if(item.questionId){if(state.seenQuestions.size>500)state.seenQuestions.clear();state.seenQuestions.add(item.questionId);}
       syncNotch(activeCount,workItems);
       updateSourceSwitch();
-    const available=activeCount>0||state.hiddenChats.size>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
+    const available=activeCount>0||roots.length>0||state.hiddenChats.size>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
     const header=$('#chats-head'),searchToggle=$('#search-toggle');
     if(header)header.hidden=!available;if(searchToggle)searchToggle.hidden=!available;
     if(!available){state.query='';state.searchOpen=false;const input=$('#chat-search');if(input)input.value='';header?.classList?.remove('searching');}
@@ -2458,7 +2521,7 @@ function renderChats(providers) {
   // The compact tree always paints its empty state (the list is hidden by CSS while the widget is collapsed), never a blank panel.
   const searchCanShowEmpty=COMPACT;
   if(!realDom(list)) {
-    const html=roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers);
+    const html=(roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers))+runwayGlobalPagerHTML();
     if(list.innerHTML!==html)list.innerHTML=html;
     return;
   }
@@ -2497,6 +2560,7 @@ function renderChats(providers) {
     prev=el;
   }
   state.lastOrder=order;
+  if(runwayGlobalPlan)list.insertAdjacentHTML?.('beforeend',runwayGlobalPagerHTML());
   if(anchor&&anchor.isConnected&&Number.isFinite(anchorTop)&&scroller){const moved=anchor.getBoundingClientRect().top-anchorTop;if(Math.abs(moved)>1)scroller.scrollTop=scrollTopBefore+moved;}
 }
 
@@ -2600,7 +2664,7 @@ function renderTitle(providers) {
   age.textContent=seconds<10?"now":seconds<60?seconds+"s":"stale "+ageShort(state.lastOkAt);
   age.className="sync-age"+(seconds>=60?" t-attn":"");
 }
-const PHASES={waiting_for_exhaustion:"waiting for limit",armed_waiting_for_reset:"armed for reset",reset_observed_sending:"sending",needs_login:"sign-in expired",blocked_weekly:"held · weekly used",greeting_sent:"greeting sent",keepalive_scheduled:"scheduled",greeting_verifying:"verifying"};
+const PHASES={account_changed:"Account changed, re-arm to keep greeting",waiting_for_exhaustion:"waiting for limit",armed_waiting_for_reset:"armed for reset",reset_observed_sending:"sending",needs_login:"sign-in expired",blocked_weekly:"held · weekly used",greeting_sent:"greeting sent",keepalive_scheduled:"scheduled",greeting_verifying:"verifying"};
 function applyIdentityPayload(payload) {
   state.policyWarnings=Array.isArray(payload?.policyWarnings)?payload.policyWarnings.filter(value=>typeof value==='string'&&value.trim()).map(value=>value.trim().slice(0,160)):[];
   return state.policyWarnings;
@@ -2991,11 +3055,11 @@ function handleVisibilityChange() {
 
   return refresh();
 }
-const LIVE_FIELDS=["contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
+const LIVE_FIELDS=["runPid","runCreated","runVerified","runBindingUnresolved","retainedRun","stoppedAt","contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
 // A live row is qualified as "<Provider>:<id>"; ids may themselves contain ":" (Claude subagents).
 function liveIdentity(item) {
   if(!item||typeof item.id!=='string'||!item.id||typeof item.key!=='string')return null;
-  for(const name of SOURCES)if(item.key===name+':'+item.id)return !item.provider||item.provider===name?name:null;
+  for(const name of SOURCES)if(item.key===keyOf({...item,provider:name}))return !item.provider||item.provider===name?name:null;
   return null;
 }
 // Overlay seconds-fresh activity/state from /api/live onto the last full snapshot.
@@ -3010,10 +3074,10 @@ function applyLive(snapshot, live) {
   const validKnown=item=>!RUNWAY||liveIdentity(item)!==null;
   const byKey=new Map((live.chats||[]).filter(validKnown).map(item=>[item.key,item]));
   let changed=graphChanged,oldestShown=Infinity;
-  const initiallyLoaded=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
+  const initiallyLoaded=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>keyOf({...chat,provider:provider.name}))));
   // Unseen rows are inserted per provider; providers hidden by policy are already absent from the snapshot.
   const liveTargets=new Map();
-  if(RUNWAY)for(const name of SOURCES){const target=(snapshot.providers||[]).find(provider=>provider.name===name);if(target&&Array.isArray(target.chats))liveTargets.set(name,{target,known:new Set(target.chats.map(chat=>name+':'+chat.id))});}
+  if(RUNWAY)for(const name of SOURCES){const target=(snapshot.providers||[]).find(provider=>provider.name===name);if(target&&Array.isArray(target.chats))liveTargets.set(name,{target,known:new Set(target.chats.map(chat=>keyOf({...chat,provider:name})))});}
   if(liveTargets.size){
     for(const item of live.chats||[]){
       const owner=liveIdentity(item),entry=owner&&liveTargets.get(owner);
@@ -3022,12 +3086,13 @@ function applyLive(snapshot, live) {
       if(known.has(item.key))continue;
        // A detail-pending row carries identity and lineage only: it inserts without a status, so it cannot read as a transition.
        const record={id:item.id,key:item.key};
+       for(const field of ['runPid','runCreated','runVerified','runBindingUnresolved','retainedRun','stoppedAt'])if(item[field]!==undefined)record[field]=item[field];
        const fields=item.detailPending?['parentId','parentKey','title','agentName','agentRole','workspace','workspaceKind','source']:['parentId','parentKey','title','agentName','agentRole','workspace','workspaceKind','source','status','statusSource','telemetryUnavailable','metricsUnavailable','previousStatus','lastValidAt','stateDetail','failureReason','activity','activityUnavailable','executionStatus','executionSource','executionObservedAt','executionSince','executionCompactionStartedAt','executionTerminalAt','executionActivity','activeRunStartedAt','stateSince','runStartedAt','runEndedAt','updatedAt','activityAt','pendingQuestion','pendingQuestionAt','pendingQuestionId','pendingQuestionIds','questionId','questionResolutionAt','pendingOptions','model','contextTokens','contextWindow','contextPercent','contextObservedAt','contextModel','contextDelta','contextDeltaObservedAt','latestRequest','latestRequestAt','latestUpdate','latestUpdateAt','trackerUpdate','trackerUpdateAt','latestMessageAt','latestMessageDirection','latestMessageSourceId','latestMessageTargetId','toolCalls','filesEdited','fileChanges','recentTokens','usageUpdatedAt','lastRequest','attentionSince','compactionStartedAt','statusObservedAt','modelChangeAt','resumable','sessionId'];for(const field of fields)if(item[field]!==undefined)record[field]=item[field];
       target.chats.push(record);known.add(item.key);changed=true;
     }
   }
   for(const provider of snapshot.providers||[])for(const chat of provider.chats||[]){
-    const key=provider.name+":"+chat.id;
+    const key=keyOf({...chat,provider:provider.name});
     const next=byKey.get(key);
     // A detail-pending row is only a placeholder: rows on screen keep their detail, and no transition is read from it.
     if(next&&!next.detailPending&&(RUNWAY||chat.statusSource!=="app"||stamp(next.activityAt)>stamp(snapshot.generatedAt))){
@@ -3044,6 +3109,11 @@ function applyLive(snapshot, live) {
     }
     const parent=snapshotParentKey(provider,chat,snapshot.graph?.edges||null);
     if(!parent)oldestShown=Math.min(oldestShown,stamp(chat.updatedAt));
+  }
+  if(RUNWAY&&live.complete===true)for(const provider of snapshot.providers||[]){
+    const before=provider.chats.length;
+    provider.chats=provider.chats.filter(chat=>!chat.retainedRun||byKey.has(keyOf({...chat,provider:provider.name})));
+    if(provider.chats.length!==before)changed=true;
   }
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
   const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!snapshotParentKey(p,c,snapshot.graph?.edges||null)).length,0);
@@ -3222,6 +3292,7 @@ function handleClick(event) {
   else if(RUNWAY&&action==="close-popover"){closePopover({restoreFocus:true});return;}
   else if(action==="jump"){jumpTo(button.dataset.target,button.dataset.sub);return;}
   else if(action==="dismiss"){state.dismissed.add(button.dataset.dismiss);saveDismissed();const item=button.closest?.(".si");if(item)item._dismissed=true;renderStripNow();return;}
+  else if(RUNWAY&&(action==="runway-global-next"||action==="runway-global-prev")){const last=runwayGlobalPlan?.last||0;runwayGlobalPage=action==="runway-global-prev"?Math.max(0,runwayGlobalPage-1):runwayGlobalPage>=last?0:runwayGlobalPage+1;if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(RUNWAY&&(action==="runway-more"||action==="runway-page-prev")){const page=runwayMorePage.get(key)||0,last=Number(button.dataset.last)||0;runwayMorePage.set(key,action==="runway-page-prev"?Math.max(0,page-1):(page>=last?0:page+1));if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="strip-more"){state.stripOpen=!state.stripOpen;renderStripNow();return;}
   else if(action==="toggle-question"){const question=button.dataset.question,was=state.expandedQuestions.has(question);if(RUNWAY)closeRunwayDetails();if(!was)state.expandedQuestions.add(question);renderStripNow();if(RUNWAY&&state.snapshot)renderChats(providersFor(state.snapshot));return;}
@@ -3263,7 +3334,7 @@ window.tokenTrackerRefresh=refresh;
 window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
-  setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
+  setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,runwayBudgetPages,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.evaluateRoutingAlerts=evaluateRoutingAlerts;window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.routingStates=routingStates;window.__tokenTrackerTest.getRoutingAlert=()=>routingAlert;window.__tokenTrackerTest.getRoutingNotch=()=>notch;window.__tokenTrackerTest.dismissRoutingAlert=dismissRoutingAlert;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){

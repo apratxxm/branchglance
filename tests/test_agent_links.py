@@ -12,6 +12,7 @@ from token_tracker import agent_links
 @pytest.fixture(autouse=True)
 def isolate_relative_registry(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {})
 
 
 @pytest.fixture
@@ -445,6 +446,7 @@ def _link_fixture():
     claude = {"name": "Claude", "chats": [{"id": sid}]}
     codex = {"name": "Codex", "chats": [{
         "id": thread, "source": "exec", "executionStatus": "running",
+        "runPid": 22, "runCreated": "123",
     }]}
     run = {"thread_id": thread, "codex_pid": 22, "codex_created": 123,
            "claude_session_id": sid, "first_seen": 1, "last_seen": 100,
@@ -456,19 +458,231 @@ def _allow_collection(_policies):
     return True
 
 
-def test_link_poll_skips_full_scan_for_recently_verified_execution(monkeypatch):
+def test_newest_valid_live_receipt_binds_and_older_run_remains(tmp_path, monkeypatch):
+    sid, thread, providers, _ = _link_fixture()
+    newer_sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    providers[0]["chats"].append({"id": newer_sid})
+    providers[1]["chats"][0].pop("runPid")
+    providers[1]["chats"][0].pop("runCreated")
+    rows = [{"thread_id": thread, "codex_pid": pid, "codex_created": created,
+             "claude_session_id": parent, "recorded_at": 100 + pid, "method": "receipt"}
+            for pid, created, parent in ((22, 123, sid), (23, 124, newer_sid))]
+    inbox = agent_links.receipt_path(tmp_path)
+    inbox.mkdir()
+    (inbox / agent_links.RECEIPT_FILE).write_text("\n".join(json.dumps(row) for row in rows))
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: True)
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    agent_links.apply_exact_links(
+        providers, root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
+        receipts_reader=lambda root: agent_links.read_receipts(root, permission_check=_allow_collection, owner_check=lambda: True),
+        process_table_reader=lambda: {22: (1, "codex.exe"), 23: (1, "codex.exe")},
+        current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid", equal_sid=lambda a,b: a == b,
+        process_created_reader=lambda pid: {22: 123, 23: 124}[pid],
+        command_line=lambda _: f"codex.exe exec resume {thread}",
+        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
+    )
+    current, old = providers[1]["chats"]
+    assert (current["runPid"], current["parentId"], current["runVerified"]) == (23, newer_sid, True)
+    assert old["retainedRun"] and old["runPid"] == 22 and old["parentId"] == sid
+
+
+def test_ambiguous_scan_without_receipt_is_unknown(tmp_path, monkeypatch):
+    _, thread, providers, _ = _link_fixture()
+    row = providers[1]["chats"][0]
+    row.pop("runPid"); row.pop("runCreated")
+    row["runStartedAt"] = "1970-01-01T00:01:30Z"
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    scans = [{"thread_id": thread, "codex_pid": pid, "codex_created": _filetime(100 + pid),
+              "claude_session_id": None, "method": "unlinked"} for pid in (22, 23)]
+    agent_links.apply_exact_links(providers, now=200, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [],
+                                 process_table_reader=lambda: {}, hooks=lambda: {}, scan=lambda **kw: scans)
+    assert row["runVerified"] is None and row["executionStatus"] == "unavailable"
+    assert not row.get("parentId") and not row.get("stoppedAt")
+
+
+def test_scan_only_binds_when_process_follows_latest_rollout(tmp_path, monkeypatch):
+    _, thread, providers, _ = _link_fixture()
+    row = providers[1]["chats"][0]
+    row.pop("runPid"); row.pop("runCreated")
+    row["runStartedAt"] = "1970-01-01T00:01:30Z"
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    scan = {"thread_id": thread, "codex_pid": 23, "codex_created": _filetime(100),
+            "claude_session_id": None, "method": "unlinked"}
+    agent_links.apply_exact_links(providers, now=200, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [],
+                                 process_table_reader=lambda: {}, hooks=lambda: {}, scan=lambda **kw: [scan])
+    assert row["runVerified"] is True and row["runPid"] == 23
+    assert not row.get("parentId")
+
+
+def test_dead_old_receipt_cannot_override_new_live_receipt(tmp_path, monkeypatch):
+    old_sid, thread, providers, old = _link_fixture()
+    new_sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    providers[0]["chats"].append({"id": new_sid})
+    row = providers[1]["chats"][0]
+    row.pop("runPid"); row.pop("runCreated")
+    new = {**old, "codex_pid": 23, "codex_created": 124, "claude_session_id": new_sid}
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [old, new],
+                                 verify=lambda pid, created: pid == 23)
+    assert row["parentId"] == new_sid and row["parentId"] != old_sid
+    assert row["runPid"] == 23 and row["runVerified"] is True
+
+
+def test_native_child_links_unique_retained_ancestor(monkeypatch):
+    monkeypatch.setattr(agent_links, "_GRAPH_EDGES", {})
+    parent = {"provider": "Codex", "id": "parent", "retainedRun": True, "runPid": 22, "runCreated": "123"}
+    child = {"provider": "Codex", "id": "child", "parentId": "parent", "parentProvider": "Codex"}
+    graph = agent_links.snapshot_graph([parent, child])
+    assert graph["edges"]["Codex:child"] == "Codex:parent:run:22:123"
+
+
+def test_terminal_thread_does_not_inherit_an_old_run_without_process_identity(tmp_path, monkeypatch):
+    sid, _, providers, run = _link_fixture()
+    row = providers[1]["chats"][0]
+    row.update(executionStatus="idle", parentId=sid, parentProvider="Claude")
+    row.pop("runPid");row.pop("runCreated")
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [run])
+    assert not row.get("parentId")
+    assert row["runVerified"] is None
+
+
+def test_two_live_runs_for_one_thread_binds_row_evidence_run(tmp_path, monkeypatch):
+    sid, _, providers, run = _link_fixture()
+    other = {**run, "codex_pid": 23, "codex_created": 124}
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [run, other],
+                                 verify=lambda *_: True, registry_writer=lambda *a, **k: True)
+    row = providers[1]["chats"][0]
+    assert row["parentId"] == sid
+    assert row["runPid"] == 22
+    assert row["runVerified"] is True
+
+
+def test_one_live_registry_run_without_row_process_evidence_binds_receipt(tmp_path, monkeypatch):
+    sid, _, providers, run = _link_fixture()
+    row = providers[1]["chats"][0]
+    row.pop("runPid");row.pop("runCreated")
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [run],
+                                 verify=lambda *_: True, registry_writer=lambda *a, **k: True)
+    assert row["parentId"] == sid
+    assert row["parentLinkMethod"] == "receipt"
+    assert row["runVerified"] is True
+
+
+def test_row_process_evidence_keeps_its_run_and_newer_receipt_is_retained(tmp_path, monkeypatch):
+    sid, thread, providers, _ = _link_fixture()
+    newer_sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    providers[0]["chats"].append({"id": newer_sid})
+    rows = [{"thread_id": thread, "codex_pid": pid, "codex_created": created,
+             "claude_session_id": parent, "recorded_at": 100 + pid, "method": "receipt"}
+            for pid, created, parent in ((22, 123, sid), (23, 124, newer_sid))]
+    inbox = agent_links.receipt_path(tmp_path)
+    inbox.mkdir()
+    (inbox / agent_links.RECEIPT_FILE).write_text("\n".join(json.dumps(row) for row in rows))
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: True)
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    agent_links.apply_exact_links(
+        providers, root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
+        receipts_reader=lambda root: agent_links.read_receipts(root, permission_check=_allow_collection, owner_check=lambda: True),
+        process_table_reader=lambda: {22: (1, "codex.exe"), 23: (1, "codex.exe")},
+        current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid", equal_sid=lambda a, b: a == b,
+        process_created_reader=lambda pid: {22: 123, 23: 124}[pid],
+        command_line=lambda _: f"codex.exe exec resume {thread}",
+        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
+    )
+    current, newer = providers[1]["chats"]
+    assert (current["runPid"], current["parentId"], current["runVerified"]) == (22, sid, True)
+    assert newer["retainedRun"] and newer["runPid"] == 23 and newer["parentId"] == newer_sid
+
+
+def test_dead_old_run_does_not_parent_an_unresolved_new_run(tmp_path, monkeypatch):
+    _, thread, providers, old = _link_fixture()
+    providers[1]["chats"][0].pop("runPid");providers[1]["chats"][0].pop("runCreated")
+    new = {"thread_id": thread, "codex_pid": 23, "codex_created": 124,
+           "claude_session_id": None, "method": "unlinked"}
+    monkeypatch.setattr(agent_links, "_UNLINKED_EXECUTIONS", {})
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [old],
+                                 verify=lambda pid, created: False if pid == 22 else None,
+                                 process_table_reader=lambda: {}, hooks=lambda: {}, scan=lambda **kw: [new])
+    row = providers[1]["chats"][0]
+    assert not row.get("parentId")
+    assert row["runVerified"] is None
+    assert row.get("stateDetail") != "stopped"
+
+
+def test_verified_run_retains_frozen_telemetry_until_expiry(tmp_path, monkeypatch):
+    sid, _, providers, run = _link_fixture()
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {})
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    providers[1]["chats"][0].update(tokens=42, contextTokens=100)
+    common = dict(registry_path=tmp_path / "registry.json", permission_check=_allow_collection,
+                  registry_reader=lambda _: [dict(run)])
+    agent_links.apply_exact_links(providers, now=106, verify=lambda *_: True, **common)
+    assert providers[1]["chats"][0]["parentId"] == sid
+    _, _, after, _ = _link_fixture()
+    after[1]["chats"][0].update(tokens=999, contextTokens=999)
+    agent_links.apply_exact_links(after, now=107, verify=lambda *_: False, **common)
+    stopped = next(row for row in after[1]["chats"] if row.get("retainedRun"))
+    assert stopped["stateDetail"] == "stopped" and stopped["runVerified"] is False
+    assert stopped["tokens"] == 42 and stopped["contextTokens"] == 100
+    stopped_at = stopped["stoppedAt"]
+    _, _, later, _ = _link_fixture()
+    agent_links.apply_exact_links(later, now=107 + 899, verify=lambda *_: False, **common)
+    assert next(row for row in later[1]["chats"] if row.get("retainedRun"))["stoppedAt"] == stopped_at
+    _, _, expired, _ = _link_fixture()
+    agent_links.apply_exact_links(expired, now=107 + 900, verify=lambda *_: False, **common)
+    assert not any(row.get("retainedRun") for row in expired[1]["chats"])
+
+
+def test_retained_run_keeps_its_last_known_parent(tmp_path, monkeypatch):
+    sid, _, providers, run = _link_fixture()
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    common = dict(registry_path=tmp_path / "registry.json", permission_check=_allow_collection,
+                  registry_reader=lambda _: [dict(run)])
+    agent_links.apply_exact_links(providers, now=106, verify=lambda *_: True, **common)
+    _, _, after, _ = _link_fixture()
+    after[0]["chats"] = []
+    agent_links.apply_exact_links(after, now=107, verify=lambda *_: False, **common)
+    assert any(row.get("id") == sid for row in after[0]["chats"])
+    assert any(row.get("retainedRun") and row.get("parentId") == sid for row in after[1]["chats"])
+
+
+def test_link_poll_rechecks_recently_verified_execution(monkeypatch):
     _sid, _thread, providers, run = _link_fixture()
     called = []
     monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 104)
     agent_links.apply_exact_links(
         providers, now=105, registry_path=Path("unused"), permission_check=_allow_collection,
         registry_reader=lambda _path: [dict(run)],
-        verify=lambda *_args: called.append("verify"),
+        verify=lambda *_args: called.append("verify") or True,
         scan=lambda **_kwargs: called.append("scan"),
         hooks=lambda: called.append("hooks"),
         receipts_reader=lambda _root: called.append("receipts"),
     )
-    assert called == []
+    assert called == ["verify"]
 
 
 def test_expired_verification_checks_known_process_without_full_scan(monkeypatch):
@@ -501,7 +715,7 @@ def test_full_discovery_runs_at_ten_seconds_even_if_known_pid_verifies(monkeypat
         process_table_reader=lambda: {}, hooks=lambda: {},
         receipts_reader=lambda _root: [],
     )
-    assert calls == []
+    assert calls == ["verify"]
     agent_links.apply_exact_links(
         _link_fixture()[2], now=110, registry_path=Path("unused"), permission_check=_allow_collection,
         registry_reader=lambda _path: [dict(run)],
@@ -510,7 +724,7 @@ def test_full_discovery_runs_at_ten_seconds_even_if_known_pid_verifies(monkeypat
         process_table_reader=lambda: {}, hooks=lambda: {},
         receipts_reader=lambda _root: [],
     )
-    assert calls == ["scan"]
+    assert calls == ["verify", "scan"]
 
 
 def test_unverifiable_known_process_blocks_without_bypassing_scan_cadence(monkeypatch):
@@ -553,6 +767,7 @@ def test_new_exec_triggers_scan_and_links_only_exact_session(monkeypatch):
 
 def test_previous_claude_parent_survives_live_index_and_is_revalidated(monkeypatch):
     sid, _thread, grouped, run = _link_fixture()
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 104)
     codex_row = grouped[1]["chats"][0]
     codex_row.update(parentId=sid, parentProvider="Claude")
     from token_tracker import providers
@@ -564,7 +779,7 @@ def test_previous_claude_parent_survives_live_index_and_is_revalidated(monkeypat
     assert providers._LIVE_INDEX[f"Codex:{codex_row['id']}"]["parentProvider"] == "Claude"
     agent_links.apply_exact_links(
         grouped, now=105, registry_path=Path("unused"), permission_check=_allow_collection,
-        registry_reader=lambda _path: [run],
+        registry_reader=lambda _path: [run], verify=lambda *_args: True,
         scan=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("recent live link is verified")),
     )
     assert codex_row["parentId"] == sid and codex_row["parentProvider"] == "Claude"
@@ -598,7 +813,7 @@ def test_cached_claude_parent_without_provider_is_revalidated_while_running(monk
     monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 104)
     agent_links.apply_exact_links(
         grouped, now=105, registry_path=Path("unused"), permission_check=_allow_collection,
-        registry_reader=lambda _path: [dict(run)],
+        registry_reader=lambda _path: [dict(run)], verify=lambda *_args: True,
         scan=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("recent live link is verified")),
     )
     assert row["parentId"] == sid and row["parentProvider"] == "Claude"

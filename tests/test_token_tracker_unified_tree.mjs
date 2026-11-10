@@ -31,6 +31,55 @@ const policy={schemaVersion:1,generation:"tree-fixture",providers:[
   {name:"Claude",collect:true,show:true,send:false,capabilities:{}}]};
 const quota={fiveHour:{percent:42,resetAt:fixedNow/1000+5400},weekly:{percent:31,resetAt:fixedNow/1000+190000},limitsUpdatedAt:ago(1)};
 const claudeParent={id:"op",key:"Claude:op",parentKey:null,title:"Branchglance lead",model:"claude-opus-5-5",status:"running",updatedAt:ago(0),workspace:"D:\\work\\sample-app",...quota};
+
+{
+  const {T}=boot();
+  const stopped={id:'old',key:'Codex:old:run:42:133000000000000000',provider:'Codex',parentKey:'Claude:op',
+    retainedRun:true,runPid:42,runCreated:'133000000000000000',stoppedAt:ago(1),runStartedAt:ago(3),
+    status:'idle',stateDetail:'stopped',executionStatus:'idle',model:'gpt-6.1-sol',contextModel:'gpt-6.1-sol',
+    contextTokens:1000,contextWindow:2000,contextObservedAt:ago(2),updatedAt:ago(2)};
+  const forest=T.buildForest([{name:'Claude',chats:[claudeParent]},{name:'Codex',chats:[stopped]}]);
+  const child=forest.rows.find(row=>row.id==='old');
+  assert.equal(child.key,stopped.key);
+  assert.equal(T.runInfo(child).seconds,120);
+  const markup=T.runwayTelemetryHTML(child,true);
+  assert.match(markup,/Stopped/);
+  for(const slot of ['timing','path-column','tokens'])assert.ok(markup.includes('data-runway-slot="'+slot+'"'));
+}
+
+{
+  const {T}=boot();
+  T.state.snapshot={generatedAt:ago(0)};
+  const root={key:'root',status:'running',children:[]};
+  const parent={key:'parent',status:'idle',children:[]};
+  const child={key:'child',status:'running',children:[]};
+  parent.children=[child];root.children=[parent,...Array.from({length:6},(_,i)=>({key:'job'+i,status:'running',children:[]}))];
+  const plan=T.runwayBudgetPages([root],5);
+  assert.ok(plan.pages.length>1);
+  for(const page of plan.pages)assert.ok(page.size+1<=5,'roots, ancestors, and the pager fit the budget');
+  const childPage=plan.pages.find(page=>page.has('child'));
+  assert.ok(childPage.has('root')&&childPage.has('parent'),'active descendant keeps its ancestor chain');
+  assert.deepEqual(plan.pages.map(p=>[...p]),T.runwayBudgetPages([root],5).pages.map(p=>[...p]),'page order is stable');
+  let deep={key:'leaf',status:'running',children:[]};
+  for(let i=0;i<5;i++)deep={key:'ancestor'+i,status:'idle',children:[deep]};
+  const impossible=T.runwayBudgetPages([deep],5);
+  const leafPage=impossible.pages.find(page=>page.has('leaf'));
+  assert.equal(impossible.overflow,false);
+  assert.ok(leafPage.has('ancestor4')&&leafPage.has('ancestor0')&&leafPage.has('leaf'));
+  const collapsed=[...leafPage].find(key=>key.startsWith('__ancestors:'));
+  assert.equal(impossible.collapsed.get(collapsed).keys.length,3);
+  assert.ok(leafPage.size+1<=5,'collapsed chain and paging control fit the viewport');
+}
+{
+  const {T}=boot();
+  const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[{name:'Codex',chats:[{id:'thread',status:'running'}]}]};
+  const old={id:'thread',key:'Codex:thread:run:42:123',provider:'Codex',retainedRun:true,runPid:42,runCreated:'123',runVerified:false,stoppedAt:ago(1),status:'idle'};
+  assert.equal(T.applyLive(snapshot,{generatedAt:ago(0),chats:[old],complete:true}).changed,true);
+  assert.equal(snapshot.providers[0].chats.length,2);
+  assert.ok(snapshot.providers[0].chats.some(row=>row.retainedRun&&row.stoppedAt===old.stoppedAt));
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[],complete:true});
+  assert.equal(snapshot.providers[0].chats.length,1,'expired retained run is removed');
+}
 const codexLuna={id:"luna",key:"Codex:luna",parentKey:"Claude:op",title:"dashboard pass",agentName:"luna",model:"gpt-6-luna",status:"running",updatedAt:ago(1),workspace:"D:\\work\\sample-app",...quota};
 const codexSol={id:"sol",key:"Codex:sol",parentKey:"Codex:luna",title:"review pass",agentName:"sol",model:"gpt-6.1-sol",status:"running",updatedAt:ago(2),workspace:"D:\\work\\sample-app",...quota};
 const claudeHaiku={id:"haiku",key:"Claude:haiku",parentKey:"Claude:op",title:"test pass",agentName:"haiku",model:"claude-haiku-5-5",status:"running",updatedAt:ago(3),workspace:"D:\\work\\sample-app",...quota};
@@ -152,7 +201,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.ok(keys(entries).includes(extra[5].key)&&keys(entries).includes(waitingGrandchild.key),'actionable descendant preserves ancestor path');
   const idle={...extra[0],status:'idle',executionStatus:'idle'},grandchild={...extra[1],parentKey:idle.key,treeParentKey:idle.key};
   entries=entriesFor([idle,grandchild]);
-  assert.deepEqual(keys(entries),[grandchild.key],'visible grandchild survives an inactive intermediate');
+  assert.deepEqual(keys(entries),[idle.key,grandchild.key],'active grandchild keeps its inactive ancestor');
   T.state.pointerInList=true;
   entries=entriesFor(extra.map((a,i)=>({...a,latest:i===6?9999:a.latest})));
   assert.deepEqual(keys(entries),extra.slice(0,3).map(e=>e.key),'polling activity cannot reorder siblings');

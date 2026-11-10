@@ -6,6 +6,7 @@ ancestry and receipt rules can be tested without inspecting real processes.
 from __future__ import annotations
 
 import ctypes
+import copy
 from functools import wraps
 import json
 import logging
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -39,6 +41,8 @@ _SCAN_LOCK = threading.Lock()
 _LAST_FULL_SCAN_AT = float("-inf")
 _UNLINKED_LOCK = threading.Lock()
 _UNLINKED_EXECUTIONS: dict[tuple[str, int, int], dict[str, Any]] = {}
+_RUN_ROWS: dict[tuple[str, int, int], dict[str, Any]] = {}
+STOPPED_RETENTION_SECONDS = 15 * 60
 _LOG = logging.getLogger(__name__)
 
 
@@ -64,6 +68,10 @@ def snapshot_graph(rows: Iterable[dict[str, Any]], *, delta: bool = False) -> di
         if not isinstance(provider, str) or not isinstance(identity, str):
             continue
         key = f"{provider}:{identity}"
+        if provider == "Codex" and row.get("retainedRun") is True:
+            pid, created = row.get("runPid"), row.get("runCreated")
+            if type(pid) is int and pid > 0 and isinstance(created, str) and created.isascii() and created.isdigit():
+                key += f":run:{pid}:{created}"
         row["key"] = key
         indexed[key] = row
     current: dict[str, str | None] = {}
@@ -71,6 +79,10 @@ def snapshot_graph(rows: Iterable[dict[str, Any]], *, delta: bool = False) -> di
         parent_id = row.get("parentId")
         parent_provider = row.get("parentProvider") or row.get("provider") or row.get("providerName")
         parent_key = f"{parent_provider}:{parent_id}" if isinstance(parent_id, str) and parent_id else None
+        if parent_key not in indexed and parent_provider == "Codex" and parent_key:
+            retained = [candidate for candidate in indexed if candidate.startswith(parent_key + ":run:")]
+            if len(retained) == 1:
+                parent_key = retained[0]
         if parent_key not in indexed:
             parent_key = None
         row["parentKey"] = parent_key
@@ -892,6 +904,17 @@ def _instance_mutex_held() -> bool:
         return False
 
 
+def _run_identity(run: dict[str, Any]) -> tuple[int, int]:
+    return int(run["codex_pid"]), int(run["codex_created"])
+
+
+def _row_identity(row: dict[str, Any]) -> tuple[int, int] | None:
+    try:
+        return int(row["runPid"]), int(row["runCreated"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 @_serialized_link_poll
 def apply_exact_links(
     providers: list[dict[str, Any]], *, root: Path | None = None,
@@ -916,11 +939,14 @@ def apply_exact_links(
     claude = next((item for item in providers if item.get("name") == "Claude"), None)
     codex = next((item for item in providers if item.get("name") == "Codex"), None)
     if not claude or not codex:
+        _RUN_ROWS.clear()
         return
     try:
         if not permission_check(policies):
+            _RUN_ROWS.clear()
             return
     except Exception:
+        _RUN_ROWS.clear()
         return
     now = time.time() if now is None else now
     registry_changed = False
@@ -943,9 +969,15 @@ def apply_exact_links(
                 or (not row.get("parentProvider") and str(parent) in claude_ids
                     and str(parent) not in codex_ids))
 
+    # Native/untagged Codex parents are never stripped or re-linked by this poll.
+    native_rows = {id(row) for row in codex.get("chats") or []
+                   if row.get("parentId") and not cross_provider_candidate(row)}
+    for row in codex.get("chats") or []:
+        if row.get("runBindingUnresolved") and row.get("runBindingPreviousExecutionStatus"):
+            row["executionStatus"] = row.pop("runBindingPreviousExecutionStatus")
+            row.pop("runBindingUnresolved", None)
     live_rows = [row for row in codex.get("chats") or []
-                 if cross_provider_candidate(row)
-                 and row.get("source") == "exec"
+                 if row.get("source") == "exec"
                  and row.get("executionStatus") == "running"]
     global _LAST_FULL_SCAN_AT
     with _SCAN_LOCK:
@@ -953,9 +985,13 @@ def apply_exact_links(
     need_full_scan = bool(live_rows) and discovery_due
     verified_by_thread: dict[str, list[dict[str, Any]]] = {}
     unresolved_by_thread: dict[str, list[dict[str, Any]]] = {}
+    verdicts: dict[tuple[str, int, int], bool | None] = {}
     watched_threads = {str(row.get("id") or "").lower() for row in live_rows
                        if row.get("id")}
     unlinked_live_threads: set[str] = set()
+    unknown_unlinked_threads: set[str] = set()
+    verified_unlinked: dict[str, list[dict[str, Any]]] = {}
+    unlinked_identities: dict[str, set[tuple[int, int]]] = {}
     with _UNLINKED_LOCK:
         remembered_unlinked = [
             (identity, dict(run)) for identity, run in _UNLINKED_EXECUTIONS.items()
@@ -967,6 +1003,11 @@ def apply_exact_links(
                 _UNLINKED_EXECUTIONS.pop(identity, None)
         else:
             unlinked_live_threads.add(identity[0])
+            unlinked_identities.setdefault(identity[0], set()).add((identity[1], identity[2]))
+            if verdict is True:
+                verified_unlinked.setdefault(identity[0], []).append(run)
+            else:
+                unknown_unlinked_threads.add(identity[0])
     for row in live_rows:
         thread = str(row.get("id") or "").lower()
         candidates = [run for run in runs if str(run.get("thread_id") or "").lower() == thread]
@@ -979,10 +1020,14 @@ def apply_exact_links(
                 verified_at = float(known.get("verified_at") or 0)
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            fresh = now - verified_at < 10
-            verdict = True if fresh else verify(pid, created_at)
+            if need_full_scan:
+                # A due full scan supersedes per-pid verification this poll.
+                continue
+            # A cached live result cannot establish liveness on the next poll.
+            verdict = verify(pid, created_at)
+            verdicts[(thread, pid, created_at)] = verdict
             if verdict is True:
-                if not fresh:
+                if now - verified_at >= 10:
                     known["verified_at"] = now
                     known["last_seen"] = now
                     registry_changed = True
@@ -1045,6 +1090,7 @@ def apply_exact_links(
         with _UNLINKED_LOCK:
             _UNLINKED_EXECUTIONS[identity] = {**run, "verified_at": now}
         unlinked_live_threads.add(identity[0])
+        unlinked_identities.setdefault(identity[0], set()).add((identity[1], identity[2]))
     for run in discovered:
         if run.get("claude_session_id") is not None:
             try:
@@ -1066,8 +1112,6 @@ def apply_exact_links(
                 competing = receipt_processes.get((identity[1], identity[2]), set())
                 if identity not in discovered_threads and any(thread != identity[0] for thread in competing):
                     continue
-                if verify(identity[1], identity[2]) is not True:
-                    continue
                 with _UNLINKED_LOCK:
                     _UNLINKED_EXECUTIONS.pop(identity, None)
                     still_unlinked = any(key[0] == identity[0] for key in _UNLINKED_EXECUTIONS)
@@ -1087,6 +1131,7 @@ def apply_exact_links(
                 verified_by_thread.setdefault(key[0], []).append(record)
             elif run.get("method") == "receipt":
                 record["verified_at"] = now
+                verdicts[(key[0], key[1], key[2])] = True
                 verified_by_thread.setdefault(key[0], []).append(record)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
@@ -1101,48 +1146,184 @@ def apply_exact_links(
             by_thread.setdefault(thread, []).append(run)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
+    seen_live_runs: set[tuple[str, int, int]] = set()
     for row in codex.get("chats") or []:
         thread = str(row.get("id") or "").lower()
-        if not cross_provider_candidate(row):
-            continue
+        native_parent = not cross_provider_candidate(row)
         # Existing Claude links must be revalidated from the registry/discovery
         # before they are republished in this poll.
-        if row.get("parentId"):
+        if row.get("parentId") and not native_parent:
             row.pop("parentId", None)
             row.pop("parentProvider", None)
             row.pop("parentLinkMethod", None)
+        row["runVerified"] = None
         historical = by_thread.get(thread, [])
         if not historical:
             continue
         status = str(row.get("executionStatus") or row.get("status") or "").lower()
         if status == "running":
-            if thread in unlinked_live_threads or unresolved_by_thread.get(thread):
+            # Any live candidate that cannot be verified blocks binding, even when
+            # another candidate is a receipt.
+            if unresolved_by_thread.get(thread) or thread in unknown_unlinked_threads:
                 continue
             live_runs = verified_by_thread.get(thread, [])
-            live_sessions = {str(run.get("claude_session_id")) for run in live_runs}
-            if len(live_sessions) != 1:
-                continue
-            sid = next(iter(live_sessions))
-            selected = max((run for run in live_runs if str(run.get("claude_session_id")) == sid),
-                           key=lambda run: float(run.get("last_seen") or 0))
-            if sid in claude_ids:
-                row["parentId"], row["parentProvider"] = sid, "Claude"
+            row_identity = _row_identity(row)
+            receipt_runs = [run for run in live_runs if run.get("method") == "receipt"]
+            exact_unlinked = unlinked_identities.get(thread, set())
+            if receipt_runs:
+                # A live unlinked execution blocks receipts unless the receipt is that exact process.
+                receipts = [run for run in receipt_runs
+                            if thread not in unlinked_live_threads or _run_identity(run) in exact_unlinked]
+                if row_identity is not None:
+                    receipts = [run for run in receipts if _run_identity(run) == row_identity]
+                if not receipts:
+                    continue
+                selected = max(receipts, key=lambda run: (int(run["codex_created"]), float(run.get("last_seen") or 0)))
+                identity = _run_identity(selected)
+                sid = str(selected.get("claude_session_id") or "")
+            else:
+                scanned = [run for run in discovered if str(run.get("thread_id") or "").lower() == thread]
+                candidates = scanned if scanned else [*live_runs, *verified_unlinked.get(thread, [])]
+                identities = {_run_identity(run) for run in candidates}
+                if len(identities) != 1:
+                    continue
+                selected = candidates[0]
+                identity = _run_identity(selected)
+                if row_identity is not None and identity != row_identity:
+                    continue
+                # Process scans establish liveness only, never lineage, unless the
+                # run is an exact cmdline ancestry match.
+                if selected.get("method") != "cmdline":
+                    try:
+                        started = datetime.fromisoformat(str(row.get("runStartedAt") or row.get("activeRunStartedAt")).replace("Z", "+00:00")).timestamp()
+                        created_epoch = _filetime_epoch(int(selected["codex_created"]))
+                        if created_epoch is None or created_epoch < started:
+                            continue
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        continue
+                # Exact cmdline lineage: one session for this identity or no parent.
+                sids = {str(run.get("claude_session_id") or "") for run in candidates
+                        if _run_identity(run) == identity}
+                sid = next(iter(sids)) if len(sids) == 1 else ""
+            run_key = (thread, *identity)
+            prior = _RUN_ROWS.get(run_key)
+            sid = prior["parent"] if prior else sid
+            if prior and prior.get("parentProvider") == "Codex":
+                row["parentId"], row["parentProvider"] = sid, "Codex"
+                native_parent = True
+            if native_parent or sid in claude_ids or not sid:
+                if not native_parent and sid:
+                    row["parentId"], row["parentProvider"] = sid, "Claude"
                 row["parentLinkMethod"] = selected.get("method")
+                row["runPid"], process_created = identity
+                row["runCreated"] = str(process_created)
+                row["runVerified"] = True
+                row.pop("runBindingUnresolved", None)
+                parent_row = next((item for item in claude.get("chats") or [] if str(item.get("id")) == sid), None)
+                _RUN_ROWS[run_key] = {"row": copy.deepcopy(row), "parent": row.get("parentId"), "parentProvider": row.get("parentProvider"), "stoppedAt": None,
+                                      "parentRow": copy.deepcopy(parent_row)}
+                seen_live_runs.add(run_key)
+                # Other live receipts are retained as separate rows, never merged into this one.
+                for older in receipt_runs:
+                    other_key = (thread, int(older["codex_pid"]), int(older["codex_created"]))
+                    if other_key == run_key or other_key in _RUN_ROWS:
+                        continue
+                    older_sid = str(older.get("claude_session_id") or "")
+                    old_row = copy.deepcopy(row)
+                    for field in ("tokens", "toolCalls", "filesEdited", "fileChanges", "contextTokens", "contextPercent", "contextWindow", "runStartedAt", "activeRunStartedAt"):
+                        old_row.pop(field, None)
+                    old_row.update(runPid=other_key[1], runCreated=str(other_key[2]), metricsUnavailable=True)
+                    if older_sid in claude_ids:
+                        old_row.update(parentId=older_sid, parentProvider="Claude", parentLinkMethod="receipt")
+                    else:
+                        old_row.pop("parentId", None)
+                        old_row.pop("parentProvider", None)
+                    old_parent = next((item for item in claude.get("chats") or [] if str(item.get("id")) == older_sid), None)
+                    _RUN_ROWS[other_key] = {"row": old_row, "parent": older_sid, "parentRow": copy.deepcopy(old_parent), "stoppedAt": None}
             continue
-        selected = max(historical, key=lambda run: float(run.get("last_seen") or 0))
+        if row.get("runBindingUnresolved") or id(row) in native_rows:
+            continue
+        # A terminal thread row has no provable connection to a historical
+        # execution unless it carries some execution's process identity.
+        if _row_identity(row) is None:
+            continue
+        # Newest historical execution wins (latest codex_created, then last_seen).
+        selected = max(historical, key=lambda run: (int(run["codex_created"]), float(run.get("last_seen") or 0)))
         sid = str(selected.get("claude_session_id") or "")
         if sid not in claude_ids:
             continue
         turn_start = row.get("runStartedAt") or row.get("activeRunStartedAt")
         try:
-            from datetime import datetime
             turn_epoch = datetime.fromisoformat(str(turn_start).replace("Z", "+00:00")).timestamp() if turn_start else None
         except (TypeError, ValueError, OverflowError, OSError):
             turn_epoch = None
-        if turn_epoch is not None and turn_epoch > float(selected["last_seen"]) or sid not in claude_ids:
+        if turn_epoch is not None and turn_epoch > float(selected["last_seen"]):
             continue
         if turn_epoch is None and row.get("detailPending"):
             # A deferred row has no transcript detail; without a run boundary it cannot prove an old association.
             continue
+        verdict = verify(*_run_identity(selected))
+        if verdict is None:
+            continue
         row["parentId"], row["parentProvider"] = sid, "Claude"
         row["parentLinkMethod"] = selected.get("method")
+        row["runVerified"] = verdict
+
+    for row in codex.get("chats") or []:
+        if row.get("source") == "exec" and row.get("runVerified") is None:
+            if id(row) not in native_rows:
+                row.pop("parentId", None)
+                row.pop("parentProvider", None)
+            row["previousStatus"] = row.get("status")
+            row["runBindingPreviousExecutionStatus"] = row.get("executionStatus")
+            row.update(status="unknown", statusSource="unavailable", executionStatus="unavailable",
+                       executionSource="unavailable", telemetryUnavailable=True, runBindingUnresolved=True)
+
+    # Retain only runs observed with an exact process identity.  An unknown
+    # verification is not evidence of death, and never freezes a current row.
+    retained = []
+    needed_ancestors = {str(row.get("parentId")) for row in codex.get("chats") or []
+                        if row.get("runVerified") is True and row.get("parentProvider") == "Codex" and row.get("parentId")}
+    while True:
+        more = {str(saved["row"].get("parentId")) for key, saved in _RUN_ROWS.items()
+                if key[0] in needed_ancestors and saved["row"].get("parentProvider") == "Codex"
+                and saved["row"].get("parentId")}
+        if more <= needed_ancestors:
+            break
+        needed_ancestors.update(more)
+    for identity, saved in list(_RUN_ROWS.items()):
+        if identity in seen_live_runs:
+            continue
+        stopped_at = saved.get("stoppedAt")
+        if stopped_at is None:
+            verdict = verdicts.get(identity)
+            if identity not in verdicts:
+                if any(str(run.get("thread_id", "")).lower() == identity[0] and run.get("codex_pid") == identity[1] and run.get("codex_created") == identity[2] and run.get("retired_at") for run in runs):
+                    verdict = False
+                elif need_full_scan:
+                    # The due scan supersedes per-pid verification; an unscanned identity stays unresolved.
+                    verdict = None
+                else:
+                    verdict = verify(identity[1], identity[2])
+            if verdict is None:
+                continue
+            if verdict is True:
+                row = copy.deepcopy(saved["row"])
+                row.update(retainedRun=True, runVerified=True)
+                retained.append(row)
+                continue
+            stopped_at = saved["stoppedAt"] = now
+        if now - stopped_at >= STOPPED_RETENTION_SECONDS and identity[0] not in needed_ancestors:
+            del _RUN_ROWS[identity]
+            continue
+        row = copy.deepcopy(saved["row"])
+        if saved["parent"] not in claude_ids and saved.get("parentRow"):
+            claude.setdefault("chats", []).append(copy.deepcopy(saved["parentRow"]))
+            claude_ids.add(saved["parent"])
+        stamp = datetime.fromtimestamp(stopped_at, timezone.utc).isoformat()
+        row.update(retainedRun=True, runVerified=False, stoppedAt=stamp, runEndedAt=stamp,
+                   executionStatus="idle", executionTerminalAt=stamp, stateSince=stamp)
+        if str(row.get("status") or "").lower() not in {"failed", "completed"}:
+            row.update(status="idle", stateDetail="stopped")
+        retained.append(row)
+    codex.setdefault("chats", []).extend(retained)

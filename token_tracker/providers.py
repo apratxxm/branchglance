@@ -4749,6 +4749,11 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
         provider_stale = bool(provider.get("stale"))
         seen_keys = set()
         for chat in provider.get("chats") or []:
+            if chat.get("retainedRun") is True:
+                # A retained run is already frozen; never index its rollout as
+                # the current execution for this canonical thread ID.
+                chat.pop("path", None)
+                continue
             identity = chat.get("id")
             valid_identity = ((isinstance(identity, str) and bool(identity.strip()))
                               or type(identity) is int)
@@ -5314,14 +5319,25 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
             grouped = [{"name": name, "chats": [chat for chat in chats
                                                  if str(chat.get("key") or "").startswith(name + ":")]}
                        for name in ("Claude", "Codex")]
+            original_rows = {id(row) for row in chats}
             apply_exact_links(grouped)
-            linked = {str(row.get("key")): (row.get("parentId"), row.get("parentProvider"))
-                      for provider in grouped for row in provider["chats"]}
+            linked = {str(row.get("key")): row
+                      for provider in grouped for row in provider["chats"] if not row.get("retainedRun")}
             for chat in chats:
                 if chat.get("key") in linked:
-                    chat["parentId"], parent_provider = linked[chat["key"]]
-                    if parent_provider:
-                        chat["parentProvider"] = parent_provider
+                    source = linked[chat["key"]]
+                    for field in ("parentId", "parentProvider", "parentLinkMethod", "runPid", "runCreated", "runVerified", "runBindingUnresolved"):
+                        if field in source:
+                            chat[field] = source[field]
+                        else:
+                            chat.pop(field, None)
+            for provider in grouped:
+                for row in provider["chats"]:
+                    if id(row) not in original_rows:
+                        row["provider"] = provider["name"]
+                        if not row.get("key"):
+                            row["key"] = f"{provider['name']}:{row['id']}"
+                        chats.append(row)
         except Exception:
             pass
     for chat in chats:
@@ -5435,7 +5451,9 @@ def _dedupe_provider_chats(provider: dict[str, Any]) -> None:
     for chat in chats:
         identity = chat.get("id") if isinstance(chat, dict) else None
         if ((isinstance(identity, str) and bool(identity.strip())) or type(identity) is int):
-            key = (provider.get("name"), str(identity))
+            key = (provider.get("name"), str(identity),
+                   chat.get("runPid") if chat.get("retainedRun") else None,
+                   chat.get("runCreated") if chat.get("retainedRun") else None)
             if key in seen:
                 continue
             seen.add(key)
