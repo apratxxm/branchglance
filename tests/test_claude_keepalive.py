@@ -319,6 +319,38 @@ def test_missing_desktop_keeps_cli_evidence(tmp_path, monkeypatch):
     assert lr.claude_limit_sample().reset_at == now + 100
 
 
+
+@pytest.mark.parametrize("cached_account, expected", [("account-a", True), ("account-b", False)])
+def test_claude_code_cache_alone_drives_reset_evidence(tmp_path, monkeypatch, cached_account, expected):
+    """No Desktop and no statusline file (SDK-only use): Claude Code's cache still arms resets."""
+    from datetime import datetime, timezone
+    from token_tracker import claude_statusline as sl, product
+    import os, time
+    now = time.time()
+    iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat()
+    five_reset, week_reset = int(now) + 1000, int(now) + 86400
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(lr.ClaudeDesktopProvider, "_usage", lambda self: (_ for _ in ()).throw(FileNotFoundError("missing")))
+    monkeypatch.setattr(product, "state_root", lambda: tmp_path)
+    monkeypatch.setattr(sl, "sample_paths", lambda: [])
+    config = Path(os.environ["CLAUDE_CONFIG_DIR"])
+    config.mkdir(parents=True, exist_ok=True)
+    (config / ".claude.json").write_text(json.dumps({
+        "oauthAccount": {"accountUuid": "account-a", "organizationUuid": "org-a"},
+        "cachedUsageUtilization": {"fetchedAtMs": (now - 30) * 1000, "accountUuid": cached_account, "utilization": {
+            "five_hour": {"utilization": 30, "resets_at": iso(five_reset)},
+            "seven_day": {"utilization": 45, "resets_at": iso(week_reset)}}},
+    }), encoding="utf-8")
+    watcher = lr.LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json", policies=POLICIES)
+    account = watcher._claude_account_sample("org-a", now)
+    sample = lr.claude_limit_sample()
+    if expected:
+        assert (account.reset_at, account.weekly_percent, account.identity_generation) == (five_reset, 45, "epoch-a")
+        assert (sample.reset_at, sample.five_hour_percent, sample.weekly_percent) == (five_reset, 30, 45)
+    else:
+        assert (account.reset_at, account.weekly_percent, account.identity_generation) == (None, None, None)
+        assert (sample.five_hour_percent, sample.weekly_percent, sample.identity_generation) == (None, None, None)
+
 def test_weekly_selects_newer_unexpired_window(tmp_path, monkeypatch):
     desktop = {"weekly": NOW - 1, "weeklyPercent": 100, "observedAt": NOW - 100}
     cli = {"identityFingerprint": lr.claude_identity.account_fingerprint("account-a", "org-a"), "seven_day": {"used_percentage": 10, "resets_at": NOW + 500, "receivedAt": NOW}}
