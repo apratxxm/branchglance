@@ -1581,6 +1581,8 @@ class WidgetApp:
             return False
         from .claude_hook import start_event_retention
         start_event_retention()
+        from . import claude_usage_api
+        claude_usage_api.REFRESHER.start()
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         # The first transcript scan is the slow cold path; build it before the page asks.
         threading.Thread(target=_warm_snapshot, name="token-snapshot-warmup", daemon=True).start()
@@ -2510,6 +2512,9 @@ class WidgetApp:
         # alive with a destroyed tray or an undestroyed window.
         with suppress(Exception):
             self.limit_reset.stop()
+        with suppress(Exception):
+            from . import claude_usage_api
+            claude_usage_api.REFRESHER.stop()
         with suppress(Exception):
             self.ledger.stop()
         if self.tray:

@@ -208,13 +208,15 @@ def claude_limit_sample() -> LimitSample:
     cli_verified = bool(identity and org == identity.org_id
                         and claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint")))
     code_usage = claude_identity.read_claude_code_usage(identity)
-    generation = identity.generation if identity and (desktop_verified or cli_verified or code_usage) else None
+    from . import claude_usage_api
+    live_usage = claude_usage_api.read(identity)
+    generation = identity.generation if identity and (desktop_verified or cli_verified or code_usage or live_usage) else None
     empty = {"fiveHour": None, "weekly": None, "fiveHourPercent": None,
              "weeklyPercent": None, "observedAt": None}
     usage = claude_statusline.merge_usage(desktop if desktop_verified else empty, paths=[], org_id=org, max_age=90,
                                          identity_generation=generation,
                                          identity_fingerprint=identity.fingerprint if identity else None,
-                                         extra_samples=[code_usage] if code_usage else None)
+                                         extra_samples=[code_usage, live_usage])
     latest = claude_identity.current_identity()
     if not latest or latest.generation != generation:
         generation = None
@@ -1250,12 +1252,15 @@ class LimitResetService:
             cli = {}
         # Claude Code's own cache, already bound to this account and selection.
         code = claude_identity.read_claude_code_usage(identity, now=now)
-        if not desktop and not cli and not code:
+        from . import claude_usage_api
+        live = claude_usage_api.read(identity)
+        if not desktop and not cli and not code and not live:
             return LimitSample(None, None, now)
         deadlines = [_epoch_seconds(desktop.get("fiveHour") or desktop.get("lastKnownFiveHour")) if _valid_quota_percent(desktop.get("fiveHourPercent")) is not None else None]
         five = cli.get("five_hour") or {}
         deadlines.append(_epoch_seconds(five.get("resets_at")))
         deadlines.append(_epoch_seconds((code.get("five_hour") or {}).get("resets_at")))
+        deadlines.append(_epoch_seconds((live.get("five_hour") or {}).get("resets_at")))
         valid = [x for x in deadlines if x is not None and math.isfinite(x)]
         weekly = None
         desktop_weekly_reset = _epoch_seconds(desktop.get("weekly"))
@@ -1269,6 +1274,9 @@ class LimitResetService:
         code_weekly = code.get("seven_day") or {}
         if (_epoch_seconds(code_weekly.get("resets_at")) or 0) > now:
             best_weekly = claude_statusline.choose(best_weekly, code_weekly, now)
+        live_weekly = live.get("seven_day") or {}
+        if (_epoch_seconds(live_weekly.get("resets_at")) or 0) > now:
+            best_weekly = claude_statusline.choose(best_weekly, live_weekly, now)
         if best_weekly:
             weekly = best_weekly["used_percentage"]
         current = claude_identity.current_identity()

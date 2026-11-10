@@ -3373,7 +3373,9 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
         # Claude Code's own usage cache is bound to the account exactly, so it stands
         # on its own; Desktop data from another org is still dropped below.
         code_usage = claude_identity.read_claude_code_usage(identity)
-        verified = bool(identity and (code_usage or ((not org or org == identity.org_id) and (cli_verified or desktop_verified))))
+        from . import claude_usage_api
+        live_usage = claude_usage_api.read(identity)
+        verified = bool(identity and (code_usage or claude_usage_api.fresh(live_usage, CLAUDE_DISPLAY_USAGE_AGE_SECONDS) or ((not org or org == identity.org_id) and (cli_verified or desktop_verified))))
         if verified and not desktop_verified:
             usage = {}
             info = usage_info(self.root, [], max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
@@ -3382,7 +3384,7 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
         info = merge_usage(self._newest_live(info, watermarks=True, identity_generation=(epoch, org, verified)),
                            paths=[] if verified else None, org_id=identity.org_id if identity else None,
                            identity_generation=epoch, identity_fingerprint=identity.fingerprint if identity else None,
-                           extra_samples=[code_usage] if code_usage else None)
+                           extra_samples=[code_usage, live_usage])
         fresh_identity = claude_identity.current_identity()
         verified = bool(verified and fresh_identity and fresh_identity.generation == epoch)
         if missing is not None and info.get("fiveHourPercent") is None and info.get("weeklyPercent") is None:

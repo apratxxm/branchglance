@@ -385,7 +385,7 @@ def sample_paths(root=None, environ=None):
 
 
 def choose(a, b, now):
-    """Select by window identity and usage, never observation order."""
+    """Select by window identity, usage, and observation time."""
     if not a:
         return b
     if not b:
@@ -394,6 +394,8 @@ def choose(a, b, now):
         av, bv = a["used_percentage"], b["used_percentage"]
         if av is None: return b if bv is not None else a
         if bv is None: return a
+        if av == bv:
+            return b if b["receivedAt"] > a["receivedAt"] else a
         return a if av >= bv else b
     return a if a["resets_at"] > b["resets_at"] else b
 

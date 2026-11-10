@@ -1758,6 +1758,8 @@ def main() -> None:
     from .claude_hook import start_event_retention
     start_event_retention()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    from . import claude_usage_api
+    claude_usage_api.REFRESHER.start()
     url = f"http://{args.host}:{args.port}"
     print(f"Token Tracker running at {url}")
     if not args.no_open:
@@ -1767,6 +1769,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        claude_usage_api.REFRESHER.stop()
         server.server_close()
 
 

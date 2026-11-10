@@ -74,6 +74,8 @@ def main() -> None:
         raise SystemExit(3)
     from . import agent_links
     agent_links.initialize_receipt_inbox()
+    from . import claude_usage_api
+    claude_usage_api.REFRESHER.start()
     parent = os.getppid()
 
     def exit_with_parent() -> None:
@@ -88,6 +90,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        claude_usage_api.REFRESHER.stop()
         httpd.server_close()
 
 

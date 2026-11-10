@@ -87,9 +87,9 @@ Use `bg-codex` to nest Codex jobs under the Claude Code chat that starts them; s
 
 ## Privacy
 
-Branchglance reads local files only: Codex session data, Claude Code transcripts and hook events, and Claude Desktop's usage cache. There is no account, server or telemetry, and nothing is uploaded.
+Branchglance reads local Codex session data, Claude Code transcripts and hook events, and Claude Desktop's usage cache. Branchglance uses Claude Code's sign-in to read the account's usage from Anthropic, and never refreshes or stores the token. There is no Branchglance account, server or telemetry.
 
-The one exception is opt-in: if you enable reset greetings, Branchglance runs the provider's own CLI to send a short message. Claude greetings keep its five-hour window rolling; Branchglance reads limits printed by Claude Code for that greeting and runs `claude auth status` locally to check the account. It never reads Claude credentials. Greetings are off by default.
+If you enable reset greetings, Branchglance runs the provider's own CLI to send a short message. Claude greetings keep its five-hour window rolling; Branchglance reads limits printed by Claude Code for that greeting and runs `claude auth status` locally to check the account. Greetings are off by default.
 
 ## Building from source
 

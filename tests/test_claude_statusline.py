@@ -69,6 +69,19 @@ def empty_desktop():
             "weeklyPercent": None, "observedAt": None}
 
 
+def test_choose_equal_usage_prefers_newer_observation_in_either_order():
+    old = {"used_percentage": 43, "resets_at": 2000, "receivedAt": 1000}
+    new = {"used_percentage": 43, "resets_at": 2060, "receivedAt": 1100}
+    assert statusline.choose(old, new, 1100) is new
+    assert statusline.choose(new, old, 1100) is new
+    higher = {"used_percentage": 44, "resets_at": 2000, "receivedAt": 900}
+    assert statusline.choose(higher, new, 1100) is higher
+    assert statusline.choose(new, higher, 1100) is higher
+    later_window = {"used_percentage": 1, "resets_at": 2061, "receivedAt": 900}
+    assert statusline.choose(old, later_window, 1100) is later_window
+    assert statusline.choose(later_window, old, 1100) is later_window
+
+
 def test_cli_store_is_bound_to_desktop_org(tmp_path):
     windows = statusline.parse(sample(22), now=1000)
     fingerprint = "a" * 64
