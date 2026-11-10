@@ -219,6 +219,53 @@ def account_path() -> Path:
 
 def read_passive_account(path: Path) -> tuple[str, str, str] | None:
     """Bounded, no-follow read; the account and bytes come from the same handle."""
+    data = _read_passive_document(path)
+    account = data.get("oauthAccount") if isinstance(data, dict) else None
+    if not isinstance(account, dict):
+        return None
+    account_id, org_id = account.get("accountUuid"), account.get("organizationUuid")
+    if not all(isinstance(v, str) and v.strip() and len(v) <= 256 for v in (account_id, org_id)):
+        return None
+    email = account.get("emailAddress")
+    label = email.strip()[:200] if isinstance(email, str) and email.strip() else account_id[:8]
+    return account_id, org_id, label
+
+
+def read_claude_code_usage(identity: Identity | None, path: Path | None = None, *, now: float | None = None) -> dict:
+    """Limits Claude Code caches in its config after its own usage fetch (display only).
+
+    Every Claude Code surface (CLI, IDE, Agent SDK) refreshes this cache while it
+    runs, so it works without a status line. The cache names its account, and the
+    selected account in the same document must be the verified identity. The cache
+    does not name an organization; the selected organization in the same read is
+    taken as its organization.
+    """
+    from . import claude_statusline
+    if identity is None:
+        return {}
+    data = _read_passive_document(Path(path) if path is not None else account_path())
+    if not isinstance(data, dict):
+        return {}
+    account, cached = data.get("oauthAccount"), data.get("cachedUsageUtilization")
+    if not isinstance(account, dict) or not isinstance(cached, dict):
+        return {}
+    if (account.get("accountUuid"), account.get("organizationUuid")) != (identity.account_uuid, identity.org_id):
+        return {}
+    if cached.get("accountUuid") != identity.account_uuid:
+        return {}
+    fetched = cached.get("fetchedAtMs")
+    if type(fetched) not in (int, float) or not math.isfinite(fetched) or fetched <= 0:
+        return {}
+    observed = fetched / 1000
+    now = time.time() if now is None else now
+    if observed > now + 60:
+        return {}
+    windows = claude_statusline.parse_live_usage(cached.get("utilization"), observed_at=observed)
+    return {name: {"used_percentage": window["used_percentage"], "resets_at": window["resets_at"], "receivedAt": observed}
+            for name, window in windows.items() if window.get("crossCheckPassed")}
+
+
+def _read_passive_document(path: Path) -> dict | None:
     from . import claude_statusline
     path = Path(os.path.abspath(path))
     try:
@@ -257,14 +304,6 @@ def read_passive_account(path: Path) -> tuple[str, str, str] | None:
         if len(raw) > 1024 * 1024:
             return None
         data = json.loads(raw)
-        account = data.get("oauthAccount") if isinstance(data, dict) else None
-        if not isinstance(account, dict):
-            return None
-        account_id, org_id = account.get("accountUuid"), account.get("organizationUuid")
-        if not all(isinstance(v, str) and v.strip() and len(v) <= 256 for v in (account_id, org_id)):
-            return None
-        email = account.get("emailAddress")
-        label = email.strip()[:200] if isinstance(email, str) and email.strip() else account_id[:8]
-        return account_id, org_id, label
+        return data if isinstance(data, dict) else None
     except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
         return None

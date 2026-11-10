@@ -5518,3 +5518,43 @@ def test_thread_keeps_cached_parent_provider_and_tags_native_parents(monkeypatch
     assert (native["parentId"], native["parentProvider"]) == ("codex-parent", "Codex")
     root = CodexProvider._thread({"id": "root", "status": "inactive"})
     assert root["parentId"] is None and root["parentProvider"] is None
+
+
+def test_claude_limits_come_from_claude_code_cache_without_desktop(tmp_path, monkeypatch):
+    # Users without Claude Desktop (or running Claude Code through the Agent SDK)
+    # get live meters from the usage cache Claude Code keeps in its config.
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    from token_tracker import claude_identity
+    from token_tracker.providers import ClaudeLimitsProvider
+    monkeypatch.setattr(ClaudeLimitsProvider, "_last_live", {})
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    now = _time.time()
+    iso = lambda seconds: _dt.fromtimestamp(seconds, _tz.utc).isoformat()
+    config = config_dir / ".claude.json"
+    def write(account):
+        config.write_text(json.dumps({
+            "oauthAccount": {"accountUuid": account, "organizationUuid": "org-a"},
+            "cachedUsageUtilization": {"fetchedAtMs": (now - 60) * 1000, "accountUuid": "acct-a", "utilization": {
+                "five_hour": {"utilization": 30, "resets_at": iso(now + 3600)},
+                "seven_day": {"utilization": 45, "resets_at": iso(now + 86400)}}},
+        }), encoding="utf-8")
+    write("acct-a")
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json")
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(config))
+    provider = ClaudeLimitsProvider(str(tmp_path / "no-desktop"))
+    snapshot = provider.snapshot()
+    assert snapshot["fiveHour"]["percent"] == 30 and snapshot["weekly"]["percent"] == 45
+    assert snapshot["identityVerified"] is True
+    assert snapshot["identityGeneration"] == authority.capture()[0]
+    # Another account selected: the cache for acct-a must not be shown as current.
+    write("acct-b")
+    monkeypatch.setattr(ClaudeLimitsProvider, "_last_live", {})
+    switched = ClaudeLimitsProvider(str(tmp_path / "no-desktop"))
+    try:
+        result = switched.snapshot()
+    except Exception:
+        result = None
+    assert result is None or (result["identityVerified"] is False and result["fiveHour"]["percent"] is None)

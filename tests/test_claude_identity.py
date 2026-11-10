@@ -184,3 +184,65 @@ def test_busy_lock_serves_last_identity_instead_of_reporting_a_change(tmp_path):
         worker.join(5)
     changed = authority.credential_changed((str(tmp_path / "b"), "token-b"))
     assert authority.capture_nonblocking() == (changed, None)
+
+
+
+OBSERVED = 1_700_000_000.0  # 2023-11-14T22:13:20Z
+FIVE_RESET = "2023-11-14T23:13:20+00:00"
+WEEK_RESET = "2023-11-15T22:13:20+00:00"
+
+
+def _code_usage_config(path, *, account="acct-a", org="org-a", cached_account="acct-a",
+                       fetched_ms=OBSERVED * 1000, five=30, limits=None):
+    import json as _json
+    utilization = {"five_hour": {"utilization": five, "resets_at": FIVE_RESET},
+                   "seven_day": {"utilization": 45, "resets_at": WEEK_RESET},
+                   "seven_day_opus": None}
+    if limits is not None:
+        utilization["limits"] = limits
+    path.write_text(_json.dumps({
+        "oauthAccount": {"accountUuid": account, "organizationUuid": org},
+        "cachedUsageUtilization": {"fetchedAtMs": fetched_ms, "accountUuid": cached_account, "utilization": utilization},
+    }), encoding="utf-8")
+
+
+def _code_usage_identity(tmp_path, path):
+    from token_tracker.claude_identity import IdentityAuthority
+    authority = IdentityAuthority(tmp_path / "identity.json", clock=lambda: OBSERVED)
+    return authority.refresh_passive(path)
+
+
+def test_claude_code_usage_cache_is_read_for_the_verified_account(tmp_path):
+    from token_tracker.claude_identity import read_claude_code_usage
+    config = tmp_path / ".claude.json"
+    _code_usage_config(config)
+    identity = _code_usage_identity(tmp_path, config)
+    usage = read_claude_code_usage(identity, config, now=OBSERVED + 100)
+    assert usage == {"five_hour": {"used_percentage": 30, "resets_at": OBSERVED + 3600, "receivedAt": OBSERVED},
+                     "seven_day": {"used_percentage": 45, "resets_at": OBSERVED + 86400, "receivedAt": OBSERVED}}
+
+
+@pytest.mark.parametrize("change", [
+    {"cached_account": "acct-b"},                     # cache fetched for another account
+    {"fetched_ms": (OBSERVED + 1000) * 1000},         # observed in the future
+    {"fetched_ms": "soon"},                           # malformed time
+    {"five": 130},                                    # out-of-range usage
+    {"limits": [{"kind": "session", "percent": 12, "resets_at": FIVE_RESET}]},  # cross-check fails
+])
+def test_claude_code_usage_cache_fails_closed(tmp_path, change):
+    from token_tracker.claude_identity import read_claude_code_usage
+    config = tmp_path / ".claude.json"
+    _code_usage_config(config)
+    identity = _code_usage_identity(tmp_path, config)
+    _code_usage_config(config, **change)
+    assert "five_hour" not in read_claude_code_usage(identity, config, now=OBSERVED + 100)
+
+
+def test_claude_code_usage_requires_the_selected_account_in_the_same_read(tmp_path):
+    from token_tracker.claude_identity import read_claude_code_usage
+    config = tmp_path / ".claude.json"
+    _code_usage_config(config)
+    identity = _code_usage_identity(tmp_path, config)
+    _code_usage_config(config, org="org-b")  # switched org; the cache still names the account
+    assert read_claude_code_usage(identity, config, now=OBSERVED + 100) == {}
+    assert read_claude_code_usage(None, config, now=OBSERVED + 100) == {}

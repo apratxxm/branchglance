@@ -398,10 +398,12 @@ def choose(a, b, now):
     return a if a["resets_at"] > b["resets_at"] else b
 
 
-def merge_usage(desktop, paths=None, now=None, max_age=600, *, org_id=None, cli_path=None, identity_generation=None, identity_fingerprint=None):
+def merge_usage(desktop, paths=None, now=None, max_age=600, *, org_id=None, cli_path=None, identity_generation=None, identity_fingerprint=None, extra_samples=None):
+    """extra_samples are windows the caller has already bound to the current account."""
     now = time.time() if now is None else now
     result = dict(desktop)
     samples = [read(path, now=now) for path in (sample_paths() if paths is None else paths)]
+    samples.extend(sample for sample in extra_samples or () if sample)
     cli = read(cli_path or product.state_root() / CLI_FILENAME, now=now, source="claude-cli", include_org=True)
     if (cli and isinstance(org_id, str) and org_id.strip() and isinstance(identity_generation, str)
             and identity_generation and isinstance(identity_fingerprint, str)

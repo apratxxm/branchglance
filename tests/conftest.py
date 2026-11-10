@@ -12,6 +12,8 @@ def _isolated_product_state(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
     monkeypatch.setenv(product.STATE_ROOT_ENV, str(tmp_path / "product-state"))
     monkeypatch.delenv(product.POLICY_FILE_ENV, raising=False)
+    # Claude Code's config holds the selected account and its usage cache; never read the real one.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     monkeypatch.setattr(product, "legacy_webview_path", lambda environ=None: tmp_path / "no-legacy-webview")
 
 
