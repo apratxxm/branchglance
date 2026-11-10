@@ -1207,7 +1207,9 @@ def apply_exact_links(
                 sid = next(iter(sids)) if len(sids) == 1 else ""
             run_key = (thread, *identity)
             prior = _RUN_ROWS.get(run_key)
-            sid = prior["parent"] if prior else sid
+            # A parentless prior binding (parent None) must not override a later receipt.
+            if prior and prior.get("parent") is not None:
+                sid = prior["parent"]
             if prior and prior.get("parentProvider") == "Codex":
                 row["parentId"], row["parentProvider"] = sid, "Codex"
                 native_parent = True
@@ -1240,6 +1242,13 @@ def apply_exact_links(
                         old_row.pop("parentProvider", None)
                     old_parent = next((item for item in claude.get("chats") or [] if str(item.get("id")) == older_sid), None)
                     _RUN_ROWS[other_key] = {"row": old_row, "parent": older_sid, "parentRow": copy.deepcopy(old_parent), "stoppedAt": None}
+            else:
+                # The parent session is absent from the Claude list: keep this row's own
+                # status and bind only the run identity, never a parent.
+                row["runPid"], process_created = identity
+                row["runCreated"] = str(process_created)
+                row["runVerified"] = True
+                row.pop("runBindingUnresolved", None)
             continue
         if row.get("runBindingUnresolved") or id(row) in native_rows:
             continue
@@ -1270,7 +1279,10 @@ def apply_exact_links(
         row["runVerified"] = verdict
 
     for row in codex.get("chats") or []:
-        if row.get("source") == "exec" and row.get("runVerified") is None:
+        # Only a running row whose thread had link candidates and whose binding failed is unresolved.
+        thread = str(row.get("id") or "").lower()
+        if (row.get("source") == "exec" and row.get("runVerified") is None and by_thread.get(thread)
+                and str(row.get("executionStatus") or row.get("status") or "").lower() == "running"):
             if id(row) not in native_rows:
                 row.pop("parentId", None)
                 row.pop("parentProvider", None)
