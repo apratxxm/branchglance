@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -177,6 +178,7 @@ def world(tmp_path, monkeypatch):
     events.mkdir()
     monkeypatch.setenv("CLAUDE_HOME", str(home))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(claude_provider, "_t3_database", lambda: tmp_path / "t3.sqlite")
     claude_provider.reset_memo()
 
     class World:
@@ -641,6 +643,26 @@ def test_title_and_model_survive_the_transcript_rewrite_during_compaction(world)
     assert row["title"] == "Ship the parser" and row["model"] == "claude-opus-5"
     world.transcript(SID, [{"type": "custom-title", "customTitle": "Renamed"}, user(NOW - 3)])
     assert world.rows()[SID]["title"] == "Renamed"
+
+
+def test_parent_title_tracks_t3_rename_and_survives_missing_source(world):
+    database = world.tmp / "t3.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE projection_threads (thread_id TEXT, title TEXT, deleted_at TEXT, archived_at TEXT)")
+        db.execute("CREATE TABLE provider_session_runtime (thread_id TEXT, provider_name TEXT, resume_cursor_json TEXT)")
+        db.execute("INSERT INTO projection_threads VALUES (?, ?, NULL, NULL)", ("thread", "Original T3 title"))
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)",
+                   ("thread", "claudeAgent", json.dumps({"resume": SID})))
+    world.transcript(SID, [{"type": "ai-title", "aiTitle": "Original first prompt"},
+                           user(NOW - 100), assistant(NOW - 60, "m1")])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit")])
+    assert world.rows()[SID]["title"] == "Original T3 title"
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE projection_threads SET title = ?", ("Renamed T3 title",))
+    assert world.rows()[SID]["title"] == "Renamed T3 title"
+    with sqlite3.connect(database) as db:
+        db.execute("DELETE FROM provider_session_runtime")
+    assert world.rows()[SID]["title"] == "Renamed T3 title"
 
 
 def test_question_survives_the_permission_events_claude_sends_after_it(world):

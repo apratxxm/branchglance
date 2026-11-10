@@ -1815,7 +1815,7 @@ function contextHTML(chat) {
     const pct=windowSize>0?tokens*100/windowSize:null;
     const tone=pct==null?'':pct>75?'err':pct>50?'attn':'';
     const delta=runwayContextDelta(chat,pair),deltaText=delta==null?'':'; change since previous sample '+(delta>0?'+':'')+fmt(delta)+' tokens';
-    const title=String(tokens)+' / '+(windowSize==null?'window size unknown':String(windowSize))+deltaText;
+    const title='Context occupancy: '+String(tokens)+' / '+(windowSize==null?'window size unknown':String(windowSize))+' tokens'+deltaText;
     return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+(windowSize==null?'—':fmt(windowSize))+'</span></span></span>';
   }
   const pct=safeNumber(chat.contextPercent);

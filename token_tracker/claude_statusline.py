@@ -157,6 +157,44 @@ def parse(payload, now=None):
     return result
 
 
+def parse_live_usage(payload, *, observed_at):
+    """Normalize an offline live-usage response without assigning identity.
+
+    The caller must bind the result to a verified credential generation before
+    publication or use for actions. A missing or contradictory limit never
+    becomes zero usage.
+    """
+    if not isinstance(payload, dict) or not _number(observed_at):
+        return {}
+    limits = payload.get("limits")
+    malformed_limits = limits is not None and not isinstance(limits, list)
+    result = {}
+    for name, kind in (("five_hour", "session"), ("seven_day", "weekly_all")):
+        item = payload.get(name)
+        if not isinstance(item, dict):
+            continue
+        used = item.get("utilization")
+        raw_reset = item.get("resets_at")
+        if used is not None and (not _number(used) or not 0 <= used <= 100):
+            continue
+        reset = _reset(raw_reset) if isinstance(raw_reset, str) else None
+        if raw_reset is not None and (reset is None or not observed_at - SKEW <= reset <= observed_at + DURATIONS[name] + SKEW):
+            continue
+        usable = used is not None and reset is not None and not malformed_limits
+        for limit in limits if isinstance(limits, list) else ():
+            if not isinstance(limit, dict) or limit.get("kind") != kind:
+                continue
+            limit_used, limit_reset = limit.get("percent"), limit.get("resets_at")
+            checked_reset = _reset(limit_reset) if isinstance(limit_reset, str) else None
+            if (not _number(limit_used) or used is None or limit_used != used
+                    or checked_reset is None or reset is None or abs(checked_reset - reset) > 60):
+                usable = False
+        result[name] = {"used_percentage": used, "resets_at": reset,
+                        "receivedAt": observed_at, "source": "claude-live-usage",
+                        "crossCheckPassed": usable, "actionUsable": False}
+    return result
+
+
 def read(path, now=None, max_age=None, *, source="claude-statusline", include_org=False):
     path = Path(os.path.abspath(path))
     now = time.time() if now is None else now
@@ -168,7 +206,7 @@ def read(path, now=None, max_age=None, *, source="claude-statusline", include_or
         data = json.loads(raw)
         if not isinstance(data, dict) or data.get("source") != source:
             return {}
-        if source == "claude-cli" and (not isinstance(data.get("orgId"), str) or not data["orgId"]):
+        if source == "claude-cli" and (not isinstance(data.get("orgId"), str) or not data["orgId"].strip()):
             return {}
         result = {}
         for name in WINDOWS:
@@ -192,7 +230,7 @@ def write(windows, root=None, now=None, deadline=None, *, filename=FILENAME, sou
     """Serialize writers using a verified, non-following lock handle."""
     if (filename, source) not in ((FILENAME, "claude-statusline"), (CLI_FILENAME, "claude-cli")):
         raise ValueError("unsupported Claude sample store")
-    if source == "claude-cli" and (not isinstance(org_id, str) or not org_id):
+    if source == "claude-cli" and (not isinstance(org_id, str) or not org_id.strip()):
         raise ValueError("CLI sample requires an organization")
     root = Path(os.path.abspath(root if root is not None else product.state_root()))
     now = time.time() if now is None else now
@@ -355,7 +393,7 @@ def merge_usage(desktop, paths=None, now=None, max_age=600, *, org_id=None, cli_
     result = dict(desktop)
     samples = [read(path, now=now) for path in (sample_paths() if paths is None else paths)]
     cli = read(cli_path or product.state_root() / CLI_FILENAME, now=now, source="claude-cli", include_org=True)
-    if cli and (not org_id or cli.get("orgId") == org_id):
+    if cli and isinstance(org_id, str) and org_id.strip() and cli.get("orgId") == org_id:
         samples.append(cli)
     selected_times = []
     for name, key in (("five_hour", "fiveHour"), ("seven_day", "weekly")):

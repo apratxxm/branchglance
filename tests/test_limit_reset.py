@@ -55,10 +55,9 @@ class Sender:
         self.calls += 1
         index = min(self.calls - 1, len(self.results) - 1)
         result = dict(self.results[index])
-        # Scripted failures model a confirmed pre-delivery rejection unless
-        # a test explicitly requests an ambiguous outcome.
-        if result.get("ok") is False:
-            result.setdefault("outcome", "rejected")
+        # The default scripted failure represents typed pre-start proof.
+        if result.get("ok") is False and result.get("outcome") in (None, "not_started"):
+            raise limit_reset.CodexNotStarted(result.get("error") or result.get("output") or "spawn failed")
         return result
 
 
@@ -162,7 +161,7 @@ def test_started_sender_timeout_is_unknown_and_never_retried(tmp_path):
 
 def test_prestart_sender_failure_preserves_arm_generation(tmp_path):
     def not_started(_cwd):
-        raise RuntimeError("spawn failed")
+        raise limit_reset.CodexNotStarted("spawn failed")
     watcher = make(tmp_path, Codex=not_started)
     watcher.check_provider("Codex", LimitSample(100, 10, T0))
     generation = watcher._state["providers"]["Codex"]["greetingGeneration"]
@@ -171,6 +170,34 @@ def test_prestart_sender_failure_preserves_arm_generation(tmp_path):
     assert state["lastGreetingOutcome"] == "not_started"
     assert state["armed"] is True
     assert state["greetingGeneration"] == generation
+
+
+@pytest.mark.parametrize("scheduled", [False, True])
+def test_sender_exception_after_delivery_is_unknown_and_not_retried(tmp_path, scheduled):
+    clock = Clock()
+    deliveries = []
+    def sender(_cwd):
+        deliveries.append("delivered")
+        raise ValueError("response decoding failed")
+    watcher = make(tmp_path, clock, Codex=sender)
+    deadline = T0 + 20 if scheduled else None
+    watcher.check_provider("Codex", LimitSample(20 if scheduled else 100, 10, T0, deadline))
+    clock.advance(20 if scheduled else 60)
+    watcher.check_provider("Codex", LimitSample(0, 10, clock(), deadline))
+    state = watcher._state["providers"]["Codex"]
+    assert state["lastGreetingOutcome"] == "unknown"
+    assert state["armed"] is False
+    clock.advance(RETRY_SECONDS + 1)
+    watcher.check_provider("Codex", LimitSample(0, 10, clock(), deadline))
+    assert deliveries == ["delivered"]
+
+
+def test_untyped_rejected_greeting_is_not_prestart_proof(tmp_path):
+    watcher = make(tmp_path, Codex=lambda _cwd: {"ok": False, "outcome": "rejected"})
+    watcher.check_provider("Codex", LimitSample(100, 10, T0))
+    watcher.check_provider("Codex", LimitSample(0, 10, T0 + 60))
+    assert watcher._state["providers"]["Codex"]["lastGreetingOutcome"] == "unknown"
+    assert watcher._state["providers"]["Codex"]["armed"] is False
 
 
 def test_scheduled_not_started_retry_keeps_same_generation(tmp_path):
@@ -605,7 +632,7 @@ def test_success_clears_errors_and_disarms(tmp_path):
 
 def test_sender_exception_is_a_failure_not_a_crash(tmp_path):
     def explode(_cwd):
-        raise RuntimeError("spawn failed")
+        raise limit_reset.CodexNotStarted("spawn failed")
 
     watcher = make(tmp_path, Codex=explode)
     watcher.check_provider("Codex", LimitSample(100, 10, T0))

@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import stat as stat_module
 import threading
 import time
@@ -98,6 +99,65 @@ _PATHS_LOCK = threading.Lock()
 _IDENTITY: dict[str, tuple[str | None, str | None]] = {}
 _IDENTITY_LOCK = threading.Lock()
 _IDENTITY_MAX = 512
+_T3_TITLES: dict[str, str] = {}
+
+
+def _t3_database() -> Path:
+    return Path.home() / ".t3" / "userdata" / "state.sqlite"
+
+
+def _t3_titles() -> dict[str, str]:
+    """Read current T3 titles using its exact Claude resume-session binding."""
+    path = _t3_database()
+    try:
+        db = sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True, timeout=0.1)
+        try:
+            records = db.execute(
+                "SELECT t.title, r.resume_cursor_json FROM projection_threads t "
+                "JOIN provider_session_runtime r ON r.thread_id = t.thread_id "
+                "WHERE r.provider_name = 'claudeAgent' AND t.deleted_at IS NULL "
+                "AND t.archived_at IS NULL LIMIT 4096"
+            ).fetchall()
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error, ValueError):
+        return {}
+    titles: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for title, raw in records:
+        if not isinstance(raw, str) or len(raw) > 65536:
+            continue
+        try:
+            cursor = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        session = cursor.get("resume") if isinstance(cursor, dict) else None
+        title = public_title(title)
+        if not isinstance(session, str) or not session or not title:
+            continue
+        if session in titles:
+            ambiguous.add(session)
+        else:
+            titles[session] = title
+    return {session: title for session, title in titles.items() if session not in ambiguous}
+
+
+def _apply_t3_titles(rows: list[dict[str, Any]]) -> None:
+    titles = _t3_titles()
+    with _IDENTITY_LOCK:
+        for row in rows:
+            if row.get("parentId"):
+                continue
+            sid = row.get("id")
+            if not isinstance(sid, str):
+                continue
+            if sid in titles:
+                _T3_TITLES.pop(sid, None)
+                _T3_TITLES[sid] = titles[sid]
+            if sid in _T3_TITLES:
+                row["title"] = _T3_TITLES[sid]
+        while len(_T3_TITLES) > _IDENTITY_MAX:
+            _T3_TITLES.pop(next(iter(_T3_TITLES)))
 
 
 def _remembered_identity(key: str, title: str | None, model: str | None) -> tuple[str | None, str | None]:
@@ -563,6 +623,7 @@ def build_rows(now: float | None = None,
         row = _fallback_row(path, sid, mtime)
         if row:
             rows.append(row)
+    _apply_t3_titles(rows)
     rows.sort(key=lambda r: r.get("updatedAt") or "", reverse=True)
     return rows
 
@@ -792,6 +853,7 @@ def reset_memo() -> None:
         _MEMO.update(at=0.0, rows=None)
     with _IDENTITY_LOCK:
         _IDENTITY.clear()
+        _T3_TITLES.clear()
 
 
 def _cached_rows() -> list[dict[str, Any]]:

@@ -339,6 +339,9 @@ class SnapshotCache:
         self._restore_pending = self.persist_path is not None
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
+        # Commit I/O never holds the request condition. Epoch changes share
+        # this lock with durable publication and peak recording.
+        self._publication_lock = threading.RLock()
         self._value = None
         # Only a snapshot built in this process may authorize chat actions.
         self._trusted_value = None
@@ -389,11 +392,18 @@ class SnapshotCache:
 
     @value.setter
     def value(self, value) -> None:
-        with self.condition:
-            self._publication_epoch += 1
-            self._value = copy.deepcopy(value)
-            self._trusted_value = copy.deepcopy(value)
-            self._restored = False
+        display, trusted = copy.deepcopy(value), copy.deepcopy(value)
+        with self._publication_lock:
+            # Rotate the authentication key before changing the epoch. A crash
+            # then leaves any previous disk record unverifiable on restore.
+            if self.persist_path is not None and self.persist_path.exists():
+                self._ensure_persistence_key()
+                self._atomic_write(self._key_path, secrets.token_bytes(self.PERSISTED_KEY_BYTES))
+            with self.condition:
+                self._publication_epoch += 1
+                self._value = display
+                self._trusted_value = trusted
+                self._restored = False
 
     @property
     def at(self) -> float:
@@ -520,6 +530,10 @@ class SnapshotCache:
         )
 
     def _restore_persisted(self) -> None:
+        with self._publication_lock:
+            self._restore_persisted_guarded()
+
+    def _restore_persisted_guarded(self) -> None:
         path = self.persist_path
         if path is None:
             return
@@ -737,7 +751,6 @@ class SnapshotCache:
             raise TypeError("snapshot builder returned a non-object")
         trusted = copy.deepcopy(value)
         built_at = self._utc_now()
-        _record_insights_peaks(value)
         with self.condition:
             published_at = time.monotonic()
             generation = self.generation + 1
@@ -756,12 +769,14 @@ class SnapshotCache:
                         provider[field] = copy.deepcopy(saved)
                         times = provider.setdefault("_quotaWindowObservedAt", {})
                         times[field] = (old.get("_quotaWindowObservedAt") or {}).get(field, old.get("limitsUpdatedAt"))
-        persisted = self._persistable(value)
-        if persisted:
-            self._write_persisted(display, generation, built_at)
-        with self.condition:
-            superseded = publication_epoch != self._publication_epoch
-            if not superseded:
+        with self._publication_lock:
+            with self.condition:
+                if publication_epoch != self._publication_epoch:
+                    raise RuntimeError("snapshot publication superseded")
+            _record_insights_peaks(value)
+            if self._persistable(value):
+                self._write_persisted(display, generation, built_at)
+            with self.condition:
                 self._value = display
                 self._trusted_value = trusted
                 self._at = published_at
@@ -775,10 +790,6 @@ class SnapshotCache:
                 self.last_failure_category = None
                 self._last_build_error = None
                 self._completed_attempt = attempt if attempt is not None else self._attempt
-        if superseded:
-            if persisted:
-                self._delete_persisted()
-            raise RuntimeError("snapshot publication superseded")
         return None
 
     def _start_background_locked(self) -> None:

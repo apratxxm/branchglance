@@ -392,8 +392,16 @@ def prune_event_logs(directory: str | None = None, *, today: date | None = None)
             _retention_windows(directory, today)
             return
         import fcntl
-        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+            return
+        parts = Path(os.path.abspath(directory)).parts
+        handles = []
         try:
+            fd = os.open(parts[0], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            handles.append(fd)
+            for component in parts[1:]:
+                fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                handles.append(fd)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             for name in os.listdir(fd):
                 if not _retention_candidate(name, today):
@@ -404,7 +412,8 @@ def prune_event_logs(directory: str | None = None, *, today: date | None = None)
                 except OSError:
                     continue
         finally:
-            os.close(fd)
+            for handle in reversed(handles):
+                os.close(handle)
     except OSError:
         return
 

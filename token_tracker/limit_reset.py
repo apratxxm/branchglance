@@ -799,7 +799,7 @@ class LimitResetService:
             pending = action.get("finalizePending")
             if isinstance(pending, dict):
                 if action.get("armGeneration") == pending.get("armGeneration"):
-                    action["armed"] = False
+                    action["armed"] = pending.get("retryable") is True
                 action.pop("finalizePending", None)
         state = self._state.get("providers", {}).get("Codex", {})
         pending = state.get("greetingIntent") if isinstance(state, dict) else None
@@ -970,6 +970,7 @@ class LimitResetService:
         # CLI startup/network waits must not block the status endpoint or another
         # provider. Reserve this provider while the lock is released.
         sender = None
+        not_started = False
         try:
             policy_for(name, self.policies).require("greet")
             sender = self.senders.get(name)
@@ -977,13 +978,19 @@ class LimitResetService:
                 raise ProviderPolicyError("greeting sender is unavailable")
             if sender is send_codex_greeting or sender is send_claude_greeting:
                 result = sender(self.cwd, policies=self.policies)
+                not_started = sender is send_codex_greeting and result.get("outcome") == "not_started"
             else:
                 result = sender(self.cwd)
+        except CodexNotStarted as exc:
+            not_started = True
+            result = {"ok": False, "outcome": "not_started", "error": str(exc)}
+        except ProviderPolicyError as exc:
+            not_started = sender is None
+            result = {"ok": False, "outcome": "not_started" if not_started else "unknown", "error": str(exc)}
         except subprocess.TimeoutExpired as exc:
             result = {"ok": False, "outcome": "unknown", "error": str(exc)}
-        except Exception as exc:  # injected senders raise only before starting a child
-            result = {"ok": False, "outcome": "unknown" if sender is send_codex_greeting else "not_started",
-                      "error": str(exc)}
+        except Exception as exc:
+            result = {"ok": False, "outcome": "unknown", "error": str(exc)}
         with self._lock:
             self._sending.discard(name)
             if name == "Codex" and state.get("greetingGeneration") != greeting_generation:
@@ -991,7 +998,7 @@ class LimitResetService:
             if name == "Codex":
                 state.pop("greetingIntent", None)
                 state["lastGreetingOutcome"] = ("completed" if isinstance(result, dict) and result.get("ok") else
-                                                "not_started" if isinstance(result, dict) and result.get("outcome") in {"not_started", "rejected"}
+                                                "not_started" if not_started
                                                 else "unknown")
                 if state["lastGreetingOutcome"] == "not_started":
                     state["armed"] = True
@@ -1071,6 +1078,10 @@ class LimitResetService:
         if not available:
             action["previousSample"] = current_sample
             return False
+
+        if action.get("retryPending"):
+            action["previousSample"] = current_sample
+            return now >= float(action.get("retryAfter") or 0)
 
         # A manual/weekly reset can restore allowance without the five-hour
         # counter reaching zero. The last observed blocked sample proves it.
@@ -1581,6 +1592,7 @@ class LimitResetService:
                 return
 
         sender = None
+        not_started = False
         try:
             policy_for(name, self.policies).require("greet")
             sender = self.senders.get(name)
@@ -1588,13 +1600,19 @@ class LimitResetService:
                 raise ProviderPolicyError("greeting sender is unavailable")
             if sender is send_codex_greeting or sender is send_claude_greeting:
                 result = sender(self.cwd, policies=self.policies)
+                not_started = sender is send_codex_greeting and result.get("outcome") == "not_started"
             else:
                 result = sender(self.cwd)
+        except CodexNotStarted as exc:
+            not_started = True
+            result = {"ok": False, "outcome": "not_started", "error": str(exc)}
+        except ProviderPolicyError as exc:
+            not_started = sender is None
+            result = {"ok": False, "outcome": "not_started" if not_started else "unknown", "error": str(exc)}
         except subprocess.TimeoutExpired as exc:
             result = {"ok": False, "outcome": "unknown", "error": str(exc)}
-        except Exception as exc:  # injected senders raise only before starting a child
-            result = {"ok": False, "outcome": "unknown" if sender is send_codex_greeting else "not_started",
-                      "error": str(exc)}
+        except Exception as exc:
+            result = {"ok": False, "outcome": "unknown", "error": str(exc)}
 
         with self._lock:
             self._sending.discard(name)
@@ -1602,7 +1620,7 @@ class LimitResetService:
                 return
             state.pop("greetingIntent", None)
             state["lastGreetingOutcome"] = ("completed" if isinstance(result, dict) and result.get("ok") else
-                                            "not_started" if isinstance(result, dict) and result.get("outcome") in {"not_started", "rejected"}
+                                            "not_started" if not_started
                                             else "unknown")
             if state["lastGreetingOutcome"] == "not_started":
                 state["releasedGreetingCycle"] = cycle_key

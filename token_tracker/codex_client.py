@@ -240,74 +240,145 @@ def _run_contained_codex(resolved: CodexExecutable, args: list[str], *, timeout:
     kernel.CreateJobObjectW.restype = wt.HANDLE
     kernel.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
     kernel.SetInformationJobObject.restype = wt.BOOL
-    kernel.AssignProcessToJobObject.argtypes = [wt.HANDLE, wt.HANDLE]
-    kernel.AssignProcessToJobObject.restype = wt.BOOL
     kernel.CloseHandle.argtypes = [wt.HANDLE]
     kernel.CloseHandle.restype = wt.BOOL
-    ntdll = ctypes.WinDLL("ntdll")
-    ntdll.NtResumeProcess.argtypes = [wt.HANDLE]
-    ntdll.NtResumeProcess.restype = ctypes.c_long
     job = kernel.CreateJobObjectW(None, None)  # default security attributes: non-inheritable
     if not job:
         raise OSError(ctypes.get_last_error(), "could not create containment job")
-    proc = None
-    reader = None
-    result: list[tuple[str, str]] = []
-    drain_errors: list[Exception] = []
     try:
         limits = EXTENDED_LIMIT()
         limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             raise OSError(ctypes.get_last_error(), "could not configure containment job")
-        proc = subprocess.Popen(command, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False,
-                                close_fds=True, creationflags=0x00000004 | subprocess.CREATE_NO_WINDOW)
-        if not kernel.AssignProcessToJobObject(job, int(proc._handle)):
-            raise OSError(ctypes.get_last_error(), "could not assign containment job")
-        # A resume error may occur after execution begins; classify it as unknown.
-        mark_started()
-        if ntdll.NtResumeProcess(int(proc._handle)) != 0:
-            raise OSError("could not resume contained process")
-
-        def communicate() -> None:
-            try:
-                result.append(proc.communicate())
-            except Exception as exc:
-                drain_errors.append(exc)
-
-        reader = threading.Thread(target=communicate, daemon=True)
-        reader.start()
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            kernel.CloseHandle(job)
-            job = None
-            reader.join(2.0)
-            raise subprocess.TimeoutExpired(command, timeout)
-        # Closing the job also terminates descendants which kept pipes open.
-        kernel.CloseHandle(job)
-        job = None
-        reader.join(2.0)
-        if reader.is_alive() or drain_errors or not result:
-            raise subprocess.TimeoutExpired(command, timeout)
-        stdout, stderr = result[0]
-        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+        return _windows_process_in_job(kernel, job, command, cwd, child_env, timeout, mark_started)
     finally:
-        if job:
-            kernel.CloseHandle(job)
-        if proc is not None and proc.poll() is None:
+        kernel.CloseHandle(job)
+
+
+def _windows_process_in_job(kernel: Any, job: Any, command: list[str], cwd: Path | None,
+                            env: dict[str, str], timeout: float, mark_started: Any) -> subprocess.CompletedProcess:
+    """Create a process atomically assigned to the job using STARTUPINFOEX."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes as wt
+
+    class STARTUPINFO(ctypes.Structure):
+        _fields_ = [("cb", wt.DWORD), ("lpReserved", wt.LPWSTR), ("lpDesktop", wt.LPWSTR),
+                    ("lpTitle", wt.LPWSTR), ("dwX", wt.DWORD), ("dwY", wt.DWORD),
+                    ("dwXSize", wt.DWORD), ("dwYSize", wt.DWORD), ("dwXCountChars", wt.DWORD),
+                    ("dwYCountChars", wt.DWORD), ("dwFillAttribute", wt.DWORD), ("dwFlags", wt.DWORD),
+                    ("wShowWindow", wt.WORD), ("cbReserved2", wt.WORD),
+                    ("lpReserved2", ctypes.c_void_p), ("hStdInput", wt.HANDLE),
+                    ("hStdOutput", wt.HANDLE), ("hStdError", wt.HANDLE)]
+
+    class STARTUPINFOEX(ctypes.Structure):
+        _fields_ = [("StartupInfo", STARTUPINFO), ("lpAttributeList", ctypes.c_void_p)]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [("hProcess", wt.HANDLE), ("hThread", wt.HANDLE),
+                    ("dwProcessId", wt.DWORD), ("dwThreadId", wt.DWORD)]
+
+    kernel.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wt.DWORD, wt.DWORD, ctypes.POINTER(ctypes.c_size_t)]
+    kernel.InitializeProcThreadAttributeList.restype = wt.BOOL
+    kernel.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wt.DWORD, ctypes.c_size_t, ctypes.c_void_p,
+                                                 ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
+    kernel.UpdateProcThreadAttribute.restype = wt.BOOL
+    kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+    kernel.CreateProcessW.argtypes = [wt.LPCWSTR, wt.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wt.BOOL,
+                                      wt.DWORD, ctypes.c_void_p, wt.LPCWSTR,
+                                      ctypes.POINTER(STARTUPINFO), ctypes.POINTER(PROCESS_INFORMATION)]
+    kernel.CreateProcessW.restype = wt.BOOL
+    kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel.WaitForSingleObject.restype = wt.DWORD
+    kernel.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+    kernel.GetExitCodeProcess.restype = wt.BOOL
+    kernel.TerminateJobObject.argtypes = [wt.HANDLE, wt.UINT]
+    kernel.TerminateJobObject.restype = wt.BOOL
+    fds: set[int] = set()
+    info = PROCESS_INFORMATION()
+    attr_initialized = False
+    threads: list[threading.Thread] = []
+    outputs = ["", ""]
+    errors: list[Exception] = []
+    try:
+        out_read, out_write = os.pipe()
+        fds.update((out_read, out_write))
+        err_read, err_write = os.pipe()
+        fds.update((err_read, err_write))
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        fds.add(devnull)
+        for fd in (out_write, err_write, devnull):
+            os.set_inheritable(fd, True)
+        handles = (wt.HANDLE * 3)(*(msvcrt.get_osfhandle(fd) for fd in (devnull, out_write, err_write)))
+        jobs = (wt.HANDLE * 1)(job)
+        size = ctypes.c_size_t()
+        kernel.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+        if not size.value:
+            raise OSError(ctypes.get_last_error(), "could not size process attributes")
+        storage = ctypes.create_string_buffer(size.value)
+        attributes = ctypes.cast(storage, ctypes.c_void_p)
+        if not kernel.InitializeProcThreadAttributeList(attributes, 2, 0, ctypes.byref(size)):
+            raise OSError(ctypes.get_last_error(), "could not initialize process attributes")
+        attr_initialized = True
+        for key, values in ((0x00020002, handles), (0x0002000D, jobs)):
+            if not kernel.UpdateProcThreadAttribute(attributes, 0, key, ctypes.byref(values), ctypes.sizeof(values), None, None):
+                raise OSError(ctypes.get_last_error(), "could not set process attributes")
+        startup = STARTUPINFOEX()
+        startup.StartupInfo.cb = ctypes.sizeof(startup)
+        startup.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
+        startup.StartupInfo.hStdInput, startup.StartupInfo.hStdOutput, startup.StartupInfo.hStdError = handles
+        startup.lpAttributeList = attributes
+        command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+        environment = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(env.items(), key=lambda item: item[0].upper())) + "\0\0")
+        if not kernel.CreateProcessW(command[0], command_line, None, None, True,
+                                     0x00080000 | 0x00000400 | subprocess.CREATE_NO_WINDOW,
+                                     environment, str(cwd) if cwd is not None else None,
+                                     ctypes.byref(startup.StartupInfo), ctypes.byref(info)):
+            raise OSError(ctypes.get_last_error(), "could not create contained process")
+        mark_started()  # Successful CreateProcess is the delivery boundary.
+        for fd in (out_write, err_write, devnull):
+            os.close(fd)
+            fds.remove(fd)
+        def drain(index: int, fd: int) -> None:
             try:
-                proc.kill()
+                with os.fdopen(fd, "r", errors="replace") as stream:
+                    outputs[index] = stream.read()
+            except Exception as exc:
+                errors.append(exc)
+        for index, fd in enumerate((out_read, err_read)):
+            thread = threading.Thread(target=drain, args=(index, fd), daemon=True)
+            thread.start()
+            fds.remove(fd)
+            threads.append(thread)
+        wait_ms = min(0xFFFFFFFE, max(0, int(timeout * 1000)))
+        wait_result = kernel.WaitForSingleObject(info.hProcess, wait_ms)
+        if wait_result != 0:
+            kernel.TerminateJobObject(job, 1)
+            for thread in threads:
+                thread.join(1)
+            raise subprocess.TimeoutExpired(command, timeout)
+        code = wt.DWORD()
+        if not kernel.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+            raise OSError(ctypes.get_last_error(), "could not read process exit status")
+        # A finished parent may leave descendants holding the pipes.
+        kernel.TerminateJobObject(job, 1)
+        for thread in threads:
+            thread.join(1)
+        if errors or any(thread.is_alive() for thread in threads):
+            raise subprocess.TimeoutExpired(command, timeout)
+        return subprocess.CompletedProcess(command, code.value, outputs[0], outputs[1])
+    finally:
+        if info.hThread:
+            kernel.CloseHandle(info.hThread)
+        if info.hProcess:
+            kernel.CloseHandle(info.hProcess)
+        if attr_initialized:
+            kernel.DeleteProcThreadAttributeList(attributes)
+        for fd in fds:
+            try:
+                os.close(fd)
             except OSError:
                 pass
-            try:
-                proc.wait(timeout=2.0)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        if proc is not None and reader is None:
-            for stream in (proc.stdout, proc.stderr):
-                if stream is not None:
-                    stream.close()
 
 
 

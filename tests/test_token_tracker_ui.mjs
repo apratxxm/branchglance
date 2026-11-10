@@ -141,6 +141,7 @@ async function acceptRunwayLive(sample){
   assert.match(rootMarkup,/data-runway-slot="activity"[^>]*>Reading live_telemetry\.py</);
   assert.doesNotMatch(rootMarkup,/Read live telemetry/);
   assert.match(rootMarkup,/class="runway-model-timing"/);
+  assert.match(rootMarkup,/title="Context occupancy: 80000 \/ 200000 tokens"/);
   assert.notEqual(R.runwayStateElapsed(root),"—");
   assert.match(childMarkup,/runway-telemetry-state t-attn[^>]*aria-label="Waiting"/);
   assert.match(childMarkup,/data-action="runway-question" data-key="Codex:run-worker"/);

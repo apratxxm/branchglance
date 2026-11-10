@@ -74,6 +74,109 @@ def test_superseded_builder_cannot_replace_newer_snapshot(monkeypatch):
     assert cache.value["marker"] == "new"
 
 
+def test_superseded_build_never_records_peaks(monkeypatch):
+    cache = server.SnapshotCache()
+    started, release = threading.Event(), threading.Event()
+    peaks = []
+    def build():
+        started.set()
+        release.wait(2)
+        return {"providers": [], "marker": "old"}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: peaks.append(value["marker"]))
+    cache.get_background()
+    assert started.wait(1)
+    cache.value = {"providers": [], "marker": "new"}
+    release.set()
+    _wait_idle(cache)
+    assert peaks == []
+
+
+def test_epoch_change_waits_for_guarded_durable_commit(tmp_path, monkeypatch):
+    cache = server.SnapshotCache(persist_path=tmp_path / "snapshot.json", compatibility="test")
+    cache._restore_pending = False
+    original_key = cache._ensure_persistence_key()
+    entered, release, changed = threading.Event(), threading.Event(), threading.Event()
+    disk = cache.persist_path
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": [], "marker": "old"})
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: None)
+    monkeypatch.setattr(cache, "_persistable", lambda value: True)
+    def write(_snapshot, _generation, _built_at):
+        entered.set()
+        assert release.wait(2)
+        disk.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(cache, "_write_persisted", write)
+    cache.get_background()
+    assert entered.wait(1)
+    def change():
+        cache.value = {"providers": [], "marker": "new"}
+        changed.set()
+    thread = threading.Thread(target=change)
+    thread.start()
+    try:
+        assert not changed.wait(.05)
+    finally:
+        release.set()
+    thread.join(2)
+    _wait_idle(cache)
+    assert changed.is_set() and cache.value["marker"] == "new"
+    assert disk.exists()
+    assert cache._read_persistence_key() != original_key
+
+
+def test_rotated_epoch_rejects_old_authenticated_snapshot_on_restart(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    stamp = datetime.now(timezone.utc).isoformat()
+    old = {"generatedAt": stamp, "enabledProviders": ["Codex"], "providers": [
+        {"name": "Codex", "connected": True, "chats": []}]}
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Codex"}))
+    cache._write_persisted(old, 1, stamp)
+    assert path.exists()
+    cache.value = {"providers": [], "marker": "new"}
+    assert path.exists(), "correctness cannot rely on deleting the old record"
+    restored = server.SnapshotCache(persist_path=path, compatibility="test")
+    restored._ensure_restored()
+    assert restored.value is None
+
+
+def test_restore_and_epoch_change_are_serialized(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    stamp = datetime.now(timezone.utc).isoformat()
+    old = {"generatedAt": stamp, "enabledProviders": ["Codex"], "providers": [
+        {"name": "Codex", "connected": True, "chats": []}]}
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Codex"}))
+    server.SnapshotCache(persist_path=path, compatibility="test")._write_persisted(old, 1, stamp)
+    cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    read_key = cache._read_persistence_key
+    entered, release, changed = threading.Event(), threading.Event(), threading.Event()
+
+    def paused_read():
+        entered.set()
+        assert release.wait(2)
+        return read_key()
+
+    monkeypatch.setattr(cache, "_read_persistence_key", paused_read)
+    restore = threading.Thread(target=cache._ensure_restored)
+    restore.start()
+    assert entered.wait(1)
+
+    def change():
+        cache.value = {"providers": [], "marker": "new"}
+        changed.set()
+
+    setter = threading.Thread(target=change)
+    setter.start()
+    try:
+        assert not changed.wait(.05)
+    finally:
+        release.set()
+        restore.join(2)
+        setter.join(2)
+    assert changed.is_set()
+    assert cache.value["marker"] == "new"
+
+
 def test_timeout_returns_stale_snapshot_and_disables_restored_actions(monkeypatch):
     cache = server.SnapshotCache(ttl=0)
     cache.REQUEST_TIMEOUT_SECONDS = 0.05

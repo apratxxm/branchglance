@@ -12,6 +12,42 @@ def test_parser_rejects_invalid_values():
         assert statusline.parse(sample(value), now=1000) == {}
 
 
+def test_live_usage_parser_preserves_nulls_and_rejects_conflicting_limits(tmp_path):
+    reset = "1970-01-01T00:33:20Z"
+    payload = {"five_hour": {"utilization": 20, "resets_at": reset},
+               "seven_day": {"utilization": None, "resets_at": reset},
+               "limits": [{"kind": "session", "percent": 80, "resets_at": reset},
+                          {"kind": "weekly_scoped", "percent": 100, "resets_at": reset}]}
+    fixture = tmp_path / "usage.json"
+    fixture.write_text(json.dumps(payload), encoding="utf-8")
+    parsed = statusline.parse_live_usage(json.loads(fixture.read_text(encoding="utf-8")), observed_at=1000)
+    assert parsed["five_hour"]["used_percentage"] == 20
+    assert parsed["five_hour"]["receivedAt"] == 1000
+    assert parsed["five_hour"]["actionUsable"] is False
+    assert parsed["five_hour"]["crossCheckPassed"] is False
+    assert parsed["seven_day"]["used_percentage"] is None
+    assert parsed["seven_day"]["actionUsable"] is False
+
+
+def test_live_usage_parser_rejects_invalid_values_and_naive_resets(tmp_path):
+    for value in (True, "20", -1, 101, float("nan"), float("inf")):
+        assert statusline.parse_live_usage({"five_hour": {"utilization": value,
+                                                         "resets_at": "1970-01-01T00:33:20Z"}}, observed_at=1000) == {}
+    assert statusline.parse_live_usage({"five_hour": {"utilization": 20,
+                                                     "resets_at": "1970-01-01T00:33:20"}}, observed_at=1000) == {}
+
+
+def test_live_usage_parser_keeps_fresh_partial_observation_separate(tmp_path):
+    payload = {"five_hour": {"utilization": 20, "resets_at": "1970-01-01T00:33:20Z"},
+               "seven_day": None,
+               "limits": [{"kind": "session", "percent": 20, "resets_at": "1970-01-01T00:33:20+00:00"}]}
+    parsed = statusline.parse_live_usage(payload, observed_at=1100)
+    assert set(parsed) == {"five_hour"}
+    assert parsed["five_hour"]["receivedAt"] == 1100
+    assert parsed["five_hour"]["crossCheckPassed"] is True
+    assert parsed["five_hour"]["actionUsable"] is False
+
+
 def test_unchanged_or_lower_usage_does_not_refresh(tmp_path):
     statusline.write(statusline.parse(sample(40), now=1000), tmp_path, now=1000)
     statusline.write(statusline.parse(sample(40), now=1100), tmp_path, now=1100)
@@ -40,7 +76,8 @@ def test_cli_store_is_bound_to_desktop_org(tmp_path):
     cli_path = tmp_path / statusline.CLI_FILENAME
     assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-a", cli_path=cli_path)["fiveHourPercent"] == 22
     assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-b", cli_path=cli_path)["fiveHourPercent"] is None
-    assert statusline.merge_usage(empty_desktop(), [], now=1000, cli_path=cli_path)["fiveHourPercent"] == 22
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, cli_path=cli_path)["fiveHourPercent"] is None
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id=" ", cli_path=cli_path)["fiveHourPercent"] is None
 
 
 def test_parser_schema_and_reset_edges():

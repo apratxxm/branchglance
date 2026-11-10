@@ -349,7 +349,9 @@ def test_metadata_without_name_column_passes_real_dispatch_boundary(tmp_path, mo
     result = dispatcher.dispatch("reset-cycle-1")
 
     assert queued == [THREAD]
-    assert result["targets"] == [{"threadId": THREAD, "status": "queued", "reason": None}]
+    [target] = result["targets"]
+    assert {k: target[k] for k in ("threadId", "status", "reason")} == {"threadId": THREAD, "status": "queued", "reason": None}
+    assert isinstance(target["armGeneration"], str) and target["attempts"] == 1
     assert isinstance(state["lastRun"]["at"], float)
 
 
@@ -399,7 +401,7 @@ def test_missing_cli_and_invalid_id_never_invoke_runner(monkeypatch):
     monkeypatch.setattr(reset_delivery, "run_contained_codex", lambda *a, **k: called.append(a))
     assert reset_delivery.queue_continue(THREAD,
                                          policies=TEST_POLICIES) == {
-        "status": "rejected", "error": "Codex CLI is unavailable"
+        "status": "not_started", "error": "Codex CLI is unavailable"
     }
     assert reset_delivery.queue_continue("not-a-thread", executable="codex.exe")["status"] == "rejected"
     assert called == []

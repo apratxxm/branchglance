@@ -12,7 +12,7 @@ from typing import Any
 from collections.abc import Mapping
 
 from . import providers
-from .codex_client import CodexAppServer, CodexUnavailable, resolve_codex, run_contained_codex
+from .codex_client import CodexAppServer, CodexNotStarted, CodexUnavailable, resolve_codex, run_contained_codex
 from .provider_policy import POLICIES, ProviderPolicy, ProviderPolicyError, policy_for
 
 
@@ -239,16 +239,21 @@ def queue_continue(
         policy_for("Codex", POLICIES if policies is None else policies).require("continue")
     except ProviderPolicyError as exc:
         return {"status": "rejected", "error": str(exc)}
-    resolved = resolve_codex(executable)
+    try:
+        resolved = resolve_codex(executable)
+    except OSError:
+        return {"status": "not_started", "error": "Codex CLI is unavailable"}
     if not resolved:
-        return {"status": "rejected", "error": "Codex CLI is unavailable"}
+        return {"status": "not_started", "error": "Codex CLI is unavailable"}
     try:
         result = run_contained_codex(resolved, ["queue", "--thread", thread_id, "--message", "continue"],
                                      timeout=QUEUE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         return {"status": "unknown", "error": "queue status unknown; check the Codex task"}
+    except CodexNotStarted:
+        return {"status": "not_started", "error": "could not start Codex CLI"}
     except OSError:
-        return {"status": "rejected", "error": "could not start Codex CLI"}
+        return {"status": "unknown", "error": "queue status unknown; check the Codex task"}
     if result.returncode:
         return {"status": "rejected", "error": "Codex CLI rejected the queue request"}
     return {"status": "queued"}

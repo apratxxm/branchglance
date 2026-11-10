@@ -326,6 +326,8 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(page,/id="brand-name">Branchglance/);
   const template=css.match(/\.runway-refined-row\{\s*grid-template-columns:([^;]+);/)?.[1];
   assert.ok(template,"the inspect row declares shared tracks");
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-title\{grid-column:1 \/ 3/,'child titles stay in the shared title column');
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-timing\{grid-column:4/,'child timing stays in the shared timing column');
   const minimums=[120,46,82,70,80,78],gap=8,padLeft=30,centers=[];let x=padLeft;
   for(const width of minimums){centers.push(x+width/2);x+=width+gap;}
   assert.equal(centers.length,6);

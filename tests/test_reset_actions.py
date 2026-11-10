@@ -15,6 +15,7 @@ from token_tracker.reset_actions import ResetActionDispatcher, default_action
 T0 = 1_800_000_000.0
 ONE = "00000000-0000-4000-8000-000000000001"
 TWO = "00000000-0000-4000-8000-000000000002"
+THREE = "00000000-0000-4000-8000-000000000003"
 TEST_POLICIES = load_policies({
     "TOKEN_TRACKER_CODEX_COLLECT": "true",
     "TOKEN_TRACKER_CODEX_SHOW": "true",
@@ -44,6 +45,7 @@ class Harness:
             list_candidates=lambda limit=100: [
                 {"id": ONE, "title": "one", "status": "idle"},
                 {"id": TWO, "title": "two", "status": "idle"},
+                {"id": THREE, "title": "three", "status": "idle"},
             ][:limit],
             inspect_target=lambda thread_id: self.inspection.get(thread_id, {
                 "exists": True, "archived": False, "running": False, "waiting": False,
@@ -186,6 +188,78 @@ def test_final_save_failure_does_not_rearm_consumed_generation():
     h.dispatcher = h.make_dispatcher()
     assert h.dispatcher.dispatch("codex:final-save") is None
     assert h.queue_calls == [ONE]
+
+
+@pytest.mark.parametrize("selection", [[TWO], [ONE, TWO]])
+@pytest.mark.parametrize("first_status", ["queued", "unknown"])
+def test_rearm_same_cycle_only_delivers_new_targets(selection, first_status):
+    h = Harness(queued={ONE: {"status": first_status}})
+    h.dispatcher.configure("continue", [ONE])
+    h.dispatcher.dispatch("same-cycle")
+    h.dispatcher.configure("continue", selection)
+    result = h.dispatcher.dispatch("same-cycle")
+    assert [item["threadId"] for item in result["targets"]] == selection
+    assert h.queue_calls == [ONE, TWO]
+    if ONE in selection:
+        assert result["targets"][0]["status"] == first_status
+
+
+def test_mixed_delivery_retries_only_proven_unstarted_target():
+    h = Harness(queued={ONE: {"status": "queued"}, TWO: {"status": "not_started"}, THREE: {"status": "unknown"}})
+    h.dispatcher.configure("continue", [ONE, TWO, THREE])
+    generation = h.state["armGeneration"]
+    first = h.dispatcher.dispatch("same-cycle")
+    assert [item["status"] for item in first["targets"]] == ["queued", "not_started", "unknown"]
+    assert h.state["armed"] is True and h.state["armGeneration"] == generation
+    assert h.dispatcher.dispatch("same-cycle") is None
+    h.now += reset_actions.NOT_STARTED_RETRY_SECONDS
+    h.queue_results[TWO] = {"status": "queued"}
+    second = h.dispatcher.dispatch("same-cycle")
+    assert [item["status"] for item in second["targets"]] == ["queued", "queued", "unknown"]
+    assert h.queue_calls == [ONE, TWO, THREE, TWO]
+    assert h.state["armed"] is False
+
+
+def test_not_started_retries_are_bounded():
+    h = Harness(queued={ONE: {"status": "not_started"}})
+    h.dispatcher.configure("continue", [ONE])
+    for attempt in range(reset_actions.MAX_NOT_STARTED_ATTEMPTS):
+        assert h.dispatcher.dispatch("same-cycle")["targets"][0]["status"] == "not_started"
+        assert h.state["armed"] is (attempt + 1 < reset_actions.MAX_NOT_STARTED_ATTEMPTS)
+        h.now += reset_actions.NOT_STARTED_RETRY_SECONDS
+    assert h.dispatcher.dispatch("same-cycle") is None
+    assert len(h.queue_calls) == reset_actions.MAX_NOT_STARTED_ATTEMPTS
+
+
+def test_failed_result_save_does_not_release_unpersisted_claim():
+    h = Harness(queued={ONE: {"status": "not_started"}, TWO: {"status": "not_started"}})
+    h.dispatcher.configure("continue", [ONE, TWO])
+    saves = []
+
+    def save():
+        saves.append(copy.deepcopy(h.state))
+        return len(saves) != 3
+
+    h.dispatcher.save = save
+    result = h.dispatcher.dispatch("same-cycle")
+    assert [row["status"] for row in result["targets"]] == ["not_started", "unknown"]
+    h.now += reset_actions.NOT_STARTED_RETRY_SECONDS
+    h.queue_results[ONE] = {"status": "queued"}
+    result = h.dispatcher.dispatch("same-cycle")
+    assert [row["status"] for row in result["targets"]] == ["queued", "unknown"]
+    assert h.queue_calls == [ONE, TWO, ONE]
+
+
+def test_typed_transport_prestart_exception_is_retryable():
+    from token_tracker.codex_client import CodexNotStarted
+
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    def fail_before_start(_thread_id):
+        raise CodexNotStarted("could not create process")
+    h.dispatcher.queue_continue = fail_before_start
+    assert h.dispatcher.dispatch("same-cycle")["targets"][0]["status"] == "not_started"
+    assert h.state["armed"] is True
 
 
 def test_result_commit_does_not_disarm_new_arm():

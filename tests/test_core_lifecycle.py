@@ -97,7 +97,7 @@ def test_p1_all_callers_refuse_shim_only_path(tmp_path, monkeypatch):
     with pytest.raises(FileNotFoundError):
         server.queue_codex_message(thread, "hello")
     assert limit_reset.send_codex_greeting(work, policies=policies)["ok"] is False
-    assert reset_delivery.queue_continue(thread, policies=policies)["status"] == "rejected"
+    assert reset_delivery.queue_continue(thread, policies=policies)["status"] == "not_started"
     assert codex_client.CodexAppServer().executable is None
 
 
@@ -123,23 +123,79 @@ def test_p1_job_kills_descendant_and_closes_inherited_pipes(fake_codex, tmp_path
     assert _process_gone(pid)
 
 
-def test_p1_assignment_failure_never_resumes_child(fake_codex, tmp_path, monkeypatch):
+def test_p1_job_attribute_failure_refuses_creation(fake_codex, tmp_path, monkeypatch):
     original = ctypes.WinDLL
     real_kernel = original("kernel32", use_last_error=True)
-    class FailedAssignment:
+    class FailedAttribute:
         argtypes = None
         restype = None
         def __call__(self, *_args):
             return False
     class KernelProxy:
-        AssignProcessToJobObject = FailedAssignment()
+        UpdateProcThreadAttribute = FailedAttribute()
         def __getattr__(self, name):
             return getattr(real_kernel, name)
     monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kwargs: KernelProxy() if name == "kernel32" else original(name, **kwargs))
     marker = tmp_path / "executed"
-    with pytest.raises(OSError):
+    with pytest.raises(codex_client.CodexNotStarted):
         codex_client.run_contained_codex(fake_codex, ["-c", "open(__import__('sys').argv[1],'w').write('bad')", str(marker)], timeout=5)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("failure", ["create", "after_create", "supervisor_exit"])
+def test_p1_creation_boundary_uses_job_attribute_and_classifies_failures(fake_codex, monkeypatch, failure):
+    original = ctypes.WinDLL
+    real_kernel = original("kernel32", use_last_error=True)
+    observed = {"attributes": [], "closed": [], "created": False}
+    class Api:
+        def __init__(self, function):
+            self.function = function
+            self.argtypes = None
+            self.restype = None
+        def __call__(self, *args):
+            return self.function(*args)
+    def update(*args):
+        observed["attributes"].append(args[2])
+        real_kernel.UpdateProcThreadAttribute.argtypes = proxy.UpdateProcThreadAttribute.argtypes
+        real_kernel.UpdateProcThreadAttribute.restype = proxy.UpdateProcThreadAttribute.restype
+        return real_kernel.UpdateProcThreadAttribute(*args)
+    def create(*args):
+        assert 0x0002000D in observed["attributes"]
+        if failure == "create":
+            return False
+        observed["created"] = True
+        return True
+    def close(handle):
+        observed["closed"].append(handle)
+        real_kernel.CloseHandle.argtypes = proxy.CloseHandle.argtypes
+        real_kernel.CloseHandle.restype = proxy.CloseHandle.restype
+        return real_kernel.CloseHandle(handle)
+    class Proxy:
+        def __init__(self):
+            self.UpdateProcThreadAttribute = Api(update)
+            self.CreateProcessW = Api(create)
+            self.CloseHandle = Api(close)
+        def __getattr__(self, name):
+            return getattr(real_kernel, name)
+    proxy = Proxy()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kwargs: proxy if name == "kernel32" else original(name, **kwargs))
+    if failure in ("after_create", "supervisor_exit"):
+        real_close = os.close
+        failed = [False]
+        def close_fd(fd):
+            if observed["created"] and not failed[0]:
+                failed[0] = True
+                if failure == "supervisor_exit":
+                    raise SystemExit("simulated supervisor exit")
+                raise OSError("simulated post-create failure")
+            return real_close(fd)
+        monkeypatch.setattr(os, "close", close_fd)
+    expected = codex_client.CodexNotStarted if failure == "create" else SystemExit if failure == "supervisor_exit" else subprocess.TimeoutExpired
+    with pytest.raises(expected):
+        codex_client.run_contained_codex(fake_codex, ["-c", "pass"], timeout=1)
+    assert {0x00020002, 0x0002000D}.issubset(observed["attributes"])
+    assert observed["closed"], "the job handle closes on every boundary"
+    assert observed["created"] is (failure != "create")
 
 
 def test_p7_retention_dates_reparse_and_concurrent_writer(tmp_path):
@@ -170,3 +226,15 @@ def test_p7_retention_dates_reparse_and_concurrent_writer(tmp_path):
                  "20260230.jsonl", "２０２６１１０１.jsonl", "dropped.jsonl", "20261101.jsonl", "20261031.jsonl"):
         assert (directory / name).exists()
     assert outside.read_text() == "untouched"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory traversal")
+def test_retention_refuses_symlink_in_ancestor(tmp_path):
+    outside = tmp_path / "outside"
+    events = outside / "claude-events"
+    events.mkdir(parents=True)
+    sentinel = events / "20260101.jsonl"
+    sentinel.write_text("keep", encoding="utf-8")
+    (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
+    claude_hook.prune_event_logs(str(tmp_path / "linked" / "claude-events"), today=date(2026, 11, 10))
+    assert sentinel.read_text(encoding="utf-8") == "keep"
