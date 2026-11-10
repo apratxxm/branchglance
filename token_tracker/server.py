@@ -680,7 +680,7 @@ class SnapshotCache:
             return None
         result = copy.deepcopy(value)
         from . import claude_identity
-        identity = claude_identity.current_identity()
+        _, identity = claude_identity.AUTHORITY.capture_nonblocking()
         metadata = dict(metadata)
         for provider in result.get("providers", []):
             if isinstance(provider, dict):
@@ -757,7 +757,10 @@ class SnapshotCache:
     def _build_inner(self, *, background: bool = False, attempt: int | None = None,
                      publication_epoch: int = 0):
         from . import claude_identity
-        identity = claude_identity.current_identity()
+        try:
+            identity = claude_identity.current_identity()
+        except Exception:
+            identity = None
         identity_generation = identity.generation if identity else None
         value = copy.deepcopy(build_snapshot())
         if not isinstance(value, dict):
@@ -786,15 +789,22 @@ class SnapshotCache:
                         provider[field] = copy.deepcopy(saved)
                         times = provider.setdefault("_quotaWindowObservedAt", {})
                         times[field] = (old.get("_quotaWindowObservedAt") or {}).get(field, old.get("limitsUpdatedAt"))
-        latest_identity = claude_identity.current_identity()
-        if (latest_identity.generation if latest_identity else None) != identity_generation:
-            raise RuntimeError("Claude identity changed during snapshot build")
+        try:
+            latest_identity = claude_identity.current_identity()
+        except Exception:
+            latest_identity = None
+        identity_current = bool(identity_generation and latest_identity and latest_identity.generation == identity_generation)
         with self._publication_lock, claude_identity.AUTHORITY.guard(identity_generation) as guarded_identity:
             with self.condition:
                 if publication_epoch != self._publication_epoch:
                     raise RuntimeError("snapshot publication superseded")
-            if identity_generation is not None and guarded_identity is None:
-                raise RuntimeError("Claude identity changed during snapshot publication")
+            if not identity_current or guarded_identity is None:
+                for snapshot in (value, display, trusted):
+                    for provider in snapshot.get("providers", []):
+                        if isinstance(provider, dict) and provider.get("name") == "Claude":
+                            provider["identityVerified"] = False
+                            provider["identityLabel"] = "Account unverified"
+                            provider.pop("identityGeneration", None)
             _record_insights_peaks(value)
             if self._persistable(value):
                 self._write_persisted(display, generation, built_at)
@@ -1025,7 +1035,7 @@ class FastClaudeLimits:
     def overlay(self, snapshot: dict, *, owned: bool = False) -> dict:
         """Overlay quota data, copying unless the caller owns its snapshot."""
         from . import claude_identity
-        identity = claude_identity.current_identity()
+        _, identity = claude_identity.AUTHORITY.capture_nonblocking()
         epoch = identity.generation if identity else None
         with self.condition:
             if self.identity_generation != epoch:
@@ -1081,9 +1091,13 @@ class FastClaudeLimits:
         if limits is None:
             if waiting:
                 return self._apply_retained(snapshot, owned=owned)
-            limits = self._load()
-            if limits is None:
-                return self._apply_retained(snapshot, owned=owned)
+            try:
+                threading.Thread(target=self._load, name="fast-claude-limits", daemon=True).start()
+            except (RuntimeError, OSError):
+                with self.condition:
+                    self.loading = False
+                    self.condition.notify_all()
+            return self._apply_retained(snapshot, owned=owned)
         result = snapshot if owned else copy.deepcopy(snapshot)
         for provider in result.get("providers", []):
             if isinstance(provider, dict) and provider.get("name") == "Claude":
@@ -1247,7 +1261,7 @@ class Handler(SimpleHTTPRequestHandler):
                 {k: v for k, v in provider.items() if k != "_insightsData"} if isinstance(provider, dict) else provider
                 for provider in snapshot.get("providers") or []]}
             from . import claude_identity
-            identity = claude_identity.current_identity()
+            _, identity = claude_identity.AUTHORITY.capture_nonblocking()
             for provider in snapshot["providers"]:
                 if isinstance(provider, dict) and provider.get("name") == "Claude":
                     verified = bool(identity and provider.get("identityVerified") is True
@@ -1415,14 +1429,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge"}
+        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm"}
         if not self._valid_local_host():
             if settings_mutation:
                 self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
             self._reject_post(parsed.path, {"ok": False, "error": "local Host required"}, 403)
             return
-        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge"}:
+        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm"}:
             self._reject_post(parsed.path, {"ok": False, "error": "not found"}, 404)
             return
         if not self._same_origin_request():
@@ -1456,6 +1470,21 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/ledger/purge":
             self._purge_ledger(body)
+            return
+        if parsed.path == "/api/claude-greeting-rearm":
+            if body != {} or self.reset_service is None:
+                self._send_json({"ok": False, "error": "Claude greeting is unavailable."}, 400)
+                return
+            with _SETTINGS_TOKEN_LOCK:
+                if not _settings_token_matches_locked(self.headers.get("X-Branchglance-Settings-Token")):
+                    self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                    return
+                try:
+                    self.reset_service.rearm_claude_greeting()
+                except Exception:
+                    self._send_json({"ok": False, "error": "Claude greeting could not be armed."}, 409)
+                    return
+            self._send_json({"ok": True})
             return
         if settings_mutation:
             action = body.get("action") if isinstance(body, dict) else None

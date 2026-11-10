@@ -213,6 +213,7 @@ def test_cli_parser_and_environment(tmp_path, monkeypatch):
     ]
     class Process:
         def __init__(self, command, **kwargs):
+            assert command[1:3] != ["auth", "status"]
             observed.append((command, kwargs["env"]))
             data = {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "orgId": "org-a", "email": "private"} if command[1:3] == ["auth", "status"] else None
             self.stdout = io.BytesIO(json.dumps(data).encode() if data else b"\n".join(json.dumps(e).encode() for e in events))
@@ -231,6 +232,51 @@ def test_cli_parser_and_environment(tmp_path, monkeypatch):
     events[0]["apiKeySource"] = "api_key"
     result = lr.send_claude_greeting(tmp_path, policies=POLICIES)
     assert not result["ok"] and result["failureKind"] == "not_subscription" and not result["limits"]
+
+
+def test_passive_account_switch_disarms_until_explicit_rearm(tmp_path, monkeypatch):
+    from token_tracker import claude_identity
+    account = tmp_path / ".claude.json"
+    def write_account(account_id):
+        account.write_text(json.dumps({"oauthAccount": {"accountUuid": account_id, "organizationUuid": "org-a"}}))
+    clock = Clock()
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json", clock=clock)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(account))
+    monkeypatch.setattr(lr.LimitResetService, "_claude_account_sample", lambda self, org, now: lr.LimitSample(None, 10, now, None, identity_generation=authority.capture()[1].generation))
+    sent = []
+    watcher = lr.LimitResetService(sources={}, senders={"Claude": lambda cwd: sent.append(cwd) or {"ok": True, "delivered": True, "orgId": "org-a", "limits": {}}}, state_path=tmp_path / "state.json", log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True, clock=clock, monotonic=clock.monotonic, policies=POLICIES)
+    write_account("a")
+    watcher.rearm_claude_greeting()
+    state = watcher._provider_state("Claude")
+    state.update(nextGreetingAt=clock.now + 20, retryAfter=clock.now + 50)
+    write_account("b")
+    poll(watcher)
+    assert not sent and not state["armed"] and state["nextGreetingAt"] is None and state["retryAfter"] == 0
+    assert watcher.status()["providers"]["Claude"]["phase"] == "account_changed"
+    watcher.rearm_claude_greeting()
+    poll(watcher)
+    assert len(sent) == 1 and state["claudeIdentityFingerprint"] == claude_identity.account_fingerprint("b", "org-a")
+
+
+def test_interrupted_delivery_stays_claimed_across_account_round_trip(tmp_path, monkeypatch):
+    from token_tracker import claude_identity
+    account = tmp_path / ".claude.json"
+    def write_account(account_id):
+        account.write_text(json.dumps({"oauthAccount": {"accountUuid": account_id, "organizationUuid": "org-a"}}))
+    clock = Clock()
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json", clock=clock)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(account))
+    watcher = lr.LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json", log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True, clock=clock, monotonic=clock.monotonic, policies=POLICIES)
+    write_account("a")
+    watcher.rearm_claude_greeting()
+    state = watcher._provider_state("Claude")
+    state["dispatchIntent"] = {"cycleKey": "cycle-1", "at": clock.now}
+    write_account("b")
+    assert watcher._claude_disarm_changed(state, claude_identity.current_identity())
+    write_account("a")
+    watcher.rearm_claude_greeting()
+    assert state["claudeIdentityFingerprint"] == claude_identity.account_fingerprint("a", "org-a")
+    assert "cycle-1" in state["consumedCycles"]
 
 
 def test_missing_desktop_keeps_cli_evidence(tmp_path, monkeypatch):

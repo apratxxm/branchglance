@@ -17,6 +17,19 @@
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const message = (text, error=false) => { const el=$("#message"); el.textContent=text||""; el.classList.toggle("error",error); };
   const canChangeClaude = () => Boolean(settingsToken);
+  async function loadClaudeGreeting() {
+    try {
+      const response=await fetch('/api/limit-reset',{cache:'no-store'}), data=await response.json();
+      const button=$('#claude-rearm');if(button)button.hidden=!(settingsToken && (!response.ok || data?.providers?.Claude?.phase==='account_changed'));
+    } catch { const button=$('#claude-rearm');if(button)button.hidden=!settingsToken; }
+  }
+  async function rearmClaudeGreeting() {
+    try {
+      const response=await fetch('/api/claude-greeting-rearm',{method:'POST',headers:{'Content-Type':'application/json','X-Branchglance-Settings-Token':settingsToken},body:'{}'});
+      if(!response.ok)throw new Error('Claude greeting could not be armed.');
+      message('Claude greeting re-armed.'); await loadClaudeGreeting();
+    } catch(e) { message(e.message,true); }
+  }
   function renderClaude() {
     const value=state.claude,status=$("#claude-status"),button=$("#claude-toggle"),explanation=$("#claude-explanation"),readOnly=$("#claude-readonly-note");
     if(!value){status.textContent="Unavailable";button.textContent="Turn on Claude Code";button.disabled=true;explanation.hidden=true;readOnly.hidden=canChangeClaude();return;}
@@ -216,6 +229,7 @@
   $("#search").addEventListener("input",()=>{state.page=0;render();}); $("#page-prev")?.addEventListener("click",()=>{state.page--;render();}); $("#page-next")?.addEventListener("click",()=>{state.page++;render();}); $("#refresh").addEventListener("click",load); $("#save").addEventListener("click",save);
   $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();loadLedger();});
   for(const provider of LEDGER_PROVIDERS)document.querySelector(`[data-purge="${provider}"]`)?.addEventListener("click",()=>purgeClick(provider));
-  load();loadClaude();loadLedger();
+  $('#claude-rearm')?.addEventListener('click',rearmClaudeGreeting);
+  load();loadClaude();loadLedger();loadClaudeGreeting();
   if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};
 })();

@@ -502,21 +502,10 @@ def _claude_process(command: list[str], cwd: Path, timeout: int) -> dict[str, An
 
 
 def _claude_auth_status(cwd: Path) -> dict[str, Any]:
-    executable = _find_executable("claude")
-    if not executable:
-        return {"ok": False, "error": "Claude Code CLI is not installed"}
-    result = _claude_process([executable, "auth", "status", "--json"], cwd, 15)
-    try:
-        data = json.loads(result.get("data", b""))
-        org = data.get("orgId")
-        valid = (result.get("returnCode") == 0 and data.get("loggedIn") is True
-                 and data.get("authMethod") == "claude.ai" and data.get("apiProvider") == "firstParty"
-                 and isinstance(org, str) and bool(org.strip()))
-    except (ValueError, TypeError, AttributeError):
-        valid = False
-    if not valid:
+    identity = claude_identity.current_identity()
+    if not identity:
         return {"ok": False, "error": "Claude Code subscription sign-in required"}
-    return {"ok": True, "orgId": org}
+    return {"ok": True, "orgId": identity.org_id}
 
 
 def send_claude_greeting(cwd: Path, *, policies: Mapping[str, ProviderPolicy] | None = None, expected_org_id: str | None = None, expected_identity_generation: str | None = None) -> dict[str, Any]:
@@ -690,6 +679,55 @@ class LimitResetService:
     def get_reset_action(self) -> dict[str, Any]:
         with self._lock:
             return self._reset_actions.get()
+
+    def rearm_claude_greeting(self) -> None:
+        policy_for("Claude", self.policies).require("greet")
+        identity = claude_identity.current_identity()
+        if identity is None:
+            raise RuntimeError("Claude account identity is unavailable")
+        with self._lock:
+            if "Claude" in self._sending:
+                raise RuntimeError("Claude greeting is in progress")
+            state = self._provider_state("Claude")
+            before = copy.deepcopy(state)
+            history = state.get("claudeAccountCycles") or {}
+            saved = history.get(identity.fingerprint, {}) if state.get("accountChanged") and isinstance(history, dict) else {"cycles": state.get("consumedCycles") or {}, "bootstrap": state.get("lastBootstrapAt")}
+            state.update(claudeIdentityFingerprint=identity.fingerprint,
+                         claudeIdentityGeneration=identity.generation,
+                         accountChanged=False, armed=True, lastError=None, retryAfter=0,
+                         consumedCycles=copy.deepcopy(saved.get("cycles", {})),
+                         lastBootstrapAt=saved.get("bootstrap"))
+            if not self._save_state():
+                state.clear()
+                state.update(before)
+                raise RuntimeError("Claude greeting could not be armed")
+
+    def _claude_disarm_changed(self, state: dict[str, Any], identity) -> bool:
+        if state.get("accountChanged"):
+            return True
+        previous = state.get("claudeIdentityFingerprint")
+        if identity and previous and previous != identity.fingerprint:
+            cycles = copy.deepcopy(state.get("consumedCycles") or {})
+            intent = state.get("dispatchIntent")
+            if isinstance(intent, dict) and intent.get("cycleKey"):
+                # An interrupted send may have delivered; keep it claimed for this account.
+                cycles[intent["cycleKey"]] = intent.get("at")
+            history = state.setdefault("claudeAccountCycles", {})
+            if isinstance(history, dict):
+                history[previous] = {"cycles": cycles,
+                                     "bootstrap": state.get("lastBootstrapAt")}
+            state.update(accountChanged=True, armed=False, nextGreetingAt=None,
+                         retryAfter=0, claudeDeadline=None, awaitingVerification=False,
+                         lastBootstrapAt=None, consumedCycles={},
+                         lastError="Account changed, re-arm to keep greeting")
+            state.pop("dispatchIntent", None)
+            self._claude_cycle_mono.clear()
+            self._claude_deadline_mono.clear()
+            self._claude_bootstrap_mono = None
+            self._claude_auth_cache = None
+            self._save_state()
+            return True
+        return bool(state.get("accountChanged"))
 
     def configure_reset_action(self, mode: str, thread_ids: list[str]) -> dict[str, Any]:
         validated_ids = self._reset_actions.validate_configuration(mode, thread_ids)
@@ -1225,10 +1263,13 @@ class LimitResetService:
 
     def _check_claude_keepalive(self, sample: LimitSample) -> None:
         name = "Claude"
+        observed_identity = claude_identity.current_identity()
         with self._lock:
             if name in self._sending:
                 return
             state = self._provider_state(name)
+            if self._claude_disarm_changed(state, observed_identity):
+                return
             state["lastStatus"] = {**asdict(sample), "checkedAt": _claude_checked_at(sample, self._now_iso())}
             intent = state.get("dispatchIntent")
             if isinstance(intent, dict) and intent.get("cycleKey"):
@@ -1251,7 +1292,7 @@ class LimitResetService:
             cached = getattr(self, "_claude_auth_cache", None)
             if state.get("needsLogin") and state.get("lastFailureKind") == "not_subscription":
                 cached = None
-            # Each check starts a CLI process, so the cached result only schedules sends.
+            # Cached identity may schedule, but cannot authorize a send.
             if cached and 0 <= mono - cached[0] < 1800:
                 auth = cached[1]
             else:
@@ -1272,9 +1313,7 @@ class LimitResetService:
             if not current or current.generation != identity_generation or evidence.identity_generation != identity_generation:
                 return
             with self._lock:
-                if state.get("claudeIdentityFingerprint") not in (None, identity.fingerprint):
-                    state["lastError"] = "Claude account identity changed; greeting was not started"
-                    self._save_state()
+                if self._claude_disarm_changed(state, identity):
                     return
                 if state.get("claudeIdentityFingerprint") != identity.fingerprint:
                     state.pop("claudeOrgId", None)
@@ -1333,10 +1372,12 @@ class LimitResetService:
                     del consumed[key]
                     self._claude_cycle_mono.pop(key, None)
             # The cached account can schedule, but never authorize a send. The
-            # CLI check runs unlocked; this provider stays reserved in _sending.
+            # Passive check runs unlocked; this provider stays reserved in _sending.
             fresh_auth = _claude_auth_status(self.cwd)
             fresh_identity = claude_identity.current_identity()
             with self._lock:
+                if self._claude_disarm_changed(state, fresh_identity):
+                    return
                 if (not fresh_auth.get("ok") or fresh_auth.get("orgId") != org
                         or not fresh_identity or fresh_identity.generation != identity_generation):
                     self._claude_auth_cache = None
@@ -1814,6 +1855,8 @@ class LimitResetService:
             self._thread.join(timeout=2)
 
     def _phase(self, state: dict[str, Any], now: float) -> str:
+        if state.get("accountChanged"):
+            return "account_changed"
         if state.get("awaitingVerification"):
             return PHASE_GREETING_VERIFYING
         next_greeting = _epoch_seconds(state.get("nextGreetingAt"))

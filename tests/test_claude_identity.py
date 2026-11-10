@@ -151,3 +151,12 @@ def test_desktop_observation_must_follow_account_change(tmp_path):
     assert not desktop_matches(identity, "org", 199)
     assert desktop_matches(identity, "org", 200)
     assert not desktop_matches(identity, "other", 201)
+
+
+def test_corrupt_huge_changed_at_is_replaced(tmp_path):
+    account, state = tmp_path / ".claude.json", tmp_path / "identity.json"
+    account.write_text(json.dumps({"oauthAccount": {"accountUuid": "a", "organizationUuid": "org"}}))
+    state.write_text(json.dumps({"fingerprint": "a" * 64, "changedAt": 10**400}))
+    identity = IdentityAuthority(state, clock=lambda: 123).refresh_passive(account)
+    assert identity is not None and identity.changed_at == 123
+    assert json.loads(state.read_text())["changedAt"] == 123

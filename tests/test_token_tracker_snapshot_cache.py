@@ -660,6 +660,7 @@ def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
 
     identity = claude_identity.Identity("account", "org", "epoch", "Account")
     monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: (identity.generation, identity))
 
     class EnabledClaude:
         def allows(self, action):
@@ -688,6 +689,9 @@ def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
     cache = server.FastClaudeLimits()
     snapshot = {"providers": [{"name": "Claude", "fiveHour": None, "weekly": None,
                                "limitsUpdatedAt": None, "chats": [{"id": "chat"}]}]}
+    cache.overlay(snapshot)
+    with cache.condition:
+        assert cache.condition.wait_for(lambda: not cache.loading, timeout=2)
     first = cache.overlay(snapshot)
     second = cache.overlay(snapshot)
     assert snapshot["providers"][0]["fiveHour"] is None
@@ -799,9 +803,63 @@ def test_claude_snapshot_identity_must_match_at_egress(monkeypatch):
     from token_tracker.server import SnapshotCache
     provider = {"name": "Claude", "identityVerified": True, "identityGeneration": "a",
                 "fiveHour": {"percent": 20}, "weekly": {"percent": 10}}
-    monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("acct", "org", "a", "Account"))
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: ("a", claude_identity.Identity("acct", "org", "a", "Account")))
     assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is True
-    monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("acct2", "org", "b"))
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: ("b", claude_identity.Identity("acct2", "org", "b")))
     assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is False
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: (None, None))
+    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is False
+
+
+def test_codex_snapshot_publishes_when_claude_identity_unavailable(monkeypatch, tmp_path):
+    from token_tracker import claude_identity
     monkeypatch.setattr(claude_identity, "current_identity", lambda: None)
-    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is False
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": [{"name": "Codex", "fiveHour": {"percent": 42}, "chats": [{"id": "run"}]}]})
+    cache = server.SnapshotCache(persist_path=tmp_path / "snapshot.json")
+    result = cache.get()
+    assert result["providers"][0]["fiveHour"]["percent"] == 42
+    assert result["providers"][0]["chats"][0]["id"] == "run"
+
+
+def test_cached_egress_does_not_wait_for_identity_reader(monkeypatch):
+    from token_tracker import claude_identity
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = .01
+    cache._value = {"providers": [{"name": "Codex", "chats": []}]}
+    cache._at = time.monotonic()
+    entered, release = threading.Event(), threading.Event()
+    def stalled():
+        entered.set()
+        release.wait(2)
+    monkeypatch.setattr(claude_identity, "current_identity", stalled)
+    thread = threading.Thread(target=claude_identity.current_identity, daemon=True)
+    thread.start()
+    try:
+        assert entered.wait(1)
+        start = time.monotonic()
+        assert cache.get()["providers"][0]["name"] == "Codex"
+        assert time.monotonic() - start < .1
+    finally:
+        release.set()
+        thread.join(1)
+
+
+def test_identity_switch_during_build_keeps_codex(monkeypatch, tmp_path):
+    from token_tracker import claude_identity
+    account = tmp_path / ".claude.json"
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json")
+    def set_account(name):
+        account.write_text(json.dumps({"oauthAccount": {"accountUuid": name, "organizationUuid": "org"}}))
+    set_account("a")
+    first = authority.refresh_passive(account)
+    monkeypatch.setattr(claude_identity, "AUTHORITY", authority)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(account))
+    def build():
+        set_account("b")
+        return {"providers": [{"name": "Claude", "identityVerified": True, "identityGeneration": first.generation},
+                              {"name": "Codex", "fiveHour": {"percent": 35}, "chats": [{"id": "run"}]}]}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    result = server.SnapshotCache().get()
+    assert result["providers"][0]["identityVerified"] is False
+    assert result["providers"][1]["fiveHour"]["percent"] == 35
+    assert result["providers"][1]["chats"][0]["id"] == "run"

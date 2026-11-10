@@ -115,7 +115,7 @@ class IdentityAuthority:
                 if (isinstance(saved, str) and len(saved) == 64 and all(c in "0123456789abcdef" for c in saved)
                         and type(stamp) in (int, float) and math.isfinite(stamp) and 0 <= stamp <= self._clock()):
                     previous = (saved, float(stamp))
-            except (OSError, ValueError, TypeError, RecursionError):
+            except (OSError, ValueError, TypeError, OverflowError, RecursionError):
                 previous = None
         if previous and previous[0] == fingerprint:
             self._history = previous
@@ -153,6 +153,14 @@ class IdentityAuthority:
     def capture(self) -> tuple[str, Identity | None]:
         with self._lock:
             return self._generation, self._identity
+
+    def capture_nonblocking(self) -> tuple[str | None, Identity | None]:
+        if not self._lock.acquire(blocking=False):
+            return None, None
+        try:
+            return self._generation, self._identity
+        finally:
+            self._lock.release()
 
     @contextmanager
     def guard(self, generation: str) -> Iterator[Identity | None]:
