@@ -6,7 +6,7 @@ Everything optional is off until you turn it on. Settings live in the widget (In
 
 **Settings → Notifications → Claude tracking.** Turning it on records your consent, backs up Claude Code's `settings.json` and adds Branchglance's own hooks; your other hooks stay as they are. Hook events carry metadata only, not prompts, tool inputs or outputs, full paths or chat titles. Turning it off, or uninstalling, removes only those hooks. Coverage depends on the hook events Claude Code reports.
 
-Hook installation (`claude_hook_install`) and transcript discovery (`providers`) prefer `CLAUDE_HOME`, then `CLAUDE_CONFIG_DIR`, then `~/.claude`. Identity (`claude_identity`), live usage (`claude_usage_api`), status-line connection and its hook preflight, and installer status-line handling use `CLAUDE_CONFIG_DIR` or `~/.claude`; they ignore `CLAUDE_HOME`. When both are set to different paths, those operations can target different configurations. Set only one, or set both to the same path.
+Every Branchglance component finds Claude Code's config folder through `CLAUDE_CONFIG_DIR` if set, otherwise `~/.claude`.
 
 ## Claude live usage
 
@@ -16,7 +16,7 @@ Claude limits also use the account-bound Claude Code cache and status-line or CL
 
 ## Claude status line helper
 
-Use **Connect Claude status line** in Settings to install the helper, and Disconnect to remove it. Connect refuses to replace an existing status line. To keep your own status line, configure your existing command manually to invoke the Branchglance helper as appropriate. Branchglance backs up existing settings and refuses observed concurrent edits; a write between its final comparison and replacement remains a possible race. Settings are resolved through `CLAUDE_CONFIG_DIR` or `~/.claude`.
+Use **Connect Claude status line** in Settings to install the helper, and Disconnect to remove it. Connect refuses to replace an existing status line. To keep your own status line, configure your existing command manually to invoke the Branchglance helper as appropriate. Branchglance backs up existing settings and refuses observed concurrent edits; a write between its final comparison and replacement remains a possible race. Settings are resolved through the config folder described under Claude tracking; Disconnect edits the file the status line was connected to.
 
 ## Usage ledger and By work
 
@@ -49,8 +49,7 @@ The inventory covers product, installer, packaging and macOS host reads. Privacy
 | `TOKEN_TRACKER_LIMIT_RESET` | Legacy Codex greeting grant or global send veto; unset by default. | Network |
 | `TOKEN_TRACKER_CLAUDE_LIVE_USAGE` | Live usage override; saved setting or off by default, requires collection. | Network |
 | `TOKEN_TRACKER_LEDGER` | Local usage ledger override; saved setting or off by default. Only exactly `1` enables it. | Privacy |
-| `CLAUDE_HOME` | Hook and transcript config directory; falls back to `CLAUDE_CONFIG_DIR`, then `~/.claude`. | No |
-| `CLAUDE_CONFIG_DIR` | Claude config directory; defaults to `~/.claude`, subject to the precedence above. | No |
+| `CLAUDE_CONFIG_DIR` | Claude config directory (read by Claude Code too); defaults to `~/.claude`. | No |
 | `CODEX_HOME` | Codex data directory; defaults to `~/.codex`. | No |
 | `CLAUDE_CODE_SESSION_ID` | Associates a bg-codex receipt with its Claude session; absent means no receipt. | Privacy |
 | `CLAUDE_CODE_GIT_BASH_PATH` | Preferred Git Bash path for Windows hooks; otherwise searches installed Git and PATH. | No |

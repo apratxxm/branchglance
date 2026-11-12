@@ -22,7 +22,7 @@ import pytest
 
 def _profile_roots(home, environ):
     roots = [home / ".claude", home / ".codex"]
-    roots.extend(Path(environ[name]) for name in ("CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR")
+    roots.extend(Path(environ[name]) for name in ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
                  if environ.get(name))
     # The product's data dirs, not all of LOCALAPPDATA: pytest's tmp_path lives under LOCALAPPDATA\Temp.
     if environ.get("LOCALAPPDATA"):
@@ -78,7 +78,7 @@ def ledger_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     for name in ("USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA"):
         monkeypatch.setenv(name, str(fake_home / name.lower()))
-    for name in ("CLAUDE_HOME", "CLAUDE_CONFIG_DIR"):
+    for name in ("CLAUDE_CONFIG_DIR",):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-env-unused"))
 
@@ -88,7 +88,7 @@ def ledger_guard(tmp_path, monkeypatch):
 
 def test_profile_roots_include_original_overrides(tmp_path):
     env = {name: str(tmp_path / name) for name in
-           ("LOCALAPPDATA", "CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR")}
+           ("LOCALAPPDATA", "CODEX_HOME", "CLAUDE_CONFIG_DIR")}
     roots = set(_profile_roots(tmp_path / "home", env))
     local = Path(env.pop("LOCALAPPDATA"))
     assert set(map(Path, env.values())) <= roots

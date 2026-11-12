@@ -647,9 +647,8 @@ def uninstall(paths: Paths, native: Native) -> dict:
                                   "error": f"{type(exc).__name__}: {exc}"}
         try:
             from token_tracker import statusline_connect
-            config = os.environ.get("CLAUDE_CONFIG_DIR")
-            status_settings = (Path(config).expanduser() if config else paths.home / ".claude") / "settings.json"
-            claude_integration["statusLine"] = statusline_connect.disconnect(root=paths.product_root / "state", path=status_settings)
+            # No explicit path: disconnect edits the file the status line was connected to, else the resolved default.
+            claude_integration["statusLine"] = statusline_connect.disconnect(root=paths.product_root / "state")
         except Exception as exc:
             claude_integration["statusLine"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         pointer = root / "current.json"

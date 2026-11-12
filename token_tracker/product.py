@@ -232,6 +232,22 @@ def _environ(environ: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if environ is None else environ
 
 
+def claude_config_override(environ: Mapping[str, str] | None = None) -> Path | None:
+    """The explicitly configured Claude config folder, or None.
+
+    CLAUDE_CONFIG_DIR is the only override; Claude Code reads it too. Empty values are ignored.
+    """
+    env = _environ(environ)
+    value = env.get("CLAUDE_CONFIG_DIR")
+    return Path(os.path.expanduser(value)) if value else None
+
+
+def claude_config_dir(home: Path | None = None, *, environ: Mapping[str, str] | None = None) -> Path:
+    """Claude Code's user configuration folder; every Branchglance module resolves it here."""
+    override = claude_config_override(environ)
+    return override if override is not None else (home or Path.home()) / ".claude"
+
+
 def local_app_data(environ: Mapping[str, str] | None = None) -> Path:
     env = _environ(environ)
     if env.get("LOCALAPPDATA"):

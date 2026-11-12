@@ -23,7 +23,7 @@ from token_tracker.provider_policy import load_policies
 def isolated_agent_homes(tmp_path_factory, monkeypatch):
     """Provider tests must never read the real Claude or Codex transcripts on this machine."""
     homes = tmp_path_factory.mktemp("agent-homes")
-    monkeypatch.setenv("CLAUDE_HOME", str(homes / "claude"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(homes / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(homes / "codex"))
     monkeypatch.setattr(widget, "_warm_snapshot", lambda: None)  # no real snapshot builds from widget tests
     monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: True)
@@ -1492,7 +1492,7 @@ def test_claude_limits_only_adds_quota_meters_without_chats_or_traffic(tmp_path,
     transcript = tmp_path / "projects" / "project"; transcript.mkdir(parents=True)
     event = {"timestamp": "2026-09-03T10:00:00Z", "message": {"id": "m", "model": "claude-sonnet-5", "usage": {"input_tokens": 100, "output_tokens": 20}}}
     (transcript / "cli.jsonl").write_text(json.dumps(event), encoding="utf-8")
-    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(providers, "ENABLED_PROVIDERS", ("Codex",))
     monkeypatch.setattr(providers, "LIMIT_ONLY_PROVIDERS", ("Claude",))
@@ -2735,7 +2735,7 @@ def test_tracker_update_keeps_original_source_time_across_later_run_commentary(t
 def test_structure_stamp_changes_when_a_session_file_is_created(tmp_path, monkeypatch):
     claude_home = tmp_path / "claude"; (claude_home / "projects" / "p").mkdir(parents=True)
     codex_home = tmp_path / "codex"; (codex_home / "sessions" / "2026" / "09" / "13").mkdir(parents=True)
-    monkeypatch.setenv("CLAUDE_HOME", str(claude_home)); monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home)); monkeypatch.setenv("CODEX_HOME", str(codex_home))
     before = providers._structure_stamp()
     import os as _os, time as _time
     target = codex_home / "sessions" / "2026" / "09" / "13"
@@ -2752,7 +2752,7 @@ def test_structure_stamp_changes_when_an_agent_is_added_to_existing_subagents_fo
     subagents.mkdir(parents=True)
     (subagents / "existing.jsonl").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     before = providers._structure_stamp()
     (subagents / "new-agent.jsonl").write_text("{}\n", encoding="utf-8")
     import os as _os, time as _time

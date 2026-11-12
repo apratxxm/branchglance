@@ -1157,7 +1157,6 @@ def test_app_main_resumes_markerless_uninstall_journal(tmp_path, monkeypatch):
     from branchglance_installer import app
     from branchglance_installer.app import Native, Paths, Ui
     from branchglance_installer.core import JOURNAL
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     root = tmp_path / "Programs" / "Branchglance"
     root.mkdir(parents=True)
     record = {"schemaVersion": 1, "id": "b" * 32, "operation": "uninstall", "target": "uninstall",
@@ -1532,7 +1531,6 @@ def test_missing_owner_marker_is_reported_as_ownership(tmp_path):
 def _claude_uninstall_fixture(tmp_path, monkeypatch, settings_bytes=None):
     from token_tracker import claude_hook_install
     from branchglance_installer.app import Paths
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setattr(claude_hook_install, "find_git_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     root = _root(tmp_path)
     home = tmp_path / "Home"

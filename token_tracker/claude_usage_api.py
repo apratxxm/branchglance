@@ -90,8 +90,7 @@ def _credentials():
 
 def _read_credentials():
     # Keychain access is deliberately deferred until a noninteractive read is verified.
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
-    path = (Path(config).expanduser() if config else Path.home() / ".claude") / ".credentials.json"
+    path = product.claude_config_dir() / ".credentials.json"
     doc = claude_identity._read_passive_document(path)
     value = doc.get("claudeAiOauth") if isinstance(doc, dict) else None
     if not isinstance(value, dict):

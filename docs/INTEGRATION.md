@@ -21,7 +21,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the data flow and link verification.
 
 Collection is off until the user enables it in Branchglance (Settings → Notifications → Claude tracking). Enabling it backs up Claude Code's `settings.json` and adds Branchglance-owned hook entries that run `Branchglance.exe --claude-hook`.
 
-- **Config folder:** Branchglance uses `CLAUDE_HOME` if set, then `CLAUDE_CONFIG_DIR`, then `~/.claude` (`claude_hook_install.claude_config_dir`). Transcripts are read from `<config dir>/projects`. If you switch config folders after enabling collection, enable it again so the hooks are in the folder Claude Code actually uses.
+- **Config folder:** Branchglance uses `CLAUDE_CONFIG_DIR` if set, otherwise `~/.claude` (`product.claude_config_dir`). Transcripts are read from `<config dir>/projects`. If you switch config folders after enabling collection, enable it again so the hooks are in the folder Claude Code actually uses.
 - **Events:** `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `Notification`, `Stop`, `StopFailure`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact` (`claude_hook._EVENTS`).
   - `UserPromptSubmit` starts a turn. Tool events record the current activity.
   - `Stop` (completed) and `StopFailure` (failed) end that turn. So does a `Notification` of type `idle_prompt`.

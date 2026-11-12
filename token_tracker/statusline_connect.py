@@ -33,8 +33,15 @@ def _default_command():
 
 
 def settings_path():
-    configured = os.environ.get("CLAUDE_CONFIG_DIR")
-    return (Path(configured).expanduser() if configured else Path.home() / ".claude") / "settings.json"
+    return product.claude_config_dir() / "settings.json"
+
+
+def _target(path, record):
+    """Explicit path; else the file this status line was connected to (so a later
+    config-folder change cannot strand it); else the resolved default."""
+    if path is not None:
+        return Path(path)
+    return Path(record["settingsPath"]) if record else settings_path()
 
 
 def _record(root):
@@ -93,10 +100,10 @@ def _write(path, snapshot, data, bom):
 
 def status(*, root=None, path=None):
     root = Path(root) if root is not None else product.state_root()
-    path = Path(path) if path is not None else settings_path()
     with _lock:
-        hooks._validate_path_chain(path)
         record = _record(root)
+        path = _target(path, record)
+        hooks._validate_path_chain(path)
         if not record or record["settingsPath"] != str(path.resolve()):
             return {"connected": False}
         _, data, _ = hooks._read_versioned(path)
@@ -133,10 +140,10 @@ def connect(*, root=None, path=None, command=None):
 
 def disconnect(*, root=None, path=None):
     root = Path(root) if root is not None else product.state_root()
-    path = Path(path) if path is not None else settings_path()
     with _lock:
-        hooks._validate_path_chain(path)
         record = _record(root)
+        path = _target(path, record)
+        hooks._validate_path_chain(path)
         if not record:
             return {"connected": False, "changed": False}
         if record["settingsPath"] != str(path.resolve()):

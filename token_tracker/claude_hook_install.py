@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import claude_hook
+from .product import claude_config_dir, claude_config_override
 
 MARKER = "--branchglance-hook"
 HOOK_TIMEOUT_SECONDS = 10  # Claude Code's own bound; the hook also self-exits sooner
@@ -66,12 +67,6 @@ class _SettingsSnapshot:
     def matches(self, other: "_SettingsSnapshot") -> bool:
         return (self.raw == other.raw and self.digest == other.digest and self.mtime_ns == other.mtime_ns
                 and self.device == other.device and self.inode == other.inode and self.size == other.size)
-
-
-def claude_config_dir(home: Path | None = None) -> Path:
-    """Resolve Claude's user configuration, retaining the legacy override priority."""
-    configured = os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(configured) if configured else (home or Path.home()) / ".claude"
 
 
 def default_settings_path() -> Path:
@@ -326,9 +321,7 @@ def preflight_statusline_connect(settings_path: str | os.PathLike[str] | None = 
     statusLine is safe to proceed with; callers must still perform their own
     guarded, conflict-checked write.
     """
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
-    path = (Path(settings_path) if settings_path is not None else
-            (Path(config).expanduser() if config else Path.home() / ".claude") / "settings.json")
+    path = Path(settings_path) if settings_path is not None else claude_config_dir() / "settings.json"
     try:
         _, data, _ = _read_versioned(path)
     except _ConcurrentSettingsEdit:
@@ -677,10 +670,10 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
     now = time.time() if now is None else now
     marker_present = _consent_file(data_directory).exists()
     provenance, path = _recorded_settings_path(data_directory) if marker_present else ("absent", None)
-    if provenance == "legacy" and not (os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")):
+    if provenance == "legacy" and claude_config_override() is None:
         # Consent written before the target was recorded: those installs used
-        # ~/.claude unless CLAUDE_HOME was set, so with no override now that is
-        # the only file they can have edited.
+        # ~/.claude unless a config override was set, so with no override now
+        # that is the only file they can have edited.
         path = Path(settings_path) if settings_path is not None else default_settings_path()
     known = _known_executables(data_directory, command)  # read before the marker is removed
     consent_removed = _remove_consent(data_directory)

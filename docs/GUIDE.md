@@ -155,7 +155,7 @@ Claude collection is off until you turn it on in **Claude tracking**.
 
 - Turning it on backs up your existing Claude Code settings file, then adds Branchglance-owned hooks. Your other hooks stay as they are.
 - The hooks record event metadata only: identifiers, model and tool categories, state, and the workspace drive and final folder name. They never record prompts, tool inputs or outputs, full paths or chat titles. Titles are read from local transcripts for display only.
-- Branchglance uses `CLAUDE_HOME` if set, otherwise `CLAUDE_CONFIG_DIR`, otherwise `~/.claude`. The settings file it edits is recorded, so turning tracking off or uninstalling edits that same file.
+- Branchglance uses `CLAUDE_CONFIG_DIR` if set, otherwise `~/.claude`. The settings file it edits is recorded, so turning tracking off or uninstalling edits that same file.
 - Claude rows and subagents appear only when Claude Code reports hook events for them. Coverage across real sessions has not been fully established yet.
 - Turning it off revokes consent and removes Branchglance's hooks. If removal isn't safe or fails, the hooks left behind are reported.
 

@@ -19,6 +19,7 @@ Planned as 0.2.0.
 - Live Claude usage is now off by default for all installations, including existing ones; Settings enables it separately. Claude Desktop is no longer a limit source.
 - Settings controls By work, Claude greetings, and status-line connection; an existing status line is left untouched.
 - Removed routing alerts and their automatic widget expansion.
+- Branchglance now finds Claude's settings in `CLAUDE_CONFIG_DIR` when set (same as Claude Code); the old `CLAUDE_HOME` variable is no longer read.
 
 - A Codex job nests under a Claude chat only when its parent is proven by a receipt or verified process lineage. Unverifiable candidates now stay unresolved instead of being guessed.
 - Subagent rows keep their parent's timing and workspace columns.

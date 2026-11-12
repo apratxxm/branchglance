@@ -176,7 +176,7 @@ def world(tmp_path, monkeypatch):
     projects.mkdir(parents=True)
     events = tmp_path / "events"
     events.mkdir()
-    monkeypatch.setenv("CLAUDE_HOME", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(claude_provider, "_t3_database", lambda: tmp_path / "t3.sqlite")
     claude_provider.reset_memo()

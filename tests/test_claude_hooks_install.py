@@ -38,14 +38,12 @@ def test_statusline_preflight_allows_absent_and_refuses_malformed(tmp_path):
 
 
 def test_config_dir_precedence_and_default(monkeypatch, tmp_path):
-    legacy = tmp_path / "legacy"
     configured = tmp_path / "configured"
-    monkeypatch.setenv("CLAUDE_HOME", str(legacy))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
-    assert installer.default_settings_path() == legacy / "settings.json"
-    monkeypatch.delenv("CLAUDE_HOME")
     assert installer.default_settings_path() == configured / "settings.json"
-    monkeypatch.setenv("CLAUDE_HOME", "")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    assert installer.claude_config_dir(tmp_path) == tmp_path / ".claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
     assert installer.claude_config_dir(tmp_path) == configured
     monkeypatch.delenv("CLAUDE_CONFIG_DIR")
     assert installer.claude_config_dir(tmp_path) == tmp_path / ".claude"
@@ -158,7 +156,6 @@ def test_uninstall_uses_recorded_target_after_config_changes(tmp_path, monkeypat
     first.mkdir()
     second.mkdir()
     data_dir = tmp_path / "data"
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(first))
     installer.install(command=CMD, data_directory=data_dir)
     consent = load(data_dir / claude_hook.CONSENT_NAME)
@@ -175,7 +172,6 @@ def test_uninstall_uses_recorded_target_after_config_changes(tmp_path, monkeypat
 
 def test_uninstall_without_settings_provenance_retains_hooks(env, monkeypatch):
     settings, data_dir = env
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(settings.parent))
     installer.install(settings, CMD, data_dir)
     marker = data_dir / claude_hook.CONSENT_NAME
@@ -195,7 +191,6 @@ def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_pa
     settings = home / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     data_dir = tmp_path / "data"
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
     installer.install(settings, CMD, data_dir)
@@ -217,7 +212,6 @@ def test_uninstall_with_invalid_provenance_retains_hooks_even_without_overrides(
     settings = home / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     data_dir = tmp_path / "data"
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
     installer.install(settings, CMD, data_dir)

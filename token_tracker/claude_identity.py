@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
+from .product import claude_config_override
+
 
 @dataclass(frozen=True)
 class Identity:
@@ -205,8 +207,9 @@ def matches_fingerprint(identity: Identity | None, fingerprint: object) -> bool:
 
 
 def account_path() -> Path:
-    config = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(config).expanduser() / ".claude.json" if config else Path.home() / ".claude.json"
+    # Without an override Claude Code keeps this file in the home folder, not in ~/.claude.
+    config = claude_config_override()
+    return config / ".claude.json" if config else Path.home() / ".claude.json"
 
 
 def read_passive_account(path: Path) -> tuple[str, str, str] | None:
