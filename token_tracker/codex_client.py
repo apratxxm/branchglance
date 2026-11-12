@@ -517,9 +517,15 @@ class CodexAppServer:
             raise CodexUnavailable(str(initialized["error"]))
         self._persistent_send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
 
-    def close(self) -> None:
-        with self._persistent_lock:
+    def close(self, timeout: float | None = None) -> None:
+        acquired = (self._persistent_lock.acquire() if timeout is None
+                    else self._persistent_lock.acquire(timeout=timeout))
+        if not acquired:
+            return
+        try:
             self._discard_persistent()
+        finally:
+            self._persistent_lock.release()
 
     def _ensure_persistent(self) -> None:
         if self._persistent_proc is not None and self._persistent_proc.poll() is None:

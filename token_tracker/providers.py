@@ -35,6 +35,19 @@ ENABLED_PROVIDERS = (
 )
 LIMIT_ONLY_PROVIDERS = ("Claude",)
 
+_snapshot_executor_lock = threading.Lock()
+_snapshot_executors: set[ThreadPoolExecutor] = set()
+_snapshot_shutdown = False
+
+
+def stop_snapshot_workers() -> None:
+    """Reject new snapshot work and cancel queued jobs; running jobs finish."""
+    global _snapshot_shutdown
+    with _snapshot_executor_lock:
+        _snapshot_shutdown = True
+        for pool in _snapshot_executors:
+            pool.shutdown(wait=False, cancel_futures=True)
+
 
 def _iso_from_ms(value: int | float | None) -> str | None:
     if not value:
@@ -5551,10 +5564,19 @@ def build_snapshot() -> dict[str, Any]:
     factories = {"Claude": (_claude_code_provider, "#e8813f"), "Codex": (CodexProvider, "#4a95e0")}
     limit_factories = {"Claude": (ClaudeLimitsProvider, "#e8813f")}
     jobs = [(name, *factories[name]) for name in full_collect] + [(name, *limit_factories[name]) for name in limit_only]
-    with ThreadPoolExecutor(max_workers=max(1, len(jobs)), thread_name_prefix="token-provider") as pool:
+    with _snapshot_executor_lock:
+        if _snapshot_shutdown:
+            raise RuntimeError("provider snapshots are shutting down")
+        pool = ThreadPoolExecutor(max_workers=max(1, len(jobs)), thread_name_prefix="token-provider")
+        _snapshot_executors.add(pool)
+    try:
         futures = [pool.submit(_provider_snapshot, factory, name, accent, policy_payload["generation"])
                    for name, factory, accent in jobs]
         all_providers = [future.result() for future in futures]
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        with _snapshot_executor_lock:
+            _snapshot_executors.discard(pool)
     active_providers = all_providers[:len(full_collect)]
     visible_active = [provider for provider in active_providers
                       if policy_for(provider.get("name"), policies).allows("show")]

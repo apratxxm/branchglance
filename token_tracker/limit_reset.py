@@ -418,7 +418,7 @@ class CodexQuotaCache:
 # reset actions require a fresh generation and never consume this last-good HTTP fallback.
 _CODEX_LIMIT_CLIENT = CodexAppServer(timeout=10)
 _CODEX_QUOTA_CACHE = CodexQuotaCache(client=_CODEX_LIMIT_CLIENT)
-atexit.register(_CODEX_LIMIT_CLIENT.close)
+atexit.register(_CODEX_LIMIT_CLIENT.close, timeout=2.0)
 
 
 def codex_limit_sample() -> LimitSample:
