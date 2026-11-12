@@ -404,3 +404,39 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
 }
 
 console.log("unified agent tree contract checks passed");
+
+// The tree pages only when its rows cannot fit at the widget's maximum height. The window is sized to
+// its content, so a budget taken from the current window height flipped between "1 / 2" and one page.
+{
+  const {T,node,context}=boot();
+  const list=node('#chat-list');list.getBoundingClientRect=()=>({top:120,height:0,width:400});
+  const lead=(i)=>({id:'lead'+i,key:'Claude:lead'+i,parentKey:null,title:'Lead '+i,model:'claude-opus-5-5',status:'running',updatedAt:ago(i),workspace:'D:\work\sample-app',...quota});
+  const sub=(i,j)=>({id:'sub'+i+j,key:'Claude:sub'+i+j,parentKey:'Claude:lead'+i,title:'Worker '+i+j,agentName:'worker',model:'claude-haiku-5-5',status:'running',updatedAt:ago(i),workspace:'D:\work\sample-app',...quota});
+  const chats=[];for(let i=0;i<4;i++)chats.push(lead(i),sub(i,0),sub(i,1));
+  const edges=Object.fromEntries(chats.map(chat=>[chat.key,chat.parentKey]));
+  const providers=[{name:'Claude',connected:true,chats,...quota}];
+  T.state.snapshot={generatedAt:ago(0),providerPolicies:policy,providers,graph:{revision:1,edges}};
+  const seen=new Set();
+  for(const height of [420,180,300,150,260,420,200]){
+    context.window.innerHeight=height;
+    T.renderChats(providers);
+    assert.doesNotMatch(list.innerHTML,/runway-global-pager/,'4 agents with subagents fit at max height: no pager at innerHeight '+height);
+    seen.add(list.innerHTML);
+  }
+  assert.equal(seen.size,1,'the same forest renders identically whatever the current window height');
+  assert.ok(T.runwayPagingBudget(32)>=12,'budget comes from the 420px maximum, not the current window');
+
+  // Too many rows for max height: paging is stable across window-height changes and new rows.
+  const many=[];for(let i=0;i<20;i++)many.push(lead(i));
+  const bigProviders=[{name:'Claude',connected:true,chats:many,...quota}];
+  T.state.snapshot={generatedAt:ago(0),providerPolicies:policy,providers:bigProviders,graph:{revision:2,edges:Object.fromEntries(many.map(chat=>[chat.key,null]))}};
+  const pagerText=()=>(list.innerHTML.match(/(\d+) \/ (\d+) →/)||[])[0];
+  const pages=new Set(),texts=new Set();
+  for(const height of [420,160,330,140,420]){
+    context.window.innerHeight=height;T.renderChats(bigProviders);
+    texts.add(pagerText());pages.add(list.innerHTML);
+  }
+  assert.equal(texts.size,1,'page count does not flip with window height');
+  assert.match([...texts][0],/^1 \/ \d+ →$/);
+  assert.equal(pages.size,1,'the visible page stays put');
+}
