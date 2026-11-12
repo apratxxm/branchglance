@@ -113,8 +113,10 @@ def test_claude_pid_associations_keep_all_time_scoped_process_identities():
                                          claude_pid_created=9000))
     root = state["keys"][(SID, "")]
     assert root["pid_associations"] == [
-        {"pid": 4242, "created": 777, "sid": SID, "first": 10, "last": 10},
-        {"pid": 5000, "created": 9000, "sid": SID, "first": 20, "last": 20},
+        {"pid": 4242, "created": 777, "sid": SID, "first": 10.0, "last": 10.0,
+         "observed_last": 10.0, "ambiguous": False},
+        {"pid": 5000, "created": 9000, "sid": SID, "first": 20.0, "last": 20.0,
+         "observed_last": 20.0, "ambiguous": False},
     ]
     associations = agent_links._association_map(state["keys"])
     assert associations[(4242, 777)] == [(SID, 10.0, float("inf"))]

@@ -46,6 +46,7 @@ _CLAUDE_PROCESS_LINKS: dict[str, dict[str, Any]] = {}
 _CLAUDE_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
 _RECEIPT_CONFLICTS: set[tuple[str, int, int]] = set()
 _CODEX_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
+_CODEX_PARENT_CONTRADICTIONS: set[tuple[str, int, int]] = set()
 # Execution identities seen per thread in this app process, for the resume
 # badge. Never pruned by run retention; bounded by thread count.
 _OBSERVED_IDENTITIES: dict[str, set[tuple[int, int]]] = {}
@@ -1813,6 +1814,7 @@ def apply_exact_links(
             for candidate in candidates)
         if (run_key in _RECEIPT_CONFLICTS or contradictory_capture
                 or _codex_parent_proof_contradicted(proof, claude_states)):
+            _CODEX_PARENT_CONTRADICTIONS.add(run_key)
             saved["parent"] = None
             saved["parentProvider"] = None
             saved["processProof"] = None
@@ -2078,12 +2080,27 @@ def apply_exact_links(
                 sid = next(iter(sids)) if len(sids) == 1 else ""
             run_key = (thread, *identity)
             prior = _RUN_ROWS.get(run_key)
-            if run_key in _RECEIPT_CONFLICTS:
+            proof_candidates = current_codex_proofs.get(run_key, ())
+            proof_signatures = {
+                tuple(proof.get(field) for field in ("parent_id", "parent_pid", "parent_created",
+                                                       "direct_child_pid", "direct_child_created")): proof
+                for proof in proof_candidates
+            }
+            fresh_process_proof = next(iter(proof_signatures.values())) if len(proof_signatures) == 1 else None
+            if run_key in _RECEIPT_CONFLICTS or run_key in _CODEX_LINK_CONTRADICTIONS:
                 sid = ""
-            if run_key in _CODEX_LINK_CONTRADICTIONS:
-                sid = ""
-            # A parentless prior binding (parent None) must not override a later receipt.
-            if prior and prior.get("parent") is not None and run_key not in _RECEIPT_CONFLICTS:
+                fresh_process_proof = None
+            elif run_key in _CODEX_PARENT_CONTRADICTIONS:
+                if fresh_process_proof is None:
+                    sid = ""
+                else:
+                    sid = str(fresh_process_proof["parent_id"])
+                    _CODEX_PARENT_CONTRADICTIONS.discard(run_key)
+            # Preserve a saved edge only while its proof has not been contradicted.
+            if (prior and prior.get("parent") is not None
+                    and run_key not in _RECEIPT_CONFLICTS
+                    and run_key not in _CODEX_LINK_CONTRADICTIONS
+                    and run_key not in _CODEX_PARENT_CONTRADICTIONS):
                 sid = prior["parent"]
             prior_process_codex = bool(prior and prior.get("parentProvider") == "Codex"
                                        and prior.get("row", {}).get("linkSource") == "process")
@@ -2122,7 +2139,9 @@ def apply_exact_links(
                 row["runVerified"] = True
                 row.pop("runBindingUnresolved", None)
                 parent_row = next((item for item in claude.get("chats") or [] if str(item.get("id")) == sid), None)
-                process_proof = selected.get("_process_proof") or _codex_parent_proof(selected)
+                process_proof = fresh_process_proof
+                if process_proof is None and prior and run_key not in _CODEX_PARENT_CONTRADICTIONS:
+                    process_proof = prior.get("processProof")
                 _RUN_ROWS[run_key] = {"row": copy.deepcopy(row), "parent": row.get("parentId"), "parentProvider": row.get("parentProvider"), "stoppedAt": None,
                                       "parentRow": copy.deepcopy(parent_row), "processProof": process_proof}
                 seen_live_runs.add(run_key)
@@ -2231,6 +2250,7 @@ def apply_exact_links(
             stopped_at = saved["stoppedAt"] = now
         if now - stopped_at >= STOPPED_RETENTION_SECONDS and identity[0] not in needed_ancestors:
             del _RUN_ROWS[identity]
+            _CODEX_PARENT_CONTRADICTIONS.discard(identity)
             continue
         row = copy.deepcopy(saved["row"])
         if saved["parent"] not in claude_ids and saved.get("parentRow"):
@@ -2243,6 +2263,12 @@ def apply_exact_links(
             row.update(status="idle", stateDetail="stopped")
         retained.append(row)
     codex.setdefault("chats", []).extend(retained)
+    if not _CODEX_ENV_PER_THREAD_VERIFIED:
+        # Retained copies and per-thread collapse can reintroduce saved process
+        # edges after the incoming provider rows were gated above.
+        for row in codex.get("chats") or []:
+            if row.get("parentProvider") == "Codex" and row.get("linkSource") == "process":
+                _clear_process_lineage(row)
     # One row per thread. The current provider row is the base: a retained copy
     # is frozen at its last live poll and never replaces fresher data. Only
     # execution and lineage fields come from the newest execution, an

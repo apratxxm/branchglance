@@ -4916,6 +4916,8 @@ def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> di
         parent_id, parent_provider = _codex_parent_pair(None, indexed)
     else:
         parent_id, parent_provider = indexed.get("parentId"), indexed.get("parentProvider")
+    native_codex_parent = provider == "Codex" and bool(indexed.get("identityParentId"))
+    lineage_source = "native" if native_codex_parent else indexed.get("linkSource")
     title = (_tidy_codex_title(indexed.get("identityTitle") or indexed.get("title") or "", indexed.get("model"))
              if provider == "Codex" else indexed.get("title")) or None
     return {
@@ -4934,10 +4936,10 @@ def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> di
         "runStartedAt": indexed.get("identityRunStartedAt"),
         "activeRunStartedAt": indexed.get("identityActiveRunStartedAt"),
         "parentId": parent_id, "parentProvider": parent_provider,
-        "parentLinkMethod": indexed.get("parentLinkMethod"),
-        "linkSource": indexed.get("linkSource"),
-        "parentIncarnation": indexed.get("parentIncarnation"),
-        "childRunIdentity": indexed.get("childRunIdentity"),
+        "parentLinkMethod": None if native_codex_parent else indexed.get("parentLinkMethod"),
+        "linkSource": lineage_source,
+        "parentIncarnation": None if native_codex_parent else indexed.get("parentIncarnation"),
+        "childRunIdentity": None if native_codex_parent else indexed.get("childRunIdentity"),
         "title": title,
         "workspace": indexed.get("identityWorkspace") or indexed.get("workspace"),
         "source": indexed.get("identitySource") or indexed.get("source"),
@@ -5069,6 +5071,10 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
                 if indexed.get("identityParentId"):
                     retained["parentId"] = indexed["identityParentId"]
                     retained["parentProvider"] = indexed.get("identityParentProvider") or "Codex"
+                    retained["linkSource"] = "native"
+                    retained.pop("parentLinkMethod", None)
+                    retained.pop("parentIncarnation", None)
+                    retained.pop("childRunIdentity", None)
                 if indexed.get("identityTitle"):
                     retained["title"] = indexed["identityTitle"]
                 if indexed.get("identityWorkspace"):

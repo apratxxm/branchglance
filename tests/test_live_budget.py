@@ -9,6 +9,7 @@ import sqlite3
 import time
 import types
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -369,6 +370,27 @@ def test_live_index_preserves_process_provenance_and_replaces_it_with_native_lin
     native = providers._LIVE_INDEX["Claude:child"]
     assert (native["parentId"], native["parentProvider"], native["linkSource"]) == (
         "native-parent", "Claude", "native")
+
+    codex_native = {**entry, "identityParentId": "native-root",
+                    "identityParentProvider": "Codex"}
+    deferred_native = providers._deferred_live_row("Codex:child", codex_native, path.stat().st_mtime)
+    assert (deferred_native["parentId"], deferred_native["parentProvider"],
+            deferred_native["linkSource"]) == ("native-root", "Codex", "native")
+    assert deferred_native.get("parentIncarnation") is None
+
+
+def test_missing_file_native_codex_parent_clears_old_process_provenance(lineage_roster):
+    key = "Codex:native-child"
+    indexed = lineage_roster.index[key]
+    indexed.update(linkSource="process", parentLinkMethod="process",
+                   parentIncarnation={"provider": "Claude", "id": "old", "pid": 10, "created": 100},
+                   childRunIdentity={"provider": "Codex", "id": "native-child", "pid": 30, "created": 200})
+    Path(indexed["path"]).unlink()
+    live = providers.live_state()
+    row = next(chat for chat in live["chats"] if chat["key"] == key)
+    assert (row.get("parentId"), row.get("parentProvider"), row.get("linkSource")) == (
+        "native-root", "Codex", "native")
+    assert row.get("parentIncarnation") is None and row.get("childRunIdentity") is None
 
 
 def test_hook_backed_claude_subagent_keeps_its_parent_when_deferred(lineage_roster):

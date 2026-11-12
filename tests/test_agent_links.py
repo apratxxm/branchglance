@@ -18,6 +18,7 @@ def isolate_relative_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_links, "_CLAUDE_LINK_CONTRADICTIONS", set())
     monkeypatch.setattr(agent_links, "_RECEIPT_CONFLICTS", set())
     monkeypatch.setattr(agent_links, "_CODEX_LINK_CONTRADICTIONS", set())
+    monkeypatch.setattr(agent_links, "_CODEX_PARENT_CONTRADICTIONS", set())
     monkeypatch.setattr(agent_links, "_OBSERVED_IDENTITIES", {})
 
 
@@ -457,6 +458,52 @@ def test_codex_frozen_parent_changes_when_current_scan_proves_other_owner(tmp_pa
     assert agent_links._RUN_ROWS[run_key]["processProof"]["parent_id"] == sid_b
 
 
+def test_codex_proof_survives_registry_roundtrip_then_blocks_contradicted_old_parent(tmp_path, monkeypatch):
+    sid_a, sid_b = "session-a", "session-b"
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_created, direct_created, child_created = map(_filetime, (900, 980, 1000))
+    claude = {"name": "Claude", "chats": [{"id": sid_a}, {"id": sid_b}]}
+    codex_row = {"id": thread, "source": "exec", "status": "running",
+                 "executionStatus": "running", "runPid": 22, "runCreated": str(child_created),
+                 "parentId": sid_a, "parentProvider": "Claude", "linkSource": "process"}
+    providers = [claude, {"name": "Codex", "chats": [codex_row]}]
+    run_key = (thread, 22, child_created)
+    proof = {"parent_id": sid_a, "parent_pid": 10, "parent_created": parent_created,
+             "direct_child_pid": 20, "direct_child_created": direct_created,
+             "child_pid": 22, "child_created": child_created}
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {run_key: {
+        "row": dict(codex_row), "parent": sid_a, "parentProvider": "Claude",
+        "stoppedAt": None, "processProof": dict(proof),
+    }})
+    registry_run = {"thread_id": thread, "codex_pid": 22, "codex_created": child_created,
+                    "claude_session_id": sid_a, "first_seen": 900, "last_seen": 1000,
+                    "verified_at": 1000, "method": "receipt"}
+    common = dict(registry_path=tmp_path / "registry.json", permission_check=_allow_collection,
+                  registry_reader=lambda _: [dict(registry_run)],
+                  registry_writer=lambda *a, **k: True, verify=lambda *_: True)
+
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 1000)
+    agent_links.apply_exact_links(providers, now=1001, **common)
+    assert agent_links._RUN_ROWS[run_key]["processProof"] == proof
+
+    states = {
+        (sid_a, ""): _reduced_pid_session(sid_a, 10, parent_created, 900, 949),
+        (sid_b, ""): _reduced_pid_session(sid_b, 10, parent_created, 950, 1200),
+    }
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    agent_links.apply_exact_links(
+        providers, now=1011, claude_states=states,
+        process_table_reader=lambda: {}, scan=lambda **_kwargs: [], **common)
+    assert run_key in agent_links._CODEX_PARENT_CONTRADICTIONS
+    assert agent_links._RUN_ROWS[run_key]["processProof"] is None
+    assert "parentId" not in codex_row
+
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 1011)
+    agent_links.apply_exact_links(providers, now=1012, **common)
+    assert "parentId" not in codex_row
+    assert agent_links._RUN_ROWS[run_key]["parent"] is None
+
+
 def test_codex_parent_proof_detects_delayed_owner_switch():
     parent_created, direct_created, child_created = map(_filetime, (900, 980, 1000))
     proof = {"parent_id": "session-a", "parent_pid": 10, "parent_created": parent_created,
@@ -486,6 +533,65 @@ def test_cached_codex_process_parent_is_suppressed_when_verification_switch_is_o
                                   registry_writer=lambda *a, **k: True)
     assert "parentId" not in codex_row
     assert "linkSource" not in codex_row
+
+
+def test_gate_off_filters_codex_process_edges_from_final_live_and_retained_chats(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", False)
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    _, _, live_providers, _ = _link_fixture()
+    live_codex = live_providers[1]
+    live_codex["chats"].append({"id": parent})
+    live_row = live_codex["chats"][0]
+    live_row.update(parentId=parent, parentProvider="Codex", parentLinkMethod="receipt",
+                    linkSource="process")
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 1000)
+    agent_links.apply_exact_links(
+        live_providers, now=1001, registry_path=tmp_path / "live-registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [],
+        registry_writer=lambda *a, **k: True)
+    published_live = next(row for row in live_codex["chats"] if row.get("id") == thread)
+    assert "parentId" not in published_live and "linkSource" not in published_live
+
+    saved_row = {"id": thread, "source": "exec", "status": "running", "executionStatus": "running",
+                 "runPid": 22, "runCreated": "123", "parentId": parent,
+                 "parentProvider": "Codex", "parentLinkMethod": "receipt", "linkSource": "process"}
+    retained_providers = [{"name": "Claude", "chats": []},
+                          {"name": "Codex", "chats": [{"id": parent},
+                                                         {**saved_row, "status": "idle", "executionStatus": "idle"}]}]
+    run_key = (thread, 22, 123)
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {run_key: {
+        "row": saved_row, "parent": parent, "parentProvider": "Codex", "stoppedAt": None,
+    }})
+    agent_links.apply_exact_links(
+        retained_providers, now=1002, registry_path=tmp_path / "retained-registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [],
+        registry_writer=lambda *a, **k: True, verify=lambda *_: False)
+    published_stopped = next(row for row in retained_providers[1]["chats"] if row.get("id") == thread)
+    assert published_stopped.get("retainedRun") is True
+    assert "parentId" not in published_stopped and "linkSource" not in published_stopped
+
+
+def test_gate_off_filters_saved_process_edge_from_final_retained_provider_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", False)
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    retained = {"id": thread, "source": "exec", "status": "idle", "executionStatus": "idle",
+                "runPid": 22, "runCreated": "123", "retainedRun": True,
+                "parentId": parent, "parentProvider": "Codex", "parentLinkMethod": "receipt",
+                "linkSource": "process"}
+    providers = [{"name": "Claude", "chats": []}, {"name": "Codex", "chats": [{"id": parent}]}]
+    run_key = (thread, 22, 123)
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {run_key: {
+        "row": dict(retained), "parent": parent, "parentProvider": "Codex", "stoppedAt": 1000,
+    }})
+    agent_links.apply_exact_links(
+        providers, now=1001, registry_path=tmp_path / "retained-registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [],
+        registry_writer=lambda *a, **k: True, verify=lambda *_: False)
+    final_row = next(row for row in providers[1]["chats"] if row.get("id") == thread)
+    assert final_row.get("retainedRun") is True
+    assert "parentId" not in final_row and "linkSource" not in final_row
 
 
 def test_codex_receipt_gated_exact_launcher_links_only_when_switch_true(tmp_path, monkeypatch):

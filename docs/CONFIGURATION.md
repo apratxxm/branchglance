@@ -53,6 +53,8 @@ The inventory covers product, installer, packaging and macOS host reads. Privacy
 | `CLAUDE_HOME` | Legacy uninstall guard only, not a config location: when set, uninstall refuses to guess the settings file for consent recorded before targets were stored. | No |
 | `CODEX_HOME` | Codex data directory; defaults to `~/.codex`. | No |
 | `CLAUDE_CODE_SESSION_ID` | Associates a bg-codex receipt with its Claude session; absent means no receipt. | Privacy |
+| `CLAUDE_PID` | Read by the Claude hook as a process identity cross-check; used only for display attribution. | Privacy |
+| `CODEX_THREAD_ID` | Read by the Claude hook and bg-codex launchers as a thread attribution input; used only for display attribution. | Privacy |
 | `CLAUDE_CODE_GIT_BASH_PATH` | Preferred Git Bash path for Windows hooks; otherwise searches installed Git and PATH. | No |
 | `BG_CODEX_LAUNCHER` | Identifies the bg-codex launcher for executable resolution; unset by default. | No |
 | `BRANCHGLANCE_STATE_ROOT` | Source-mode state directory override; defaults to the product's local state directory, ignored in frozen builds. | No |
