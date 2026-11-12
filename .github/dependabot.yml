@@ -15,6 +15,9 @@ updates:
   # Developer and source-test requirements (requirements-token-tracker.txt).
   - package-ecosystem: pip
     directory: /
+    # The release closure below has its own entry; keep the scopes separate.
+    exclude-paths:
+      - "packaging/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

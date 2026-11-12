@@ -444,7 +444,9 @@ jobs:
         with:
           subject-path: |
             ${{ runner.temp }}/branchglance-release-assets/BranchglanceSetup.exe
+            ${{ runner.temp }}/branchglance-release-assets/BranchglanceSetup.exe.sha256
             ${{ runner.temp }}/branchglance-release-assets/Branchglance-${{ needs.build.outputs.version }}-windows-components.zip
+            ${{ runner.temp }}/branchglance-release-assets/Branchglance-${{ needs.build.outputs.version }}-windows-components.zip.sha256
 
       - name: Checkout frozen source commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -567,7 +569,9 @@ jobs:
         with:
           subject-path: |
             ${{ runner.temp }}/branchglance-release-assets/BranchglanceSetup.exe
+            ${{ runner.temp }}/branchglance-release-assets/BranchglanceSetup.exe.sha256
             ${{ runner.temp }}/branchglance-release-assets/Branchglance-${{ needs.build.outputs.version }}-windows-components.zip
+            ${{ runner.temp }}/branchglance-release-assets/Branchglance-${{ needs.build.outputs.version }}-windows-components.zip.sha256
 
       - name: Create unsigned draft prerelease
         shell: pwsh
