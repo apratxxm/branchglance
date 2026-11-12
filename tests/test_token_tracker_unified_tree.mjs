@@ -152,19 +152,9 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const extra=Array.from({length:7},(_,i)=>({...base,key:'Codex:extra'+i,id:'extra'+i,parentKey:root.key,treeParentKey:root.key,latest:100+i}));
   const entriesFor=descendants=>T.trayEntries({...root,descendants},{active:false});
   const keys=entries=>Array.from(entries.filter(e=>e.cls.includes('runway-agent')),e=>e.key);
-  const click=(action,key=root.key,last=2)=>{const snapshot=T.state.snapshot;T.state.snapshot=null;T.handleClick({target:{closest:()=>({dataset:{action,key,last:String(last)}})}});T.state.snapshot=snapshot;};
   let entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),extra.slice(0,3).map(e=>e.key),'forest sibling order is retained');
-  assert.match(entries.at(-1).html,/\+4 more/);
-  click('runway-more');entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),extra.slice(3,6).map(e=>e.key));
-  assert.match(entries.at(-1).html,/4\u20136 of 7/);
-  click('runway-more');entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),[extra[6].key]);
-  assert.match(entries.at(-1).html,/7 of 7/);
-  click('runway-page-prev');entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),extra.slice(3,6).map(e=>e.key));
-  click('runway-page-prev');
+  assert.deepEqual(keys(entries),extra.map(e=>e.key),'all seven siblings render in forest order');
+  assert.ok(entries.every(e=>!e.cls.includes('runway-'+'more')&&!e.key.startsWith('__'+'more:')),'no pager entry is rendered');
   const waiting={...extra[5],status:'needs-input',executionStatus:'waiting',pendingQuestion:'Choose?',pendingQuestionAt:ago(0)};
   entries=entriesFor(extra.map(a=>a.key===waiting.key?waiting:a));
   assert.ok(keys(entries).includes(waiting.key),'waiting sibling past cap remains visible');
@@ -181,7 +171,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.deepEqual(keys(entries),[idle.key,grandchild.key],'active grandchild keeps its inactive ancestor');
   T.state.pointerInList=true;
   entries=entriesFor(extra.map((a,i)=>({...a,latest:i===6?9999:a.latest})));
-  assert.deepEqual(keys(entries),extra.slice(0,3).map(e=>e.key),'polling activity cannot reorder siblings');
+  assert.deepEqual(keys(entries),extra.map(e=>e.key),'polling activity cannot reorder siblings');
 
   const inspect='body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) ';
   const rowRule=cssRule(inspect+'.runway-refined-row');
@@ -234,15 +224,15 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
     return new Element('button',attrs,[new TextNode(text)]);
   });
   doc.createElement=name=>name==='template'?{set innerHTML(value){this.content={childNodes:parse(value)};}}:new Element(name);
-  const initial='<button data-action="runway-page-prev" aria-disabled="true">\u2190</button><button data-action="runway-more" aria-expanded="false">+4 more</button>';
-  const updated='<button data-action="runway-page-prev" aria-disabled="false">\u2190</button><button data-action="runway-more" aria-expanded="true">4\u20136 of 7 \u2192</button>';
-  const wrapper=new Element('div',{},parse(initial));wrapper.dataset.key='__more:root';wrapper.className='runway-more';wrapper._html=initial;
-  const container=new Element('div',{},[wrapper]),button=wrapper.children[1];button.focus();
-  T.patchKeyed(container,[{key:'__more:root',cls:'runway-more',attrs:{},html:updated}]);
-  assert.equal(wrapper.children[1],button);
+  const initial='<button data-action="toggle-agent-details" aria-expanded="false">Open</button>';
+  const updated='<button data-action="toggle-agent-details" aria-expanded="true">Close</button>';
+  const wrapper=new Element('div',{},parse(initial));wrapper.dataset.key='agent:root';wrapper.className='runway-agent';wrapper._html=initial;
+  const container=new Element('div',{},[wrapper]),button=wrapper.children[0];button.focus();
+  T.patchKeyed(container,[{key:'agent:root',cls:'runway-agent',attrs:{},html:updated}]);
+  assert.equal(wrapper.children[0],button);
   assert.equal(doc.activeElement,button);
   assert.equal(button.getAttribute('aria-expanded'),'true');
-  assert.equal(button.firstChild.nodeValue,'4\u20136 of 7 \u2192');
+  assert.equal(button.firstChild.nodeValue,'Close');
 }
 
 // Mixed provider lineage uses canonical keys and the graph across provider boundaries.

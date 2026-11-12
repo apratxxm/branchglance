@@ -964,13 +964,10 @@ context.window.pywebview={api:{
   set_notch:async (...args)=>nativeCalls.push(["size",...args]),
   recenter:async()=>nativeCalls.push(["recenter"])
 }};
-const classicBridgeArgs=[];
-context.window.pywebview.api.set_notch=(...args)=>{classicBridgeArgs.push(args);nativeCalls.push(["size",...args]);return Promise.resolve(true);};
-T.notch.sent=null;T.notch.active=Math.max(1,T.notch.active);T.setNotch(false,true);
-assert.equal(classicBridgeArgs.at(-1).length,3,"classic mode keeps the legacy three-argument native bridge");
 nativeCalls.length=0;
 await T.syncMonitors();assert.equal(node("#monitor-toggle").textContent,"Monitor");
 assert.equal(node("#monitor-toggle").hidden,false);assert.equal(node("#monitor-toggle").disabled,false);
+nativeCalls.length=0;
 await T.toggleMonitor();assert.equal(node("#monitor-toggle").textContent,"Laptop");
 assert.deepEqual(nativeCalls,[["select","two"]]);
 const monitorGetter=context.window.pywebview.api.get_monitors;

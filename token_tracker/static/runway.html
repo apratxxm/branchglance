@@ -80,7 +80,6 @@
     window.__TOKEN_TRACKER_REFINED__=true;
     window.__TOKEN_TRACKER_COMPACT__=true;
     const runwayParams=new URLSearchParams(window.location.search);
-    if(runwayParams.get("theme")==="classic"){window.__TOKEN_TRACKER_REFINED__=false;window.__TOKEN_TRACKER_COMPACT__=false;document.body.classList.remove("runway-refined","runway-compact");}
     if(runwayParams.get("review")==="1")window.__TOKEN_TRACKER_TEST__=true;
     if(runwayParams.get("wire")==="1")document.body.classList.add("wireframe");
   </script>

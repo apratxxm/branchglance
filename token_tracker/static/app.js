@@ -1549,7 +1549,7 @@ function patchKeyed(container, entries, {enter,exit}={}) {
     if(!el){el=document.createElement("div");el.dataset.key=entry.key;fresh=true;}
     if(el.className!==entry.cls)el.className=entry.cls;
     for(const [k,v] of Object.entries(entry.attrs||{})){if(v==null)el.removeAttribute(k);else if(el.getAttribute(k)!==String(v))el.setAttribute(k,v);}
-    if(el._html!==entry.html){if(RUNWAY&&(entry.cls.includes('runway-agent')||entry.cls==='runway-more'))runwayPatchContent(el,entry.html);else el.innerHTML=entry.html;el._html=entry.html;syncBreath(el);}
+    if(el._html!==entry.html){if(RUNWAY&&(entry.cls.includes('runway-agent')))runwayPatchContent(el,entry.html);else el.innerHTML=entry.html;el._html=entry.html;syncBreath(el);}
     el._entry=entry;
     const next=prev?prev.nextSibling:container.firstChild;
     if(next!==el)container.insertBefore(el,next);
@@ -2075,7 +2075,6 @@ function denseRowEntry(agent) {
   return {key:agent.key,cls:"ag dense",attrs:{role:"button",tabindex:"0","data-action":resumeCommand(agent)?"copy":null,"data-copy":resumeCommand(agent)||null,"data-sub":agent.key,title:modelLabel(agent)+" · "+(stats.tools??"—")+" tools · "+(stats.files??"—")+" files"},
     html:'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span>'+(stats.tokens==null&&!stats.tools?'<span class="s s-time">'+esc(modelLabel(agent))+'</span>':'<span class="s s-tok"><b>'+fmt(stats.tokens)+'</b> <i>tok</i></span>'+filesHTML(stats)+'<span class="s s-time">'+(stats.run==null?"—":"ran "+runSpan(stats.run))+'</span>')};
 }
-const runwayMorePage=new Map();
 function trayEntries(chat, query) {
   const allDescendants=chat.descendants||[],needed=new Set(allDescendants.filter(isVisibleAgent).map(a=>a.key));
   if(RUNWAY){const byKey=new Map(allDescendants.map(a=>[a.key,a]));for(const key of [...needed]){let row=byKey.get(key),seen=new Set();while(row){const parent=treeParentKey(row);if(!parent||seen.has(parent)||!byKey.has(parent))break;seen.add(parent);needed.add(parent);row=byKey.get(parent);}}}
@@ -2092,21 +2091,9 @@ function trayEntries(chat, query) {
       if(!children.has(parent))children.set(parent,[]);
       children.get(parent).push(agent);
     }
-    const protectedPath=new Set();
-    function mark(parent){let actionable=false;for(const child of children.get(parent)||[]){const keep=mark(child.key)||runwayActionable(child);if(keep){protectedPath.add(child.key);actionable=true;}}return actionable;}
-    mark(chat.key);
     const entries=[];
     function visit(parent,depth=1){
-      const siblings=children.get(parent.key)||[],ordinary=siblings.filter(a=>!protectedPath.has(a.key)&&runwayRunning(a));
-      const last=Math.max(0,Math.ceil(ordinary.length/3)-1),page=Math.min(last,Math.max(0,runwayMorePage.get(parent.key)||0));
-      runwayMorePage.set(parent.key,page);
-      const slice=new Set(ordinary.slice(page*3,page*3+3).map(a=>a.key));
-      for(const agent of siblings){if(protectedPath.has(agent.key)||!runwayRunning(agent)||slice.has(agent.key)){entries.push(agentRowEntry(agent,query,parent.key,depth));visit(agent,depth+1);}}
-      if(last){
-        const start=page*3+1,end=Math.min(ordinary.length,page*3+3),label=page===0?'+'+(ordinary.length-3)+' more':(start===end?String(start):start+'\u2013'+end)+' of '+ordinary.length;
-        const name=esc(runwayTitle(parent,hasTreeParent(parent)));
-        entries.push({key:'__more:'+parent.key,cls:'runway-more',attrs:{},html:'<button type="button" data-action="runway-page-prev" data-key="'+esc(parent.key)+'" aria-label="Previous agents for '+name+'" aria-disabled="'+(page===0)+'">\u2190</button><button type="button" data-action="runway-more" data-key="'+esc(parent.key)+'" data-last="'+last+'" aria-expanded="'+(page>0)+'" aria-label="'+esc(label)+' agents for '+name+'">'+esc(label)+(page>0&&page<last?' \u2192':page===last?' \u2190':'')+'</button>'});
-      }
+      for(const agent of children.get(parent.key)||[]){entries.push(agentRowEntry(agent,query,parent.key,depth));visit(agent,depth+1);}
     }
     visit(chat);return entries;
   }
@@ -3137,7 +3124,6 @@ function handleClick(event) {
   else if(RUNWAY&&action==="close-popover"){closePopover({restoreFocus:true});return;}
   else if(action==="jump"){jumpTo(button.dataset.target,button.dataset.sub);return;}
   else if(action==="dismiss"){state.dismissed.add(button.dataset.dismiss);saveDismissed();const item=button.closest?.(".si");if(item)item._dismissed=true;renderStripNow();return;}
-  else if(RUNWAY&&(action==="runway-more"||action==="runway-page-prev")){const page=runwayMorePage.get(key)||0,last=Number(button.dataset.last)||0;runwayMorePage.set(key,action==="runway-page-prev"?Math.max(0,page-1):(page>=last?0:page+1));if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="strip-more"){state.stripOpen=!state.stripOpen;renderStripNow();return;}
   else if(action==="toggle-question"){const question=button.dataset.question,was=state.expandedQuestions.has(question);if(RUNWAY)closeRunwayDetails();if(!was)state.expandedQuestions.add(question);renderStripNow();if(RUNWAY&&state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="toggle-agents"){const target=button.dataset.key;const chat=state.forest?.roots.find(c=>c.key===target);const expanded=RUNWAY&&chat?runwayAgentsExpanded(chat):state.agentOpen.has(target);if(expanded){state.agentOpen.delete(target);state.agentCollapsed.add(target);state.agentSearchClosed.add(target);}else{state.agentOpen.add(target);state.agentCollapsed.delete(target);state.agentSearchClosed.delete(target);}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
