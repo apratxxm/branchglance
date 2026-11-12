@@ -19,7 +19,8 @@ Releases before 1.0 are marked **pre-release** on GitHub. Builds carry the commi
 2. In `CHANGELOG.md`, rename `[Unreleased]` to `[<version>] - <YYYY-MM-DD>` and add a fresh empty `[Unreleased]` above it. Update the compare links at the bottom.
 3. Write `docs/release/RELEASE_NOTES_<version>.md`: a short highlights list, install steps, known limitations and a privacy summary. The release workflow uses this file as the release body; without it, GitHub generates notes using [`.github/release.yml`](../../.github/release.yml).
 4. Run both test suites and walk through the [release checklist](RELEASE_CHECKLIST.md) on a disposable VM.
-5. Merge to `master`.
+5. Remove the "(0.2.0)" availability notes from `README.md` that the release makes obsolete.
+6. Merge to `master`.
 
 ## 2. Tag
 

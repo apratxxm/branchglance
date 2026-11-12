@@ -20,10 +20,10 @@ Full list: [CHANGELOG](https://github.com/apratxxm/branchglance/blob/master/CHAN
 
 ## Known limitations
 
-- Windows is the primary platform. macOS is available from source only, and does not read Claude Code's token (no Keychain access), so Claude limits there come from local caches.
+- Windows is the primary platform. macOS is available from source only, and does not use the Keychain, so live Claude usage there works only if Claude Code keeps a credentials file; otherwise Claude limits come from local caches.
 - Claude subagent coverage depends on the hook events Claude Code reports.
 - The usage ledger is off by default (`TOKEN_TRACKER_LEDGER=1` enables it).
 
 ## Privacy
 
-Branchglance reads local Codex and Claude Code data and has no account, server or telemetry. With Claude tracking on, it reads Claude Code's OAuth token in memory and asks `api.anthropic.com` for your usage; it never refreshes, logs or stores the token. Greetings are off by default and, when enabled, send a short message through the provider's own CLI. Details: [Privacy](https://github.com/apratxxm/branchglance/blob/master/docs/PRIVACY.md).
+Branchglance reads local Codex and Claude Code data and has no account, server or telemetry. With Claude tracking on, it reads Claude Code's OAuth token in memory and asks `api.anthropic.com` for your usage; it never refreshes, logs or stores the token. Greetings and queued Codex messages are off by default and, when enabled, are sent through the provider's own CLI. Details: [Privacy](https://github.com/apratxxm/branchglance/blob/master/docs/PRIVACY.md).

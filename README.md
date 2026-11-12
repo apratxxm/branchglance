@@ -26,14 +26,14 @@ Running several agent chats in parallel means constantly checking which one fini
 
 ## What it does
 
-1. **One tree for both providers.** Every Codex and Claude Code chat with its subagents; Codex jobs started from a Claude chat nest under that chat.
+> Items marked **(0.2.0)** are on `master` and arrive in the next release; release 0.1.0 does not include them.
+
+1. **One tree for both providers.** Every Codex and Claude Code chat with its subagents; Codex jobs started from a Claude chat nest under that chat. A status or parent link is shown only when there is evidence for it, otherwise it shows as unknown.
 2. **Needs-you queue.** Chats waiting for input are marked and counted. Click the count to jump to the next one.
-3. **Limits with countdowns.** 5-hour and weekly usage for Codex and Claude side by side. Claude usage can refresh about every 30 seconds from Anthropic, using Claude Code's existing sign-in (with your consent; see [Privacy](#privacy)).
-4. **Routing alerts.** A heads-up when one provider's limit runs low, so you can send work to the other.
-5. **Reset handling.** Banked Codex resets shown beside the weekly bar. Optional, off by default: a greeting that keeps Claude's 5-hour window rolling, and a one-time `continue` queued for chats you pick.
-6. **Insights.** Tokens, estimated cost, model breakdown, plan multiples and limit peaks over 24 hours, 7 days, 30 days or all time. Unpriced models are listed, never guessed.
-7. **Honest status.** A status or parent link is shown only when there is evidence for it; otherwise it shows as unknown.
-8. **Out of the way.** It collapses to a thin strip with a clock and limit bands; hover or press Ctrl+Shift+T for the tree.
+3. **Limits and routing.** 5-hour and weekly usage for Codex and Claude side by side, with reset countdowns and a heads-up when one provider runs low so you can send work to the other. **(0.2.0)** Claude usage can refresh about every 30 seconds from Anthropic using Claude Code's existing sign-in, with your consent (see [Privacy](#privacy)); banked Codex resets show beside the weekly bar.
+4. **Insights.** Tokens, estimated cost, model breakdown, plan multiples and limit peaks over 24 hours to all time. Unpriced models are listed, never guessed.
+5. **Reset actions (off by default).** A greeting that keeps Claude's 5-hour window rolling **(0.2.0)**, and a one-time `continue` queued for chats you pick.
+6. **Out of the way.** It collapses to a thin strip with a clock and limit bands; hover or press Ctrl+Shift+T for the tree.
 
 <p align="center">
   <img alt="Insights view with token and cost totals, provider shares and limit peaks" src="docs/images/insights.png" width="560">
@@ -58,14 +58,15 @@ Details, verifying the download and uninstalling: [Install guide](docs/INSTALL.m
 - Windows 10 (build 19041) or 11, 64-bit, with Edge WebView2 and .NET Framework 4.8 (both ship with current Windows). The installer checks and tells you if one is missing.
 - Codex signed in, for Codex chats and limits.
 - Optional: Claude Code, for Claude chats and limits.
-- macOS: Python 3 and the Xcode command line tools.
+- macOS: macOS 14 or later, Python 3.10+ and the Xcode command line tools.
 
 ## Privacy
 
-- Everything is read from local files on your machine: Codex session data, Claude Code transcripts and hook events, and the usage caches Claude Desktop and Claude Code keep. Transcripts are never uploaded.
-- **One network call, only with Claude tracking on:** Branchglance reads Claude Code's OAuth token from `~/.claude/.credentials.json` in memory and asks `api.anthropic.com` for your account's usage. It never refreshes, logs or stores the token. On macOS it does not read the Keychain and falls back to the local caches.
+- Branchglance reads local files on your machine: Codex session data, Claude Code transcripts and hook events, and the usage caches Claude Desktop and Claude Code keep. Transcript files are never uploaded.
+- **Claude usage request (0.2.0), only with Claude tracking on:** Branchglance reads Claude Code's OAuth token from `.credentials.json` in memory and asks `api.anthropic.com` for your account's usage. It never refreshes, logs or stores the token. It does not use the macOS Keychain; without a credentials file it falls back to the local caches.
+- Messages leave only when you enable them: reset greetings and queued Codex messages go through the provider's own CLI.
 - No Branchglance account, server or telemetry.
-- Claude tracking, Claude hooks, the usage ledger and greetings are all off until you enable them.
+- Claude tracking, Claude hooks, the usage ledger, greetings and sending are all off until you enable them.
 
 Full details: [Privacy](docs/PRIVACY.md) and [SECURITY.md](SECURITY.md).
 

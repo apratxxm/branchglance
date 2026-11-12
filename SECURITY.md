@@ -12,7 +12,7 @@ Include what you found, how to reproduce it and what it affects. Expect a first 
 
 - It has no account, server or telemetry, and uploads nothing to Branchglance.
 - With Claude tracking on and Claude Code signed in, it sends Claude Code's OAuth token to `api.anthropic.com` to fetch your usage. It reads the token into memory from `.credentials.json`, and never refreshes, logs or stores it.
-- If you enable a reset greeting, it runs the provider's own CLI to send a short message.
+- If you enable a reset greeting or Codex sending, it runs the provider's own CLI to send a short message to that provider.
 
 Full detail: [Privacy](docs/PRIVACY.md).
 

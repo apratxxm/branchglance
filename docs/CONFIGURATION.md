@@ -6,11 +6,11 @@ Everything optional is off until you turn it on. Settings live in the widget (In
 
 **Settings → Notifications → Claude tracking.** Turning it on records your consent, backs up Claude Code's `settings.json` and adds Branchglance's own hooks; your other hooks stay as they are. Hook events carry metadata only, not prompts, tool inputs or outputs, full paths or chat titles. Turning it off, or uninstalling, removes only those hooks. Coverage depends on the hook events Claude Code reports.
 
-Branchglance finds Claude Code's config through `CLAUDE_HOME`, then `CLAUDE_CONFIG_DIR`, then `~/.claude`.
+For hooks and transcripts, Branchglance finds Claude Code's config through `CLAUDE_HOME`, then `CLAUDE_CONFIG_DIR`, then `~/.claude`. Live usage reads `.credentials.json` from `CLAUDE_CONFIG_DIR` or `~/.claude` only.
 
 ## Claude live usage
 
-With Claude tracking on and Claude Code signed in, Branchglance reads Claude Code's OAuth token from `.credentials.json` in that config folder, in memory, and asks `api.anthropic.com` for your account's usage about every 30 seconds (the account profile is fetched once per account). It never refreshes, logs or stores the token; only a retry-after timestamp is saved. On macOS it does not read the Keychain, so Claude limits there come from the caches below.
+With Claude tracking on and Claude Code signed in, Branchglance reads Claude Code's OAuth token from `.credentials.json` in that config folder, in memory, and asks `api.anthropic.com` for your account's usage about every 30 seconds (the account profile is fetched when it first binds to an account, after a restart, and when the credentials or account change). It never refreshes, logs or stores the token; only a retry-after timestamp is saved. It does not use the macOS Keychain, so on macOS it works only when a credentials file exists; otherwise Claude limits come from the caches below.
 
 Without it, Claude limits fall back to Claude Desktop's usage cache, the usage cache Claude Code keeps in `~/.claude.json`, and the status line helper. See [Privacy](PRIVACY.md).
 
@@ -33,7 +33,7 @@ Off by default. Set `TOKEN_TRACKER_LEDGER=1` in the widget's environment before 
 
 ## Reset actions and greetings
 
-Off by default and one-shot. A greeting runs the provider's own CLI to send a short message after a verified reset; for Claude this keeps the 5-hour window rolling.
+Off by default. A greeting runs the provider's own CLI to send a short message after a verified reset. Greetings recur while enabled, and for Claude may send a first greeting to establish a window; this keeps the 5-hour window rolling. A `continue` for selected Codex chats is one-shot.
 
 - **Claude greeting** needs Claude tracking on, `TOKEN_TRACKER_CLAUDE_SEND=1`, an enabled greeting in reset settings, and a signed-in Claude Code CLI.
 - **Codex greeting and `continue`** need `TOKEN_TRACKER_CODEX_SEND=1` and an enabled action in reset settings. On macOS the menu switch **Allow Codex Messages After Reset** does this.

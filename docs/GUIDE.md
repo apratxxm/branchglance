@@ -140,7 +140,7 @@ The **Settings** tab sits next to Insights.
 
 ## Reset actions
 
-Off by default. Configure them from Settings or the reset-action status pop-up. Each is a **one-shot** choice for the next verified reset:
+Off by default. Configure them from Settings or the reset-action status pop-up. Each applies to a verified reset. The greeting recurs while enabled (Claude may send a first greeting to establish a window); `continue` is one-shot:
 
 - **Greeting:** sends a short greeting through the provider's own CLI once a real reset is observed. This sends a request to that provider. A greeting does not reset your allowance and does not prove work finished.
 - **Continue selected chats once:** with the needed Codex permissions, queues the exact message `continue` for eligible chats you pick, after the next verified reset. Chats that are active or can't be verified are skipped. Queued doesn't mean started.

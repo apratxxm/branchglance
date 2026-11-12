@@ -32,7 +32,7 @@ Get-AuthenticodeSignature .\BranchglanceSetup.exe | Format-List Status, SignerCe
 
 ## macOS (from source)
 
-Install Python 3 and the Xcode command line tools, then:
+Requires macOS 14 or later, Python 3.10+ and the Xcode command line tools. Then:
 
 ```sh
 git clone https://github.com/apratxxm/branchglance.git
@@ -40,7 +40,7 @@ cd branchglance
 ./macos/build.sh install
 ```
 
-This installs the notch app in `/Applications`. Rollback, uninstall and signing are covered in the [macOS guide](../macos/README.md). Builds without a Developer ID are signed locally and run on the machine that built them. There is no macOS installer download yet.
+This installs the notch app in `/Applications`. Rollback, uninstall (`./macos/build.sh uninstall --purge` also deletes saved data) and signing are covered in the [macOS guide](../macos/README.md). Builds without a Developer ID are signed locally and run on the machine that built them. There is no macOS installer download yet.
 
 ## Troubleshooting
 
