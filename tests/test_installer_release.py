@@ -214,6 +214,7 @@ def test_icon_refresh_exception_is_logged_and_does_not_fail_setup(tmp_path, monk
     assert "icon refresh failed" in caplog.text
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: shell32 SHChangeNotify via ctypes.WinDLL")
 def test_shell_icon_refresh_uses_assoc_changed_and_path_update_notifications(tmp_path, monkeypatch):
     from branchglance_installer import app as app_module
     calls = []
@@ -1085,6 +1086,7 @@ def test_preflight_host_matrix_and_staged_self_test(tmp_path):
     assert calls[0][1]["timeout"] == 30
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: host detection reads winreg/windll on win32 only")
 def test_current_host_maps_registry_hive_labels_to_winreg_constants(monkeypatch):
     import ctypes
     import platform

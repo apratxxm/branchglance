@@ -1,5 +1,11 @@
 name: Windows release
 
+# Signed flow: build -> sign (SignPath) -> draft-release (draft GitHub release).
+# Unsigned flow (opt-in): build -> draft-unsigned-prerelease, only when signing is not
+# configured AND the repository variable ALLOW_UNSIGNED_PRERELEASE is "true". A signing
+# job that is configured but fails never falls back to an unsigned release.
+# Both release jobs attest build provenance for the published assets.
+
 on:
   push:
     tags:
@@ -407,7 +413,9 @@ jobs:
           needs.sign.outputs.enabled == 'true' }}
     permissions:
       actions: read
+      attestations: write
       contents: write
+      id-token: write
     steps:
       - name: Download signed release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -430,6 +438,13 @@ jobs:
           if (-not (Get-ChildItem $assets -Filter "Branchglance-*-windows-components.zip" -File)) {
             throw "Signed component archive is missing."
           }
+
+      - name: Attest build provenance for signed release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/branchglance-release-assets/BranchglanceSetup.exe
+            ${{ runner.temp }}/branchglance-release-assets/Branchglance-${{ needs.build.outputs.version }}-windows-components.zip
 
       - name: Checkout frozen source commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -472,11 +487,132 @@ jobs:
           $policyUrl = "https://github.com/$env:GITHUB_REPOSITORY/blob/$env:SOURCE_SHA/docs/CODE_SIGNING_POLICY.md"
           $notes += "`r`n`r`n## Code signing policy`r`nSee [Branchglance code signing policy]($policyUrl).`r`n"
           Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          # Mark as a GitHub pre-release when the version has a prerelease suffix or is
+          # 0.x (alpha/unstable by SemVer); a 1.0.0+ release without a suffix is a normal release.
+          $extra = @()
+          if ($env:VERSION -match '-' -or $env:VERSION -match '^0\.') { $extra += "--prerelease" }
           gh release create $env:RELEASE_TAG `
             (Join-Path $assets "BranchglanceSetup.exe") `
             (Join-Path $assets "BranchglanceSetup.exe.sha256") `
             (Get-ChildItem $assets -Filter "Branchglance-*-windows-components.zip" | Select-Object -First 1).FullName `
             (Join-Path $assets "Branchglance-$env:VERSION-windows-components.zip.sha256") `
-            --draft --verify-tag --title "Branchglance $env:VERSION" `
+            --draft @extra --verify-tag --title "Branchglance $env:VERSION" `
+            --notes-file $notesPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  draft-unsigned-prerelease:
+    # Opt-in alpha path for when code signing is not configured. Requires the repository
+    # variable ALLOW_UNSIGNED_PRERELEASE == 'true'. Runs only when the sign job was skipped
+    # (SignPath variables unset) or ran without an API token; a failed or cancelled signing
+    # job must never fall through to an unsigned release.
+    needs: [build, sign]
+    runs-on: windows-latest
+    if: >-
+      ${{
+        always() && github.ref_type == 'tag' &&
+        vars.ALLOW_UNSIGNED_PRERELEASE == 'true' &&
+        needs.build.result == 'success' &&
+        (needs.sign.result == 'skipped' ||
+          (needs.sign.result == 'success' && needs.sign.outputs.enabled != 'true'))
+      }}
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download unsigned setup build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: branchglance-unsigned-build
+          path: ${{ runner.temp }}/branchglance-unsigned-build
+
+      - name: Download unsigned components
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: branchglance-unsigned-components
+          path: ${{ runner.temp }}/branchglance-components
+
+      - name: Assemble unsigned release assets
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $build = Join-Path $env:RUNNER_TEMP "branchglance-unsigned-build"
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          New-Item -ItemType Directory -Path $assets | Out-Null
+          foreach ($name in @("BranchglanceSetup.exe", "BranchglanceSetup.exe.sha256")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $build $name) -PathType Leaf)) {
+              throw "Unsigned build artifact is missing: $name"
+            }
+          }
+          Copy-Item (Join-Path $build "BranchglanceSetup.exe") $assets
+          Copy-Item (Join-Path $build "BranchglanceSetup.exe.sha256") $assets
+          $recorded = ((Get-Content -LiteralPath (Join-Path $assets "BranchglanceSetup.exe.sha256") -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash (Join-Path $assets "BranchglanceSetup.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($recorded -ne $actual) { throw "BranchglanceSetup.exe does not match its recorded SHA-256." }
+          $componentZip = Join-Path $assets "Branchglance-$env:VERSION-windows-components.zip"
+          Compress-Archive -Path (Join-Path $env:RUNNER_TEMP "branchglance-components/*") -DestinationPath $componentZip
+          (Get-FileHash $componentZip -Algorithm SHA256).Hash.ToLower() + `
+            "  $([IO.Path]::GetFileName($componentZip))" | Set-Content -Encoding ascii "$componentZip.sha256"
+
+      - name: Checkout frozen source commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Attest build provenance for unsigned release assets
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/branchglance-release-assets/BranchglanceSetup.exe
+            ${{ runner.temp }}/branchglance-release-assets/Branchglance-${{ needs.build.outputs.version }}-windows-components.zip
+
+      - name: Create unsigned draft prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP "branchglance-release-assets"
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($head -ne $env:SOURCE_SHA) { throw "Unsigned-release checkout differs from frozen source SHA." }
+          # Same tag-moved guard as the signed draft-release job.
+          $directRef = "refs/tags/" + $env:RELEASE_TAG
+          $peeledRef = $directRef + "^{}"
+          $tagRefs = @(git ls-remote origin $directRef $peeledRef)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tagLine = $tagRefs | Where-Object { $_.Substring($_.IndexOf("`t") + 1) -eq $peeledRef } | Select-Object -First 1
+          if (-not $tagLine) {
+            $tagLine = $tagRefs | Where-Object { $_.Substring($_.IndexOf("`t") + 1) -eq $directRef } | Select-Object -First 1
+          }
+          if (-not $tagLine) { throw "Release tag is missing from origin." }
+          $tagSha = $tagLine.Substring(0, $tagLine.IndexOf("`t"))
+          if ($tagSha -ne $env:SOURCE_SHA) { throw "Release tag moved after the build; unsigned prerelease refused." }
+          $notesPath = Join-Path $env:RUNNER_TEMP "branchglance-release-notes.md"
+          $sourceNotes = "docs/release/RELEASE_NOTES_$env:VERSION.md"
+          if (Test-Path -LiteralPath $sourceNotes -PathType Leaf) {
+            $notes = Get-Content -Raw -LiteralPath $sourceNotes
+          } else {
+            $notes = gh api "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" `
+              -f "tag_name=$env:RELEASE_TAG" --jq ".body"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $policyUrl = "https://github.com/$env:GITHUB_REPOSITORY/blob/$env:SOURCE_SHA/docs/CODE_SIGNING_POLICY.md"
+          $banner = "> **UNSIGNED alpha build.** These binaries are NOT code-signed, so Windows SmartScreen will likely warn on first run. " +
+            "Verify the SHA-256 in the attached ``.sha256`` files, and the build provenance with ``gh attestation verify <file> --repo $env:GITHUB_REPOSITORY``, before running.`r`n`r`n"
+          $notes = $banner + $notes
+          $notes += "`r`n`r`n## Code signing policy`r`nThis release is unsigned. See [Branchglance code signing policy]($policyUrl) for the signing plan.`r`n"
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          gh release create $env:RELEASE_TAG `
+            (Join-Path $assets "BranchglanceSetup.exe") `
+            (Join-Path $assets "BranchglanceSetup.exe.sha256") `
+            (Get-ChildItem $assets -Filter "Branchglance-*-windows-components.zip" | Select-Object -First 1).FullName `
+            (Join-Path $assets "Branchglance-$env:VERSION-windows-components.zip.sha256") `
+            --draft --prerelease --verify-tag --title "Branchglance $env:VERSION (unsigned)" `
             --notes-file $notesPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

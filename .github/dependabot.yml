@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Actions are pinned to full commit SHAs; Dependabot moves the SHA and the "# vX.Y.Z" comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-minor-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "ci"
+
+  # Developer and source-test requirements (requirements-token-tracker.txt).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-dev-minor-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps"
+
+  # Frozen Windows release closure (packaging/requirements-release.txt). Installed with --no-deps,
+  # so review every bump as one change.
+  - package-ecosystem: pip
+    directory: /packaging
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-release-minor-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps(release)"

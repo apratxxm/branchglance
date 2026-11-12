@@ -102,6 +102,7 @@ def test_p1_all_callers_refuse_shim_only_path(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("timeout_parent", [True, False])
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: Job object and kernel32 process handles")
 def test_p1_job_kills_descendant_and_closes_inherited_pipes(fake_codex, tmp_path, timeout_parent):
     marker = tmp_path / "child.pid"
     child = "import os,sys,time;open(sys.argv[1],'w').write(str(os.getpid()));time.sleep(60)"
@@ -123,6 +124,7 @@ def test_p1_job_kills_descendant_and_closes_inherited_pipes(fake_codex, tmp_path
     assert _process_gone(pid)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: kernel32 process-attribute shim via ctypes.WinDLL")
 def test_p1_job_attribute_failure_refuses_creation(fake_codex, tmp_path, monkeypatch):
     original = ctypes.WinDLL
     real_kernel = original("kernel32", use_last_error=True)
@@ -143,6 +145,7 @@ def test_p1_job_attribute_failure_refuses_creation(fake_codex, tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("failure", ["create", "after_create", "supervisor_exit"])
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: kernel32 process-creation shim via ctypes.WinDLL")
 def test_p1_creation_boundary_uses_job_attribute_and_classifies_failures(fake_codex, monkeypatch, failure):
     original = ctypes.WinDLL
     real_kernel = original("kernel32", use_last_error=True)

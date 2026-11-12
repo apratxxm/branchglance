@@ -100,6 +100,7 @@ def test_mutex_names_are_global_and_scoped_to_the_user_sid():
     assert product.mutex_name("Instance", sid) == rf"Global\Branchglance-{sid}-Instance"
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: named-mutex security descriptor via kernel32/advapi32")
 def test_runtime_mutex_creation_uses_user_and_system_only_dacl(monkeypatch):
     import ctypes
     sid = "S-1-5-21-7-8-9-1001"
@@ -275,6 +276,7 @@ def _bystander_handle(name):
     return kernel32.CreateMutexW(None, False, name)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: named-mutex ownership (non-Windows reports no mutex)")
 def test_instance_mutex_second_acquirer_is_refused():
     name = _test_mutex_name()
     handle, owned = widget.acquire_instance_mutex(name)
@@ -289,6 +291,7 @@ def test_instance_mutex_second_acquirer_is_refused():
     _close(again)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: named-mutex ownership via kernel32 handles")
 def test_released_mutex_kept_alive_by_another_handle_is_acquired_not_refused():
     # F3: the object still exists (a plain handle is open elsewhere) but nobody owns it.
     name = _test_mutex_name()
@@ -301,6 +304,7 @@ def test_released_mutex_kept_alive_by_another_handle_is_acquired_not_refused():
         _close(bystander)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: named-mutex abandonment via kernel32 handles")
 def test_abandoned_mutex_with_retained_handle_is_owned_and_reported_abandoned():
     name = _test_mutex_name()
     bystander = _bystander_handle(name)
