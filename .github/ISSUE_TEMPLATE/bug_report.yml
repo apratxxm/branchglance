@@ -55,5 +55,5 @@ body:
     id: debug_report
     attributes:
       label: Debug report
-      description: "Settings, Report a bug, Copy, then paste here. Review it first."
+      description: "Settings, Report a bug, Preview debug report, Copy, then paste here. Review it first."
       render: markdown

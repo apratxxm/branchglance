@@ -141,6 +141,7 @@ The **Settings** tab sits next to Insights.
 - **Notifications:** reset actions and Claude tracking (see below).
 - **Display:** the monitor the widget opens on, and **Recenter**, which brings the widget back to that display.
 - **Version:** the installed version and build, for example `0.2.0+910b6d3`.
+- **Report a bug:** previews a privacy-filtered debug report to copy into an issue. See [Attaching a debug report](CONTRIBUTING.md#attaching-a-debug-report).
 
 ## Reset actions
 

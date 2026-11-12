@@ -21,6 +21,8 @@ On either platform, only three things can leave your machine, and all go to a pr
 2. **Reset greetings.** Off by default. If you enable one, Branchglance runs the provider's own CLI to send a short message after a verified limit reset, and repeats it while enabled to keep the window rolling; for Claude it may also send a first greeting to establish a window. That request goes to the provider. For Claude, Branchglance reads the limits Claude Code prints for the greeting; it does not run `claude auth status`.
 3. **Queued Codex messages.** Off until you enable Codex sending (`TOKEN_TRACKER_CODEX_SEND=1`). Then a choice you queue on a Codex question, or the `continue` you arm for chosen chats after a reset, is sent to that chat through the local Codex CLI.
 
+A debug report is not on this list. Branchglance builds one only when you ask for it, from typed fields, and keeps it on your machine. It is never uploaded; you attach it yourself. **Open GitHub issue** only opens the issue page in your browser, with the version and OS filled in. The browser makes that request when you click it.
+
 ## What it stores
 
 Settings, the last snapshot and (if you enable it) the usage ledger live under `%LOCALAPPDATA%\Branchglance` on Windows. On macOS, the app and settings are in `~/Library/Application Support/Branchglance` and saved state in `~/Library/Application Support/TokenTracker`. The uninstaller keeps them; on Windows delete the folder, and on macOS run `./macos/build.sh uninstall --purge`, to remove them. A provider's saved ledger history can be deleted in the reset-action settings.
