@@ -1215,3 +1215,12 @@ assert.equal(T.state.snapshot,snapshot);
 assert.equal(T.state.bootstrapRetryTimer,null);
 
 console.log("Token Tracker Runway telemetry contracts passed");
+
+// Stopped children under a running parent are hidden in runway mode, unless a descendant still runs.
+{
+  const live=(id,parent)=>({id,key:'Claude:'+id,provider:'Claude',...(parent?{parentKey:'Claude:'+parent}:{}),title:id,status:'running',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(1),runStartedAt:ago(60)});
+  const stopped=(id,parent)=>({id,key:'Claude:'+id,provider:'Claude',parentKey:'Claude:'+parent,title:id,status:'idle',stateDetail:'stopped',retainedRun:true,stoppedAt:ago(60)});
+  const keys=chats=>Array.from(T.trayEntries(T.buildForest([{name:'Claude',chats}]).roots[0],T.parseQuery('')),entry=>entry.key);
+  assert.deepEqual(keys([live('lead'),live('kid','lead'),stopped('done','lead')]),['Claude:kid'],'stopped child under a running parent is hidden');
+  assert.deepEqual(keys([live('lead'),stopped('mid','lead'),live('leaf','mid')]).sort(),['Claude:leaf','Claude:mid'],'a stopped middle agent stays while its descendant runs');
+}

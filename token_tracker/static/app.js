@@ -1849,8 +1849,9 @@ function runwayStateElapsed(chat) {
   const execution=runwayExecutionView(chat);
   const status=runwayEffectiveStatus(chat);
   const waiting=runwayWaiting(chat);
-  const since=stamp(waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):execution?execution.since:chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince:null);
-  return since&&since<=Date.now()?runSpan((Date.now()-since)/1000):'—';
+  const candidates=execution&&!waiting?(status==='running'?[execution.since,chat.activeRunStartedAt,chat.runStartedAt,chat.firstSeenAt]:[execution.since]):[waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince:null];
+  const now=Date.now(),since=candidates.map(stamp).find(value=>value&&value<=now+5000);
+  return since?runSpan(Math.max(0,now-since)/1000):'—';
 }
 const runwayMessageDirection = chat => ({"parent-to-agent":"from parent","agent-to-parent":"to parent","agent-to-agent":"between agents"})[chat.latestMessageDirection]||'';
 const runwayMessageAge = chat => { const sent=stamp(chat.latestMessageAt),age=Date.now()-sent;return runwayMessageDirection(chat)&&sent&&age>=0&&age<10000?age:null; };
@@ -1858,7 +1859,7 @@ const runwayAgentHasNewMessage = chat => runwayMessageAge(chat)!=null;
 // macOS paths have no drive: the Mac app reports POSIX paths, and Claude hooks a bare folder name.
 const MAC_HOST=/^Mac/i.test(globalThis.navigator?.platform||'');
 function runwayWorkspacePath(workspace) {
-  if(MAC_HOST){const raw=String(workspace||'').trim();if(/^\//.test(raw))return raw.replace(/\/+$/,'')||'/';if(raw&&!/[\\/:]/.test(raw))return raw;}
+  {const raw=String(workspace||'').trim();if(/^\//.test(raw))return raw.replace(/\/+$/,'')||'/';if(MAC_HOST&&raw&&!/[\\/:]/.test(raw))return raw;}
   const normalized=String(workspace||'').trim().replace(/\//g,'\\');
   const path=/^[A-Za-z]:\\+$/.test(normalized)?normalized.slice(0,3):normalized.replace(/\\+$/,'');
   // Show the absolute Windows location from its volume root. If telemetry is not
@@ -1867,8 +1868,9 @@ function runwayWorkspacePath(workspace) {
 }
 function runwayWorkspaceLeaf(workspace) {
   const path=runwayWorkspacePath(workspace);
-  return path?path.split(MAC_HOST&&path.startsWith('/')?'/':'\\').at(-1)||path:'';
+  return path?path.split(path.startsWith('/')?'/':'\\').at(-1)||path:'';
 }
+const runwayScratch = (chat,path) => {const kind=chat.workspace?chat.workspaceKind:chat.root?.workspaceKind;return kind!=='project'&&(['codex-chat','per-chat'].includes(kind)||/(?:^|[\\/])\.t3[\\/]scratch(?:[\\/]|$)/i.test(path||''));};
 function runwayWorkspaceHTML(chat) {
   if(!chat.workspace&&!chat.root?.workspace)return '';
   const own=Boolean(chat.workspace),workspace=chat.workspace||chat.root?.workspace,path=runwayWorkspacePath(workspace);
@@ -1876,7 +1878,8 @@ function runwayWorkspaceHTML(chat) {
   const inherited=!own&&Boolean(chat.root?.workspace),full=workspace;
   const title=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+full;
   // A Mac path has no drive; same markup with an empty drive, "/" separators.
-  const posix=MAC_HOST&&!/^[A-Za-z]:/.test(path),sep=posix?'/':'\\',rest=posix?path:path.slice(3);
+  const posix=path.startsWith('/'),sep=posix?'/':'\\',rest=posix?path:path.slice(3);
+  if(runwayScratch(chat,path))return '<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(title)+'">scratch</span>';
   const drive=posix?'':path.slice(0,3),parts=rest.split(sep).filter(Boolean),leafPart=parts.pop()||'',middle=(posix&&path.startsWith('/')?'/':'')+parts.join(sep),leaf=(parts.length?sep:'')+leafPart;
   return '<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(title)+'" aria-label="'+esc((inherited?'Inherited workspace: ':'Workspace: ')+path)+'">'+(inherited?'<span class="runway-workspace-inherited" aria-label="Inherited workspace">'+ICON.branch+'</span>':'')+'<span class="runway-path-drive">'+esc(drive)+'</span><span class="runway-path-middle">'+esc(middle)+'</span><span class="runway-path-leaf">'+esc(leaf)+'</span></span>';
 }
@@ -1994,8 +1997,9 @@ function runwayTelemetryHTML(chat,agent=false) {
     const workspaceTitle=(chat.workspaceKind==='codex-chat'?'Per-chat working folder; not a project checkout · ':inherited?'Inherited workspace · ':'Workspace · ')+workspacePath;
     const workspaceLabel=(inherited?'Inherited workspace: ':'Workspace: ')+workspacePath;
     // Drive first, one line: the leaf keeps the drive as its start and truncates at the end.
-    const drive=workspacePath?workspacePath.slice(0,2):'';
-    const cleanPath=workspacePath&&workspaceLeaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(drive)+' '+esc(workspaceLeaf)+'</span></span>':'';
+    const drive=/^[A-Za-z]:[\\/]/.test(workspacePath)?workspacePath.slice(0,2):'';
+    const leaf=runwayScratch(chat,workspacePath)?'scratch':workspaceLeaf;
+    const cleanPath=workspacePath&&leaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(drive&&!runwayScratch(chat,workspacePath)?drive+' ':'')+esc(leaf)+'</span></span>':'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
     const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
     // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
@@ -2076,7 +2080,10 @@ function denseRowEntry(agent) {
     html:'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span>'+(stats.tokens==null&&!stats.tools?'<span class="s s-time">'+esc(modelLabel(agent))+'</span>':'<span class="s s-tok"><b>'+fmt(stats.tokens)+'</b> <i>tok</i></span>'+filesHTML(stats)+'<span class="s s-time">'+(stats.run==null?"—":"ran "+runSpan(stats.run))+'</span>')};
 }
 function trayEntries(chat, query) {
-  const allDescendants=chat.descendants||[],needed=new Set(allDescendants.filter(isVisibleAgent).map(a=>a.key));
+  const allDescendants=chat.descendants||[],byParent=new Map([chat,...allDescendants].map(a=>[a.key,a]));
+  const hiddenStopped=a=>{const parent=byParent.get(treeParentKey(a));return Boolean(parent&&runwayRunning(parent)&&(runwayTerminated(a)||a.stateDetail==='stopped'||a.executionTerminalAt));};
+  const visible=a=>!hiddenStopped(a)&&isVisibleAgent(a);
+  const needed=new Set(allDescendants.filter(visible).map(a=>a.key));
   if(RUNWAY){const byKey=new Map(allDescendants.map(a=>[a.key,a]));for(const key of [...needed]){let row=byKey.get(key),seen=new Set();while(row){const parent=treeParentKey(row);if(!parent||seen.has(parent)||!byKey.has(parent))break;seen.add(parent);needed.add(parent);row=byKey.get(parent);}}}
   const agents=RUNWAY?allDescendants.filter(a=>needed.has(a.key)):sortAgents(allDescendants.filter(isVisibleAgent));
   agents.forEach(a=>{if(state.agentLive.get(a.key)!==agentStats(a).live)noteLiveness(a,agentStats(a).live);});

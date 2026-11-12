@@ -363,8 +363,8 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(css,/\.chat\[data-provider="Claude"\]>\.row::after\{background:radial-gradient\(ellipse at 48% 110%,color-mix\(in srgb,var\(--claude-accent\) 22%/,"Claude parents keep a warm, edgeless identifier glow");
   assert.match(css,/\.runway-refined-row::after\{[^}]*border-radius:0;[^}]*radial-gradient\([^}]*transparent 100%/,"hover highlight is an edgeless glow");
   assert.doesNotMatch(css,/linear-gradient\(to bottom,var\(--tree-(?:claude|codex)-surface\)/,"cross-provider seams have no row-edge feather bands");
-  const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard"},true);
-  const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard review dashboard updates and coordination"},true);
+  const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna Â· dashboard"},true);
+  const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna Â· dashboard review dashboard updates and coordination"},true);
   assert.equal((shortTitle.match(/class="runway-refined-row"/g)||[]).length,(longTitle.match(/class="runway-refined-row"/g)||[]).length,"title length does not add rows or change the fixed row tracks");
   assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center;\s*width:100%;min-width:0;min-height:50px/);
   assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
@@ -394,4 +394,22 @@ console.log("unified agent tree contract checks passed");
   const many=Array.from({length:20},(_,i)=>lead(i));check(many);
   for(const chat of many)assert.ok(list.innerHTML.includes(chat.key),chat.key+' renders');
   assert.match(cssRule('body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat-list'),/overflow-y:auto/);
+}
+
+// Agent-tree display regressions: elapsed, workspace, and stopped children.
+{
+  const {T}=boot();
+  const active={id:'active',key:'Claude:active',title:'Active',status:'running',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),runStartedAt:ago(2)};
+  assert.equal(T.runwayStateElapsed(active),'2:00');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2:00');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+3000).toISOString()}),'0:00');
+  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1:00');
+  // The thread's creation time is not a run start: a resumed run without a run start shows a dash.
+  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,createdAt:ago(600)}),'—');
+  const row=workspace=>T.runwayTelemetryHTML({...active,workspace},false);
+  assert.match(row('C:\\Users\\a\\.t3\\scratch\\session'),/>scratch<\/span>/);
+  assert.match(row('C:\\work\\proj'),/>C: proj<\/span>/);
+  assert.match(T.runwayTelemetryHTML({...active,workspace:'C:\\Users\\a\\.t3\\scratch\\checkout',workspaceKind:'project'},false),/>C: checkout<\/span>/);
+  assert.match(row('/Users/a/proj'),/>proj<\/span>/);
+  assert.doesNotMatch(row('/Users/a/proj'),/>\/U proj/);
 }
