@@ -25,9 +25,9 @@ The project name in signed version resources is **Branchglance**. The ProductVer
 
 ## Privacy and data handled
 
-Branchglance reads data locally to show the user's own activity. This includes Codex session metadata and transcripts through the locally installed Codex app-server, Claude Code session data, Claude Desktop's local usage cache, and local application settings. Claude Code hook events are collected only after the user explicitly enables collection; the hook stores event metadata locally and does not record prompt text or tool inputs and outputs.
+Branchglance reads data locally to show the user's own activity. This includes Codex session metadata and transcripts through the locally installed Codex app-server, Claude Code session data, Claude Desktop's local usage cache, the usage cache Claude Code keeps in its config, and local application settings. Claude Code hook events are collected only after the user explicitly enables collection; the hook stores event metadata locally and does not record prompt text or tool inputs and outputs.
 
-Branchglance has no Branchglance-hosted account, analytics, or synchronization service. The desktop app does not upload transcripts or history to Branchglance. The local Codex app-server and optional provider greeting commands use the user's installed, signed-in provider tools; those tools may communicate with their respective providers under the user's account. Claude Desktop obtains its own usage data; Branchglance reads that local cache.
+Branchglance has no Branchglance-hosted account, analytics, or synchronization service. The desktop app does not upload transcripts or history to Branchglance. The local Codex app-server and optional provider greeting commands use the user's installed, signed-in provider tools; those tools may communicate with their respective providers under the user's account. Claude Desktop obtains its own usage data; Branchglance reads that local cache. When Claude tracking is on and Claude Code is signed in, Branchglance also reads Claude Code's OAuth token in memory and calls `api.anthropic.com` for the account's usage; it never refreshes, logs or stores the token. See [Privacy](PRIVACY.md).
 
 ## Changes made to Windows and Claude settings
 

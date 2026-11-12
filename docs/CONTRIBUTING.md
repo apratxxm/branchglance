@@ -2,7 +2,7 @@
 
 Thanks for your interest in Branchglance. Bug reports, fixes and focused features are all welcome. This guide covers setting up a development copy, running the tests, building the installer and opening a pull request.
 
-Branchglance currently runs on Windows only. Keep platform-specific code behind a clear boundary. If you're interested in macOS, read [the macOS port inventory](MAC_PORT.md) and [the architecture](ARCHITECTURE.md) first.
+Windows is the primary platform; the macOS notch app builds from source (see [the macOS guide](../macos/README.md)). Keep platform-specific code behind a clear boundary, and read [the architecture](ARCHITECTURE.md) and [the macOS port inventory](MAC_PORT.md) before touching it.
 
 ## Development setup
 
@@ -114,15 +114,10 @@ Branchglance is in **alpha**: features are still being added and behaviour can c
 
 - The stage moves to **beta** once the planned feature set is in and releases are signed, and to **1.0** once it has been stable for daily use.
 - Every build has a build ID after a `+`, for example `0.2.0+910b6d3`. That's the commit it was built from.
-- `CHANGELOG.md` keeps an `Unreleased` section. Add a line there in the same pull request as the change, under Added, Changed or Fixed.
+- `CHANGELOG.md` keeps an `[Unreleased]` section. Add a line there in the same pull request as the change, under Added, Changed, Fixed or Security, in wording a user would understand. Don't put internal ticket or review IDs in it.
 
-To cut a release:
-
-1. Set `RELEASE_VERSION` in `packaging/build.py`.
-2. Rename `Unreleased` in `CHANGELOG.md` to the version and date, and start a new empty `Unreleased`.
-3. Tag the release commit `v<version>` and push the tag. The `Windows release` workflow builds and signs it.
-4. Publish the GitHub release marked as a pre-release while the stage is alpha or beta, with the changelog section as its notes.
+Maintainers: the tag, build, sign and publish steps are in [RELEASING](release/RELEASING.md).
 
 ## Reporting bugs
 
-Open an issue with your Windows version, the Branchglance version (shown under **Settings** in the widget) and steps to reproduce. Please don't paste chat transcripts or tokens; describe the behaviour instead.
+Open an issue with your Windows or macOS version, the Branchglance version (shown under **Settings** in the widget) and steps to reproduce. Please don't paste chat transcripts or tokens; describe the behaviour instead.

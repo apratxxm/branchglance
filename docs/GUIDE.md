@@ -2,7 +2,7 @@
 
 A guide to every part of Branchglance and how it fits a day of running Codex and Claude Code in parallel. It is written for power users: people who keep several chats going at once, delegate to subagents, and hit usage limits.
 
-Behaviour below matches release 0.1.0 (alpha). Where Branchglance only reports what it has observed, the guide says so.
+Behaviour below matches the current development version (0.2.0 in preparation). Where Branchglance only reports what it has observed, the guide says so.
 
 ## The idea
 
@@ -38,6 +38,8 @@ The collapsed widget is 328 px wide at 100% scaling. It is a thin strip with:
 - live chat counts
 - the **5-hour** limit band, and the **weekly** band beneath it
 
+<p align="center"><img alt="The collapsed widget: clock, chat counts, and 5-hour and weekly limit bands for Codex and Claude" src="images/widget-collapsed.png" width="328"></p>
+
 Hover over the widget to show its controls; when chats are active, hovering can also reveal the tree. Press the inspection shortcut (**Ctrl+Shift+T** by default) to open the tree directly. Move the pointer away and it collapses again, unless **Keep open** is on.
 
 ### Expanded
@@ -66,7 +68,7 @@ The tray icon menu has **Show / hide**, **Inspection shortcut** (Ctrl+Shift+T, C
 
 ## The chat tree
 
-Each root chat is a row, with its subagents nested beneath it, ordered by recent activity. Rows share column tracks, so title, model, activity, workspace and elapsed time line up down the tree. In the expanded tree, long titles wrap; in tighter layouts they can be shortened.
+Each root chat is a row, with its subagents nested beneath it, ordered by recent activity. Large trees page within the expanded window, and a stopped chat stays visible for 15 minutes. Rows share column tracks, so title, model, activity, workspace and elapsed time line up down the tree. In the expanded tree, long titles wrap; in tighter layouts they can be shortened.
 
 **What a row shows**
 
@@ -110,7 +112,9 @@ Clear the query, or press Escape, to go back to the tree.
 Each provider has a **5-hour** band and a **weekly** band. Both show percent used, from 0 to 100%. Turning amber at 50% and red at 70%, they give you time to plan before you hit a limit.
 
 - The countdown shows when the provider said the limit resets. Zero on the countdown does not mean the limit has reset. Branchglance waits for a real sample that shows the reset.
-- Codex limits come from the local Codex app server. Claude limits come from Claude Desktop's local usage cache.
+- Codex limits come from the local Codex app server. Claude limits come from Anthropic when [live usage](CONFIGURATION.md#claude-live-usage) is on, and otherwise from the usage caches Claude Code and Claude Desktop keep locally, or the status line helper. Claude readings are tied to the signed-in account.
+- Codex **banked resets** (unused limit resets Codex reports as available) appear as a count beside the weekly bar, with their expiry in the tooltip, and drop off when they expire.
+- **Routing alerts:** when one provider has under 40% of a window left while the other has room, the widget shows a one-time heads-up naming the window and its reset, so you can send work to the other provider. It re-arms after recovery or a reset, and stale readings never trigger it.
 - The dot next to the Codex 5-hour label shows reset action status. Click it for details.
 
 ## Insights
@@ -132,7 +136,7 @@ The **Settings** tab sits next to Insights.
 - **Providers:** the show, collect and send flags from your policy file. These are read-only here.
 - **Notifications:** reset actions and Claude tracking (see below).
 - **Display:** the monitor the widget opens on, and **Recenter**, which brings the widget back to that display.
-- **Version:** the installed version and build, for example `0.1.0+910b6d3`.
+- **Version:** the installed version and build, for example `0.2.0+910b6d3`.
 
 ## Reset actions
 
@@ -159,7 +163,7 @@ Claude collection is off until you turn it on in **Claude tracking**.
 - **Update:** run the newer Setup. It installs the new release next to the old one, self-tests it, and only then switches over.
 - **Rollback:** `BranchglanceSetup.exe --rollback` restores the previous verified release.
 - **Uninstall:** go to Settings → Apps → Installed apps → Branchglance. The uninstaller checks the install and its releases first and stops before changing anything if they don't verify. It then revokes Claude consent, backs up Claude settings, and removes only Branchglance's hooks, shortcuts and program files. Anything it can't safely remove is kept and reported. Your settings and history under `%LOCALAPPDATA%\Branchglance` are kept.
-- **Verify a download:** see [Verify the download](../README.md#verify-the-download).
+- **Verify a download:** see [Verify the download](INSTALL.md#verify-the-download).
 
 ## Power-user tips
 
@@ -176,6 +180,6 @@ Claude collection is off until you turn it on in **Claude tracking**.
 - Reset times come from the provider; a countdown alone proves nothing.
 - Cost is estimated from known prices only.
 - Claude subagent coverage depends on hook events.
-- Windows only for now. See [MAC_PORT.md](MAC_PORT.md) for the macOS inventory.
+- Windows has an installer; macOS runs from source. See the [macOS guide](../macos/README.md).
 
 For how it works inside, see [ARCHITECTURE.md](ARCHITECTURE.md).

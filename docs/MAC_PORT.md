@@ -1,6 +1,6 @@
 # macOS port inventory
 
-This is an inventory and proposed migration plan, not a claim of macOS support. The current widget and packaging path are Windows-first. Shared Python reducers, API logic and vanilla JavaScript can remain common where their contracts are platform-neutral.
+This is the original inventory and migration plan for the macOS port. A notch app now builds from source (see the [macOS guide](../macos/README.md)); there is no macOS installer download yet, and the Windows widget and packaging path remain the primary platform. Shared Python reducers, API logic and vanilla JavaScript can remain common where their contracts are platform-neutral.
 
 ## Windows-specific surfaces and proposed seams
 
