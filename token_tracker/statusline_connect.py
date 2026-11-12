@@ -44,6 +44,19 @@ def _target(path, record):
     return Path(record["settingsPath"]) if record else settings_path()
 
 
+def _recorded_settings(value):
+    """The recorded settings file, normalised; refused unless absolute and literally named settings.json.
+
+    The record is only a hint on disk: a file with any other name could hold the wrapper too.
+    """
+    if not isinstance(value, str) or not Path(value).is_absolute():
+        raise hooks.HookInstallError("Status line record has no absolute settings path; it was not changed.")
+    normal = os.path.normpath(value)
+    if Path(normal).name != "settings.json":
+        raise hooks.HookInstallError("Status line record does not name settings.json; it was not changed.")
+    return normal
+
+
 def _record(root):
     try:
         with claude_statusline._guard_directories(root), claude_statusline._open_checked(root / "statusline-chain.json") as f:
@@ -53,6 +66,7 @@ def _record(root):
                 type(value.get("originalPresent")) is not bool or
                 not isinstance(value.get("wrapper"), dict)):
             raise ValueError("invalid status line record")
+        value["settingsPath"] = _recorded_settings(value["settingsPath"])
         return value
     except FileNotFoundError:
         return None

@@ -552,6 +552,11 @@ def _write_consent(data_directory: str | os.PathLike[str] | None, now: float, co
                                   "settingsPath": str(settings_path)}), encoding="utf-8")
 
 
+def _legacy_claude_home_set() -> bool:
+    """Legacy uninstall guard only: CLAUDE_HOME is not a config location and is never resolved."""
+    return bool(os.environ.get("CLAUDE_HOME"))
+
+
 def _recorded_settings_path(data_directory: str | os.PathLike[str] | None) -> tuple[str, Path | None]:
     """("recorded", path) | ("legacy", None) for a valid record written before
     targets were recorded | ("invalid", None) for anything unreadable or malformed."""
@@ -670,10 +675,11 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
     now = time.time() if now is None else now
     marker_present = _consent_file(data_directory).exists()
     provenance, path = _recorded_settings_path(data_directory) if marker_present else ("absent", None)
-    if provenance == "legacy" and claude_config_override() is None:
+    if provenance == "legacy" and claude_config_override() is None and not _legacy_claude_home_set():
         # Consent written before the target was recorded: those installs used
         # ~/.claude unless a config override was set, so with no override now
-        # that is the only file they can have edited.
+        # that is the only file they can have edited. CLAUDE_HOME, which older
+        # releases honoured, may have pointed them elsewhere: refuse to guess.
         path = Path(settings_path) if settings_path is not None else default_settings_path()
     known = _known_executables(data_directory, command)  # read before the marker is removed
     consent_removed = _remove_consent(data_directory)

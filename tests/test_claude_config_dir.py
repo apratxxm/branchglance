@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from token_tracker import claude_identity, claude_provider, claude_usage_api, product, providers
 from token_tracker import claude_hook_install as installer, statusline_connect
 
@@ -107,3 +109,57 @@ def test_status_line_recorded_under_old_folder_is_still_disconnected(tmp_path, m
     assert statusline_connect.disconnect(root=root)["changed"]
     assert "statusLine" not in json.loads((first / "settings.json").read_text(encoding="utf-8"))
     assert not (second / "settings.json").exists()
+
+
+WRAPPER = {"type": "command", "command": "wrapper"}
+
+
+def _call(action, root):
+    return {"root": root, "command": "wrapper"} if action == "connect" else {"root": root}
+
+
+def _record_file(root, settings_path):
+    root.mkdir(parents=True, exist_ok=True)
+    record = {"schemaVersion": 1, "settingsPath": settings_path, "originalPresent": False,
+              "originalValue": None, "wrapper": WRAPPER, "createdAt": 1.0}
+    (root / "statusline-chain.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+@pytest.mark.parametrize("action", ["status", "connect", "disconnect"])
+def test_recorded_unrelated_absolute_file_is_refused(tmp_path, monkeypatch, action):
+    config = tmp_path / "config"
+    config.mkdir()
+    _env(monkeypatch, config=config)
+    root = tmp_path / "state"
+    unrelated = tmp_path / "unrelated.json"
+    unrelated.write_text(json.dumps({"statusLine": WRAPPER}), encoding="utf-8")
+    before = unrelated.read_bytes()
+    _record_file(root, str(unrelated))
+    with pytest.raises(installer.HookInstallError, match="does not name settings.json"):
+        getattr(statusline_connect, action)(**_call(action, root))
+    assert unrelated.read_bytes() == before
+    assert set(config.iterdir()) == set()
+
+
+@pytest.mark.parametrize("action", ["status", "connect", "disconnect"])
+def test_recorded_relative_path_is_refused(tmp_path, monkeypatch, action):
+    config = tmp_path / "config"
+    config.mkdir()
+    _env(monkeypatch, config=config)
+    root = tmp_path / "state"
+    _record_file(root, "relative/settings.json")
+    with pytest.raises(installer.HookInstallError, match="absolute settings path"):
+        getattr(statusline_connect, action)(**_call(action, root))
+    assert set(config.iterdir()) == set()
+
+
+def test_recorded_settings_path_with_dotdot_is_normalised_and_used(tmp_path, monkeypatch):
+    config = tmp_path / "config"
+    config.mkdir()
+    _env(monkeypatch, config=config)
+    root = tmp_path / "state"
+    (config / "settings.json").write_text(json.dumps({"statusLine": WRAPPER}), encoding="utf-8")
+    _record_file(root, str(tmp_path / "x" / ".." / "config" / "settings.json"))
+    assert statusline_connect.status(root=root)["connected"]
+    assert statusline_connect.disconnect(root=root)["changed"]
+    assert "statusLine" not in json.loads((config / "settings.json").read_text(encoding="utf-8"))

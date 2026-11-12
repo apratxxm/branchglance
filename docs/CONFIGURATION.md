@@ -50,6 +50,7 @@ The inventory covers product, installer, packaging and macOS host reads. Privacy
 | `TOKEN_TRACKER_CLAUDE_LIVE_USAGE` | Live usage override; saved setting or off by default, requires collection. | Network |
 | `TOKEN_TRACKER_LEDGER` | Local usage ledger override; saved setting or off by default. Only exactly `1` enables it. | Privacy |
 | `CLAUDE_CONFIG_DIR` | Claude config directory (read by Claude Code too); defaults to `~/.claude`. | No |
+| `CLAUDE_HOME` | Legacy uninstall guard only, not a config location: when set, uninstall refuses to guess the settings file for consent recorded before targets were stored. | No |
 | `CODEX_HOME` | Codex data directory; defaults to `~/.codex`. | No |
 | `CLAUDE_CODE_SESSION_ID` | Associates a bg-codex receipt with its Claude session; absent means no receipt. | Privacy |
 | `CLAUDE_CODE_GIT_BASH_PATH` | Preferred Git Bash path for Windows hooks; otherwise searches installed Git and PATH. | No |

@@ -192,6 +192,7 @@ def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_pa
     settings.parent.mkdir(parents=True)
     data_dir = tmp_path / "data"
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
     installer.install(settings, CMD, data_dir)
     marker = data_dir / claude_hook.CONSENT_NAME
@@ -201,6 +202,28 @@ def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_pa
     result = installer.uninstall(None, data_dir)
     assert result["ok"] and result["changed"] and result["consentRemoved"]
     assert "hooks" not in load(settings)
+
+
+def test_legacy_uninstall_with_claude_home_set_refuses_to_guess(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
+    installer.install(settings, CMD, data_dir)
+    marker = data_dir / claude_hook.CONSENT_NAME
+    record = load(marker)
+    record.pop("settingsPath")
+    marker.write_text(json.dumps(record), encoding="utf-8")
+    before = settings.read_bytes()
+    result = installer.uninstall(None, data_dir)
+    # Consent goes first; the default file the old install may not have used is untouched.
+    assert not result["ok"] and result["consentRemoved"] and result["hooksLeft"] == "unknown"
+    assert "retained" in result["error"]
+    assert settings.read_bytes() == before
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize("record", ['{"version": 1, "enabled": tr', '["not", "a", "record"]',
