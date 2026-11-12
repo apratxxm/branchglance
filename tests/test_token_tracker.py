@@ -2082,16 +2082,33 @@ def test_widget_service_stops_run_side_by_side_under_one_budget():
 
 
 def test_widget_service_stops_survive_a_thread_that_cannot_start(monkeypatch):
-    stopped = []
+    release = threading.Event()
+    ran = []
+
+    def blocking():
+        ran.append("blocking")
+        release.wait(30)
 
     class NoThread:
         def __init__(self, *args, **kwargs):
             raise RuntimeError("can't start new thread")
 
     monkeypatch.setattr(widget.threading, "Thread", NoThread)
-    widget._stop_services_together([lambda: stopped.append("a"), lambda: 1 / 0, lambda: stopped.append("c")],
-                                   budget=1.0)
-    assert stopped == ["a", "c"]  # each ran in place; the failing one did not stop the rest
+    begin = time.monotonic()
+    try:
+        widget._stop_services_together([blocking, blocking], budget=1.0)  # returns instead of blocking
+    finally:
+        release.set()
+    assert time.monotonic() - begin < 10 and ran == []  # skipped, never run in place
+
+    # A start() failure after construction is handled the same way.
+    class NoStart(threading.Thread):
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(widget.threading, "Thread", NoStart)
+    widget._stop_services_together([blocking], budget=1.0)
+    assert ran == []
 
 
 def test_widget_quit_tears_everything_down_even_if_a_step_fails(monkeypatch):

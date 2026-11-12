@@ -163,6 +163,7 @@ def _stop_claude_usage_refresher() -> None:
 
 def _stop_services_together(steps, budget: float | None = None) -> None:
     budget = SHUTDOWN_SERVICES_BUDGET if budget is None else budget
+    end = time.monotonic() + budget
     threads = []
     for step in steps:
         def run(step=step) -> None:
@@ -172,10 +173,8 @@ def _stop_services_together(steps, budget: float | None = None) -> None:
             thread = threading.Thread(target=run, name="shutdown-step", daemon=True)
             thread.start()
         except Exception:
-            run()  # no thread to spare: stop this service here rather than skip it
-            continue
+            continue  # never run a blocking stop inline: the rest of quit() must still happen
         threads.append(thread)
-    end = time.monotonic() + budget
     for thread in threads:
         thread.join(max(0.0, end - time.monotonic()))
 
