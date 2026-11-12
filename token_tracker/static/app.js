@@ -1415,7 +1415,6 @@ document.addEventListener?.("pointerdown",event=>{const view=$("#dashboard-view"
 window.addEventListener?.("blur",closeToolbarMenu);
 document.addEventListener?.("keydown",event=>{if(event.key==="Escape"){const menu=$("#toolbar-menu");if(menu&&!menu.hidden){closeToolbarMenu();$("#toolbar-more")?.focus?.({preventScroll:true});}}});
 /* ---------- chat rows (layer 1) ---------- */
-function glyphHTML(st) { return '<i class="g g-'+st.glyph+' t-'+st.tone+(st.key==="running"?" breathe":"")+'"></i>'; }
 function runwayContextPair(chat) {
   const tokens=safeNumber(chat.contextTokens),windowSize=safeNumber(chat.contextWindow),observed=stamp(chat.contextObservedAt),compacted=stamp(chat.compactionStartedAt);
   // A known window must be positive; an unknown window keeps the recorded tokens (shown as "tokens / —").
@@ -1468,13 +1467,6 @@ function runwayStateNote(chat) {
   if(chat.stateDetail==="inactive")return "No completion recorded and no transcript writes for 30+ minutes.";
   if(chat.status==="unknown")return "";
   return chat.dataError||"";
-}
-function runwayPreviewHTML(label, text, cls="", at=null) {
-  const snippet=trackerSnippet(text);
-  if(snippet)text=snippet.doing||snippet.task;
-  const preview=String(text||'').replace(/\[([^\]]+)\]\([^)]*\)/g,'$1').replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
-  const age=at?runwayActivityAge({latest:stamp(at)}):'';
-  return '<div class="runway-preview '+cls+'"'+(!text?' hidden':'')+(text?' title="'+esc(label+(age?' · '+age:''))+'"':'')+'><span class="runway-field-label">'+esc(label)+(age?' · '+esc(age):'')+'</span><span class="runway-preview-text">'+esc(preview)+'</span></div>';
 }
 function runwayContextFactsHTML(chat) {
   const pair=runwayContextPair(chat),tokens=pair.tokens,windowSize=pair.windowSize;
@@ -1702,11 +1694,6 @@ function trayState(chat) {
 function agentRowEntry(agent, query, visibleParent=null, visibleDepth=null) {
   return {key:agent.key,cls:'ag runway-agent'+(query.active&&matchesQuery(agent,query)?' match':''),attrs:{'data-sub':agent.key,'data-provider':agent.provider,'data-visible-parent':visibleParent,style:'--agent-depth:'+Math.max(0,(visibleDepth??agent.depth??1)-1)},html:'<div class="runway-agent-glance">'+runwayTelemetryHTML(agent,true)+'</div>'};
 }
-function denseRowEntry(agent) {
-  const stats=agentStats(agent);
-  return {key:agent.key,cls:"ag dense",attrs:{role:"button",tabindex:"0","data-action":resumeCommand(agent)?"copy":null,"data-copy":resumeCommand(agent)||null,"data-sub":agent.key,title:modelLabel(agent)+" · "+(stats.tools??"—")+" tools · "+(stats.files??"—")+" files"},
-    html:'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span>'+(stats.tokens==null&&!stats.tools?'<span class="s s-time">'+esc(modelLabel(agent))+'</span>':'<span class="s s-tok"><b>'+fmt(stats.tokens)+'</b> <i>tok</i></span>'+filesHTML(stats)+'<span class="s s-time">'+(stats.run==null?"—":"ran "+runSpan(stats.run))+'</span>')};
-}
 function trayEntries(chat, query) {
   const allDescendants=chat.descendants||[],byParent=new Map([chat,...allDescendants].map(a=>[a.key,a]));
   const hiddenStopped=a=>{const parent=byParent.get(treeParentKey(a));return Boolean(parent&&runwayRunning(parent)&&(runwayTerminated(a)||a.stateDetail==='stopped'||a.executionTerminalAt));};
@@ -1754,11 +1741,11 @@ function updateChatEl(el, chat, query) {
   const has=chat.descendants.some(isVisibleAgent);
   tray.hidden=!has;
   if(!has)return;
-  const [sum,full]=tray.children,expanded=true;
-  if(tray.dataset.previewExpanded!==String(expanded)){tray.dataset.previewExpanded=String(expanded);tray.className='tray '+(expanded?'runway-expanded':'runway-collapsed');}
+  const [sum,full]=tray.children;
+  if(tray.className!=='tray runway-expanded')tray.className='tray runway-expanded';
   const summary=traySummaryHTML(chat);
   if(sum.firstElementChild._html!==summary){runwayPatchContent(sum.firstElementChild,summary);sum.firstElementChild._html=summary;}
-  patchKeyed(full.firstElementChild,expanded?trayEntries(chat,query):[],{enter:el=>{if(state.runwaySnapshotPainted)runwayArrivalEnter(el);},exit:runwayExit});
+  patchKeyed(full.firstElementChild,trayEntries(chat,query),{enter:el=>{if(state.runwaySnapshotPainted)runwayArrivalEnter(el);},exit:runwayExit});
 }
 // Attention per source, independent of which forest is on screen. A new run or waiting question in an
 // unselected source flags that segment (never switches); selecting the source clears the flag.
@@ -2209,9 +2196,6 @@ function copyQuotaValue(value){
   if(value===null||typeof value!=='object')return value;
   if(Array.isArray(value))return value.map(copyQuotaValue);
   const copy={};for(const key of Object.keys(value))copy[key]=copyQuotaValue(value[key]);return copy;
-}
-function copyQuotaFields(provider){
-  const values={};for(const key of ['fiveHour','weekly','limitsUpdatedAt','_quotaWindowObservedAt'])if(Object.prototype.hasOwnProperty.call(provider,key))values[key]=copyQuotaValue(provider[key]);return values;
 }
 function initializeQuotaWindowTimes(provider){
   if(!provider._quotaWindowObservedAt||typeof provider._quotaWindowObservedAt!=='object')provider._quotaWindowObservedAt={};

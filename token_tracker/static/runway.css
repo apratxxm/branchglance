@@ -130,7 +130,7 @@ body:not(.phone).notch-expanded .chat-list{opacity:1;transform:none;transition:o
 .r-title{grid-column:2;grid-row:1;display:inline-flex;align-items:center;flex:0 1 auto;min-width:0;gap:5px;font-size:14px;font-weight:650;letter-spacing:-.25px;line-height:1.35;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.runway-preview{display:flex;min-width:0}
 .runway-preview-text{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:12px;line-height:19px;color:var(--muted)}
 .runway-preview .runway-field-label{display:none}/* Fine branching guides; all models, states, times and context stay exposed. */
-.tray{padding:0 0 8px 18px}.tray.runway-collapsed .tray-full{display:none}
+.tray{padding:0 0 8px 18px}
 .tray-clip{border:0;padding:0}
 .ag.runway-agent{position:relative;margin-left:calc(min(var(--agent-depth,0),3)*6px);border-left:1px solid #383838;padding:0 0 0 6px;min-width:0}
 .ag.runway-agent::before{content:"";position:absolute;top:3px;left:0;width:8px;height:12px;border-left:1px solid #555;border-bottom:1px solid #555;border-bottom-left-radius:6px;pointer-events:none}
