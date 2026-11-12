@@ -15,7 +15,7 @@ Complete transcript files are never copied or uploaded. Branchglance does keep a
 
 ## What it sends
 
-Only three things can leave your machine, and all go to a provider you already use:
+On either platform, only three things can leave your machine, and all go to a provider you already use. The macOS notch adds one opt-in download (see [macOS media features](#macos-media-features)).
 
 1. **Claude live usage.** With Claude tracking and live usage enabled and Claude Code signed in, Branchglance reads the OAuth token from `.credentials.json` in Claude Code's config folder (`CLAUDE_CONFIG_DIR`, otherwise `~/.claude`) into memory and sends it to `api.anthropic.com` to fetch the account's usage (about every 180 seconds, with up to 15 seconds of jitter; a fresh Claude Code cache skips a poll) and profile (when it first binds to an account, after a restart, and when the credentials or account change). It never refreshes, logs or stores the token. The only value it persists is a retry-after timestamp. It does not use the macOS Keychain; on macOS it works only if a credentials file exists, and otherwise falls back to the local caches. If Claude Code isn't signed in, nothing is sent.
 2. **Reset greetings.** Off by default. If you enable one, Branchglance runs the provider's own CLI to send a short message after a verified limit reset, and repeats it while enabled to keep the window rolling; for Claude it may also send a first greeting to establish a window. That request goes to the provider. For Claude, Branchglance reads the limits Claude Code prints for the greeting; it does not run `claude auth status`.
@@ -26,6 +26,14 @@ Only three things can leave your machine, and all go to a provider you already u
 Settings, the last snapshot and (if you enable it) the usage ledger live under `%LOCALAPPDATA%\Branchglance` on Windows. On macOS, the app and settings are in `~/Library/Application Support/Branchglance` and saved state in `~/Library/Application Support/TokenTracker`. The uninstaller keeps them; on Windows delete the folder, and on macOS run `./macos/build.sh uninstall --purge`, to remove them. A provider's saved ledger history can be deleted in the reset-action settings.
 
 Claude tracking changes Claude Code's `settings.json` by adding hooks. Connecting the status line is a separate explicit action and is refused if a status line already exists. Branchglance backs up existing settings before editing and removes only its own hooks and status line. It refuses observed concurrent edits; a write between its final comparison and replacement remains a possible race.
+
+## macOS media features
+
+The macOS notch can show what Spotify or Music is playing.
+
+- **Now playing.** It reads the current track's title, artist and playback state from Spotify or Music through Apple Events, and can send play, pause and skip commands. macOS asks for Automation permission first. This stays on your machine.
+- **Audio levels.** On macOS 14.2 and later, a Core Audio process tap reads only the player app's audio to animate the visualizer. macOS asks for audio capture permission. Levels are computed in memory and nothing is recorded or stored.
+- **Artwork.** Music artwork is read locally from the Music app. Spotify only offers artwork as a web address, so downloading it from Spotify is off until you turn it on in the menu bar.
 
 ## Controls
 

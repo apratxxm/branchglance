@@ -143,6 +143,6 @@ Maintainers: the tag, build, sign and publish steps are in [RELEASING](release/R
 
 Open an issue with your Windows or macOS version, the Branchglance version (shown under **Settings** in the widget) and steps to reproduce. Please don't paste chat transcripts or tokens; describe the behaviour instead. Support and question routes are in [SUPPORT.md](../SUPPORT.md). Security problems go to [SECURITY.md](../SECURITY.md), not to a public issue.
 
+<!-- debug-report: added with the feature
 ## Reporting a bug with a debug report
-
-<!-- debug-report: added with the feature -->
+-->

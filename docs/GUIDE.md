@@ -14,7 +14,7 @@ When work is spread across many chats and subagents, checking progress means ope
 2. **What needs me?** Chats waiting for an answer are marked and counted, with a shortcut to the exact chat.
 3. **How much room do I have?** Five-hour and weekly limits and their reset times, for Codex and Claude side by side.
 
-It reads local data only. It never answers for you, and never starts or stops work on its own. The one exception is reset actions, which you have to switch on yourself (see [Reset actions](#reset-actions)).
+It reads local data by default; the optional Claude live usage feature asks Anthropic for your usage (see [Privacy](PRIVACY.md)). It never answers for you, and never starts or stops work on its own. The one exception is reset actions, which you have to switch on yourself (see [Reset actions](#reset-actions)).
 
 ## A day with Branchglance
 
@@ -34,11 +34,13 @@ It reads local data only. It never answers for you, and never starts or stops wo
 
 ### Collapsed
 
-The collapsed widget is 328 px wide at 100% scaling. It is a thin strip with:
+On Windows, the collapsed widget is 328 px wide at 100% scaling. It is a thin strip with:
 
 - the local time (12- or 24-hour, set in Settings)
 - live chat counts
 - the **5-hour** limit band, and the **weekly** band beneath it
+
+On macOS, the widget collapses into the notch instead. See the [macOS guide](../macos/README.md).
 
 <p align="center"><img alt="The collapsed widget: clock, chat counts, and 5-hour and weekly limit bands for Codex and Claude" src="images/widget-collapsed.png" width="328"></p>
 

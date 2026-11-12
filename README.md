@@ -33,7 +33,7 @@ Items marked **(0.2.0)** are in the development version.
 - **Usage limits.** 5-hour and weekly limits for Codex and Claude side by side, with reset countdowns. Optional live Claude usage (off by default) refreshes about every 180 seconds **(0.2.0)**.
 - **Insights.** Tokens, estimated cost, model breakdown and limit peaks, over 24 hours to all time. Models without a known price are listed, never guessed.
 - **Reset actions (off by default).** A greeting that keeps Claude's 5-hour window rolling **(0.2.0)**, and a one-time `continue` queued for chats you pick.
-- **Out of the way.** The widget collapses to a thin strip with a clock and limit bands. Hover over it, or press Ctrl+Shift+T, to open the tree.
+- **Out of the way.** The widget collapses to a thin strip with a clock and limit bands (into the notch on macOS). Hover over it, or press Ctrl+Shift+T, to open the tree.
 
 ## Supported tools
 
@@ -68,7 +68,7 @@ See the [install guide](docs/INSTALL.md) for update, rollback and uninstall, and
 
 ## Privacy
 
-Branchglance runs on your machine. It reads local Codex and Claude Code data, and a local loopback server serves its UI. There is no Branchglance-hosted account, analytics or sync service. Transcript files are never uploaded. Claude tracking, live usage, Claude hooks, the usage ledger, greetings and sending are all off until you turn them on. With live usage on, Branchglance sends Claude Code's OAuth token to `api.anthropic.com` to read your usage. Messages leave only when you enable reset greetings or Codex sending, and they go through the provider's own CLI. The full list of what is read, sent and stored is in [Privacy](docs/PRIVACY.md), and reporting security issues is covered in [SECURITY.md](SECURITY.md).
+Branchglance runs on your machine. It reads local Codex and Claude Code data, and a local loopback server serves its UI. There is no Branchglance-hosted account, analytics or sync service. Transcript files are never uploaded. Claude tracking, live usage, Claude hooks, the usage ledger, greetings and sending are all off until you turn them on. With live usage on, Branchglance sends Claude Code's OAuth token to `api.anthropic.com` to read your usage. Messages leave only when you enable reset greetings or Codex sending, and they go through the provider's own CLI. What is read, sent and stored, including the macOS media features, is in [Privacy](docs/PRIVACY.md), and reporting security issues is covered in [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
