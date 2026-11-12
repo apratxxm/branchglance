@@ -3178,8 +3178,8 @@ if(!window.__TOKEN_TRACKER_TEST__){
   document.addEventListener("click",handleClick);
   document.addEventListener("contextmenu",handleContextMenu);
   document.addEventListener("keydown",handleKey);
-  if(RUNWAY)window.addEventListener?.('resize',()=>{if(COMPACT){noteInspectViewportResize();refreshInspectCssScale();}scheduleNotchSize();},{passive:true});
-  if(COMPACT)window.visualViewport?.addEventListener?.('resize',()=>{if(refreshInspectCssScale()&&notch.mode==='inspect'){noteInspectViewportResize();scheduleNotchSize();}},{passive:true});
+  window.addEventListener?.('resize',()=>{if(COMPACT){noteInspectViewportResize();refreshInspectCssScale();}scheduleNotchSize();},{passive:true});
+  window.visualViewport?.addEventListener?.('resize',()=>{if(refreshInspectCssScale()&&notch.mode==='inspect'){noteInspectViewportResize();scheduleNotchSize();}},{passive:true});
   $("#chat-search")?.addEventListener("input",event=>{state.query=event.target.value;if(state.snapshot)renderChats(providersFor(state.snapshot));queueSelectionRefresh();});
   $("#chat-list")?.addEventListener("pointerenter",()=>{state.pointerInList=true;});
   $("#chat-list")?.addEventListener("pointerleave",()=>{state.pointerInList=false;if(state.snapshot)renderChats(providersFor(state.snapshot));});
@@ -3190,6 +3190,6 @@ if(!window.__TOKEN_TRACKER_TEST__){
     $("#window-close")?.addEventListener("click",()=>window.pywebview?.api?.close?.());
   }
   $(".widget").classList.add("loading");
-  if(RUNWAY){setupNotch();setupWindowDrag();}else setupResize();renderLoading();if(RUNWAY){void loadProviderPolicy();void loadQuota();}refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);setInterval(pollToday,TODAY_REFRESH_MS);
+  setupNotch();setupWindowDrag();renderLoading();if(RUNWAY){void loadProviderPolicy();void loadQuota();}refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);setInterval(pollToday,TODAY_REFRESH_MS);
   document.addEventListener("visibilitychange",handleVisibilityChange);
 }
