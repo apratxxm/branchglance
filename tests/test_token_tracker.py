@@ -3506,10 +3506,10 @@ def test_incremental_jsonl_checkpoint_survives_windows_path_and_handle_ctime_mis
 
         # A replacement file (new identity) is still a rewrite and drops the old checkpoint.
         replacement = tmp_path / "ctime-mismatch.new"
-        replacement.write_text('{"value":9}\n', encoding="utf-8")
+        replacement.write_text('{"value":90}\n', encoding="utf-8")
         os.replace(replacement, path)
-        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [9]}
-        # Truncation to a shorter, different file is also a rewrite.
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [90]}
+        # Truncation to a shorter (12 < 13 bytes), different file is also a rewrite.
         path.write_text('{"value":8}\n', encoding="utf-8")
         assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [8]}
 
