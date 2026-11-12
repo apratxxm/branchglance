@@ -18,6 +18,7 @@ Safety rules:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -442,6 +443,51 @@ def _replace_with_retry(temp: Path, path: Path, expected: _SettingsSnapshot) -> 
             time.sleep(0.025 * (retry + 1))
 
 
+def _json_equal(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(_json_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def _verify_only_owned_changed(before: dict[str, Any], payload: bytes, known: frozenset[str]) -> None:
+    try:
+        after = json.loads(payload.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        raise HookInstallError("internal check failed: edited settings are not valid JSON; nothing was written") from None
+    if not isinstance(after, dict):
+        raise HookInstallError("internal check failed: edited settings are not an object; nothing was written")
+    hooks = after.get("hooks", {})
+    if (not isinstance(hooks, dict) or any(
+            not isinstance(groups, list) or any(
+                not isinstance(group, dict) or not isinstance(group.get("hooks"), list)
+                or any(not isinstance(hook, dict) for hook in group["hooks"])
+                for group in groups)
+            for groups in hooks.values())):
+        raise HookInstallError("internal check failed: edited hooks have an invalid shape; nothing was written")
+    if not _json_equal({k: v for k, v in before.items() if k != "hooks"},
+                       {k: v for k, v in after.items() if k != "hooks"}):
+        raise HookInstallError("internal check failed: a non-hook setting would change; nothing was written")
+    old_hooks = before.get("hooks") or {}
+    for event in old_hooks.keys() | hooks.keys():
+        old_groups = [group for group in old_hooks.get(event, []) if not is_ours(group, known)]
+        new_groups = [group for group in hooks.get(event, []) if not is_ours(group, known)]
+        if not _json_equal(old_groups, new_groups):
+            raise HookInstallError("internal check failed: a user-owned hook would change; nothing was written")
+
+
+def _guarded(transform, known: frozenset[str]):
+    def run(data, bom, original):
+        payload = transform(copy.deepcopy(data), bom, original)
+        if payload is not None:
+            _verify_only_owned_changed(data, payload, known)
+        return payload
+    return run
+
+
 def _write_transform_checked(path: Path, transform, now: float) -> str | None:
     """Apply a transform only to a stable, freshly rechecked snapshot."""
     saw_existing = False
@@ -602,7 +648,7 @@ def install(settings_path: str | os.PathLike[str] | None = None, command: str | 
             changed = True
         return _serialize(data, bom, original) if changed else None
 
-    backup = _write_transform_checked(path, ensure_hooks, now)
+    backup = _write_transform_checked(path, _guarded(ensure_hooks, known), now)
     try:
         _write_consent(data_directory, now, command, canonical_path)
     except OSError as exc:
@@ -671,7 +717,7 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
                 data.pop("hooks", None)
             return _serialize(data, bom, original) if changed else None
 
-        backup = _write_transform_checked(path, remove_owned, now)
+        backup = _write_transform_checked(path, _guarded(remove_owned, known), now)
     except HookInstallError as exc:
         left = _hooks_left(path, known)
         result.update(ok=False, error=str(exc), hooksLeft=left if left is not None else "unknown")

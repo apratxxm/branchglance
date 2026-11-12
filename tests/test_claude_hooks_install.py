@@ -95,6 +95,63 @@ def test_install_into_missing_file(env):
     assert len(data["hooks"]["Stop"]) == 1 and len(load(settings)["hooks"]["Stop"]) == 1
 
 
+@pytest.mark.parametrize("operation", ["install", "uninstall"])
+@pytest.mark.parametrize("mutation", ["unrelated", "boolean", "integer_float", "hooks_string", "hooks_list",
+                                      "group_missing_hooks", "drop", "reorder", "modify", "mixed_metadata"])
+def test_guard_refuses_unowned_transform_changes(env, monkeypatch, operation, mutation):
+    settings, data_dir = env
+    installer.install(settings, CMD, data_dir)
+    data = load(settings)
+    mixed = {"matcher": "mixed", "hooks": [{"type": "command", "command": CMD},
+                                            {"type": "command", "command": "echo user"}]}
+    data.update(model="original", enabled=True, count=1)
+    data["hooks"]["Stop"] += [USER_GROUP, {"hooks": [{"command": "echo second"}]}, mixed]
+    settings.write_text(json.dumps(data), encoding="utf-8")
+    original = settings.read_bytes()
+    before_files = set(settings.parent.iterdir())
+    serialize = installer._serialize
+
+    def corrupt(data, bom, raw):
+        output = json.loads(serialize(data, bom, raw).decode("utf-8-sig"))
+        groups = output["hooks"]["Stop"]
+        if mutation == "unrelated":
+            output["model"] = "changed"
+        elif mutation == "boolean":
+            output["enabled"] = 1
+        elif mutation == "integer_float":
+            output["count"] = 1.0
+        elif mutation == "hooks_string":
+            output["hooks"] = "broken"
+        elif mutation == "hooks_list":
+            output["hooks"] = []
+        elif mutation == "group_missing_hooks":
+            groups.append({"matcher": "broken"})
+        elif mutation == "drop":
+            groups.remove(USER_GROUP)
+        elif mutation == "reorder":
+            index = groups.index(USER_GROUP)
+            groups[index], groups[index + 1] = groups[index + 1], groups[index]
+        elif mutation == "modify":
+            groups[groups.index(USER_GROUP)]["matcher"] = "changed"
+        else:
+            groups[groups.index(mixed)]["matcher"] = "changed"
+        return json.dumps(output).encode("utf-8")
+
+    monkeypatch.setattr(installer, "_serialize", corrupt)
+    if operation == "install":
+        # Force a legitimate owned-group update so the transform serializes.
+        data["hooks"]["SessionStart"] = []
+        settings.write_text(json.dumps(data), encoding="utf-8")
+        original = settings.read_bytes()
+        with pytest.raises(installer.HookInstallError, match="internal check failed"):
+            installer.install(settings, CMD, data_dir)
+    else:
+        result = installer.uninstall(settings, data_dir, command=CMD)
+        assert not result["ok"] and "internal check failed" in result["error"]
+    assert settings.read_bytes() == original
+    assert set(settings.parent.iterdir()) == before_files
+
+
 def test_uninstall_uses_recorded_target_after_config_changes(tmp_path, monkeypatch):
     first = tmp_path / "first"
     second = tmp_path / "second"
