@@ -15,7 +15,7 @@ Releases before 1.0 are marked **pre-release** on GitHub. Builds carry the commi
 
 ## 1. Prepare the release commit
 
-1. Set `RELEASE_VERSION` in `packaging/build.py` to the new version, and update the version asserted in `tests/test_installer_build.py`.
+1. Set `__version__` in `token_tracker/_version.py` to the new version (the Windows build, macOS build and release workflow all read it), and update the version asserted in `tests/test_installer_build.py`.
 2. In `CHANGELOG.md`, rename `[Unreleased]` to `[<version>] - <YYYY-MM-DD>` and add a fresh empty `[Unreleased]` above it. Update the compare links at the bottom.
 3. Write `docs/release/RELEASE_NOTES_<version>.md`: a short highlights list, install steps, known limitations and a privacy summary. The release workflow uses this file as the release body; without it, GitHub generates notes using [`.github/release.yml`](../../.github/release.yml).
 4. Run both test suites and walk through the [release checklist](RELEASE_CHECKLIST.md) on a disposable VM.

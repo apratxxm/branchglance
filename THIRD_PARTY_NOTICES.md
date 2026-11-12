@@ -10,8 +10,6 @@ The webfonts in `token_tracker/static/fonts/` are distributed under the SIL Open
 | --- | --- | --- |
 | Geist | Copyright 2024 The Geist Project Authors; source: [vercel/geist-font](https://github.com/vercel/geist-font) | [`token_tracker/static/fonts/geist/OFL.txt`](token_tracker/static/fonts/geist/OFL.txt) |
 | Inter | Copyright 2020 The Inter Project Authors; source: [rsms/inter](https://github.com/rsms/inter) | [`token_tracker/static/fonts/inter/OFL.txt`](token_tracker/static/fonts/inter/OFL.txt) |
-| Instrument Sans | Copyright 2022 The Instrument Sans Project Authors; source: [Instrument/instrument-sans](https://github.com/Instrument/instrument-sans) | [`token_tracker/static/fonts/instrument-sans/OFL.txt`](token_tracker/static/fonts/instrument-sans/OFL.txt) |
-| Red Hat Mono | Copyright 2024 The Red Hat Project Authors; source: [RedHatOfficial/RedHatFont](https://github.com/RedHatOfficial/RedHatFont) | [`token_tracker/static/fonts/red-hat-mono/OFL.txt`](token_tracker/static/fonts/red-hat-mono/OFL.txt) |
 
 The `assets/brand/wordmark.svg` outlines were traced from the bundled Geist SemiBold font. The font software remains under OFL-1.1; the generated wordmark is an image/document created using that font, not a redistributed font program.
 

@@ -5,3 +5,5 @@ assets/brand/*.js text eol=lf
 assets/brand/source/*.py text eol=lf
 # The native Photoshop export is a byte-preserved archival input.
 assets/brand/source/*.ai binary
+# Served copy of the brand tile; tests compare it byte-for-byte with the master.
+token_tracker/static/favicon.svg text eol=lf

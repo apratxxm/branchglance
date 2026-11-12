@@ -183,5 +183,6 @@ Claude collection is off until you turn it on in **Claude tracking**.
 - Cost is estimated from known prices only.
 - Claude subagent coverage depends on hook events.
 - Windows has an installer; macOS runs from source. See the [macOS guide](../macos/README.md).
+- Environment overrides are listed in [Configuration](CONFIGURATION.md).
 
 For how it works inside, see [ARCHITECTURE.md](ARCHITECTURE.md).

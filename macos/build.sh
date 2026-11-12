@@ -27,6 +27,14 @@ launch_app() {
     open "$APPS/Branchglance.app"
 }
 
+# Check the interpreter that will run the server before changing the installation.
+require_python() {
+    if ! "$1" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+        echo "Error: $1 is missing, unusable, or older than Python 3.10; install Python 3.10 or newer and recreate the runtime virtual environment." >&2
+        exit 1
+    fi
+}
+
 if [ "$1" = "rollback" ]; then
     if [ ! -d "$PREVIOUS/Branchglance.app" ] || [ ! -d "$PREVIOUS/token_tracker" ]; then
         echo "No previous install to roll back to." >&2
@@ -64,6 +72,18 @@ fi
 
 if [ "$1" = "install" ]; then
     ROOT="$SUPPORT/runtime"
+    if [ -x "$ROOT/.venv/bin/python" ]; then
+        require_python "$ROOT/.venv/bin/python"
+    else
+        require_python python3
+    fi
+    if [ -n "$BRANCHGLANCE_ROOT" ] && [ "$BRANCHGLANCE_ROOT" != "$ROOT" ]; then
+        if [ -x "$BRANCHGLANCE_ROOT/.venv/bin/python" ]; then
+            require_python "$BRANCHGLANCE_ROOT/.venv/bin/python"
+        else
+            require_python /usr/bin/python3
+        fi
+    fi
     mkdir -p "$ROOT"
     # Keep what is installed now, for `rollback`.
     if [ -d "$ROOT/token_tracker" ] && [ -d "$APPS/Branchglance.app" ]; then
@@ -91,9 +111,20 @@ LAUNCHER
 PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -c 'from token_tracker.claude_statusline import main; raise SystemExit(main())'
 LAUNCHER
     chmod 755 "$ROOT/bin/branchglance-statusline"
+else
+    HOST_ROOT="${BRANCHGLANCE_ROOT:-$REPO}"
+    if [ -x "$HOST_ROOT/.venv/bin/python" ]; then
+        require_python "$HOST_ROOT/.venv/bin/python"
+    else
+        require_python /usr/bin/python3
+    fi
 fi
 # Same version as the Windows release.
-VERSION="$(sed -n 's/^RELEASE_VERSION = "\(.*\)"/\1/p' ../packaging/build.py)"
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' ../token_tracker/_version.py)"
+if [ -z "$VERSION" ]; then
+    echo "Error: could not read __version__ from token_tracker/_version.py." >&2
+    exit 1
+fi
 if [ "$1" = "install" ]; then
     # Settings > Version reads this, as in the Windows release build.
     printf 'VERSION = %s\nBUILD_ID = %s\n' "'$VERSION'" "'$(git -C "$REPO" rev-parse --short HEAD)'" \

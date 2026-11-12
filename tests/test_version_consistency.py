@@ -18,6 +18,9 @@ def test_release_version_wiring():
     assert "Get-Content token_tracker/_version.py" in workflow
     assert "__version__\\s*=" in workflow
     assert "$Matches.version -ne $version" in workflow
+    mac_build = (ROOT / "macos/build.sh").read_text(encoding="utf-8")
+    assert "../token_tracker/_version.py" in mac_build
+    assert "RELEASE_VERSION" not in mac_build
 
 
 def _semver_key(text):
