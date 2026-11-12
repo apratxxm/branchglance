@@ -136,6 +136,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Branchglance.icns "$APP/Contents/Resources/"
 swiftc -O -o "$APP/Contents/MacOS/Branchglance" Sources/*.swift \
     -framework Cocoa -framework WebKit -framework SwiftUI -framework CoreAudio -framework AudioToolbox -framework IOKit -framework ServiceManagement -framework CoreMediaIO -framework Accelerate -framework Carbon
+# XML-escape the path so a checkout under a name with & or < still yields a valid plist.
+ROOT_XML="$(printf '%s' "$ROOT" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -151,7 +153,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSAudioCaptureUsageDescription</key><string>Branchglance reads the music player's audio levels to animate the notch visualizer. Nothing is recorded.</string>
   <key>NSAppleEventsUsageDescription</key><string>Branchglance shows and controls what Spotify or Music is playing.</string>
-  <key>BranchglanceRoot</key><string>$ROOT</string>
+  <key>BranchglanceRoot</key><string>$ROOT_XML</string>
 </dict></plist>
 PLIST
 IDENTITY="${BRANCHGLANCE_SIGN_IDENTITY:--}"
