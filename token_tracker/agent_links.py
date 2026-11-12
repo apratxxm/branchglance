@@ -2181,6 +2181,11 @@ def apply_exact_links(
             continue
         # Newest historical execution wins (latest codex_created, then last_seen).
         selected = max(historical, key=lambda run: (int(run["codex_created"]), float(run.get("last_seen") or 0)))
+        selected_key = (thread, *_run_identity(selected))
+        if (selected_key in _CODEX_PARENT_CONTRADICTIONS or selected_key in _RECEIPT_CONFLICTS
+                or selected_key in _CODEX_LINK_CONTRADICTIONS):
+            # A contradicted association stays revoked for idle and stopped rows too.
+            continue
         sid = str(selected.get("claude_session_id") or "")
         if sid not in claude_ids:
             continue
@@ -2250,7 +2255,10 @@ def apply_exact_links(
             stopped_at = saved["stoppedAt"] = now
         if now - stopped_at >= STOPPED_RETENTION_SECONDS and identity[0] not in needed_ancestors:
             del _RUN_ROWS[identity]
-            _CODEX_PARENT_CONTRADICTIONS.discard(identity)
+            # Forget the contradiction only once the registry no longer offers the old
+            # association; otherwise the history branch would republish it.
+            if not any(_run_identity(run) == identity[1:] for run in by_thread.get(identity[0], [])):
+                _CODEX_PARENT_CONTRADICTIONS.discard(identity)
             continue
         row = copy.deepcopy(saved["row"])
         if saved["parent"] not in claude_ids and saved.get("parentRow"):

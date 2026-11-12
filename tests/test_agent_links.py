@@ -504,6 +504,51 @@ def test_codex_proof_survives_registry_roundtrip_then_blocks_contradicted_old_pa
     assert agent_links._RUN_ROWS[run_key]["parent"] is None
 
 
+@pytest.mark.parametrize("status", ["idle", "stopped"])
+def test_contradicted_codex_parent_stays_revoked_for_idle_and_stopped_rows(tmp_path, monkeypatch, status):
+    sid_a, sid_b = "session-a", "session-b"
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_created, direct_created, child_created = map(_filetime, (900, 980, 1000))
+    claude = {"name": "Claude", "chats": [{"id": sid_a}, {"id": sid_b}]}
+    codex_row = {"id": thread, "source": "exec", "status": status, "executionStatus": status,
+                 "runPid": 22, "runCreated": str(child_created),
+                 "runStartedAt": "1970-01-01T00:16:30+00:00"}
+    providers = [claude, {"name": "Codex", "chats": [codex_row]}]
+    run_key = (thread, 22, child_created)
+    proof = {"parent_id": sid_a, "parent_pid": 10, "parent_created": parent_created,
+             "direct_child_pid": 20, "direct_child_created": direct_created,
+             "child_pid": 22, "child_created": child_created}
+    monkeypatch.setattr(agent_links, "_CODEX_PARENT_CONTRADICTIONS", set())
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {run_key: {
+        "row": dict(codex_row, parentId=sid_a, parentProvider="Claude", linkSource="process"),
+        "parent": sid_a, "parentProvider": "Claude", "stoppedAt": None, "processProof": dict(proof),
+    }})
+    registry_run = {"thread_id": thread, "codex_pid": 22, "codex_created": child_created,
+                    "claude_session_id": sid_a, "first_seen": 900, "last_seen": 1000,
+                    "verified_at": 1000, "method": "receipt"}
+    common = dict(registry_path=tmp_path / "registry.json", permission_check=_allow_collection,
+                  registry_reader=lambda _: [dict(registry_run)],
+                  registry_writer=lambda *a, **k: True, verify=lambda *_: False)
+    states = {
+        (sid_a, ""): _reduced_pid_session(sid_a, 10, parent_created, 900, 949),
+        (sid_b, ""): _reduced_pid_session(sid_b, 10, parent_created, 950, 1200),
+    }
+
+    def published_parents():
+        return [chat.get("parentId") for chat in providers[1]["chats"] if str(chat.get("id")) == thread]
+
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    agent_links.apply_exact_links(
+        providers, now=1011, claude_states=states,
+        process_table_reader=lambda: {}, scan=lambda **_kwargs: [], **common)
+    assert run_key in agent_links._CODEX_PARENT_CONTRADICTIONS
+    assert sid_a not in published_parents()
+
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 1011)
+    agent_links.apply_exact_links(providers, now=1012, **common)
+    assert sid_a not in published_parents()
+
+
 def test_codex_parent_proof_detects_delayed_owner_switch():
     parent_created, direct_created, child_created = map(_filetime, (900, 980, 1000))
     proof = {"parent_id": "session-a", "parent_pid": 10, "parent_created": parent_created,
