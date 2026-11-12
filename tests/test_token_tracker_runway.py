@@ -1407,8 +1407,9 @@ def test_snapshot_warmup_logs_failures_without_raising(monkeypatch, caplog):
 def test_live_endpoint_returns_bounded_failure_and_rate_limits_logs(monkeypatch, caplog):
     import logging
 
+    # A cold cache calls live_state with a time budget; accept it so the order of tests doesn't matter.
     monkeypatch.setattr(server, "live_state",
-                        lambda: (_ for _ in ()).throw(NameError("private transcript path")))
+                        lambda **_kwargs: (_ for _ in ()).throw(NameError("private transcript path")))
     server._LIVE_FAILURE_LOGGED_AT.clear()
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     worker = threading.Thread(target=httpd.serve_forever, daemon=True)
