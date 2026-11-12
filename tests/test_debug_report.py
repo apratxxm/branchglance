@@ -5,8 +5,10 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import socket
+import subprocess
 import sys
 from datetime import datetime, timezone
 from http.client import HTTPConnection
@@ -710,3 +712,23 @@ def test_hook_is_a_typed_execution_source():
     assert tree[0]["executionSource"] == "hook"
     assert tree[0]["executionObservedAt"] == -10
     assert tree[1]["executionSource"] == "unknown"
+
+
+def test_module_cli_writes_report_without_widget_ui_packages(tmp_path):
+    # macOS runs the report from its runtime, which has no tray or window packages.
+    out = tmp_path / "module.md"
+    code = "; ".join([
+        "import runpy, sys",
+        "sys.modules.update(pystray=None, webview=None, PIL=None)",
+        "sys.argv = ['debug_report', sys.argv[1], '--port', sys.argv[2]]",
+        "runpy.run_module('token_tracker.debug_report', run_name='__main__')",
+    ])
+    env = {k: v for k, v in os.environ.items() if not k.startswith("TOKEN_TRACKER_")}
+    result = subprocess.run([sys.executable, "-c", code, str(out), str(_free_port())],
+                            cwd=Path(__file__).resolve().parents[1], env=env,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "token_tracker.widget" not in result.stderr
+    text = out.read_text(encoding="utf-8")
+    assert debug_report.HEADER in text and "App not running" in text
+    assert str(out.resolve()) in result.stdout

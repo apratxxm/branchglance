@@ -656,3 +656,20 @@ def write_cli(path, *, port: int = DEFAULT_PORT) -> int:
         return 1
     print(os.path.abspath(target))
     return 0
+
+
+def main(argv=None) -> int:
+    """`python -m token_tracker.debug_report [PATH]`: the report without the Windows widget's UI dependencies.
+
+    The macOS runtime has no tray or window packages, so it cannot import widget.py.
+    """
+    import argparse
+    parser = argparse.ArgumentParser(description="Write a privacy-filtered Branchglance debug report and exit")
+    parser.add_argument("path", nargs="?", default=DEFAULT_OUTPUT, metavar="PATH")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    return write_cli(args.path, port=args.port)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -149,6 +149,8 @@ Settings has a **Report a bug** section. Click **Preview debug report**, check t
 
 From a source checkout, run `.\.venv\Scripts\python.exe -m token_tracker.widget --debug-report` and optionally add a path. Without a path it writes `branchglance-debug-report.md` to the current folder and prints the full path. The command reads the running widget on port 8765. If that read fails, the file says "App not running" and has no agent tree.
 
+From an installed copy, the same command is `%LOCALAPPDATA%\Programs\Branchglance\Branchglance.exe --debug-report` on Windows. That build has no console, so it prints nothing; check for the file instead. On macOS, run `PYTHONPATH="$HOME/Library/Application Support/Branchglance/runtime" "$HOME/Library/Application Support/Branchglance/runtime/.venv/bin/python" -m token_tracker.debug_report` from the folder you want the report in; it uses the installed runtime and does not start the app.
+
 The report has the app version and build, OS and architecture, Python version, install type, Settings switches and provider flags, Claude hook state, counts and depths of chats and subagents, status and state values, public model names, and warnings or errors as component, level, time and exception class name. Times are age buckets or offsets in seconds, never clock times.
 
 It never contains chat titles, prompts or replies, file paths, workspace names, ids, account names, emails or tokens. Read the file before you attach it. Branchglance never sends a report; you do.
