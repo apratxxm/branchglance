@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ctypes
 import argparse
+import atexit
+import faulthandler
 import json
 import logging
 import math
@@ -14,6 +16,23 @@ import unicodedata
 from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
+
+
+_shutdown_trace_file = None
+_shutdown_trace_lock = threading.Lock()
+
+
+def _cancel_shutdown_trace() -> None:
+    global _shutdown_trace_file
+    with _shutdown_trace_lock:
+        if _shutdown_trace_file is not None:
+            faulthandler.cancel_dump_traceback_later()
+            _shutdown_trace_file.close()
+            _shutdown_trace_file = None
+
+
+# Register before importing services so their atexit cleanup is traced too.
+atexit.register(_cancel_shutdown_trace)
 
 import pystray
 import webview
@@ -154,6 +173,28 @@ CONTROL_LINE_LIMIT = 160
 # shutdown past what an upgrade or a user will wait. The workers are daemons: one
 # still finishing when the budget ends cannot keep the process alive.
 SHUTDOWN_SERVICES_BUDGET = 6.0
+
+
+def _arm_shutdown_trace(root: Path | None = None, timeout: float = 10.0) -> None:
+    global _shutdown_trace_file
+    with _shutdown_trace_lock:
+        if _shutdown_trace_file is not None:
+            return
+        try:
+            path = (root if root is not None else _runtime_dir()) / "logs" / "shutdown-trace.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size >= 192 * 1024:
+                with path.open("wb"):
+                    pass
+            stream = path.open("ab")
+            try:
+                faulthandler.dump_traceback_later(timeout, repeat=False, file=stream, exit=False)
+            except Exception:
+                stream.close()
+                raise
+            _shutdown_trace_file = stream
+        except (OSError, RuntimeError, ValueError):
+            logging.getLogger(__name__).warning("Could not arm shutdown trace")
 
 
 def _stop_claude_usage_refresher() -> None:
@@ -2526,6 +2567,9 @@ class WidgetApp:
                     self._notch_thread.start()
 
     def quit(self, *_args) -> None:
+        _arm_shutdown_trace()
+        from .providers import stop_snapshot_workers
+        stop_snapshot_workers()
         self._shutdown_requested.set()
         # Wait out any in-progress startup step; once quitting is set under the
         # lock no further startup resource is acquired, so the cleanup below
