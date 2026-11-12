@@ -24,6 +24,9 @@ _REQUEST_DEADLINE = 10.0  # seconds for the whole request: DNS, connect, TLS, he
 _transport_lock = threading.RLock()
 _transport_generation = 0
 _active_connections = set()
+# Guards only the registry and is never held during I/O, so revocation can reach
+# sockets while a sender holds _transport_lock in a blocked write.
+_registry_lock = threading.Lock()
 
 
 def _transport_admit():
@@ -38,16 +41,26 @@ def _transport_current(generation):
         return generation == _transport_generation and live_usage_allowed()
 
 
-def _revoke_transports():
-    global _transport_generation
-    with _transport_lock:
-        _transport_generation += 1
+def _cancel_registered():
+    with _registry_lock:
         connections = tuple(_active_connections)
     for connection in connections:
         try:
             connection.cancel()
         except OSError:
             pass
+
+
+def _revoke_transports():
+    # Senders check and transmit under _transport_lock, so the generation bump is
+    # the cut-off: nothing starts transmitting after it. Cancel first without that
+    # lock to abort a write that holds it, then bump and cancel anything that
+    # registered in between. cancel() only flags and shuts sockets.
+    global _transport_generation
+    _cancel_registered()
+    with _transport_lock:
+        _transport_generation += 1
+        _cancel_registered()
 
 
 def live_usage_allowed():
@@ -115,9 +128,14 @@ class _DeadlineConnection(http.client.HTTPSConnection):
         # admission check. Gate again after DNS/TLS, immediately before sendall.
         if self.sock is None:
             self.connect()
-        if self.cancelled.is_set() or not _transport_current(self.generation):
-            raise OSError("Claude usage request revoked")
-        return super().send(data)
+        with _transport_lock:
+            # Transmit under the lock revocation bumps under, so a passed check
+            # cannot be consumed after revocation. A blocked write is aborted by
+            # revocation's lock-free cancel.
+            if (self.cancelled.is_set() or self.generation != _transport_generation
+                    or not live_usage_allowed()):
+                raise OSError("Claude usage request revoked")
+            return super().send(data)
 
     def cancel(self):
         self.cancelled.set()
@@ -202,7 +220,8 @@ def _request(path, token):
                 obj = _DeadlineConnection(host, deadline=deadline, generation=generation, **kwargs)
                 with _transport_lock:
                     connections.append(obj)
-                    _active_connections.add(obj)
+                    with _registry_lock:
+                        _active_connections.add(obj)
                     if generation != _transport_generation:
                         obj.cancel()
                 return obj
@@ -250,7 +269,7 @@ def _request(path, token):
         raise RuntimeError("Claude usage request failed") from None
     finally:
         timer.cancel()
-        with _transport_lock:
+        with _registry_lock:
             _active_connections.difference_update(connections)
 
 
