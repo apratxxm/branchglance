@@ -148,6 +148,34 @@ CONTROL_PORT = 8766
 BIND_RETRY_ATTEMPTS = 20
 BIND_RETRY_DELAY = 0.25
 CONTROL_LINE_LIMIT = 160
+
+# quit() stops three background services that each wait on their own worker. Run
+# side by side under one budget so a slow one cannot stack onto the others and push
+# shutdown past what an upgrade or a user will wait. The workers are daemons: one
+# still finishing when the budget ends cannot keep the process alive.
+SHUTDOWN_SERVICES_BUDGET = 6.0
+
+
+def _stop_claude_usage_refresher() -> None:
+    from . import claude_usage_api
+    claude_usage_api.REFRESHER.stop()
+
+
+def _stop_services_together(steps, budget: float | None = None) -> None:
+    budget = SHUTDOWN_SERVICES_BUDGET if budget is None else budget
+    threads = []
+    for step in steps:
+        def run(step=step) -> None:
+            with suppress(Exception):
+                step()
+        thread = threading.Thread(target=run, name="shutdown-step", daemon=True)
+        thread.start()
+        threads.append(thread)
+    end = time.monotonic() + budget
+    for thread in threads:
+        thread.join(max(0.0, end - time.monotonic()))
+
+
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 PM_NOREMOVE = 0x0000
@@ -2510,13 +2538,7 @@ class WidgetApp:
         self._stop_inspection_hotkey()
         # Each step is independent: one failure must not leave the process
         # alive with a destroyed tray or an undestroyed window.
-        with suppress(Exception):
-            self.limit_reset.stop()
-        with suppress(Exception):
-            from . import claude_usage_api
-            claude_usage_api.REFRESHER.stop()
-        with suppress(Exception):
-            self.ledger.stop()
+        _stop_services_together([lambda: self.limit_reset.stop(), _stop_claude_usage_refresher, lambda: self.ledger.stop()])
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()

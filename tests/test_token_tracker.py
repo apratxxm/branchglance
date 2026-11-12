@@ -2052,6 +2052,35 @@ def test_widget_http_server_port_is_exclusive():
         first.server_close()
 
 
+def test_widget_service_stops_run_side_by_side_under_one_budget():
+    started, finished = [], []
+
+    def slow(name, seconds):
+        def step():
+            started.append(name)
+            time.sleep(seconds)
+            finished.append(name)
+        return step
+
+    def failing():
+        started.append("failing")
+        raise RuntimeError("boom")
+
+    begin = time.monotonic()
+    widget._stop_services_together([slow("a", 0.4), failing, slow("b", 0.4), slow("c", 0.4)], budget=3.0)
+    elapsed = time.monotonic() - begin
+    assert sorted(started) == ["a", "b", "c", "failing"] and sorted(finished) == ["a", "b", "c"]
+    assert elapsed < 1.0  # waiting one after another would take about 1.2 s
+
+    # A service that outlives the budget is abandoned; the others are not delayed past it.
+    release = threading.Event()
+    begin = time.monotonic()
+    widget._stop_services_together([release.wait, slow("fast", 0.05)], budget=0.5)
+    elapsed = time.monotonic() - begin
+    release.set()
+    assert 0.4 < elapsed < 1.5 and "fast" in finished
+
+
 def test_widget_quit_tears_everything_down_even_if_a_step_fails(monkeypatch):
     monkeypatch.setattr(widget, "HTTP_PORT", 0)
     calls = []
