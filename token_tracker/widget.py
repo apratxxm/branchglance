@@ -2818,6 +2818,16 @@ class WidgetApp:
         self.window.events.loaded += self._mark_window_loaded
 
 
+def _debug_report_target(path: str) -> Path:
+    """The installed launcher starts the app inside its release folder, where any extra file
+    makes the next launch reject the release, so relative paths go to Downloads instead."""
+    target = Path(path)
+    if not product.is_frozen() or target.is_absolute():
+        return target
+    downloads = Path.home() / "Downloads"
+    return (downloads if downloads.is_dir() else Path.home()) / target
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Run the Branchglance widget")
     parser.add_argument("--background", action="store_true", help="start hidden in the tray")
@@ -2832,7 +2842,7 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
     if args.debug_report is not None:
         # CLI only: no UI, no instance lock. Writes a file; the frozen app has no console to print to.
-        raise SystemExit(debug_report.write_cli(args.debug_report, port=HTTP_PORT))
+        raise SystemExit(debug_report.write_cli(_debug_report_target(args.debug_report), port=HTTP_PORT))
     debug_report.install_handler()
     # Wait for any setup transaction before taking the Instance lock or loading
     # provider policy. A timeout exits quietly so repeated Start-menu clicks do

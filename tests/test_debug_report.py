@@ -732,3 +732,35 @@ def test_module_cli_writes_report_without_widget_ui_packages(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert debug_report.HEADER in text and "App not running" in text
     assert str(out.resolve()) in result.stdout
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["--debug-report"], "branchglance-debug-report.md"),
+    (["--debug-report", "mine.md"], "mine.md"),
+])
+def test_installed_cli_writes_relative_paths_to_downloads_not_the_release_folder(
+        monkeypatch, tmp_path, argv, expected):
+    release, home = tmp_path / "release", tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    release.mkdir()
+    monkeypatch.chdir(release)
+    monkeypatch.setattr(widget.product, "is_frozen", lambda: True)
+    monkeypatch.setattr(widget.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(widget, "HTTP_PORT", _free_port())
+    monkeypatch.setattr(debug_report, "_configuration", lambda: {"CODEX_HOME set": False})
+    with pytest.raises(SystemExit) as exit_info:
+        widget.main(argv)
+    assert exit_info.value.code == 0
+    assert (home / "Downloads" / expected).is_file()
+    assert not any(release.iterdir()), "an extra file in the release folder breaks the next launch"
+
+
+def test_installed_cli_keeps_an_absolute_path(monkeypatch, tmp_path):
+    out = tmp_path / "chosen" / "report.md"
+    out.parent.mkdir()
+    monkeypatch.setattr(widget.product, "is_frozen", lambda: True)
+    monkeypatch.setattr(widget, "HTTP_PORT", _free_port())
+    monkeypatch.setattr(debug_report, "_configuration", lambda: {"CODEX_HOME set": False})
+    with pytest.raises(SystemExit):
+        widget.main(["--debug-report", str(out)])
+    assert out.is_file()
