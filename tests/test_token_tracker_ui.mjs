@@ -21,7 +21,7 @@ const T=context.window.__tokenTrackerTest;
 const ago=m=>new Date(fixedNow-m*60000).toISOString();
 const warmModel={warmSeconds:1800,coldSeconds:5400,samples:148,learned:true};
 function snap(chats,extra={}){return {generatedAt:new Date(fixedNow).toISOString(),enabledProviders:["Codex"],providers:[{name:"Codex",connected:true,cacheWarmth:warmModel,activity:[],chats,...extra}]};}
-function reset(){T.state.open.clear();T.state.pins.clear();T.state.dismissed.clear();T.state.query="";T.state.windowDays=1;T.state.watcher=null;T.state.failSince=null;T.state.lastOkAt=fixedNow;T.state.agentLive.clear();T.state.finishedAt.clear();}
+function reset(){T.state.pins.clear();T.state.query="";T.state.windowDays=1;T.state.watcher=null;T.state.failSince=null;T.state.lastOkAt=fixedNow;T.state.agentLive.clear();T.state.finishedAt.clear();}
 
 // A second VM runs the actual desktop Runway branch against a clock we can advance.
 let runwayNow=fixedNow,runwayTimerId=0;
@@ -299,7 +299,6 @@ T.render(tree);
   a2.status="idle";a2.runEndedAt=new Date(fixedNow).toISOString();T.render(tree);
   const fin=T.trayEntries(T.state.forest.roots[0],T.parseQuery("")).find(e=>e.key==="Codex:a2");
   assert.equal(fin,undefined);
-  T.state.open.clear();
 }
 // A failure older than 30 minutes is history: no escalation, grey state.
 {

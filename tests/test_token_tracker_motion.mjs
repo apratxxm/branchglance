@@ -31,7 +31,7 @@ assert.match(css,/notch-expanded \.chat-list\{opacity:1;transform:none;transitio
 assert.match(css,/notch-opening \.runway-row-enter\{animation:none!important\}/,"open motion suppresses individual row arrivals");
 const rowArrivalRule=css.match(/body:not\(\.phone\) \.runway-row-enter\{([^}]*)\}/)?.[1]||"";
 assert.doesNotMatch(rowArrivalRule,/animation-delay/,"single-row arrivals have no stagger delay");
-const openingMotion=app.slice(app.indexOf("function beginNotchOpening("),app.indexOf("function stripEnter(",app.indexOf("function beginNotchOpening(")));
+const openingMotion=app.slice(app.indexOf("function beginNotchOpening("),app.indexOf("const realDom",app.indexOf("function beginNotchOpening(")));
 assert.match(openingMotion,/if\(reducedMotion\(\)\)return/,"reduced-motion opening skips the temporary animation state");
 assert.match(css,/@media\(prefers-reduced-motion:reduce\)[\s\S]*?animation:none!important;transition:none!important/);
 assert.match(app,/notchOpeningTimer:null/);

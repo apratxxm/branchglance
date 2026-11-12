@@ -31,7 +31,6 @@ assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
 assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
 assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 150ms/);
-assert.match(css,/\.chat-list\.source-entering>:not\(\.source-switch-snapshot\)\{opacity:0\}/,"new rows stay hidden until the old ones have faded");
 assert.match(page,/placeholder="[^"]*is:hidden/);
 assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
 assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 58px/);
@@ -369,8 +368,6 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(T.resumeCommand({provider:"Claude",id:"11111111-1111-4111-8111-111111111111:agent_7",resumable:true}),"claude --resume 11111111-1111-4111-8111-111111111111","resume strips a valid agent suffix");
   assert.equal(T.resumeCommand({provider:"Claude",id:"not-a-uuid",resumable:true}),"");
   assert.equal(T.resumeCommand({provider:"Codex",id:"abc"}),"codex resume abc");
-  const items=T.attentionItems(T.state.forest,T.limitProvidersFor(T.state.snapshot));
-  assert.ok(items.filter(item=>item.kind==="ask").every(item=>!item.thread),"Claude attention items carry no thread");
   // Clicking Waiting on a Claude row opens the read-only popover rather than a Codex deep link.
   const target=rows[0];
   const button={dataset:{action:"runway-question",key:target.key},closest:()=>button,getBoundingClientRect:()=>({left:0,bottom:0})};

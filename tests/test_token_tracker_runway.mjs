@@ -31,7 +31,6 @@ assert.doesNotMatch(page,/Greeter status unavailable/);
 assert.match(cssRule('.layout'),/overflow-y:auto/);assert.match(cssRule('.layout'),/overflow-x:hidden/);
 assert.match(cssRule('.chat-list'),/flex:none/);assert.match(cssRule('.chat-list'),/overflow:visible/);
 assert.match(cssRule('.strip'),/display:none!important/,'the desktop attention strip stays outside the notch roster');
-assert.match(cssRule('.runway-question-detail'),/max-height:none/);assert.match(cssRule('.runway-question-detail'),/overflow:visible/);
 // Quota meters show usage while preserving semantic warning and error colors.
 assert.match(cssRule('.meter i'),/background:var\(--source-accent\)/);
 assert.match(cssRule('.meter i.t-attn'),/background:var\(--orange\)/);
@@ -48,7 +47,6 @@ assert.match(css,/\.row:has\(\[data-own-waiting=true\]\) \.r-title/);
 assert.match(css,/\.row:has\(\[data-child-waiting=true\]\) \.r-title/);
 assert.match(css,/\.runway-agent-glance:has\(\[data-own-waiting=true\]\) \.runway-agent-name/);
 assert.doesNotMatch(css,/\.row:has\(\.runway-telemetry-state\.t-attn\),\.runway-agent-glance:has\(\.runway-telemetry-state\.t-attn\)/);
-assert.match(cssRule('.runway-question-trigger'),/width:24px/);assert.match(cssRule('.runway-question-trigger'),/height:24px/);
 assert.match(cssRule('.widget'),/width:100%/);assert.match(cssRule('.widget'),/height:100%/);
 assert.match(cssRule('.layout'),/flex:1/);assert.match(cssRule('.layout'),/min-height:0/);
 assert.match(cssRule('.runway-count'),/width:48px/);assert.match(cssRule('.notch-counts'),/width:150px/); // Base sizing remains the phone layout.
@@ -62,33 +60,14 @@ assert.doesNotMatch(css,/scrollbar-gutter:\s*stable/);
 assert.match(cssRule('body:not(.phone) *'),/scrollbar-width:none/);assert.match(cssRule('body:not(.phone) *::-webkit-scrollbar'),/display:none/);
 assert.match(cssRule('.row'),/display:grid/);assert.match(cssRule('.row'),/grid-template-columns:minmax\(0,1fr\) 146px/);assert.match(cssRule('.row'),/grid-template-rows:auto auto/);
 assert.match(cssRule('.runway-agent-glance'),/display:grid/);assert.match(cssRule('.runway-agent-glance'),/grid-template-columns:minmax\(0,1fr\) 146px/);assert.match(cssRule('.runway-agent-glance'),/grid-template-rows:auto auto/);
-assert.match(cssRule('.runway-topline'),/grid-column:1\/-1/);assert.match(cssRule('.runway-topline'),/grid-row:1/);assert.match(cssRule('.runway-topline'),/display:flex/);assert.match(cssRule('.runway-topline'),/overflow:visible/);
-assert.match(cssRule('.runway-primary'),/flex:1 1 0/);assert.match(cssRule('.runway-primary'),/min-width:0/);
-assert.match(cssRule('.runway-topline .runway-agent-name,.runway-topline .r-title'),/flex:0 1 auto/);
-assert.match(cssRule('.runway-topline .runway-workspace'),/max-width:90px/);assert.match(cssRule('.runway-topline .runway-workspace'),/min-width:0/);
-assert.match(cssRule('.runway-topline .runway-primary+.runway-workspace'),/margin-left:auto/);
-assert.match(cssRule('.runway-agent-glance .runway-agent-secondary'),/grid-column:1/);assert.match(cssRule('.runway-agent-glance .runway-agent-secondary'),/grid-row:2/);assert.match(cssRule('.runway-agent-glance .runway-agent-secondary'),/display:flex/);assert.match(cssRule('.runway-agent-glance .runway-agent-secondary'),/min-width:0/);
-assert.match(cssRule('body:not(.phone) .runway-agent-glance .runway-agent-secondary'),/display:contents/);
-assert.match(cssRule('.runway-agent-glance .runway-agent-secondary .runway-telemetry-model'),/flex:none/);
-assert.match(cssRule('.runway-agent-glance .runway-agent-secondary .runway-workspace'),/overflow:hidden/);assert.match(cssRule('.runway-agent-glance .runway-agent-secondary .runway-workspace'),/min-width:0/);
-assert.match(cssRule('body:not(.phone) .runway-agent-state .runway-workspace'),/white-space:normal/);assert.match(cssRule('body:not(.phone) .runway-agent-state .runway-workspace'),/overflow-wrap:anywhere/);
-assert.match(cssRule('body:not(.phone) .runway-agent-state .runway-activity'),/white-space:normal/);assert.match(cssRule('body:not(.phone) .runway-agent-state .runway-activity'),/overflow-wrap:anywhere/);
-assert.match(cssRule('body:not(.phone) .runway-status-dot'),/fill:currentColor/);assert.match(cssRule('body:not(.phone) .runway-telemetry-state.runway-agent-state'),/overflow-wrap:anywhere/);
+assert.match(cssRule('body:not(.phone) .runway-status-dot'),/fill:currentColor/);
 assert.match(cssRule('.r-title'),/flex:0 1 auto/);assert.match(cssRule('.runway-agent-name'),/flex:0 1 auto/);
 assert.match(cssRule('.runway-telemetry-model'),/grid-column:1/);assert.match(cssRule('.runway-telemetry-model'),/grid-row:2/);
-assert.match(cssRule('.runway-telemetry-context'),/grid-column:2/);assert.match(cssRule('.runway-telemetry-context'),/grid-row:2/);
-assert.match(cssRule('.runway-path-middle'),/direction:ltr/);assert.match(cssRule('.runway-path-middle'),/text-align:left/);
-assert.match(cssRule('.runway-path-middle'),/min-width:0/);assert.match(cssRule('.runway-path-middle'),/overflow:hidden/);assert.match(cssRule('.runway-path-middle'),/text-overflow:ellipsis/);
 assert.doesNotMatch(css,/\.runway-path-(?:middle|leaf)\{[^}]*direction:rtl/);
 assert.match(cssRule('.runway-telemetry-model'),/min-width:0/);assert.match(cssRule('.runway-telemetry-model'),/width:100%/);assert.match(cssRule('.runway-telemetry-model'),/display:flex/);
 assert.match(cssRule('body:not(.phone) .runway-message-slot'),/left:var\(--message-offset-x/);assert.match(cssRule('body:not(.phone) .runway-message-slot'),/top:var\(--message-offset-y/);assert.match(cssRule('body:not(.phone) .runway-message-slot'),/width:18px/);assert.match(cssRule('body:not(.phone) .runway-message-slot'),/height:10px/);
 assert.match(css,/body:not\(\.phone\) \.row>\.runway-message-slot\[data-message-positioned=true\],[\s\S]*?body:not\(\.phone\) \.runway-agent-glance>\.runway-message-slot\[data-message-positioned=true\]\{display:inline-flex\}/);
 assert.match(cssRule('body:not(.phone) .runway-message-indicator .ic'),/width:9px/);assert.match(cssRule('body:not(.phone) .runway-message-dots i'),/width:2px/);
-assert.match(cssRule('body:not(.phone) .runway-model-timing'),/grid-column:1/);assert.match(cssRule('body:not(.phone) .runway-model-timing'),/display:flex/);
-assert.match(css,/body:not\(\.phone\) \.runway-model-timing[\s\S]*?\.runway-run-time/);
-assert.match(css,/body:not\(\.phone\) \.runway-agent-glance \.runway-agent-secondary \.runway-model-timing\{grid-column:1;grid-row:2/);
-assert.match(css,/body:not\(\.phone\) \.runway-agent-glance>\.runway-telemetry-context\{grid-column:2;grid-row:2/);
-assert.match(css,/body:not\(\.phone\) \.runway-agent-glance \.runway-topline\{grid-row:1/);
 assert.match(cssRule('.runway-model-name.model-changed'),/animation:model-change 3s/);
 assert.match(css,/body:not\(\.phone\) \.runway-row-enter\{animation:runway-row-arrival/);
 assert.match(css,/\.runway-state-glyph\.is-waiting/);assert.match(css,/\.runway-state-glyph\.is-compacting/);
@@ -96,10 +75,6 @@ assert.match(cssRule('.row'),/padding:7px 6px/);assert.match(cssRule('.r-title')
 assert.match(cssRule('.runway-agent-glance'),/padding:5px 6px 5px 5px/);
 assert.match(cssRule('.runway-agent-glance'),/border-radius:7px/);
 assert.match(cssRule('body:not(.phone) .runway-agent-name>.runway-name-status'),/flex:0 0 8px/);
-assert.match(cssRule('body:not(.phone) .runway-agent-glance .runway-agent-objective'),/grid-row:3/);
-assert.match(cssRule('body:not(.phone) .runway-agent-glance .runway-agent-objective'),/grid-column:1\/-1/);
-assert.match(cssRule('body:not(.phone) .runway-agent-glance .runway-agent-objective'),/white-space:normal/);
-assert.match(cssRule('body:not(.phone) .runway-agent-glance .runway-agent-objective'),/overflow-wrap:anywhere/);
 assert.match(cssRule('.runway-message-dots i'),/border-radius:50%/);
 assert.match(cssRule('body:not(.phone) .chat'),/position:relative/);
 assert.match(cssRule('body:not(.phone) .runway-tree-connectors'),/pointer-events:none/);
@@ -371,10 +346,8 @@ assert.match(html,/data-runway-slot="model" class="runway-telemetry-model" title
 assert.deepEqual(Array.from(T.trayEntries(T.state.forest.roots[0],T.parseQuery("")),entry=>entry.key),["Codex:child","Codex:grandchild"]);
 assert.match(html,/--agent-depth:1/);
 assert.doesNotMatch(html,/data-key="Codex:done"/);
-T.state.agentCollapsed.add("Codex:root");
 T.render(snapshot);
 assert.match(node("#chat-list").innerHTML,/data-key="Codex:grandchild"/); // old collapse state cannot conceal live agents
-assert.equal(T.panelHTML(T.state.forest.roots[0]),"");
 assert.equal(T.runwayStateElapsed({...root,status:"quiet",provider:"Codex"}),"—"); // session age is not quiet-state duration
 assert.equal(T.runwayStateElapsed({...root,status:"compacting",provider:"Codex"}),"—"); // compaction needs its own start
 assert.equal(T.runwayStateElapsed({...root,status:"needs-input",attentionSince:ago(2)}),"—");
@@ -467,7 +440,7 @@ const deltaContext=T.rowHTML({...root,contextDelta:1250,contextDeltaObservedAt:r
 assert.match(deltaContext,/title="Context occupancy: 160000 \/ 258400 tokens; change since previous sample \+1\.25K tokens"/);
 assert.doesNotMatch(T.rowHTML({...root,contextDelta:-500,contextDeltaObservedAt:ago(1)}),/change since previous sample/,"a delta from a different sample time is omitted");
 assert.doesNotMatch(T.rowHTML({...root,contextDelta:500,contextDeltaObservedAt:root.contextObservedAt,contextModel:"gpt-6-astra"}),/change since previous sample/);
-assert.match(cssRule('.runway-context-label,.runway-context-fraction,.runway-context-separator,.runway-context-total'),/color:var\(--ink\)/);
+assert.match(cssRule('.runway-context-fraction,.runway-context-separator,.runway-context-total'),/color:var\(--ink\)/);
 assert.match(cssRule('.runway-context-used'),/color:var\(--ink\)/);
 assert.match(cssRule('.runway-context-used.t-attn'),/color:var\(--orange\)/);
 assert.match(cssRule('.runway-context-used.t-err'),/color:var\(--red\)/);
@@ -602,7 +575,6 @@ context.fetch=priorFetch;T.state.live=priorLive;T.state.loading=false;T.state.re
 }const waitingSnapshot={...snapshot,providers:[{...provider,chats:[{...root,id:'waiting-title',title:'Waiting parent',status:'needs-input',pendingQuestion:'Choose?',pendingQuestionAt:ago(1),attentionSince:ago(1)}]}]};
 T.render(waitingSnapshot);
 assert.equal(node('#strip').hidden,true);assert.equal(node('#strip').innerHTML,'');
-assert.ok(T.attentionItems(T.state.forest,waitingSnapshot.providers).some(item=>item.kind==='ask'));
 assert.equal(T.notch.counts.waiting,1);assert.match(node('#notch-counts').innerHTML,/aria-label="1 waiting[",]/);
 assert.equal(T.notch.counts.roots,1);assert.equal(T.notch.counts.total,1);
 assert.match(node('#chat-list').innerHTML,/Waiting parent/);
@@ -661,13 +633,11 @@ assert.equal(desktopStatsUrl.pathname,'/api/stats');assert.equal(desktopStatsUrl
 const desktopForcedStatsUrl=new URL(T.statsUrl(true),'http://localhost');
 assert.equal(desktopForcedStatsUrl.searchParams.get('background'),'1');assert.equal(desktopForcedStatsUrl.searchParams.get('refresh'),'1');
 T.state.query='';T.state.windowDays=1;
-assert.ok(!T.attentionItems(T.state.forest,countSnapshot.providers).some(item=>item.thread==='expired-question'));
 const resumedSnapshot={...snapshot,providers:[{...provider,chats:[{...root,pendingQuestion:'Expired?',pendingQuestionExpired:true}]}]};
 T.render(resumedSnapshot);
 assert.equal(T.notch.counts.roots,1);assert.equal(T.notch.counts.total,1);assert.equal(T.notch.counts.waiting,0);
 assert.match(node('#chat-list').innerHTML,/runway-refined-status t-live[^>]*>.*?runway-state-word">Running/);
 assert.doesNotMatch(node('#chat-list').innerHTML,/Waiting|Needs you/);
-assert.ok(!T.attentionItems(T.state.forest,resumedSnapshot.providers).some(item=>item.kind==='ask'));
 T.render(snapshot);
 assert.equal(T.notch.counts.waiting,0);
 const emptyWaitingSlot=node('#notch-counts').innerHTML;
@@ -931,19 +901,9 @@ const futureMessage={...child,parentId:"question-parent",latestMessageAt:new Dat
 assert.equal(T.runwayAgentHasNewMessage(futureMessage),false);
 assert.match(T.runwayQuestionPopover({...exactAsk,pendingQuestionId:"q2"}),/Continue &lt;now&gt;\?/);
 const asks={...snapshot,providers:[{...provider,chats:[root,ask]}]};
-T.render(asks);
-const item=T.attentionItems(T.state.forest,asks.providers).find(item=>item.kind==="ask");
-assert.ok(item);T.state.expandedQuestions.add(item.key);T.renderStrip([item]);
+T.render(asks);T.renderStrip();
 assert.equal(node("#strip").hidden,true);assert.equal(node("#strip").innerHTML,"");
-assert.ok(T.attentionItems(T.state.forest,asks.providers).some(x=>x.kind==="ask"));
-const requests=[];
-context.fetch=async (...args)=>{requests.push(args);return {ok:true,json:async()=>asks};};
-T.handleClick({target:{closest:s=>s==="[data-action]"?{dataset:{action:"dismiss",dismiss:item.dismiss}}:null}});
-assert.equal(requests.length,0);
-T.render(asks);
-assert.ok(!T.attentionItems(T.state.forest,asks.providers).some(x=>x.kind==="ask"));
-T.render({...asks,providers:[{...provider,chats:[root,{...ask,pendingQuestionId:"q2"}]}]});
-assert.ok(T.attentionItems(T.state.forest,asks.providers).some(x=>x.kind==="ask"));
+assert.match(node("#chat-list").innerHTML,/data-key="Codex:ask"[\s\S]*?runway-refined-status t-attn"[\s\S]*?data-action="runway-question" data-key="Codex:ask"/,"the waiting child row shows its Waiting control");
 
 // Selecting a display uses the native API; refresh does not alter placement.
 let selected="one";const nativeCalls=[];
@@ -981,6 +941,7 @@ await T.syncMonitors();assert.equal(node('#monitor-toggle').hidden,false);assert
 context.window.pywebview.api.get_monitors=monitorGetter;await T.syncMonitors();
 nativeCalls.length=0;
 selected="one"; // native selection changed after a manual cross-monitor drag
+const requests=[];
 const refreshedSnapshot={...asks,providers:[{...provider,chats:[{...root,title:"Refreshed parent"},ask]}]};
 requests.length=0;
 context.fetch=async (url,options)=>{

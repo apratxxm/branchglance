@@ -13,9 +13,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .com
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar #sync-age{width:26px;min-width:26px;height:22px;font-size:11px;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar #monitor-toggle{position:relative;width:20px;min-width:20px;max-width:20px;height:22px;font-size:0;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar #monitor-toggle::before{content:"";display:block;position:absolute;left:4px;top:6px;width:11px;height:8px;border:1px solid currentColor;border-radius:2px;box-shadow:0 3px 0 -1px currentColor;}
-body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .source-switch{height:22px;margin:0 1px;}
-body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .source-seg{width:auto;height:20px;min-width:0;gap:0;padding:0 8px;font-size:12px;}
-body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .notch-counts{width:auto;min-width:0;display:flex;align-items:center;justify-content:center;gap:2px;overflow:visible;}
+body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .source-switch{height:22px;margin:0 1px;}body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .notch-counts{width:auto;min-width:0;display:flex;align-items:center;justify-content:center;gap:2px;overflow:visible;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .runway-count{width:auto;min-width:0;max-width:none;flex:0 0 auto;gap:1px;padding:0 2px;font-size:12px;line-height:16px;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .runway-count.is-empty{display:none;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar .runway-count .ic{width:12px;height:12px;}
@@ -114,18 +112,12 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-plan-note-cell{display:none;}
 .dash-plan-footnote{margin:4px 0 0;color:var(--d-faint);font-size:11px;line-height:16px;text-align:right;}
 .dash-plan-single{grid-area:providers;display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:13px;}
-.dash-legend-toggle{padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;}
-.dash-legend-toggle:focus-visible{outline:2px solid var(--source-accent);outline-offset:2px;border-radius:3px;}
-
-
 .dash-dot{display:inline-block;width:5px;height:5px;flex:0 0 5px;border-radius:50%;}
 .dash-dot.codex{background:var(--d-codex);}
 .dash-dot.claude{background:var(--d-claude);}
 .codex-color{--provider-color:#6876ff;--provider-text:#b3a8ff;}
 .claude-color{--provider-color:#e98953;--provider-text:#f0a06e;}
-.dash-cost-note{margin:0 0 6px;color:var(--d-mute);font-size:12px;line-height:1.3;}
-.dash-plan-name{color:var(--d-sub);font-weight:550;}
-.dash-plan-text{color:var(--d-sub);}
+.dash-cost-note{margin:0 0 6px;color:var(--d-mute);font-size:12px;line-height:1.3;}.dash-plan-text{color:var(--d-sub);}
 
 /* Middle row: Models and the side column; the chart runs the full width under both. */
 .dash-lower{position:relative;flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) var(--d-side);grid-template-rows:auto minmax(0,1fr);column-gap:var(--d-gutter);row-gap:12px;align-items:start;padding:0;}
@@ -158,9 +150,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-model-bar em{display:block;height:100%;border-radius:inherit;}
 .dash-model-bar em.codex{background:var(--d-codex);box-shadow:0 0 6px #7040ff88;}
 .dash-model-bar em.claude{background:var(--d-claude);box-shadow:0 0 6px #e8813f77;}
-.dash-model-bar em.other{background:#5b6170;}
-.dash-model-more{color:var(--d-sub);font-size:13px;}
-.dash-none{color:#6f7682;font-weight:400;}
+.dash-model-bar em.other{background:#5b6170;}.dash-none{color:#6f7682;font-weight:400;}
 .dash-side{display:flex;flex-direction:column;gap:10px;}
 .dash-lower.is-day{--d-pitch:26px;align-items:start;grid-template-rows:auto;}
 .dash-lower.is-day .dash-side{gap:14px;align-self:start;}
@@ -181,11 +171,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-summary{display:block;margin:0;}
 .dash-summary>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-height:var(--d-pitch);}
 .dash-summary dt{color:#a9afbb;font-size:13px;}
-.dash-summary dd{margin:0;color:var(--d-ink);font-size:14px;font-weight:600;letter-spacing:-.01em;}
-.dash-stats{display:grid;}
-.dash-stat{min-width:0;}
-
-/* Chart: full width, its own head with the style switch, labels inside the plot so the line starts on the content edge. */
+.dash-summary dd{margin:0;color:var(--d-ink);font-size:14px;font-weight:600;letter-spacing:-.01em;}/* Chart: full width, its own head with the style switch, labels inside the plot so the line starts on the content edge. */
 .dash-chart-section{grid-column:1 / -1;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;padding:0;border:0;}
 .dash-section-head{gap:12px;margin-bottom:0;min-height:28px;}
 .dash-section-title{flex:none;color:#e6e8ef;font-size:13px;font-weight:600;}
@@ -323,7 +309,4 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-work-cell{color:var(--d-ink);font-weight:500;border-radius:4px;}
 .dash-work-cell.is-total{font-weight:600;}
 .dash-work-cell.is-zero{color:#4a4f5c;font-weight:400;}
-.dash-work-cell[tabindex]:hover,.dash-work-cell[tabindex]:focus-visible{background:#ffffff0d;outline:none;}
-.dash-work-foot{margin:6px 0 0;color:var(--d-faint);font-size:11px;line-height:16px;}
-.dash-work-foot code{font:inherit;color:var(--d-sub);}
-.dash-work-grid .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+.dash-work-cell[tabindex]:hover,.dash-work-cell[tabindex]:focus-visible{background:#ffffff0d;outline:none;}.dash-work-grid .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
