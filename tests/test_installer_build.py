@@ -77,7 +77,7 @@ def test_release_workflow_uses_frozen_notes_and_matching_checksum_assets():
     assert 'blob/$env:SOURCE_SHA/docs/CODE_SIGNING_POLICY.md' in workflow
     assert 'Branchglance-$env:VERSION-windows-components.zip.sha256' in workflow
     assert 'Branchglance-components.zip.sha256' not in workflow
-    assert 'packaging/build.py RELEASE_VERSION' in workflow
+    assert 'token_tracker/_version.py __version__' in workflow
     assert 'top CHANGELOG.md version heading' in workflow
 
 
@@ -288,6 +288,25 @@ def test_signpath_rejects_validly_signed_same_version_substitution(tmp_path):
     with pytest.raises(SafetyError, match="Signed executable content changed after build: releases/.*/BranchglanceApp.exe"):
         finalize_signed_components(components, inventory_hash, expected_version="1.2.3+abc123",
                                    signature_inspector=_valid_signature)
+
+
+def test_signpath_manifest_matches_validated_inventory(tmp_path, monkeypatch):
+    finalizer = _signpath_finalize_module()
+    components, release, inventory_hash = _signpath_component_fixture(tmp_path)
+    for path in (components / "Branchglance.exe", components / "bg-codex.exe", components / "BranchglanceUninstall.exe",
+                 release / "BranchglanceApp.exe", release / "BranchglanceHook.exe"):
+        path.write_bytes(_signed_pe_with_embedded_digest(path.read_bytes()))
+    real = finalizer.validate_signed_inventory
+
+    def substituted(*args, **kwargs):
+        inventory = dict(real(*args, **kwargs))
+        inventory["version"] = "9.9.9+abc123"
+        return inventory
+
+    monkeypatch.setattr(finalizer, "validate_signed_inventory", substituted)
+    with pytest.raises(finalizer.SafetyError, match="manifest does not match the pre-sign inventory"):
+        finalizer.finalize_signed_components(components, inventory_hash, expected_version="1.2.3+abc123",
+                                             signature_inspector=_valid_signature)
 
 
 def test_signpath_finalizer_accepts_inventory_sidecar_outside_signed_archive(tmp_path):

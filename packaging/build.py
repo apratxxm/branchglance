@@ -22,9 +22,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.branchglance_installer.core import (read_json, validate_version, verify_manifest,
+from scripts.branchglance_installer.core import (validate_version, verify_manifest,
                                                 write_manifest, write_stamps)  # noqa: E402
-RELEASE_VERSION = "0.2.0"
+from token_tracker._version import __version__  # noqa: E402
+
+RELEASE_VERSION = __version__
 SPEC = ROOT / "packaging" / "branchglance.draft.spec"
 INSTALLER_SPEC = ROOT / "packaging" / "branchglance_installer.spec"
 ICON = ROOT / "assets" / "brand" / "branchglance.ico"

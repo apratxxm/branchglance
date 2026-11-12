@@ -556,7 +556,8 @@ def finalize_signed_components(components: Path, expected_inventory_sha256: str,
     version, build_id = full_version.split("+", 1)
     release = components / "releases" / full_version
     manifest = read_json(release / "release-manifest.json")
-    if manifest.get("version") != full_version or manifest.get("product") != PRODUCT_NAME:
+    if (manifest.get("version") != full_version or manifest.get("product") != PRODUCT_NAME
+            or manifest.get("version") != inventory.get("version") or manifest.get("product") != inventory.get("product")):
         raise SafetyError("The signed release manifest does not match the pre-sign inventory")
     inventory_file = Path(inventory_path).absolute() if inventory_path is not None else components / INVENTORY_NAME
     if inventory_file == components / INVENTORY_NAME:

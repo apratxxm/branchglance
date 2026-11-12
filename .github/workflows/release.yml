@@ -102,9 +102,9 @@ jobs:
             throw "Release tag must be vMAJOR.MINOR.PATCH with an optional prerelease: $tag"
           }
           $version = $Matches.version
-          $buildVersionLine = Get-Content packaging/build.py | Where-Object { $_ -match '^RELEASE_VERSION\s*=\s*["''][^"'']+["'']\s*$' } | Select-Object -First 1
-          if (-not $buildVersionLine -or $buildVersionLine -notmatch '^RELEASE_VERSION\s*=\s*["''](?<version>[^"'']+)["'']\s*$' -or $Matches.version -ne $version) {
-            throw "Release tag version does not match packaging/build.py RELEASE_VERSION."
+          $buildVersionLine = Get-Content token_tracker/_version.py | Where-Object { $_ -match '^__version__\s*=\s*["''][^"'']+["'']\s*$' } | Select-Object -First 1
+          if (-not $buildVersionLine -or $buildVersionLine -notmatch '^__version__\s*=\s*["''](?<version>[^"'']+)["'']\s*$' -or $Matches.version -ne $version) {
+            throw "Release tag version does not match token_tracker/_version.py __version__."
           }
           $changelogHeading = Get-Content CHANGELOG.md | Where-Object { $_ -match '^##\s+' -and $_ -notmatch '^##\s+\[?Unreleased\]?(?:\s|$)' } | Select-Object -First 1
           if (-not $changelogHeading -or $changelogHeading -notmatch '^##\s+\[?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\]?(?:\s|$)' -or $Matches.version -ne $version) {
