@@ -1,6 +1,6 @@
 # Architecture
 
-Branchglance is a Windows desktop widget with a Python data and HTTP backend, a pywebview host, and a static vanilla JavaScript interface. `token_tracker/widget.py` starts the window and local servers; `token_tracker/server.py` owns API routes and snapshot caches; `token_tracker/providers.py` builds provider snapshots; `token_tracker/static/` renders them.
+Branchglance is a desktop widget (Windows installer, macOS app from source) with a Python data and HTTP backend, a pywebview host, and a static vanilla JavaScript interface. `token_tracker/widget.py` starts the window and local servers; `token_tracker/server.py` owns API routes and snapshot caches; `token_tracker/providers.py` builds provider snapshots; `token_tracker/static/` renders them.
 
 ## Data flow
 
@@ -18,12 +18,12 @@ Codex data roots are discovered from the user's Codex installation and home dire
 
 ## Claude providers
 
-Claude data is split across three inputs:
+Claude data is split across several inputs:
 
 - `ClaudeCodeProvider` in `claude_provider.py` reads `<Claude config dir>/projects` transcripts (`CLAUDE_HOME`, then `CLAUDE_CONFIG_DIR`, then `~/.claude`) for identity, titles, usage and context.
 - With explicit consent, `claude_collection.py` installs Branchglance-owned hooks in `settings.json` in that same config dir. The launcher or Python hook receives allowlisted Claude Code events and appends bounded records to the Branchglance `claude-events` JSONL directory. Event records omit prompts, tool inputs/outputs, full paths and chat titles.
 - A Claude-launched Codex execution may record an exact display association with `Branchglance.exe --link-codex <thread-uuid> --codex-pid <pid>`. The helper binds the receipt to `CLAUDE_CODE_SESSION_ID` and the Codex process creation time; receipts never establish execution status or collection authority.
-- `ClaudeDesktopProvider` in `providers.py` reads Claude Desktop's local quota cache. This is quota input; it is not Claude Code transcript state.
+- Claude limits (quota input, not transcript state) come from `claude_usage_api.py`, which reads Claude Code's OAuth token in memory and polls `api.anthropic.com` about every 30 seconds in the process holding the per-user polling lock (only with Claude collection consent; it never refreshes, logs or stores the token, and persists only a retry-after time); the `cachedUsageUtilization` cache Claude Code keeps in `~/.claude.json`, accepted only when its account matches the verified identity (`claude_identity.py`); `ClaudeDesktopProvider` in `providers.py`, which reads Claude Desktop's local quota cache; and the status line helper. Every reading is bound to the current account, so a switch never mixes accounts. The Keychain is not used, so on macOS the token is read only if a credentials file exists; otherwise the caches apply.
 
 `claude_events.py` reduces hook JSONL into execution and wait state. `Stop` and `StopFailure` are turn-scoped terminal markers; `SubagentStart` and `SubagentStop` delimit subagent activity. Prompt identifiers and event times prevent an older stop marker or notification from ending a newer turn. `claude_provider.py` joins hook state with transcript rows; if hook evidence is missing, execution can be unavailable rather than inferred from silence. Hook collection and display are disabled until the user enables Claude Code collection.
 
@@ -65,7 +65,7 @@ There is no in-app network updater described here: update and rollback are handl
 
 `token_tracker/product.py` centralizes product paths. A frozen Windows build stores application state under `%LOCALAPPDATA%\Branchglance\state`, with other product-owned files below `%LOCALAPPDATA%\Branchglance`. Development uses the legacy `%LOCALAPPDATA%\TokenTracker` state root unless an explicit test/development override is supplied. Claude hook consent and `claude-events` live in the stable product data root so hooks can write outside the frozen app process. WebView storage is placed under product data; legacy pywebview storage is under `%APPDATA%\pywebview` and is considered during migration/redirect checks.
 
-Provider input remains in provider-owned locations: Codex home/session/state files, Claude Code's `~/.claude` tree, and Claude Desktop's local cache. Uninstall preserves Branchglance user data.
+Provider input remains in provider-owned locations: Codex home/session/state files, Claude Code's `~/.claude` tree and `~/.claude.json`, and Claude Desktop's local cache. Uninstall preserves Branchglance user data.
 
 ## Tests
 

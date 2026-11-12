@@ -106,8 +106,8 @@ jobs:
           if (-not $buildVersionLine -or $buildVersionLine -notmatch '^RELEASE_VERSION\s*=\s*["''](?<version>[^"'']+)["'']\s*$' -or $Matches.version -ne $version) {
             throw "Release tag version does not match packaging/build.py RELEASE_VERSION."
           }
-          $changelogHeading = Get-Content CHANGELOG.md | Where-Object { $_ -match '^##\s+' } | Select-Object -First 1
-          if (-not $changelogHeading -or $changelogHeading -notmatch '^##\s+(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\s|$)' -or $Matches.version -ne $version) {
+          $changelogHeading = Get-Content CHANGELOG.md | Where-Object { $_ -match '^##\s+' -and $_ -notmatch '^##\s+\[?Unreleased\]?(?:\s|$)' } | Select-Object -First 1
+          if (-not $changelogHeading -or $changelogHeading -notmatch '^##\s+\[?(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\]?(?:\s|$)' -or $Matches.version -ne $version) {
             throw "Release tag version does not match the top CHANGELOG.md version heading."
           }
           $buildId = $env:SOURCE_SHA.Substring(0, 12)

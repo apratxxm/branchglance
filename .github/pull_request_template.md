@@ -18,4 +18,4 @@
 
 - [ ] `pytest -q`
 - [ ] `node tests/*.mjs`
-- [ ] `CHANGELOG.md` updated under Unreleased
+- [ ] `CHANGELOG.md` updated under `[Unreleased]` (user-facing wording, no internal ticket IDs)

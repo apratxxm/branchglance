@@ -1,143 +1,87 @@
-![Branchglance](assets/brand/lockup-dark.svg)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/lockup-light.svg">
+    <img alt="Branchglance" src="assets/brand/lockup-dark.svg" width="520">
+  </picture>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Platform: Windows and macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D4)
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB)
-![Status: alpha 0.1.0](https://img.shields.io/badge/status-alpha%200.1.0-orange)
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://github.com/apratxxm/branchglance/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/apratxxm/branchglance?include_prereleases&label=release"></a>
+  <a href="https://github.com/apratxxm/branchglance/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/apratxxm/branchglance/ci.yml?branch=master&label=CI"></a>
+  <img alt="Platform: Windows and macOS" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey">
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776AB">
+</p>
 
-A small always-on-top widget that shows what your Codex and Claude Code agents are doing: every chat and subagent in one tree, which ones are waiting on you, and how much of your 5-hour and weekly limits is left.
+**A small always-on-top widget that shows what all your Codex and Claude Code agents are doing: which are running, which are waiting on you, and how much of your usage limits is left.**
 
-It is built for people who run several agent chats at once and keep losing track of which one finished, which one is stuck on a question, and how close they are to a limit.
+<p align="center">
+  <img alt="Branchglance showing a tree of Codex and Claude Code chats with subagents, plus 5-hour and weekly limits" src="docs/images/widget.png" width="560">
+</p>
 
-> **Alpha.** Branchglance 0.1.0 may have rough edges. Windows has an installer; macOS is available from source.
+## Why
 
-![Widget](docs/images/widget.png)
+Running several agent chats in parallel means constantly checking which one finished, which one is stuck on a question, and how close you are to a limit. Branchglance puts that in one glanceable window, built from data already on your machine. There is no account to create and no Branchglance server.
 
-## Features
+## What it does
 
-- **One tree for both providers.** Codex chats and their subagents, Claude Code sessions and their subagents, and Codex jobs started from a Claude chat nested under that chat.
-- **Needs you.** Chats waiting for input are marked in the tree and counted in the toolbar; click the count to jump to them, and open the exact chat from there.
-- **Limits at a glance.** 5-hour and weekly usage for Codex and Claude side by side, with reset countdowns. A countdown reaching zero is never treated as a reset until a fresh reading confirms it.
-- **Insights.** Explore token and cost totals, provider shares, plan multiples, model breakdowns, hourly and daily charts, and limit peaks. Toggle providers and choose 24 hours, 7 days, 30 days or all time. Unpriced models are listed rather than guessed.
-- **By work.** With the optional ledger enabled, explore saved usage by work and delete saved history per provider in reset-action settings.
-- **Observed, not guessed.** A status is shown only when there is evidence for it. Missing data shows as unknown, and a parent link is shown only when it can be proven.
-- **Out of the way.** The Windows widget collapses to a strip with a clock and limit bands. Hover or press Ctrl+Shift+T to open the tree. Subagents beyond the first three fold behind a +N more control.
+> Items marked **(0.2.0)** are on `master` and arrive in the next release; release 0.1.0 does not include them.
 
-![Insights](docs/images/insights.png)
+1. **One tree for both providers.** Every Codex and Claude Code chat with its subagents; Codex jobs started from a Claude chat nest under that chat. A status or parent link is shown only when there is evidence for it, otherwise it shows as unknown.
+2. **Needs-you queue.** Chats waiting for input are marked and counted. Click the count to jump to the next one.
+3. **Limits and routing.** 5-hour and weekly usage for Codex and Claude side by side, with reset countdowns and a heads-up when one provider runs low so you can send work to the other. **(0.2.0)** Claude usage can refresh about every 30 seconds from Anthropic using Claude Code's existing sign-in, with your consent (see [Privacy](#privacy)); banked Codex resets show beside the weekly bar.
+4. **Insights.** Tokens, estimated cost, model breakdown, plan multiples and limit peaks over 24 hours to all time. Unpriced models are listed, never guessed.
+5. **Reset actions (off by default).** A greeting that keeps Claude's 5-hour window rolling **(0.2.0)**, and a one-time `continue` queued for chats you pick.
+6. **Out of the way.** It collapses to a thin strip with a clock and limit bands; hover or press Ctrl+Shift+T for the tree.
 
-![By work](docs/images/by-work.png)
+<p align="center">
+  <img alt="Insights view with token and cost totals, provider shares and limit peaks" src="docs/images/insights.png" width="560">
+</p>
 
-See the [walkthrough](docs/GUIDE.md) for every control and a typical day of use.
-
-## Windows requirements
-
-- 64-bit Windows 10 (build 19041) or Windows 11
-- Microsoft Edge WebView2 Runtime and .NET Framework 4.8 (both ship with current Windows)
-- Codex (CLI or app) signed in, for Codex chats and limits
-- Optional: Claude Code, and Claude Desktop for Claude limits
+All screenshots use synthetic sample data.
 
 ## Quick start
 
-### Windows installer
+**Windows (about a minute)**
 
-1. Download `BranchglanceSetup.exe` from the [releases page](../../releases). Alpha builds are published as pre-releases.
-2. Run it from File Explorer as your normal user (not as administrator).
-3. Open Branchglance from the Start menu.
+1. Download `BranchglanceSetup.exe` from the [latest release](https://github.com/apratxxm/branchglance/releases).
+2. Run it as your normal user, not as administrator.
+3. Open **Branchglance** from the Start menu.
 
-Setup installs per user to `%LOCALAPPDATA%\Programs\Branchglance`, adds Start menu and Desktop shortcuts, and can start the widget at sign-in if you choose. It checks its prerequisites and stops with an explanation if one is missing.
+**macOS (from source):** `git clone https://github.com/apratxxm/branchglance.git && cd branchglance && ./macos/build.sh install`. See the [macOS guide](macos/README.md).
 
-To check a download, compare its SHA-256 hash with the `.sha256` file published next to it. Alpha builds are not code-signed yet, so Windows SmartScreen may warn on first run; once signing is in place (see the [code signing policy](docs/CODE_SIGNING_POLICY.md)), also confirm the signature:
+Details, verifying the download and uninstalling: [Install guide](docs/INSTALL.md).
 
-```powershell
-Get-FileHash .\BranchglanceSetup.exe -Algorithm SHA256
-Get-AuthenticodeSignature .\BranchglanceSetup.exe | Format-List Status, SignerCertificate
-```
+## Requirements
 
-To uninstall, use **Settings → Apps → Installed apps → Branchglance**. Your settings and history in `%LOCALAPPDATA%\Branchglance` are kept.
-
-### macOS from source
-
-Install Python 3 and the Xcode command line tools, then build and install from a checkout containing the macOS support:
-
-```sh
-git clone https://github.com/apratxxm/branchglance.git
-cd branchglance
-./macos/build.sh install
-```
-
-The script installs the notch app in `/Applications`. See the [macOS guide](macos/README.md) for rollback, uninstall and signing details. Builds without a Developer ID are signed locally for the machine that built them.
-
-## Optional features
-
-- **Claude collection:** Off by default. Enable **Settings > Notifications > Claude tracking** to consent to collection. Branchglance backs up Claude Code's `settings.json` and adds its own hooks. Disabling tracking or uninstalling removes only those hooks. Hook events contain metadata, not prompts, tool inputs or outputs, full paths or chat titles. Coverage depends on reported hook events.
-- **Claude status line:** The helper supplies Claude Code quota readings for display. Add the following `statusLine` property to your Claude Code `settings.json` on Windows. This replaces any existing status line command; the helper does not display a status line. Preserve your existing command if you need it.
-
-  ```json
-  "statusLine": {
-    "type": "command",
-    "command": "\"$LOCALAPPDATA/Programs/Branchglance/Branchglance.exe\" --statusline"
-  }
-  ```
-
-  For macOS, use the command in the [macOS guide](macos/README.md).
-- **Usage ledger:** Off by default. Set `TOKEN_TRACKER_LEDGER=1` in the widget's environment before starting it to enable saved usage and the By work view. Delete a provider's saved history in the reset-action settings window.
-- **Reset greetings:** Off by default. Claude greetings require Claude collection, `TOKEN_TRACKER_CLAUDE_SEND=1` in the widget's environment, an enabled greeting in reset settings, and a logged-in Claude Code CLI. After a verified reset, the CLI sends a short message. Codex has separate send permission.
-
-Use `bg-codex` to nest Codex jobs under the Claude Code chat that starts them; see the [integration guide](docs/INTEGRATION.md).
+- Windows 10 (build 19041) or 11, 64-bit, with Edge WebView2 and .NET Framework 4.8 (both ship with current Windows). The installer checks and tells you if one is missing.
+- Codex signed in, for Codex chats and limits.
+- Optional: Claude Code, for Claude chats and limits.
+- macOS: macOS 14 or later, Python 3.10+ and the Xcode command line tools.
 
 ## Privacy
 
-Branchglance reads local Codex session data, Claude Code transcripts and hook events, and Claude Desktop's usage cache. Branchglance uses Claude Code's sign-in to read the account's usage from Anthropic, and never refreshes or stores the token. There is no Branchglance account, server or telemetry.
+- Branchglance reads local files on your machine: Codex session data, Claude Code transcripts and hook events, and the usage caches Claude Desktop and Claude Code keep. Transcript files are never uploaded.
+- **Claude usage request (0.2.0), only with Claude tracking on:** Branchglance reads Claude Code's OAuth token from `.credentials.json` in memory and asks `api.anthropic.com` for your account's usage. It never refreshes, logs or stores the token. It does not use the macOS Keychain; without a credentials file it falls back to the local caches.
+- Messages leave only when you enable them: reset greetings and queued Codex messages go through the provider's own CLI.
+- No Branchglance account, server or telemetry.
+- Claude tracking, Claude hooks, the usage ledger, greetings and sending are all off until you enable them.
 
-If you enable reset greetings, Branchglance runs the provider's own CLI to send a short message. Claude greetings keep its five-hour window rolling; Branchglance reads limits printed by Claude Code for that greeting and runs `claude auth status` locally to check the account. Greetings are off by default.
-
-## Building from source
-
-You need Python 3.10+ and Node.js (for the UI tests).
-
-```powershell
-git clone https://github.com/apratxxm/branchglance.git
-cd branchglance
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-token-tracker.txt
-.\.venv\Scripts\python.exe -m token_tracker.widget
-```
-
-Run the tests:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-Get-ChildItem tests -Filter *.mjs | ForEach-Object { node $_.FullName }
-```
-
-Build the installer (details in [CONTRIBUTING](docs/CONTRIBUTING.md)):
-
-```powershell
-py -3.10 -m venv .build-venv
-.\.build-venv\Scripts\python.exe -m pip install -r packaging/requirements-release.txt
-.\.venv\Scripts\python.exe packaging/build.py --output build --python .build-venv\Scripts\python.exe
-```
+Full details: [Privacy](docs/PRIVACY.md) and [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
-- [Walkthrough](docs/GUIDE.md): every feature and how it fits a working day
-- [Client integration](docs/INTEGRATION.md): hooks, link receipts and nesting rules for your own launchers
-- [Architecture](docs/ARCHITECTURE.md): how the pieces fit together
-- [Contributing](docs/CONTRIBUTING.md): development setup, tests and pull requests
-- [Code signing policy](docs/CODE_SIGNING_POLICY.md)
-
-## Troubleshooting
-
-- **Setup won't continue:** check the requirements above and run Setup from File Explorer, not from another app's terminal or as administrator.
-- **Setup refuses an existing folder:** it won't overwrite files it can't identify as its own. Move the folder aside rather than deleting files to force it.
-- **No Claude chats:** turn on Claude tracking in Settings. Only sessions that report hook events can appear.
-- **A Codex job shows as its own parent:** its link to a Claude chat couldn't be proven. See [why a job shows up as its own parent](docs/INTEGRATION.md#why-a-job-shows-up-as-its-own-parent).
-- **Limits show an age, like "13m ago":** the provider hasn't reported a fresh value yet. Claude's limits can also refresh from the optional status line helper.
-
-## Contributing
-
-Issues and pull requests are welcome. Please read [CONTRIBUTING](docs/CONTRIBUTING.md) first. In short: branch from `master`, keep changes focused, run both test suites, and never let a test touch your real `~/.claude` or `~/.codex`.
+| | |
+|---|---|
+| [Walkthrough](docs/GUIDE.md) | Every control, and a day of use |
+| [Install](docs/INSTALL.md) | Installer, verification, macOS, uninstall, troubleshooting |
+| [Configuration](docs/CONFIGURATION.md) | Claude tracking, status line, ledger, greetings, environment flags |
+| [Privacy](docs/PRIVACY.md) | Exactly what is read, what is sent, what is stored |
+| [Architecture](docs/ARCHITECTURE.md), [Integration](docs/INTEGRATION.md) | How it works; nesting your own launchers |
+| [Contributing](docs/CONTRIBUTING.md), [Releasing](docs/release/RELEASING.md) | Build from source, tests, cutting a release |
+| [Changelog](CHANGELOG.md), [Code signing policy](docs/CODE_SIGNING_POLICY.md) | History and signing |
 
 ## License
 
-[MIT](LICENSE). Third-party components keep their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The Branchglance name and logo are not licensed as trademarks.
+[MIT](LICENSE). Third-party components keep their own licenses ([notices](THIRD_PARTY_NOTICES.md)). The Branchglance name and logo are not licensed as trademarks.
