@@ -3656,6 +3656,65 @@ class CodexProvider:
                 pending.extend(value)
         return total
 
+    @staticmethod
+    def _codex_thread_status(
+        recorded: dict[str, Any],
+        *,
+        app_needs_input: bool,
+        app_fresh: bool,
+        app_active: bool,
+        app_failed: bool,
+        app_idle: bool,
+        terminal_newer_than_app: bool,
+        completed_agent: bool,
+        agent_restarted: bool,
+        transcript_after_app: bool,
+        transcript_fresh: bool,
+    ) -> tuple[str, str]:
+        # The persisted request is the authoritative signal for an unanswered question.
+        # App-server snapshots can still say "active" while an async request is waiting,
+        # or lag behind the transcript and say idle.
+        if recorded["status"] == "needs input":
+            status = "needs input"
+            status_source = "transcript"
+        elif terminal_newer_than_app and recorded["status"] in {"idle", "failed"}:
+            status = recorded["status"]
+            status_source = "transcript"
+        elif app_needs_input and app_fresh:
+            status = "needs input"
+            status_source = "app"
+        elif (recorded["status"] == "compacting" and
+              ((app_fresh and app_active) or transcript_after_app or (not app_fresh and transcript_fresh))):
+            status = "compacting"
+            status_source = "transcript"
+        elif completed_agent and not agent_restarted and app_fresh and app_active:
+            # Fetch time proves the roster was refreshed, not that a child
+            # whose transcript completed has started another run.
+            status = recorded["status"]
+            status_source = "transcript"
+        elif app_fresh and app_active:
+            status = "running"
+            status_source = "app"
+        elif app_fresh and app_failed:
+            status = "failed"
+            status_source = "app"
+        elif app_fresh and app_idle and transcript_fresh and recorded["status"] in {"running", "compacting"}:
+            status = recorded["status"]
+            status_source = "transcript"
+        elif app_fresh and app_idle:
+            status = "idle"
+            status_source = "app"
+        elif recorded["status"] in {"idle", "failed"} and not recorded.get("telemetryUnavailable"):
+            status = recorded["status"]
+            status_source = "transcript"
+        elif (transcript_fresh and recorded["status"] != "unknown") or recorded["status"] == "needs input":
+            status = recorded["status"]
+            status_source = "transcript"
+        else:
+            status = "unavailable"
+            status_source = "unavailable"
+        return status, status_source
+
     @classmethod
     def _thread(cls, row: dict[str, Any]) -> dict[str, Any]:
         insights = _session_insights(row.get("path"))
@@ -3722,48 +3781,12 @@ class CodexProvider:
         app_active = status_type in {"running", "active"}
         app_failed = "failed" in status_raw or "error" in status_raw
         app_idle = status_type in {"idle", "completed", "inactive"}
-        # The persisted request is the authoritative signal for an unanswered
-        # question. App-server snapshots can still say "active" while an
-        # async request is waiting, or lag behind the transcript and say idle.
-        if recorded["status"] == "needs input":
-            status = "needs input"
-            status_source = "transcript"
-        elif terminal_newer_than_app and recorded["status"] in {"idle", "failed"}:
-            status = recorded["status"]
-            status_source = "transcript"
-        elif app_needs_input and app_fresh:
-            status = "needs input"
-            status_source = "app"
-        elif (recorded["status"] == "compacting" and
-              ((app_fresh and app_active) or transcript_after_app or (not app_fresh and transcript_fresh))):
-            status = "compacting"
-            status_source = "transcript"
-        elif completed_agent and not agent_restarted and app_fresh and app_active:
-            # Fetch time proves the roster was refreshed, not that a child
-            # whose transcript completed has started another run.
-            status = recorded["status"]
-            status_source = "transcript"
-        elif app_fresh and app_active:
-            status = "running"
-            status_source = "app"
-        elif app_fresh and app_failed:
-            status = "failed"
-            status_source = "app"
-        elif app_fresh and app_idle and transcript_fresh and recorded["status"] in {"running", "compacting"}:
-            status = recorded["status"]
-            status_source = "transcript"
-        elif app_fresh and app_idle:
-            status = "idle"
-            status_source = "app"
-        elif recorded["status"] in {"idle", "failed"} and not recorded.get("telemetryUnavailable"):
-            status = recorded["status"]
-            status_source = "transcript"
-        elif (transcript_fresh and recorded["status"] != "unknown") or recorded["status"] == "needs input":
-            status = recorded["status"]
-            status_source = "transcript"
-        else:
-            status = "unavailable"
-            status_source = "unavailable"
+        status, status_source = cls._codex_thread_status(
+            recorded, app_needs_input=app_needs_input, app_fresh=app_fresh, app_active=app_active,
+            app_failed=app_failed, app_idle=app_idle, terminal_newer_than_app=terminal_newer_than_app,
+            completed_agent=completed_agent, agent_restarted=agent_restarted,
+            transcript_after_app=transcript_after_app, transcript_fresh=transcript_fresh,
+        )
         agent_path = insights.get("agentPath") or row.get("agentPath") or row.get("agent_path")
         named = (_codex_exec_title(row.get("path")) if (insights.get("source") or row.get("source")) == "exec" else None) or row.get("name") or row.get("title") or row.get("displayName") or insights.get("title") or agent_path or insights.get("agentName")
         title = named or row.get("preview") or "Untitled task"
