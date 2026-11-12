@@ -151,7 +151,7 @@ def _request(path, token):
                 obj = _DeadlineConnection(host, deadline=deadline, **kwargs)
                 connections.append(obj)
                 return obj
-            return self.do_open(connection, req)
+            return self.do_open(connection, req, context=self._context)
     opener = _opener(Handler(context=ssl.create_default_context()))
     def cancel():
         for conn in connections:
