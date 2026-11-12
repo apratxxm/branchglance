@@ -24,6 +24,24 @@ The direct requirements and their licenses are:
 | Pillow | 12.3.0 | MIT-CMU | Copyright © 1997–2011 Secret Labs AB; Copyright © 1995–2011 Fredrik Lundh and contributors; Copyright © 2010 Jeffrey “Alex” Clark and contributors. Used by icon generation; [source/license](https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE) |
 | zstandard | 0.25.0 | BSD 3-Clause | Copyright (c) 2016 Gregory Szorc. The included Zstandard library source is separately copyright Meta Platforms, Inc. and affiliates under BSD terms, with a GPLv2 alternative; [Python binding license](https://github.com/indygreg/python-zstandard/blob/0.25.0/LICENSE), [Zstandard source license](https://github.com/indygreg/python-zstandard/blob/0.25.0/zstd/LICENSE) |
 | pytest | 8.4.2 | MIT | Copyright Holger Krekel and others, 2004. Development/test dependency only; [source/license](https://github.com/pytest-dev/pytest/blob/8.4.2/LICENSE) |
+| tzdata | 2026.5 | Apache-2.0 | Copyright Python Software Foundation and contributors. Time-zone data bundled in the app for named time zones; [source/license](https://github.com/python/tzdata/blob/master/LICENSE) |
+
+### Transitive runtime packages in the Windows app
+
+The frozen Windows app also bundles the runtime dependencies that pywebview and pystray pull in. They are pinned in `packaging/requirements-release.txt` and keep their own licenses:
+
+| Component | Version | License | Use / source |
+| --- | --- | --- | --- |
+| pythonnet | 3.1.0 | MIT | Copyright (c) 2006–2021 the contributors of the Python.NET project. Pulled in by pywebview for the Windows .NET bridge; [homepage](https://pythonnet.github.io/) |
+| clr_loader | 0.3.1 | MIT | Copyright (c) 2019–2026 Benedikt Reinartz. Pulled in by pythonnet; [source](https://github.com/pythonnet/clr-loader) |
+| cffi | 2.1.1 | MIT-0 (per package metadata) | Copyright Armin Rigo and Maciej Fijalkowski. Pulled in by clr_loader; [documentation](https://cffi.readthedocs.io/) |
+| pycparser | 3.11 | BSD 3-Clause | Copyright (c) 2008–2027, Eli Bendersky. Pulled in by cffi; [source/license](https://github.com/eliben/pycparser) |
+| bottle | 0.13.4 | MIT | Copyright (c) 2009–2024, Marcel Hellkamp. Pulled in by pywebview; [homepage](http://bottlepy.org/) |
+| proxy_tools | 0.1.0 | MIT (per package metadata) | Copyright (c) 2013 Armin Ronacher; adapted by Jonathan Tushman, 2014. Pulled in by pywebview; [source](http://github.com/jtushman/proxy_tools) |
+| typing_extensions | 4.16.0 | PSF-2.0 | Copyright Guido van Rossum, Jukka Lehtosalo, Łukasz Langa, Michael Lee and contributors. Pulled in by pywebview; [source](https://github.com/python/typing_extensions) |
+| six | 1.17.0 | MIT | Copyright (c) 2010–2024 Benjamin Peterson. Pulled in by pystray; [source](https://github.com/benjaminp/six) |
+
+pytest and its dependencies and the PyInstaller build tool are used only to test and build; they are not part of the shipped app. PyInstaller's bootloader is, under the terms noted below.
 
 These licenses are compatible with using Branchglance's own source under MIT when their component terms are preserved. pystray remains separately licensed; changes to those components, if any, must follow their respective licenses. The application does not modify these dependencies.
 
@@ -33,7 +51,7 @@ This repository has no `pyproject.toml`, `setup.cfg`, `setup.py`, or `package.js
 
 ## Packaging tool
 
-`packaging/build.py` invokes PyInstaller from the build environment, but PyInstaller is not pinned in this repository's requirements file. Copyright (c) 2010–2023 PyInstaller Development Team; Copyright (c) 2005–2009 Giovanni Bajo; based on work copyright (c) 2002 McMillan Enterprises, Inc. PyInstaller is licensed under GPL-2.0-or-later with its Bootloader Exception; its runtime hooks and some runtime modules are Apache-2.0. The exception permits distributing applications built with its bootloader under a different license, while PyInstaller modifications and separately redistributed PyInstaller files remain subject to their own terms. See [PyInstaller's license terms](https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt).
+`packaging/build.py` invokes PyInstaller from the build environment, and PyInstaller is pinned in `packaging/requirements-release.txt` for build use only. Copyright (c) 2010–2023 PyInstaller Development Team; Copyright (c) 2005–2009 Giovanni Bajo; based on work copyright (c) 2002 McMillan Enterprises, Inc. PyInstaller is licensed under GPL-2.0-or-later with its Bootloader Exception; its runtime hooks and some runtime modules are Apache-2.0. The exception permits distributing applications built with its bootloader under a different license, while PyInstaller modifications and separately redistributed PyInstaller files remain subject to their own terms. See [PyInstaller's license terms](https://github.com/pyinstaller/pyinstaller/blob/develop/COPYING.txt).
 
 ## JavaScript and brand artwork
 
