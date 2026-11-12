@@ -11,9 +11,7 @@ SNIFF_BYTES = 8192
 
 # Tracked text files allowed to start with a UTF-8 BOM, each with its reason.
 # Stale entries (no longer tracked or no longer BOM-prefixed) fail the test.
-BOM_ALLOW_LIST = {
-    "scripts/launcher/BgCodex.cs": "temporary: an open branch edits this file; strip the BOM once it merges",
-}
+BOM_ALLOW_LIST: dict[str, str] = {}
 
 
 def _tracked_files():
