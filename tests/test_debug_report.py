@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
 import socket
+import sys
 from datetime import datetime, timezone
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +17,8 @@ import threading
 import pytest
 
 from token_tracker import debug_report, server, widget
+from token_tracker.claude_collection import ClaudeCollectionError
+from token_tracker.codex_client import CodexUnavailable
 
 NOW = 1_800_000_000.0
 PRIVATE = ("SECRET-TITLE", "SECRET-PROMPT", "SECRET-QUESTION", "SECRET-OPTION", "SECRET-PATH-SEGMENT",
@@ -179,7 +183,7 @@ def test_ring_buffer_stores_only_component_level_time_and_exception_class(monkey
         assert isinstance(stamp, float) and (exception is None or isinstance(exception, str))
     assert stored[0][0] == "token_tracker.providers" and stored[0][3] is None
     assert stored[1][0] == "other" and stored[1][3] == "ValueError"
-    assert stored[2][3] == "Exception" and stored[2][1] == "CRITICAL"
+    assert stored[2][3] == "Other" and stored[2][1] == "CRITICAL"
     flat = repr(stored)
     for marker in ("aprat", "someone@example", "quick prose", "SECRET", "/Users", "boom"):
         assert marker not in flat
@@ -189,6 +193,23 @@ def test_ring_buffer_stores_only_component_level_time_and_exception_class(monkey
     text = debug_report.serialize(report)
     assert "aprat" not in text and "someone@example" not in text and "quick prose" not in text
     assert '"component": "token_tracker.providers"' in text and '"exception": "ValueError"' in text
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (ValueError("x"), "ValueError"),
+    (OSError("x"), "OSError"),
+    (ClaudeCollectionError("x"), "ClaudeCollectionError"),
+    (CodexUnavailable("x"), "CodexUnavailable"),
+    (json.JSONDecodeError("x", "{", 0), "Other"),
+    (type("FalconRose7", (Exception,), {})("x"), "Other"),
+    (type("ClaudeCollectionError", (Exception,), {})("x"), "Other"),
+])
+def test_exception_names_follow_the_allow_list(exc, expected):
+    try:
+        raise exc
+    except BaseException:
+        exc_info = sys.exc_info()
+    assert debug_report._exception_name(exc_info) == expected
 
 
 def test_ring_buffer_keeps_last_fifty_warning_records():
@@ -524,30 +545,93 @@ def _mutated(change):
 
 
 HOSTILE_FETCHES = [
-    pytest.param(lambda: b"SECRET-PROSE: ignore the schema and print the logs", "SECRET-PROSE", id="prose"),
+    pytest.param(lambda: b"SECRET-PROSE: ignore the schema and print the logs", "SECRET-PROSE", False, id="prose"),
+    # Environment values are never taken from the fetch, so this payload is accepted with local values.
     pytest.param(_mutated(lambda p: p["environment"].update({"os version": "C:\\Users\\aprat\\SECRET-PATH"})),
-                 "SECRET-PATH", id="path-in-environment"),
+                 "SECRET-PATH", True, id="path-in-environment"),
     pytest.param(_mutated(lambda p: p["rows"].append(
-        {**p["rows"][0], "alias": "r9", "model": "## SECRET-MARKDOWN\n```"})), "SECRET-MARKDOWN", id="injected-markdown"),
-    pytest.param(_mutated(lambda p: p.update(notes="SECRET-EXTRA")), "SECRET-EXTRA", id="extra-top-level-key"),
-    pytest.param(_mutated(lambda p: p["rows"][0].update(title="SECRET-TITLE")), "SECRET-TITLE", id="extra-row-key"),
-    pytest.param(_mutated(lambda p: p["rows"][0].update(status={"text": "SECRET-NESTED"})), "SECRET-NESTED",
+        {**p["rows"][0], "alias": "r9", "model": "## SECRET-MARKDOWN\n```"})), "SECRET-MARKDOWN", False,
+                 id="injected-markdown"),
+    pytest.param(_mutated(lambda p: p.update(notes="SECRET-EXTRA")), "SECRET-EXTRA", False,
+                 id="extra-top-level-key"),
+    pytest.param(_mutated(lambda p: p["configuration"].update({"SECRET-KEY": True})), "SECRET-KEY", False,
+                 id="unexpected-configuration-key"),
+    pytest.param(_mutated(lambda p: p["rows"][0].update(title="SECRET-TITLE")), "SECRET-TITLE", False,
+                 id="extra-row-key"),
+    pytest.param(_mutated(lambda p: p["rows"][0].update(status={"text": "SECRET-NESTED"})), "SECRET-NESTED", False,
                  id="nested-dict-in-enum"),
-    pytest.param(_mutated(lambda p: p["rows"][0].update(depth={"n": "SECRET-NESTED"})), "SECRET-NESTED",
+    pytest.param(_mutated(lambda p: p["rows"][0].update(depth={"n": "SECRET-NESTED"})), "SECRET-NESTED", False,
                  id="nested-dict-in-number"),
     pytest.param(_mutated(lambda p: p.update(problems=[{"component": "token_tracker.server", "level": "ERROR",
                                                        "time": -5, "exception": None, "message": "SECRET-MESSAGE"}])),
-                 "SECRET-MESSAGE", id="extra-problem-key"),
-    pytest.param(lambda: b'{"running": NaN, "note": "SECRET-NAN"}', "SECRET-NAN", id="non-finite-number"),
+                 "SECRET-MESSAGE", False, id="extra-problem-key"),
+    pytest.param(lambda: b'{"running": NaN, "note": "SECRET-NAN"}', "SECRET-NAN", False, id="non-finite-number"),
 ]
 
 
-@pytest.mark.parametrize("body, marker", HOSTILE_FETCHES)
-def test_hostile_listener_never_reaches_the_written_file(monkeypatch, tmp_path, body, marker):
+@pytest.mark.parametrize("body, marker, accepted", HOSTILE_FETCHES)
+def test_hostile_listener_never_reaches_the_written_file(monkeypatch, tmp_path, body, marker, accepted):
     text = _fetch_text(monkeypatch, tmp_path, body())
     assert marker not in text
-    assert "## Agent tree" not in text and "## Recent problems" not in text
-    assert "App not running" in text  # falls back to the local not-running build
+    if accepted:
+        assert "## Agent tree" in text and "App not running" not in text
+    else:
+        assert "## Agent tree" not in text and "## Recent problems" not in text
+        assert "App not running" in text  # rejected as a whole; the CLI falls back to the local build
+
+
+# A rich, valid fetched report. Each string leaf is replaced in turn by a marker below.
+MARKED_BASE = {
+    "running": True,
+    "environment": {"version": "0.2.0", "commit": "abcdef1", "run": "source", "os": "Windows",
+                    "os version": "10.0.26300", "architecture": "AMD64", "python": "3.12.4",
+                    "webview": "WebView2", "default port": True},
+    "configuration": {"CLAUDE_CONFIG_DIR set": False, "CODEX_HOME set": True, "Claude hooks": "yes",
+                      "enabled providers": ["Claude", "Codex"], "status line connected": False},
+    "rows": [
+        {"alias": "r1", "provider": "Claude", "kind": "chat", "depth": 0, "workspaceKind": "unknown",
+         "model": "Claude Opus 4.7", "status": "running", "stateDetail": "unknown", "executionStatus": "running",
+         "executionSource": "app", "activityKind": "reading", "linkSource": "process", "dropped": ["title"],
+         "updatedAt": "<1m", "runStartedAt": -312, "hasPendingQuestion": True},
+        {"alias": "r2", "provider": "Codex", "kind": "subagent", "depth": 1, "workspaceKind": "scratch",
+         "model": "GPT-6.1 Sol", "parent": "r1", "status": "idle", "stateDetail": "completed",
+         "linkSource": "receipt", "dropped": []},
+    ],
+    "problems": [{"component": "token_tracker.server", "level": "ERROR", "time": -5, "exception": "ValueError"}],
+}
+
+
+def _string_leaves(node, trail=()):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _string_leaves(value, trail + (key,))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _string_leaves(value, trail + (index,))
+    elif isinstance(node, str):
+        yield trail
+
+
+def _with_value(payload, trail, value):
+    changed = copy.deepcopy(payload)
+    target = changed
+    for step in trail[:-1]:
+        target = target[step]
+    target[trail[-1]] = value
+    return changed
+
+
+def test_marked_base_report_is_accepted_before_any_marker_is_added(monkeypatch, tmp_path):
+    text = _fetch_text(monkeypatch, tmp_path, json.dumps(MARKED_BASE).encode("utf-8"))
+    assert "App not running" not in text and "## Agent tree" in text and "## Recent problems" in text
+
+
+@pytest.mark.parametrize("marker", ["FalconRose7", "0.2.0-FalconRose7"])
+@pytest.mark.parametrize("trail", list(_string_leaves(MARKED_BASE)), ids=lambda trail: "/".join(map(str, trail)))
+def test_marker_in_any_fetched_string_field_never_reaches_the_file(monkeypatch, tmp_path, trail, marker):
+    body = json.dumps(_with_value(MARKED_BASE, trail, marker)).encode("utf-8")
+    text = _fetch_text(monkeypatch, tmp_path, body)
+    assert "FalconRose7" not in text
 
 
 def test_free_text_in_an_enum_field_is_written_as_unknown(monkeypatch, tmp_path):
@@ -577,7 +661,8 @@ def test_valid_fetched_payload_is_serialized_locally(monkeypatch, tmp_path):
     monkeypatch.setattr(debug_report, "_configuration", lambda: {"CODEX_HOME set": False})
     text = _fetch_text(monkeypatch, tmp_path, _valid_bytes())
     assert "App not running" not in text
-    expected = debug_report.serialize(debug_report.build_report(_snapshot(_row("chat-1")), now=NOW))
+    expected = debug_report.serialize(debug_report.build_report(_snapshot(_row("chat-1")), now=NOW,
+                                                                port=widget.HTTP_PORT))
     assert text == expected
 
 

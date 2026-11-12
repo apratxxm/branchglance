@@ -62,28 +62,30 @@ MODULES = ("agent_links", "bg_codex", "claude_cache", "claude_collection", "clau
            "statusline_connect", "widget")
 COMPONENTS = frozenset(f"token_tracker.{name}" for name in MODULES)
 _LEVELS = frozenset({"WARNING", "ERROR", "CRITICAL"})
-_CLASS_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,60}")
+# Exception names written to the report come only from this allow-list; any other class is "Other".
+_BUILTIN_EXCEPTIONS = frozenset(name for name, value in vars(builtins).items()
+                                if isinstance(value, type) and issubclass(value, BaseException))
+_BRANCHGLANCE_EXCEPTIONS = frozenset({"ClaudeCollectionError", "CodexNotStarted", "CodexUnavailable",
+                                      "HookInstallError", "LedgerSchemaError", "LedgerUnavailable",
+                                      "ProviderPolicyError", "StorageRedirectedError", "_ConcurrentSettingsEdit",
+                                      "_StartupCancelled"})
+EXCEPTION_NAMES = _BUILTIN_EXCEPTIONS | _BRANCHGLANCE_EXCEPTIONS | {"Other"}
 # Fixed vocabulary: these string values are never scrubbed, so a short account name cannot corrupt them.
 FIXED_VALUES = (STATUS | STATE_DETAIL | EXECUTION_STATUS | EXECUTION_SOURCE | ACTIVITY_KINDS | COMPONENTS
                 | _LEVELS | frozenset(LINK_SOURCES.values()) | frozenset(DROPPED)
                 | frozenset({"other", "yes", "no", "partial", "frozen", "source", "Windows", "Darwin", "Linux",
                              "WebView2", "WebKit", "scratch", "chat", "exec", "subagent", "custom/unknown",
-                             "older", "<1m", "<10m", "<1h", "<1d", "Exception"}))
+                             "older", "<1m", "<10m", "<1h", "<1d", "Other"}))
 # Wire limits for the JSON endpoint; the CLI treats every field as untrusted.
 JSON_MAX_BYTES = 4 * 1024 * 1024
 MAX_ROWS = 5000
 _BUCKETS = frozenset({"<1m", "<10m", "<1h", "<1d", "older"})
-_ALIAS_PATTERN = r"r[1-9][0-9]{0,5}"
-_ALIAS = re.compile(_ALIAS_PATTERN)
 _ROW_KEYS = frozenset({"alias", "provider", "kind", "depth", "workspaceKind", "model", "parent", "linkSource",
                        "activityKind", "resumeCount", "dropped", *FLAGS, *EXACT_TIMES, *BUCKETED_TIMES,
                        *(key for key, _ in ENUM_FIELDS)})
 _ROW_REQUIRED = frozenset({"alias", "provider", "kind", "depth", "workspaceKind", "model", "dropped"})
 _ENV_KEYS = frozenset({"version", "commit", "run", "os", "os version", "architecture", "python", "webview",
                        "default port"})
-_ENV_PATTERNS = {"version": r"\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.]+)?", "commit": r"[0-9a-f]{7,40}",
-                 "os version": r"[0-9A-Za-z._-]{1,40}", "architecture": r"AMD64|x86_64|ARM64|arm64|aarch64|x86|i386|i686",
-                 "python": r"\d+\.\d+\.\d+"}
 _CONFIG_BOOLS = frozenset({"CLAUDE_CONFIG_DIR set", "CODEX_HOME set", "status line connected",
                            *(f"{name}.{key}" for name in features.ENV
                              for key in ("persisted", "effective", "env_locked", "restart_pending"))})
@@ -129,16 +131,18 @@ LOG = ReportLogHandler()
 
 
 def _exception_name(exc_info):
+    """Class name from the allow-list only; any other exception class is written as 'Other'."""
     cls = exc_info[0] if isinstance(exc_info, tuple) and exc_info else None
     if cls is None:
         return None
     if not (isinstance(cls, type) and issubclass(cls, BaseException)):
-        return "Exception"
-    if cls.__module__ == "builtins" and getattr(builtins, cls.__name__, None) is cls:
-        return cls.__name__
-    if cls.__module__.startswith("token_tracker.") and _CLASS_NAME.fullmatch(cls.__name__):
-        return cls.__name__
-    return "Exception"
+        return "Other"
+    name, module = cls.__name__, getattr(cls, "__module__", None) or ""
+    if module == "builtins" and name in _BUILTIN_EXCEPTIONS and getattr(builtins, name, None) is cls:
+        return name
+    if module.startswith("token_tracker.") and name in _BRANCHGLANCE_EXCEPTIONS:
+        return name
+    return "Other"
 
 
 def _name_values():
@@ -504,12 +508,6 @@ def _wire_choice(value, allowed) -> str:
     return value
 
 
-def _wire_pattern(value, pattern: str) -> str:
-    if type(value) is not str or not re.fullmatch(pattern, value):
-        raise ValueError("unexpected string")
-    return value
-
-
 def _wire_enum(value, allowed) -> str:
     """Strings outside the set become 'unknown' as in the builder; nested or non-string values are rejected."""
     if type(value) is not str:
@@ -522,20 +520,11 @@ def _public_models() -> frozenset:
                       *(_public_model(t) for t in providers.CODEX_PRICING)})
 
 
-def _check_environment(data) -> dict:
+def _check_environment(data, port: int) -> dict:
+    """Only the key set is checked. Values are never taken from the fetch; the section is built in this process."""
     if type(data) is not dict or set(data) != _ENV_KEYS:
         raise ValueError("environment keys")
-    out = {}
-    for key, pattern in _ENV_PATTERNS.items():
-        out[key] = "unknown" if data[key] == "unknown" else _wire_pattern(data[key], pattern)
-    out["run"] = _wire_choice(data["run"], {"frozen", "source"})
-    out["os"] = _wire_choice(data["os"], {"Windows", "Darwin", "Linux", "unknown"})
-    out["webview"] = _wire_choice(data["webview"], {"WebView2", "WebKit", "unknown"})
-    out["default port"] = _wire_bool(data["default port"])
-    # Builder key order, so a fetched report serializes byte-for-byte like a local one.
-    out = {key: out[key] for key in ("version", "commit", "run", "os", "os version", "architecture", "python",
-                                     "webview", "default port")}
-    return out
+    return _environment(port)
 
 
 def _check_configuration(data) -> dict:
@@ -548,7 +537,7 @@ def _check_configuration(data) -> dict:
         elif key == "Claude hooks":
             out[key] = _wire_choice(value, {"yes", "no", "partial", "unknown"})
         elif key == "enabled providers":
-            if type(value) is not list:
+            if type(value) is not list or len(value) > len(PROVIDERS):
                 raise ValueError("providers")
             out[key] = [_wire_choice(item, PROVIDERS) for item in value]
         else:
@@ -556,17 +545,17 @@ def _check_configuration(data) -> dict:
     return out
 
 
-def _check_row(data) -> dict:
+def _check_row(data, alias: str, aliases) -> dict:
     if type(data) is not dict or not _ROW_REQUIRED <= set(data) <= _ROW_KEYS:
         raise ValueError("row keys")
-    item = {"alias": _wire_pattern(data["alias"], _ALIAS_PATTERN),
+    item = {"alias": _wire_choice(data["alias"], {alias}),
             "provider": _wire_choice(data["provider"], PROVIDERS),
             "kind": _wire_choice(data["kind"], {"exec", "subagent", "chat"}),
             "depth": _wire_int(data["depth"], 0, 50),
             "workspaceKind": _wire_choice(data["workspaceKind"], {"scratch", "unknown"}),
             "model": _wire_choice(data["model"], _public_models())}
     if "parent" in data:
-        item["parent"] = _wire_pattern(data["parent"], _ALIAS_PATTERN)
+        item["parent"] = _wire_choice(data["parent"], aliases)
     for key, allowed in ENUM_FIELDS:
         if key in data:
             item[key] = _wire_enum(data[key], allowed)
@@ -585,30 +574,44 @@ def _check_row(data) -> dict:
     for key in BUCKETED_TIMES:
         if key in data:
             item[key] = _wire_choice(data[key], _BUCKETS)
-    if type(data["dropped"]) is not list:
+    if type(data["dropped"]) is not list or len(data["dropped"]) > len(DROPPED):
         raise ValueError("dropped")
     item["dropped"] = [_wire_choice(name, DROPPED) for name in data["dropped"]]
     return item
 
 
+def _wire_exception(value) -> str:
+    """Allow-listed class names pass unchanged; any other string is written as 'Other', as in the local log."""
+    if type(value) is not str:
+        raise ValueError("expected exception name")
+    return value if value in EXCEPTION_NAMES else "Other"
+
+
 def _check_problem(data) -> dict:
     if type(data) is not dict or set(data) != {"component", "level", "time", "exception"}:
         raise ValueError("problem keys")
-    exception = None if data["exception"] is None else _wire_pattern(data["exception"], _CLASS_NAME.pattern)
+    exception = None if data["exception"] is None else _wire_exception(data["exception"])
     return {"component": _wire_choice(data["component"], COMPONENTS | {"other"}),
             "level": _wire_choice(data["level"], _LEVELS),
             "time": _wire_int(data["time"], -10**10, 10**10), "exception": exception}
 
 
-def report_from_dict(data) -> Report:
-    """Strict typed reconstruction of a fetched report. Raises ValueError on any unexpected shape or value."""
+def report_from_dict(data, *, port: int = DEFAULT_PORT) -> Report:
+    """Strict typed reconstruction of a fetched report. Raises ValueError on any unexpected shape or value.
+
+    Row aliases must match their position, and parents must name a row, so no fetched string can carry text.
+    The environment is rebuilt locally rather than copied from the fetch.
+    """
     if type(data) is not dict or set(data) != {"running", "environment", "configuration", "rows", "problems"}:
         raise ValueError("report keys")
     rows, problems = data["rows"], data["problems"]
     if type(rows) is not list or len(rows) > MAX_ROWS or type(problems) is not list or len(problems) > 50:
         raise ValueError("report size")
-    return Report(_wire_bool(data["running"]), _check_environment(data["environment"]),
-                  _check_configuration(data["configuration"]), [_check_row(row) for row in rows],
+    aliases = [f"r{number}" for number in range(1, len(rows) + 1)]
+    alias_set = frozenset(aliases)
+    return Report(_wire_bool(data["running"]), _check_environment(data["environment"], port),
+                  _check_configuration(data["configuration"]),
+                  [_check_row(row, alias, alias_set) for row, alias in zip(rows, aliases)],
                   [_check_problem(problem) for problem in problems])
 
 
@@ -634,7 +637,7 @@ def _fetch_running(port: int):
     if len(data) > JSON_MAX_BYTES:
         return None
     try:
-        return report_from_dict(json.loads(data.decode("utf-8"), parse_constant=_reject_constant))
+        return report_from_dict(json.loads(data.decode("utf-8"), parse_constant=_reject_constant), port=port)
     except Exception:
         return None
 
