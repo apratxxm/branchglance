@@ -91,18 +91,22 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(both.context.document.body.dataset.source,undefined,"provider selection cannot recolor the fixed frame");
 }
 
-// Any Claude quota sample arriving before stats paints into the selected provider's meter.
+// A quota sample arriving before stats is retained, but Claude requires a verified account.
 {
   const early=boot(undefined,{compact:true}),samples={
     Codex:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,five_hour_percent:55,weekly_percent:50}},
-    Claude:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,five_hour_percent:43,weekly_percent:28}}
+    Claude:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,identity_generation:"account-1",five_hour_percent:43,weekly_percent:28}}
   };
   early.context.fetch=async url=>String(url)==="/api/quota"?{ok:true,json:async()=>({providers:samples,quotaCache:{ready:true,fresh:true,ageSeconds:0.25,refreshing:false,errorCategory:null}})}:{ok:true,json:async()=>policies()};
   assert.equal(await early.T.loadQuota(),true);
   assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour,undefined,"an unapproved sample stays unrendered while policy is pending");
   await early.T.loadProviderPolicy();early.T.setSource("Claude");
-  assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour.percent,43);
-  assert.equal(early.node("#r1-fiveHour-left").innerHTML,'<span class="rr-value"><b>43%</b><i>used</i></span>');
+  assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour,undefined,"policy alone cannot verify the Claude account");
+  const verified={name:"Claude",identityVerified:true,identityGeneration:"account-1"};
+  assert.equal(early.T.applyQuotaSamples({Claude:{lastStatus:{...samples.Claude.lastStatus,identity_generation:"other-account"}}},1,[verified],{requireDated:true}),false);
+  assert.equal(verified.fiveHour,undefined,"a different account's sample remains unrendered");
+  assert.equal(early.T.applyQuotaSamples(samples,1,[verified],{requireDated:true}),true);
+  assert.equal(verified.fiveHour.percent,43);
   assert.equal(early.node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>55%</b><i>used</i></span>');
 }
 

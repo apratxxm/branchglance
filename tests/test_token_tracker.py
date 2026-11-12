@@ -31,6 +31,7 @@ def isolated_agent_homes(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(widget, "_monitor_work_areas", lambda physical=False: [(0, 0, 2560, 1392)])
     monkeypatch.setattr(widget, "_system_scale", lambda: 1.0)
     monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    monkeypatch.setattr(providers, "_LAST_GOOD", {})
     monkeypatch.setattr(providers, "ENABLED_PROVIDERS", ("Codex",))
     monkeypatch.setattr(providers, "LIMIT_ONLY_PROVIDERS", ("Claude",))
     monkeypatch.setattr(providers, "POLICIES", load_policies({
