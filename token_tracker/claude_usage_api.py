@@ -20,6 +20,7 @@ from . import claude_identity, claude_statusline, product
 from .provider_policy import policy_for
 
 _MAX_BODY = 1024 * 1024
+_REQUEST_DEADLINE = 10.0  # seconds for the whole request: DNS, connect, TLS, headers and body
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -113,6 +114,28 @@ class _DeadlineConnection(http.client.HTTPSConnection):
         raise OSError("connection failed")
 
 
+def _bound_read(response, connections, remaining):
+    """Shrink the socket timeout to the time left on the whole-request deadline.
+
+    The response's raw socket is a private http.client detail. If it is not where
+    it was, fall back to the public ``sock`` of the deadline connections; if that
+    fails too, the whole-request timer in ``_request`` still cancels the active socket, so
+    a read can never outlive the deadline.
+    """
+    try:
+        response.fp.raw._sock.settimeout(remaining)
+        return
+    except (AttributeError, TypeError):
+        pass
+    for connection in connections:
+        sock = getattr(connection, "sock", None)
+        if sock is not None:
+            try:
+                sock.settimeout(remaining)
+            except (AttributeError, OSError):
+                pass
+
+
 def _request(path, token):
     """Return status, headers and bounded body; exceptions never escape with secrets."""
     request = urllib.request.Request("https://api.anthropic.com" + path, headers={
@@ -120,7 +143,7 @@ def _request(path, token):
         "Content-Type": "application/json", "User-Agent": "Branchglance/" + product.VERSION,
     })
     started = time.monotonic()
-    deadline = started + 10
+    deadline = started + _REQUEST_DEADLINE
     connections = []
     class Handler(urllib.request.HTTPSHandler):
         def https_open(self, req):
@@ -133,12 +156,12 @@ def _request(path, token):
     def cancel():
         for conn in connections:
             conn.cancel()
-    timer = threading.Timer(10, cancel)
+    timer = threading.Timer(_REQUEST_DEADLINE, cancel)
     timer.daemon = True
     timer.start()
     try:
         try:
-            response = opener.open(request, timeout=10)
+            response = opener.open(request, timeout=_REQUEST_DEADLINE)
         except urllib.error.HTTPError as exc:
             response = exc
         with response:
@@ -147,11 +170,11 @@ def _request(path, token):
                 return status, headers, None
             body = bytearray()
             while len(body) <= _MAX_BODY:
-                remaining = 10 - (time.monotonic() - started)
+                remaining = _REQUEST_DEADLINE - (time.monotonic() - started)
                 if remaining <= 0:
                     raise TimeoutError()
                 # urllib's socket timeout otherwise applies separately to each read.
-                response.fp.raw._sock.settimeout(remaining)
+                _bound_read(response, connections, remaining)
                 chunk = response.read1(min(65536, _MAX_BODY + 1 - len(body)))
                 if not chunk:
                     break
