@@ -276,3 +276,26 @@ def test_complete_small_body_denials_loopback_stress(api, monkeypatch, server_er
     assert counts == {"denied": 1000, "other": 0, "exception": 0}, first_exception
     assert server_errors == []
     assert calls == []
+
+
+@pytest.mark.parametrize("path", ["/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge",
+                                  "/api/quota", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"])
+def test_rejected_post_reads_its_small_body_before_replying(path):
+    # Unread request data at close makes the OS reset the connection (seen as
+    # WinError 10053 in the client), so a rejection must consume the body first.
+    import email.message
+    import io
+
+    body = b'{"action": "connect"}'
+    handler = server.Handler.__new__(server.Handler)
+    handler.headers = email.message.Message()
+    handler.headers["Content-Length"] = str(len(body))
+    handler.rfile = io.BufferedReader(io.BytesIO(body))
+    handler.wfile = io.BytesIO()
+    handler.connection = type("Conn", (), {"gettimeout": lambda self: None, "settimeout": lambda self, value: None})()
+    handler.request_version, handler.requestline, handler.command = "HTTP/1.1", "POST " + path, "POST"
+    handler.client_address, handler.path = ("127.0.0.1", 0), path
+    handler.log_message = lambda *args: None
+    handler._reject_post(path, {"ok": False}, 403)
+    assert handler.rfile.read() == b"", "body left unread"
+    assert handler.wfile.getvalue().split(b"\r\n", 1)[0].endswith(b" 403 Forbidden")

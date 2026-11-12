@@ -1736,7 +1736,10 @@ class Handler(SimpleHTTPRequestHandler):
         lengths = self.headers.get_all("Content-Length", [])
         limit = QUEUE_MESSAGE_LIMIT + 512 if path == "/api/queue" else 4096
         digits = lengths[0].lstrip("0") or "0" if len(lengths) == 1 else ""
-        if (path in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/quota"}
+        # Drain a small body before replying: closing with unread request data
+        # makes the OS reset the connection, so the client may never see the status.
+        if (path in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/quota",
+                     "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}
                 and not self.headers.get_all("Transfer-Encoding", []) and len(lengths) == 1
                 and re.fullmatch(r"[0-9]+", lengths[0]) and len(digits) <= len(str(limit))
                 and int(digits) <= limit):
