@@ -3905,7 +3905,6 @@ class CodexProvider:
             "lastRequest": {"input": last_usage.get("input_tokens") if context_valid else None,
                             "cached": last_usage.get("cached_input_tokens") if context_valid else None,
                             "output": last_usage.get("output_tokens") if context_valid else None},
-            "statusSource": status_source,
             "contextSource": "Last recorded request; not a live token count",
             "tokenScope": "Session cumulative usage",
             "dailyTokens": cls._thread_daily(row.get("path")),
