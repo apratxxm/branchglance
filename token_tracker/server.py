@@ -1201,23 +1201,17 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "local Host required"}, 403)
             return
         parsed = urlparse(self.path)
-        if parsed.path in {"/api/features", "/api/statusline", "/api/claude-collection"}:
-            self._get_features_or_statusline(parsed)
+        if self._get_features_or_statusline(parsed):
             return
-        if parsed.path in {"/api/provider-policy", "/api/debug-report", "/api/debug-report.json", "/api/identity"}:
-            self._get_provider_state(parsed)
+        if self._get_provider_state(parsed):
             return
-        if parsed.path in {"/api/stats", "/api/insights", "/api/ledger/status", "/api/ledger", "/api/ledger/export", "/api/live", "/api/today"}:
-            self._get_usage(parsed)
+        if self._get_usage(parsed):
             return
-        if parsed.path == "/api/open":
-            self._get_open(parsed)
+        if self._get_open(parsed):
             return
-        if parsed.path in {"/api/avatars", "/api/limit-reset", "/api/quota"}:
-            self._get_codex_state(parsed)
+        if self._get_codex_state(parsed):
             return
-        if parsed.path == "/api/reset-action":
-            self._get_reset_action(parsed)
+        if self._get_reset_action(parsed):
             return
         if parsed.path == "/healthz":
             payload = b'{"ok":true}'
@@ -1232,10 +1226,12 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def _get_features_or_statusline(self, parsed):
+        if parsed.path not in {"/api/features", "/api/statusline", "/api/claude-collection"}:
+            return False
         if parsed.path in {"/api/features", "/api/statusline"}:
             if parsed.query or not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             try:
                 if parsed.path == "/api/features":
                     from . import features, ledger_service
@@ -1249,40 +1245,45 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, **data})
             except Exception:
                 self._send_json({"ok": False, "error": "Settings status is unavailable."}, 503)
-            return
+            return True
         if parsed.path == "/api/claude-collection":
             if parsed.query or not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             try:
                 from .claude_collection import status as claude_collection_status
                 self._send_json({"ok": True, **claude_collection_status()})
             except Exception as exc:
                 logging.getLogger(__name__).error("Claude Code collection status failed (%s)", type(exc).__name__)
                 self._send_json({"ok": False, "error": "Claude Code collection status is unavailable."}, 503)
-            return
+            return True
+        return False
 
     def _get_provider_state(self, parsed):
+        if parsed.path not in {
+            '/api/provider-policy', '/api/debug-report', '/api/debug-report.json', '/api/identity',
+        }:
+            return False
         if parsed.path == "/api/provider-policy":
             try:
                 from .provider_policy import public_policies
                 payload = public_policies()
             except Exception:
                 self._send_json({"ok": False, "error": "Provider policy is unavailable."}, 503)
-                return
+                return True
             self._send_json(payload)
-            return
+            return True
         if parsed.path == "/api/debug-report":
             # Same local-origin rules as the other /api reads; no CORS headers, never cached.
             if parsed.query or not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             try:
                 from . import debug_report
                 text = debug_report.serialize(debug_report.build_report(CACHE.get(background=True)))
             except Exception:
                 self._send_json({"ok": False, "error": "Debug report is unavailable."}, 503)
-                return
+                return True
             payload = text.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/markdown; charset=utf-8")
@@ -1290,33 +1291,39 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
-            return
+            return True
         if parsed.path == "/api/debug-report.json":
             # Structured form for the CLI. Same guards as the markdown route; no CORS, never cached.
             if parsed.query or not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             try:
                 from . import debug_report
                 payload = json.dumps(debug_report.report_to_dict(debug_report.build_report(CACHE.get(background=True)))).encode("utf-8")
             except Exception:
                 self._send_json({"ok": False, "error": "Debug report is unavailable."}, 503)
-                return
+                return True
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
-            return
+            return True
         if parsed.path == "/api/identity":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             self._send_json(_identity_payload())
-            return
+            return True
+        return False
 
     def _get_usage(self, parsed):
+        if parsed.path not in {
+            '/api/stats', '/api/insights', '/api/ledger/status', '/api/ledger',
+            '/api/ledger/export', '/api/live', '/api/today',
+        }:
+            return False
         if parsed.path == "/api/stats":
             query = parse_qs(parsed.query)
             force = query.get("refresh", [""])[0] == "1"
@@ -1326,7 +1333,7 @@ class Handler(SimpleHTTPRequestHandler):
                 snapshot = CACHE.get(force=force)
             if snapshot is None:
                 self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
-                return
+                return True
             if query.get("background", [""])[0] == "1":
                 # CACHE.get returns a private egress copy for each caller.
                 snapshot = FAST_CLAUDE_LIMITS.overlay(snapshot, owned=True)
@@ -1355,7 +1362,7 @@ class Handler(SimpleHTTPRequestHandler):
                     provider["identityVerified"] = verified
                     provider["identityLabel"] = identity.label if verified else "Account unverified"
             self._send_json(snapshot)
-            return
+            return True
         if parsed.path == "/api/insights":
             from . import insights
             from .provider_policy import POLICIES, public_policies
@@ -1363,7 +1370,7 @@ class Handler(SimpleHTTPRequestHandler):
             range_name = query.get("range", ["30d"])[0]
             if range_name not in insights.RANGES:
                 self._send_json({"ok": False, "error": "Invalid insights range."}, 400)
-                return
+                return True
             allowed = _insights_allowed_names()
             generation = public_policies(POLICIES)["generation"]
             payload = insights.INSIGHTS_CACHE.get(
@@ -1374,11 +1381,11 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
             else:
                 self._send_json(payload)
-            return
+            return True
         if parsed.path == "/api/ledger/status":
             from . import ledger_service
             self._send_json(ledger_service.status_payload())
-            return
+            return True
         if parsed.path in {"/api/ledger", "/api/ledger/export"}:
             from . import ledger_service
             status, headers, body = ledger_service.http_response(parsed.path, parse_qs(parsed.query))
@@ -1388,35 +1395,38 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-            return
+            return True
         if parsed.path == "/api/live":
             selected = LIVE_CACHE.get(encoded=True)
             if selected is None:
                 self._send_json({"ok": False, "error": "Live telemetry unavailable"}, 503)
             else:
                 self._send_live_json(*selected)
-            return
+            return True
         if parsed.path == "/api/today":
             self._send_json(today_usage())
-            return
+            return True
+        return False
 
     def _get_open(self, parsed):
+        if parsed.path not in {'/api/open'}:
+            return False
         if parsed.path == "/api/open":
             # Jump to one chat in the Codex app. Only a strict thread id is accepted, and only the
             # codex://threads/ deep link is ever opened.
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             thread = parse_qs(parsed.query).get("thread", [""])[0]
             if not THREAD_ID.fullmatch(thread):
                 self._send_json({"ok": False, "error": "invalid thread id"})
-                return
+                return True
             if not _codex_allows("show"):
                 self._send_json({"ok": False, "error": "Codex is not enabled."}, 403)
-                return
+                return True
             if not _is_collected_codex_thread(thread):
                 self._send_json({"ok": False, "error": "unknown Codex thread"}, 404)
-                return
+                return True
             try:
                 url = f"codex://threads/{thread}"
                 startfile = getattr(os, "startfile", None)
@@ -1429,28 +1439,31 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True})
             except (AttributeError, TypeError, OSError, subprocess.SubprocessError) as exc:
                 self._send_json({"ok": False, "error": str(exc)[:120]})
-            return
+            return True
+        return False
 
     def _get_codex_state(self, parsed):
+        if parsed.path not in {'/api/avatars', '/api/limit-reset', '/api/quota'}:
+            return False
         if parsed.path == "/api/avatars":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             if not _codex_allows("collect"):
                 self._send_json({"avatars": []})
-                return
+                return True
             # Codex's own subagent avatars, read from the local app install (cached per version).
             from .codex_avatars import codex_avatars
             from .limit_reset import _runtime_dir
             self._send_json({"avatars": codex_avatars(_runtime_dir())})
-            return
+            return True
         if parsed.path == "/api/limit-reset":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
-                return
+                return True
             status = self.reset_service.status() if self.reset_service else {"enabled": False, "events": []}
             if not _codex_allows("show") and isinstance(status, dict):
                 status = dict(status)
@@ -1465,14 +1478,14 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
-            return
+            return True
         if parsed.path == "/api/quota":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
-                return
+                return True
             from .limit_reset import codex_quota_http_view
             payload = codex_quota_http_view()
             if not _codex_allows("show") and isinstance(payload, dict):
@@ -1480,25 +1493,28 @@ class Handler(SimpleHTTPRequestHandler):
                 payload["providers"] = {}
                 payload.pop("events", None)
             self._send_json(payload)
-            return
+            return True
+        return False
 
     def _get_reset_action(self, parsed):
+        if parsed.path not in {'/api/reset-action'}:
+            return False
         if parsed.path == "/api/reset-action":
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
-                return
+                return True
             if not _codex_allows("show"):
                 self._send_json({"ok": False, "error": "Codex display is disabled."}, 403)
-                return
+                return True
             service = self.reset_service
             if service is None:
                 self._send_json({"ok": False, "error": "Reset action service is unavailable."}, 503)
-                return
+                return True
             try:
                 action = service.get_reset_action()
             except Exception:
                 self._send_json({"ok": False, "error": "Reset action settings could not be read."}, 503)
-                return
+                return True
             try:
                 from .reset_delivery import list_candidates
                 threads = list_candidates()
@@ -1506,7 +1522,8 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 self._send_json({"ok": True, "action": action, "threads": [], "threadsAvailable": False,
                                  "error": "Chat list is unavailable. Retry to refresh it."})
-            return
+            return True
+        return False
 
     def do_POST(self):
         parsed = urlparse(self.path)
