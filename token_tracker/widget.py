@@ -19,14 +19,16 @@ from pathlib import Path
 
 
 _shutdown_trace_file = None
+_shutdown_trace_lock = threading.Lock()
 
 
 def _cancel_shutdown_trace() -> None:
     global _shutdown_trace_file
-    if _shutdown_trace_file is not None:
-        faulthandler.cancel_dump_traceback_later()
-        _shutdown_trace_file.close()
-        _shutdown_trace_file = None
+    with _shutdown_trace_lock:
+        if _shutdown_trace_file is not None:
+            faulthandler.cancel_dump_traceback_later()
+            _shutdown_trace_file.close()
+            _shutdown_trace_file = None
 
 
 # Register before importing services so their atexit cleanup is traced too.
@@ -175,23 +177,24 @@ SHUTDOWN_SERVICES_BUDGET = 6.0
 
 def _arm_shutdown_trace(root: Path | None = None, timeout: float = 10.0) -> None:
     global _shutdown_trace_file
-    if _shutdown_trace_file is not None:
-        return
-    try:
-        path = (root if root is not None else _runtime_dir()) / "logs" / "shutdown-trace.log"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and path.stat().st_size > 256 * 1024:
-            with path.open("wb"):
-                pass
-        stream = path.open("ab")
+    with _shutdown_trace_lock:
+        if _shutdown_trace_file is not None:
+            return
         try:
-            faulthandler.dump_traceback_later(timeout, repeat=False, file=stream, exit=False)
-        except Exception:
-            stream.close()
-            raise
-        _shutdown_trace_file = stream
-    except (OSError, RuntimeError, ValueError):
-        logging.getLogger(__name__).warning("Could not arm shutdown trace")
+            path = (root if root is not None else _runtime_dir()) / "logs" / "shutdown-trace.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size >= 192 * 1024:
+                with path.open("wb"):
+                    pass
+            stream = path.open("ab")
+            try:
+                faulthandler.dump_traceback_later(timeout, repeat=False, file=stream, exit=False)
+            except Exception:
+                stream.close()
+                raise
+            _shutdown_trace_file = stream
+        except (OSError, RuntimeError, ValueError):
+            logging.getLogger(__name__).warning("Could not arm shutdown trace")
 
 
 def _stop_claude_usage_refresher() -> None:

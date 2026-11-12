@@ -81,6 +81,64 @@ def test_shutdown_trace_arms_writes_and_cancels(tmp_path):
     assert path.stat().st_size < 256 * 1024
 
 
+@pytest.mark.parametrize("size,expected", [
+    (192 * 1024 - 1, 192 * 1024 - 1),
+    (192 * 1024, 0),
+    (256 * 1024 - 1, 0),
+    (256 * 1024, 0),
+    (256 * 1024 + 1, 0),
+])
+def test_shutdown_trace_rotation_headroom(tmp_path, monkeypatch, size, expected):
+    path = tmp_path / "logs" / "shutdown-trace.log"
+    path.parent.mkdir()
+    path.write_bytes(b"x" * size)
+    monkeypatch.setattr(widget.faulthandler, "dump_traceback_later", lambda *args, **kwargs: None)
+    monkeypatch.setattr(widget.faulthandler, "cancel_dump_traceback_later", lambda: None)
+    widget._arm_shutdown_trace(tmp_path)
+    try:
+        assert path.stat().st_size == expected
+    finally:
+        widget._cancel_shutdown_trace()
+
+
+def test_overlapping_trace_arms_and_cancel_keep_descriptor_open(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    scheduled = []
+    cancelled = []
+
+    def schedule(*args, **kwargs):
+        scheduled.append(kwargs["file"])
+        entered.set()
+        assert release.wait(5)
+        assert not scheduled[0].closed
+
+    def cancel():
+        assert not scheduled[0].closed
+        cancelled.append(True)
+
+    monkeypatch.setattr(widget.faulthandler, "dump_traceback_later", schedule)
+    monkeypatch.setattr(widget.faulthandler, "cancel_dump_traceback_later", cancel)
+    first = threading.Thread(target=widget._arm_shutdown_trace, args=(tmp_path,))
+    second = threading.Thread(target=widget._arm_shutdown_trace, args=(tmp_path,))
+    first.start()
+    try:
+        assert entered.wait(5)
+        second.start()
+        release.set()
+        first.join(5)
+        second.join(5)
+        assert not first.is_alive() and not second.is_alive()
+        assert len(scheduled) == 1 and not scheduled[0].closed
+        widget._cancel_shutdown_trace()
+        assert cancelled == [True] and scheduled[0].closed
+    finally:
+        release.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+        widget._cancel_shutdown_trace()
+
+
 def test_quit_arms_trace_and_stops_snapshots(monkeypatch):
     calls = []
     monkeypatch.setattr(widget, "_arm_shutdown_trace", lambda: calls.append("trace"))
