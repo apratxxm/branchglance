@@ -205,6 +205,19 @@ def test_hook_claude_pid_mismatch_blocks_inherited_session_attribution(monkeypat
     assert claude_hook._claude_process() == (None, None)
 
 
+def test_script_mode_hook_keeps_claude_process_identity(monkeypatch):
+    import runpy
+    namespace = runpy.run_path(claude_hook.__file__, run_name="claude_hook_script_test")
+    monkeypatch.setattr(namespace["os"], "name", "nt")
+    monkeypatch.setattr(namespace["os"], "getpid", lambda: 99)
+    monkeypatch.delenv("CLAUDE_PID", raising=False)
+    hook_globals = namespace["_claude_process"].__globals__
+    hook_globals["_process_table"] = lambda: {
+        99: (10, "python.exe"), 10: (1, "claude.exe"), 1: (0, "explorer.exe")}
+    hook_globals["process_created"] = lambda pid: 500 if pid == 10 else 1
+    assert namespace["_claude_process"]() == (10, 500)
+
+
 def test_hook_recognizer_stops_at_unreadable_node_host():
     tree = {99: (20, "python.exe"), 20: (10, "node.exe"),
             10: (1, "claude.exe"), 1: (0, "explorer.exe")}

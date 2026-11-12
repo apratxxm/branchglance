@@ -4733,11 +4733,19 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                     "latestMessageSourceId", "latestMessageTargetId", "contextTokens", "contextWindow",
                     "contextPercent", "contextObservedAt", "contextModel", "contextDelta",
                     "contextDeltaObservedAt", "modelChangeAt", "lastRequest", "model", "updatedAt",
-                    "title", "parentId", "parentProvider", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
+                    "title", "parentId", "parentProvider", "parentLinkMethod", "linkSource",
+                    "parentIncarnation", "childRunIdentity", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
                     "activity", "activityUnavailable", "executionStatus", "executionSource",
                     "executionObservedAt", "executionSince", "executionCompactionStartedAt",
                     "executionTerminalAt", "executionActivity",
                 )}
+                if chat.get("parentId") and chat.get("linkSource") != "process":
+                    entry["linkSource"] = "native"
+                elif prior.get("linkSource") == "process":
+                    for field in ("parentId", "parentProvider", "parentLinkMethod", "linkSource",
+                                  "parentIncarnation", "childRunIdentity"):
+                        if entry.get(field) is None and prior.get(field) is not None:
+                            entry[field] = prior[field]
                 if entry.get("appStatus") is None and chat.get("statusSource") == "app":
                     entry["appStatus"] = chat.get("status")
                 # Carry metadata only when the current transcript is unavailable
@@ -4749,6 +4757,9 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                                      "executionCompactionStartedAt", "executionTerminalAt", "executionActivity"}:
                             continue
                         if field in {"parentId", "parentProvider"}:
+                            continue
+                        if (field in {"parentLinkMethod", "linkSource", "parentIncarnation", "childRunIdentity"}
+                                and prior.get("linkSource") != "process"):
                             continue
                         current = entry.get(field)
                         empty_request = field == "lastRequest" and isinstance(current, dict) and not any(
@@ -4870,6 +4881,27 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
         _LIVE_INDEX_POLICY_GENERATION = policy_generation
 
 
+def _sync_live_lineage_index(providers_list: list[dict[str, Any]]) -> None:
+    """Persist verified lineage provenance and remove revoked process edges from the live index."""
+    fields = ("parentId", "parentProvider", "parentLinkMethod", "linkSource",
+              "parentIncarnation", "childRunIdentity")
+    with _LIVE_LOCK:
+        for provider in providers_list:
+            for row in provider.get("chats") or []:
+                indexed = _LIVE_INDEX.get(str(row.get("key") or ""))
+                if indexed is None:
+                    continue
+                if row.get("linkSource") in {"process", "native"}:
+                    for field in fields:
+                        if row.get(field) is None:
+                            indexed.pop(field, None)
+                        else:
+                            indexed[field] = row[field]
+                elif indexed.get("linkSource") == "process":
+                    for field in fields:
+                        indexed.pop(field, None)
+
+
 def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> dict[str, Any]:
     """Cheap row for a chat whose transcript detail the live budget deferred.
 
@@ -4902,6 +4934,10 @@ def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> di
         "runStartedAt": indexed.get("identityRunStartedAt"),
         "activeRunStartedAt": indexed.get("identityActiveRunStartedAt"),
         "parentId": parent_id, "parentProvider": parent_provider,
+        "parentLinkMethod": indexed.get("parentLinkMethod"),
+        "linkSource": indexed.get("linkSource"),
+        "parentIncarnation": indexed.get("parentIncarnation"),
+        "childRunIdentity": indexed.get("childRunIdentity"),
         "title": title,
         "workspace": indexed.get("identityWorkspace") or indexed.get("workspace"),
         "source": indexed.get("identitySource") or indexed.get("source"),
@@ -5153,6 +5189,10 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
             # above (which infers running from trailing records) is discarded.
             row = _claude_live_row(row, indexed)
             row.update(parentId=indexed.get("parentId"), parentProvider=indexed.get("parentProvider"))
+            if indexed.get("linkSource"):
+                for field in ("parentLinkMethod", "linkSource", "parentIncarnation", "childRunIdentity"):
+                    if indexed.get(field) is not None:
+                        row[field] = indexed[field]
         elif provider != "Codex":
             for field in ("statusSource", "statusObservedAt", "telemetryUnavailable", "metricsUnavailable", "stateSince", "compactionStartedAt", "activity", "activityUnavailable",
                           "executionStatus", "executionSource", "executionObservedAt", "executionSince",
@@ -5175,6 +5215,12 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
                 "workspace": insights.get("workspace") or indexed.get("workspace") or indexed.get("identityWorkspace"),
                 "source": insights.get("source") or indexed.get("source") or indexed.get("identitySource"),
             })
+            if insights.get("parentId") or indexed.get("identityParentId"):
+                row["linkSource"] = "native"
+            elif indexed.get("linkSource"):
+                for field in ("parentLinkMethod", "linkSource", "parentIncarnation", "childRunIdentity"):
+                    if indexed.get(field) is not None:
+                        row[field] = indexed[field]
             # Context telemetry uses a bounded tail read; cumulative token
             # aggregation remains in the slower full provider snapshot.
             event = CodexProvider._last_token_event(path_value) or {}
@@ -5277,6 +5323,7 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
                        for name in ("Claude", "Codex")]
             original_order = {str(row.get("key")): index for index, row in enumerate(chats)}
             apply_exact_links(grouped)
+            _sync_live_lineage_index(grouped)
             linked = [row for row in chats if not str(row.get("key") or "").startswith(("Claude:", "Codex:"))]
             for provider in grouped:
                 for row in provider["chats"]:
@@ -5289,7 +5336,8 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
                     # execution and lineage fields in the live overlay.
                     for field in ("retainedRun", "stoppedAt",
                                   "runPid", "runCreated", "runVerified", "runBindingUnresolved",
-                                  "parentId", "parentProvider", "parentLinkMethod"):
+                                  "parentId", "parentProvider", "parentLinkMethod", "linkSource",
+                                  "parentIncarnation", "childRunIdentity"):
                         row.setdefault(field, None)
                     linked.append(row)
             # A collapsed thread keeps its thread key's position, whichever execution was selected.

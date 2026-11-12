@@ -334,6 +334,43 @@ def test_deferred_and_detailed_lineage_agree_for_every_chat(lineage_roster):
         assert deferred[key] == detailed[key], key
 
 
+def test_live_index_preserves_process_provenance_and_replaces_it_with_native_lineage(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    monkeypatch.setattr(providers, "_LIVE_INDEX_POLICY_GENERATION", None)
+    path = tmp_path / "child.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    process_fields = {
+        "parentId": "parent", "parentProvider": "Claude", "parentLinkMethod": "process",
+        "linkSource": "process",
+        "parentIncarnation": {"provider": "Claude", "id": "parent", "pid": 10, "created": 100},
+        "childRunIdentity": {"provider": "Claude", "id": "child", "pid": 30, "created": 200},
+    }
+    providers._index_live_paths([{"name": "Claude", "chats": [
+        {"id": "child", "path": str(path), **process_fields},
+    ]}], "generation")
+    entry = providers._LIVE_INDEX["Claude:child"]
+    assert entry["linkSource"] == "process" and entry["parentIncarnation"]["pid"] == 10
+    deferred = providers._deferred_live_row("Claude:child", entry, path.stat().st_mtime)
+    assert deferred["linkSource"] == "process"
+    assert deferred["childRunIdentity"]["pid"] == 30
+
+    providers._index_live_paths([{"name": "Claude", "chats": [
+        {"id": "child", "path": str(path)},
+    ]}], "generation")
+    assert providers._LIVE_INDEX["Claude:child"]["linkSource"] == "process"
+    providers._sync_live_lineage_index([{"name": "Claude", "chats": [{"key": "Claude:child"}]}])
+    assert "parentId" not in providers._LIVE_INDEX["Claude:child"]
+    assert "linkSource" not in providers._LIVE_INDEX["Claude:child"]
+
+    providers._index_live_paths([{"name": "Claude", "chats": [
+        {"id": "child", "path": str(path), "parentId": "native-parent",
+         "parentProvider": "Claude", "linkSource": "native"},
+    ]}], "generation")
+    native = providers._LIVE_INDEX["Claude:child"]
+    assert (native["parentId"], native["parentProvider"], native["linkSource"]) == (
+        "native-parent", "Claude", "native")
+
+
 def test_hook_backed_claude_subagent_keeps_its_parent_when_deferred(lineage_roster):
     detailed_live = providers.live_state()
     detailed = next(chat for chat in detailed_live["chats"] if chat["key"] == "Claude:session:agent")

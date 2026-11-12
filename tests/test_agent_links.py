@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from token_tracker import agent_links
+from token_tracker import claude_events
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +35,15 @@ def _filetime(epoch):
     return int((epoch + 11_644_473_600) * 10_000_000)
 
 
+def _reduced_pid_session(sid, pid, created, first, last=None):
+    file_state = claude_events.new_file_state()
+    payload = {"session_id": sid, "claude_pid": pid, "claude_pid_created": created}
+    claude_events.reduce_event(file_state, {**payload, "ts": first, "event": "SessionStart"})
+    if last is not None and last > first:
+        claude_events.reduce_event(file_state, {**payload, "ts": last, "event": "UserPromptSubmit"})
+    return file_state["keys"][(sid, "")]
+
+
 def test_resume_thread_parser_accepts_only_uuid_after_exec_resume():
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     assert agent_links.parse_exec_resume_thread(f'"codex.exe" exec resume {thread}') == thread
@@ -48,7 +58,7 @@ def test_resume_thread_parser_accepts_only_uuid_after_exec_resume():
 def test_structured_argv_parser_preserves_prompt_tokens_and_resume_identity():
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     assert agent_links.parse_exec_argv(["codex", "exec", "resume", thread]) == ("resume", thread, (thread,))
-    assert agent_links.parse_exec_argv(["codex", "exec", f"resume {thread}"]) == ("resume", thread, (thread,))
+    assert agent_links.parse_exec_argv(["codex", "exec", f"resume {thread}"]) == ("exec", None, ())
     assert agent_links.parse_exec_argv(["node", "C:\\node_modules\\@openai\\codex\\bin\\codex.js",
                                         "exec", "resume", thread]) == ("resume", thread, (thread,))
     prompt = ["codex", "exec", "a prompt with spaces", 'a "quoted" token', ""]
@@ -66,10 +76,8 @@ def test_claude_launcher_requires_one_session_interval_for_direct_child_and_chil
     parent_created, direct_created, child_created = map(_filetime, (900, 950, 1000))
     table = {30: (20, "claude.exe"), 20: (10, "zsh"), 10: (1, "claude.exe"), 1: (0, "launchd")}
     states = {
-        ("child", ""): {"pid_associations": [{"pid": 30, "created": child_created,
-                                               "sid": "child", "first": 1000, "last": 1000}]},
-        ("parent-a", ""): {"pid_associations": [{"pid": 10, "created": parent_created,
-                                                   "sid": "parent-a", "first": 900, "last": 1200}]},
+        ("child", ""): _reduced_pid_session("child", 30, child_created, 1001),
+        ("parent-a", ""): _reduced_pid_session("parent-a", 10, parent_created, 900, 1200),
     }
     found = agent_links.scan_claude_process_links(
         claude_states=states, table=table, current_sid=b"sid",
@@ -78,9 +86,23 @@ def test_claude_launcher_requires_one_session_interval_for_direct_child_and_chil
                              1: _filetime(800)}[pid],
         command_argv=lambda _pid: None)
     assert len(found) == 1 and found[0]["parent_session_id"] == "parent-a"
-    states[("parent-b", "")] = {"pid_associations": [{"pid": 10, "created": parent_created,
-                                                        "sid": "parent-b", "first": 1000, "last": 1200}]}
-    states[("parent-a", "")]["pid_associations"][0]["last"] = 999
+    states[("parent-a", "")] = _reduced_pid_session("parent-a", 10, parent_created, 900, 999)
+    states[("parent-b", "")] = _reduced_pid_session("parent-b", 10, parent_created, 1000, 1200)
+    assert agent_links.scan_claude_process_links(
+        claude_states=states, table=table, current_sid=b"sid",
+        equal_sid=lambda left, right: left == right, process_sid=lambda _pid: b"sid",
+        created=lambda pid: {30: child_created, 20: direct_created, 10: parent_created,
+                             1: _filetime(800)}[pid], command_argv=lambda _pid: None) == []
+
+
+def test_resumed_child_session_with_shared_process_identity_is_ambiguous():
+    parent_created, direct_created, child_created = map(_filetime, (900, 950, 1000))
+    table = {30: (20, "claude.exe"), 20: (10, "zsh"), 10: (1, "claude.exe"), 1: (0, "launchd")}
+    states = {
+        ("child-a", ""): _reduced_pid_session("child-a", 30, child_created, 1001),
+        ("child-b", ""): _reduced_pid_session("child-b", 30, child_created, 1002),
+        ("parent", ""): _reduced_pid_session("parent", 10, parent_created, 900, 1200),
+    }
     assert agent_links.scan_claude_process_links(
         claude_states=states, table=table, current_sid=b"sid",
         equal_sid=lambda left, right: left == right, process_sid=lambda _pid: b"sid",
@@ -160,6 +182,7 @@ def test_process_scan_requires_exact_valid_ancestry_and_unique_session():
     found = agent_links.scan_codex_processes(**kwargs)
     assert found == [{"thread_id": thread, "codex_pid": 20, "codex_created": _filetime(5),
                       "claude_pid": 10, "claude_created": 100,
+                      "direct_child_pid": 20, "direct_child_created": _filetime(5),
                       "claude_session_id": "session-a", "method": "cmdline"}]
     assert agent_links.scan_codex_processes(**{**kwargs, "created": lambda pid: _filetime(5)}) == []
     ambiguous = {**states, ("session-b", ""): states[("session-a", "")]}
@@ -186,6 +209,7 @@ def test_fresh_exec_prompt_uuid_is_not_identity_but_resume_uuid_is():
         **kwargs, command_line=lambda _pid: f"codex.exe exec resume {thread}")
     assert found == [{"thread_id": thread, "codex_pid": 20, "codex_created": _filetime(5),
                       "claude_pid": None, "claude_created": None,
+                      "direct_child_pid": None, "direct_child_created": None,
                       "claude_session_id": None, "method": "unlinked"}]
     assert agent_links.scan_codex_processes(
         **kwargs, command_line=lambda _pid: "codex.exe app-server"
@@ -392,6 +416,76 @@ def test_conflicting_receipts_revoke_frozen_parent_for_child_run(tmp_path, monke
         scan=lambda **_kwargs: [], verify=lambda *_: True, hooks=lambda: {})
     assert "parentId" not in row
     assert agent_links._RUN_ROWS[identity]["parent"] is None
+
+
+def test_codex_frozen_parent_changes_when_current_scan_proves_other_owner(tmp_path, monkeypatch):
+    sid_a, sid_b = "session-a", "session-b"
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_created, direct_created, child_created = map(_filetime, (900, 980, 1000))
+    codex_row = {"id": thread, "source": "exec", "status": "running",
+                 "executionStatus": "running", "runPid": 22, "runCreated": str(child_created),
+                 "parentId": sid_a, "parentProvider": "Claude", "linkSource": "process"}
+    providers = [{"name": "Claude", "chats": [{"id": sid_a}, {"id": sid_b}]},
+                 {"name": "Codex", "chats": [codex_row]}]
+    run_key = (thread, 22, child_created)
+    saved_row = dict(codex_row)
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {run_key: {
+        "row": saved_row, "parent": sid_a, "parentProvider": "Claude", "stoppedAt": None,
+        "processProof": {"parent_id": sid_a, "parent_pid": 10, "parent_created": parent_created,
+                         "direct_child_pid": 20, "direct_child_created": direct_created,
+                         "child_pid": 22, "child_created": child_created},
+    }})
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    states = {
+        (sid_a, ""): {"pid_associations": [{"pid": 10, "created": parent_created,
+                                              "sid": sid_a, "first": 900, "last": 949}]},
+        (sid_b, ""): {"pid_associations": [{"pid": 10, "created": parent_created,
+                                              "sid": sid_b, "first": 950, "last": 1200}]},
+    }
+    current_scan = [{"thread_id": thread, "codex_pid": 22, "codex_created": child_created,
+                     "claude_session_id": sid_b, "claude_pid": 10, "claude_created": parent_created,
+                     "direct_child_pid": 20, "direct_child_created": direct_created, "method": "cmdline"}]
+    agent_links.apply_exact_links(
+        providers, now=2000, registry_path=tmp_path / "registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [],
+        registry_writer=lambda *a, **k: True, process_table_reader=lambda: {},
+        current_sid_reader=lambda: b"sid", process_sid=lambda _pid: b"sid",
+        equal_sid=lambda left, right: left == right,
+        process_created_reader=lambda _pid: None, scan=lambda **_kwargs: current_scan,
+        verify=lambda *_: True, hooks=lambda: states)
+    assert codex_row["parentId"] == sid_b
+    assert agent_links._RUN_ROWS[run_key]["processProof"]["parent_id"] == sid_b
+
+
+def test_codex_parent_proof_detects_delayed_owner_switch():
+    parent_created, direct_created, child_created = map(_filetime, (900, 980, 1000))
+    proof = {"parent_id": "session-a", "parent_pid": 10, "parent_created": parent_created,
+             "direct_child_pid": 20, "direct_child_created": direct_created,
+             "child_pid": 22, "child_created": child_created}
+    states = {
+        ("session-a", ""): _reduced_pid_session("session-a", 10, parent_created, 900, 949),
+        ("session-b", ""): _reduced_pid_session("session-b", 10, parent_created, 950, 1200),
+    }
+    assert agent_links._codex_parent_proof_contradicted(proof, states)
+
+
+def test_cached_codex_process_parent_is_suppressed_when_verification_switch_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", False)
+    sid, thread, providers, _ = _link_fixture()
+    codex_row = providers[1]["chats"][0]
+    codex_row.update(parentId="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                     parentProvider="Codex", parentLinkMethod="receipt", linkSource="process")
+    identity = (thread, 22, 123)
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 1000)
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {identity: {
+        "row": dict(codex_row), "parent": codex_row["parentId"],
+        "parentProvider": "Codex", "stoppedAt": None,
+    }})
+    agent_links.apply_exact_links(providers, now=1001, registry_path=tmp_path / "registry.json",
+                                  permission_check=_allow_collection, registry_reader=lambda _: [],
+                                  registry_writer=lambda *a, **k: True)
+    assert "parentId" not in codex_row
+    assert "linkSource" not in codex_row
 
 
 def test_codex_receipt_gated_exact_launcher_links_only_when_switch_true(tmp_path, monkeypatch):

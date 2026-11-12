@@ -61,18 +61,28 @@ def test_argument_parsing():
 
 def test_json_exec_forwards_output_and_links_the_started_thread(monkeypatch, capfdbinary, fake_codex):
     linked = []
-    monkeypatch.setattr(bg_codex, "_link", lambda child, thread: linked.append((child.pid, thread)))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    monkeypatch.setenv("CODEX_THREAD_ID", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-captured")
+    monkeypatch.setattr(bg_codex, "_link", lambda child, thread, environment:
+                        linked.append((child.pid, thread, environment)))
     code = bg_codex.run(["exec", "--json", "task"], str(fake_codex / "codex"))
     out = capfdbinary.readouterr().out
     assert code == 0
     assert out == (b'{"type":"thread.started","thread_id":"' + THREAD.encode() + b'"}\n'
                    b'{"type":"turn.completed"}\n')
-    assert [thread for _pid, thread in linked] == [THREAD]
+    assert [thread for _pid, thread, _environment in linked] == [THREAD]
+    captured = linked[0][2]
+    assert captured == {
+        "CLAUDE_CODE_SESSION_ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "CODEX_THREAD_ID": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+    }
+    assert "UNRELATED_SECRET" not in captured
 
 
 def test_exit_code_passes_through_and_resume_links_once(monkeypatch, fake_codex):
     linked = []
-    monkeypatch.setattr(bg_codex, "_link", lambda child, thread: linked.append(thread))
+    monkeypatch.setattr(bg_codex, "_link", lambda child, thread, environment: linked.append(thread))
     assert bg_codex.run(["exec", "resume", THREAD, "--json"], str(fake_codex / "codex")) == 7
     assert linked == [THREAD]
 
@@ -98,10 +108,12 @@ def test_link_writes_a_receipt_for_the_real_codex_process(monkeypatch, fake_code
     from token_tracker import agent_links
     calls = []
     monkeypatch.setattr(agent_links, "write_receipt",
-                        lambda thread, pid, expected_created=None: calls.append((thread, pid, expected_created)))
+                        lambda thread, pid, expected_created=None, environ=None:
+                        calls.append((thread, pid, expected_created, environ)))
     child = subprocess.Popen([str(fake_codex / "codex")], stdout=subprocess.DEVNULL)
     try:
         bg_codex._link(child, THREAD)
     finally:
         child.wait()
     assert calls and calls[0][0] == THREAD and calls[0][1] == child.pid and calls[0][2] > 0
+    assert calls[0][3] is not None

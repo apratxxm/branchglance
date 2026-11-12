@@ -43,16 +43,23 @@ def _filetime(epoch):
     return int((epoch + 11_644_473_600) * 10_000_000)
 
 
-def _states(child, parent, child_created, parent_created, *, first=900, last=1200, launch=None):
-    child_state = {"pid_associations": [{"pid": child, "created": child_created,
-                                         "sid": "child", "first": 1000, "last": 1000}]}
+def _reduced_session(sid, pid, created, first, last=None, *, launch=None):
+    file_state = claude_events.new_file_state()
+    record = {"session_id": sid, "claude_pid": pid, "claude_pid_created": created}
     if launch:
-        child_state["launcher_associations"] = [{"pid": child, "created": child_created,
-                                                   "launcher_codex_thread_id": launch}]
+        record["launcher_codex_thread_id"] = launch
+    claude_events.reduce_event(file_state, {**record, "ts": first, "event": "SessionStart"})
+    if last is not None and last > first:
+        claude_events.reduce_event(file_state, {**record, "ts": last, "event": "UserPromptSubmit"})
+    return file_state["keys"][(sid, "")]
+
+
+def _states(child, parent, child_created, parent_created, *, first=900, last=1200,
+            launch=None, child_sid="child", parent_sid="parent"):
+    child_first = agent_links._filetime_epoch(child_created) + 1
     return {
-        ("child", ""): child_state,
-        ("parent", ""): {"pid_associations": [{"pid": parent, "created": parent_created,
-                                                  "sid": "parent", "first": first, "last": last}]},
+        (child_sid, ""): _reduced_session(child_sid, child, child_created, child_first, launch=launch),
+        (parent_sid, ""): _reduced_session(parent_sid, parent, parent_created, first, last),
     }
 
 
@@ -165,6 +172,22 @@ def test_claude_launcher_pid_reuse_before_first_tick_read_is_rejected():
     assert _common(table, states, created) == []
 
 
+def test_intermediate_pid_reuse_is_checked_against_its_first_tick():
+    parent_created, shell_created, child_created = map(_filetime, (900, 950, 1000))
+    table = {30: (20, "claude.exe"), 20: (10, "zsh"),
+             10: (1, "claude.exe"), 1: (0, "launchd")}
+    states = _states(30, 10, child_created, parent_created)
+    reads = {}
+
+    def created(pid):
+        reads[pid] = reads.get(pid, 0) + 1
+        value = {30: child_created, 20: shell_created, 10: parent_created,
+                 1: _filetime(800)}[pid]
+        return _filetime(1100) if pid == 20 and reads[pid] > 1 else value
+
+    assert _common(table, states, created) == []
+
+
 def test_process_born_after_first_snapshot_time_is_rejected():
     parent_created, direct_created, child_created = map(_filetime, (900, 950, 1000))
     table = {30: (20, "claude.exe"), 20: (10, "zsh"), 10: (1, "claude.exe"), 1: (0, "launchd")}
@@ -216,6 +239,81 @@ def test_receipt_inherited_through_codex_cannot_claim_claude_parent():
         command_line=lambda _pid: f"codex.exe exec resume {thread}")
 
 
+def test_receipt_through_shell_uses_direct_child_tick_and_unique_claude_owner():
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    parent_created, shell_created, child_created = map(_filetime, (900, 950, 1000))
+    table = {30: (20, "codex.exe"), 20: (10, "bash.exe"),
+             10: (1, "claude.exe"), 1: (0, "launchd")}
+    receipt = {"thread_id": thread, "codex_pid": 30, "codex_created": child_created,
+               "launcher_claude_session_id": parent_sid, "recorded_at": 1000, "method": "receipt"}
+    states = {(parent_sid, ""): _reduced_session(parent_sid, 10, parent_created, 900, 1200)}
+    created = lambda pid: {30: child_created, 20: shell_created, 10: parent_created,
+                           1: _filetime(800)}[pid]
+    assert agent_links.validate_receipt_process(
+        receipt, table=table, current_sid=b"sid", claude_states=states,
+        process_sid=lambda _pid: b"sid", equal_sid=lambda left, right: left == right,
+        created=created, command_line=lambda _pid: f"codex.exe exec resume {thread}")
+
+
+def test_receipt_rejects_child_parent_edge_changed_between_snapshots():
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    parent_created, shell_created, child_created = map(_filetime, (900, 950, 1000))
+    first = {30: (20, "codex.exe"), 20: (10, "bash.exe"),
+             10: (1, "claude.exe"), 1: (0, "launchd")}
+    second = {**first, 30: (21, "codex.exe"), 21: (10, "bash.exe")}
+    receipt = {"thread_id": thread, "codex_pid": 30, "codex_created": child_created,
+               "launcher_claude_session_id": parent_sid, "recorded_at": 1000, "method": "receipt"}
+    states = {(parent_sid, ""): _reduced_session(parent_sid, 10, parent_created, 900, 1200)}
+    created = lambda pid: {30: child_created, 20: shell_created, 21: shell_created,
+                           10: parent_created, 1: _filetime(800)}[pid]
+    assert not agent_links.validate_receipt_process(
+        receipt, table=first, table_reader=lambda: second, current_sid=b"sid",
+        claude_states=states, process_sid=lambda _pid: b"sid",
+        equal_sid=lambda left, right: left == right, created=created,
+        command_line=lambda _pid: f"codex.exe exec resume {thread}")
+
+
+def test_codex_receipt_parent_rejects_child_edge_changed_between_snapshots(monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", True)
+    parent = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    child_thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_created, child_created = _filetime(900), _filetime(1000)
+    first = {30: (10, "codex.exe"), 10: (1, "codex.exe"), 1: (0, "launchd")}
+    second = {**first, 30: (11, "codex.exe"), 11: (10, "worker.exe")}
+    receipt = {"thread_id": child_thread, "codex_pid": 30, "codex_created": child_created,
+               "launcher_codex_thread_id": parent, "recorded_at": 1000, "method": "receipt"}
+    threads = [{"id": parent, "runPid": 10, "runCreated": str(parent_created)}]
+    assert agent_links._codex_receipt_parent(
+        receipt, table=first, table_reader=lambda: second, current_sid=b"sid",
+        process_sid=lambda _pid: b"sid", equal_sid=lambda left, right: left == right,
+        created=lambda pid: {30: child_created, 10: parent_created, 11: _filetime(950),
+                             1: _filetime(800)}[pid], command_argv=lambda _pid: None,
+        codex_threads=threads, snapshot_time=_filetime(2000)) is None
+
+
+def test_receipt_claim_requires_all_owners_to_be_the_claimed_session():
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    session_a = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    session_b = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    parent_created, shell_created, child_created = map(_filetime, (900, 950, 1000))
+    table = {30: (20, "codex.exe"), 20: (10, "bash.exe"),
+             10: (1, "claude.exe"), 1: (0, "launchd")}
+    receipt = {"thread_id": thread, "codex_pid": 30, "codex_created": child_created,
+               "launcher_claude_session_id": session_a, "recorded_at": 1000, "method": "receipt"}
+    states = {
+        (session_a, ""): _reduced_session(session_a, 10, parent_created, 900, 1200),
+        (session_b, ""): _reduced_session(session_b, 10, parent_created, 950, 1300),
+    }
+    created = lambda pid: {30: child_created, 20: shell_created, 10: parent_created,
+                           1: _filetime(800)}[pid]
+    assert not agent_links.validate_receipt_process(
+        receipt, table=table, current_sid=b"sid", claude_states=states,
+        process_sid=lambda _pid: b"sid", equal_sid=lambda left, right: left == right,
+        created=created, command_line=lambda _pid: f"codex.exe exec resume {thread}")
+
+
 def test_hook_timestamps_going_backwards_mark_process_association_ambiguous():
     state = claude_events.new_file_state()
     base = {"event": "UserPromptSubmit", "session_id": "session",
@@ -225,6 +323,33 @@ def test_hook_timestamps_going_backwards_mark_process_association_ambiguous():
     association, = state["process_sessions"].values()
     assert association["ambiguous"] is True
     assert agent_links._association_map({("session", ""): state}).get((10, 100), ()) == ()
+
+
+def test_ambiguous_later_session_ends_prior_launcher_ownership():
+    parent_created, shell_created, child_created = map(_filetime, (900, 980, 1000))
+    table = {30: (20, "claude.exe"), 20: (10, "zsh"),
+             10: (1, "claude.exe"), 1: (0, "launchd")}
+    parent_file = claude_events.new_file_state()
+    pid_fields = {"claude_pid": 10, "claude_pid_created": parent_created}
+    claude_events.reduce_event(parent_file, {**pid_fields, "session_id": "session-a",
+                                              "ts": 900, "event": "SessionStart"})
+    claude_events.reduce_event(parent_file, {**pid_fields, "session_id": "session-a",
+                                              "ts": 1200, "event": "UserPromptSubmit"})
+    claude_events.reduce_event(parent_file, {**pid_fields, "session_id": "session-b",
+                                              "ts": 950, "event": "SessionStart"})
+    claude_events.reduce_event(parent_file, {**pid_fields, "session_id": "session-b",
+                                              "ts": 960, "event": "UserPromptSubmit"})
+    claude_events.reduce_event(parent_file, {**pid_fields, "session_id": "session-b",
+                                              "ts": 955, "event": "PostToolUse"})
+    states = {
+        ("child", ""): _reduced_session("child", 30, child_created, 1001),
+        ("session-a", ""): parent_file["keys"][("session-a", "")],
+        ("session-b", ""): parent_file["keys"][("session-b", "")],
+    }
+    found = _common(table, states,
+                    lambda pid: {30: child_created, 20: shell_created,
+                                 10: parent_created, 1: _filetime(800)}[pid])
+    assert found == []
 
 
 def _apply_cached_claude_link(tmp_path, monkeypatch, *, states=None, native_parent=False):
@@ -241,7 +366,22 @@ def _apply_cached_claude_link(tmp_path, monkeypatch, *, states=None, native_pare
     return child
 
 
-def test_process_edge_survives_parent_exit_and_resume_under_same_thread(tmp_path, monkeypatch):
+def test_codex_process_edge_cache_is_not_published_while_switch_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", False)
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    link = {"child_session_id": "child", "child_pid": 30, "child_created": _filetime(1000),
+            "parent_session_id": None, "parent_thread_id": thread, "parent_provider": "Codex",
+            "parent_pid": 10, "parent_created": _filetime(900),
+            "direct_child_pid": 20, "direct_child_created": _filetime(950), "method": "process"}
+    monkeypatch.setattr(agent_links, "_CLAUDE_PROCESS_LINKS", {"child": link})
+    child = _apply_cached_claude_link(tmp_path, monkeypatch)
+    assert "parentId" not in child
+    assert "linkSource" not in child
+    assert "child" in agent_links._CLAUDE_PROCESS_LINKS
+
+
+def test_codex_process_edge_survives_parent_resume_when_switch_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", True)
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     link = {"child_session_id": "child", "child_pid": 30, "child_created": _filetime(1000),
             "parent_session_id": None, "parent_thread_id": thread, "parent_provider": "Codex",
@@ -251,6 +391,21 @@ def test_process_edge_survives_parent_exit_and_resume_under_same_thread(tmp_path
     child = _apply_cached_claude_link(tmp_path, monkeypatch)
     assert child["parentId"] == thread and child["parentProvider"] == "Codex"
     assert child["parentIncarnation"]["pid"] == 10
+
+
+def test_native_codex_parent_still_publishes_while_switch_is_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", False)
+    child = {"id": "child", "status": "running", "parentId": "native-root",
+             "parentProvider": "Codex", "linkSource": "native"}
+    providers = [{"name": "Claude", "chats": [child]},
+                 {"name": "Codex", "chats": [{"id": "native-root"}]}]
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 1000)
+    agent_links.apply_exact_links(providers, now=1001, registry_path=tmp_path / "registry.json",
+                                  permission_check=lambda _: True,
+                                  registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
+                                  claude_states={})
+    assert (child["parentId"], child["parentProvider"], child["linkSource"]) == (
+        "native-root", "Codex", "native")
 
 
 def test_delayed_sessionstart_revokes_frozen_claude_process_edge(tmp_path, monkeypatch):
@@ -319,14 +474,8 @@ def test_three_level_chain_claude_codex_claude(monkeypatch):
     outer_created, codex_created, child_created = map(_filetime, (900, 1000, 1100))
     table = {40: (30, "claude.exe"), 30: (20, "zsh"), 20: (15, "codex.exe"),
              15: (10, "bash"), 10: (1, "claude.exe"), 1: (0, "launchd")}
-    states = {
-        ("child", ""): {"pid_associations": [{"pid": 40, "created": child_created,
-                                               "sid": "child", "first": 1100, "last": 1100}],
-                          "launcher_associations": [{"pid": 40, "created": child_created,
-                                                     "launcher_codex_thread_id": thread}]},
-        (outer, ""): {"pid_associations": [{"pid": 10, "created": outer_created,
-                                             "sid": outer, "first": 900, "last": 1200}]},
-    }
+    states = _states(40, 10, child_created, outer_created, first=900, last=1200,
+                     launch=thread, parent_sid=outer)
     created = lambda pid: {40: child_created, 30: _filetime(1050), 20: codex_created,
                            15: _filetime(950), 10: outer_created, 1: _filetime(800)}[pid]
     codex_link = agent_links.scan_codex_processes(

@@ -189,7 +189,11 @@ def nearest_claude_ancestor(table: dict[int, tuple[int, str]], start: int, limit
 def nearest_agent_ancestor(table: dict[int, tuple[int, str]], start: int,
                            argv_reader=None, limit: int = 16) -> tuple[int, str] | None:
     """Return the nearest positively identified agent; unknown node hosts stop the walk."""
-    from .agent_links import classify_agent_process, _command_argv
+    if __package__:
+        from .agent_links import classify_agent_process, _command_argv
+    else:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from token_tracker.agent_links import classify_agent_process, _command_argv
     argv_reader = argv_reader or _command_argv
     pid, seen = start, set()
     for _ in range(limit):
