@@ -1239,6 +1239,43 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._send_json(payload)
             return
+        if parsed.path == "/api/debug-report":
+            # Same local-origin rules as the other /api reads; no CORS headers, never cached.
+            if parsed.query or not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return
+            try:
+                from . import debug_report
+                text = debug_report.serialize(debug_report.build_report(CACHE.get(background=True)))
+            except Exception:
+                self._send_json({"ok": False, "error": "Debug report is unavailable."}, 503)
+                return
+            payload = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if parsed.path == "/api/debug-report.json":
+            # Structured form for the CLI. Same guards as the markdown route; no CORS, never cached.
+            if parsed.query or not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return
+            try:
+                from . import debug_report
+                payload = json.dumps(debug_report.report_to_dict(debug_report.build_report(CACHE.get(background=True)))).encode("utf-8")
+            except Exception:
+                self._send_json({"ok": False, "error": "Debug report is unavailable."}, 503)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if parsed.path == "/api/identity":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)

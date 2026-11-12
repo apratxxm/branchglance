@@ -51,3 +51,9 @@ body:
     attributes:
       label: Screenshots or logs
       description: Redact tokens, emails, transcripts and private information first.
+  - type: textarea
+    id: debug_report
+    attributes:
+      label: Debug report
+      description: "Settings, Report a bug, Copy, then paste here. Review it first."
+      render: markdown

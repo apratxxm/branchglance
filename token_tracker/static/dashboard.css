@@ -277,6 +277,9 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-setting-note,.dash-status{margin:4px 0 0;color:var(--d-sub);font-size:12px;line-height:1.4;overflow-wrap:anywhere;}
 .dash-setting-note code{font-size:12px;}
 .dash-status.error{color:#f08d88;}
+.dash-debug-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
+.dash-debug-panel[hidden]{display:none;}
+.dash-debug-text{box-sizing:border-box;width:100%;min-height:150px;margin:8px 0 0;padding:8px 10px;border:1px solid var(--d-track);border-radius:7px;background:var(--d-well);color:var(--d-sub);font:12px/1.45 Consolas,"Cascadia Mono",monospace;resize:vertical;white-space:pre;overflow:auto;}
 .dash-plan-group{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;align-items:center;padding:3px 0;}
 .dash-plan-group .dash-setting-label,.dash-plan-group .dash-setting-description{grid-column:1;}
 .dash-plan-group .dash-setting-label{align-self:end;}

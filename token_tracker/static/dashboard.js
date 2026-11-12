@@ -396,7 +396,45 @@
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
     const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:"";
     // Both columns fit the fixed panel body: the reset frame keeps the second column, the rest share the first.
-    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${plan}${providers}${display}</div><div class="dash-settings-column">${notifications}${status}${version}</div></div>`;
+    // The preview is text in a read-only box: the report is never parsed as HTML.
+    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="Report a bug"><h2>Report a bug</h2><p class="dash-setting-note">Builds a text report with no chat text, file paths, account details or tokens. Review it before sharing.</p><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-preview">Preview debug report</button></div><div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
+    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${plan}${providers}${display}</div><div class="dash-settings-column">${notifications}${status}${version}${debug}</div></div>`;
+  }
+  const DEBUG_ISSUE_URL="https://github.com/apratxxm/branchglance/issues/new?template=bug_report.yml";
+  const DEBUG_TITLE="# Branchglance debug report";
+  function setDebugStatus(text,error=false){state.debugStatus=String(text||"");state.debugError=!!error;const node=$("#dash-debug-status");if(node){node.textContent=state.debugStatus;node.classList.toggle("error",state.debugError);}}
+  function debugOS(){const platform=String(typeof navigator!=="undefined"?(navigator.userAgentData?.platform||navigator.platform||""):"");return /^win/i.test(platform)?"Windows":/^mac/i.test(platform)?"macOS":/linux/i.test(platform)?"Linux":"unknown";}
+  // Only a validated version and the OS enum are prefilled; the report itself is pasted by the user.
+  function debugIssueURL(){const version=state.identity?.version;const safeVersion=typeof version==="string"&&/^\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.]+)?$/.test(version)?version:null;return `${DEBUG_ISSUE_URL}${safeVersion?`&version=${encodeURIComponent(safeVersion)}`:""}&os=${debugOS()}`;}
+  async function previewDebugReport(){
+    setDebugStatus("Building report…");
+    try{
+      const response=await fetch("/api/debug-report",{cache:"no-store"});
+      const text=response.ok?await response.text():"";
+      if(!text.startsWith(DEBUG_TITLE))throw new Error("unavailable");
+      state.debugReport=text;
+      const box=$("#dash-debug-report"),panel=$(".dash-debug-panel");
+      if(box)box.value=text;
+      if(panel)panel.hidden=false;
+      setDebugStatus("Review the report before sharing.");
+    }catch{setDebugStatus("Debug report is unavailable.",true);}
+  }
+  async function copyDebugReport(){
+    const text=state.debugReport;
+    if(!text){setDebugStatus("Preview the report first.",true);return;}
+    try{
+      if(!navigator.clipboard?.writeText)throw new Error("no clipboard");
+      await navigator.clipboard.writeText(text);
+      setDebugStatus("Copied.");
+    }catch{
+      const box=$("#dash-debug-report");
+      if(box&&typeof document.execCommand==="function"){box.focus();box.select();if(document.execCommand("copy")){setDebugStatus("Copied.");return;}}
+      setDebugStatus("Copy failed. Select the text and copy it.",true);
+    }
+  }
+  function openDebugIssue(){
+    try{window.open(debugIssueURL(),"_blank","noopener,noreferrer");}
+    catch{setDebugStatus("Could not open the issue page.",true);}
   }
   let activePoint=null,activeMode=null,tooltipBound=false,tooltipGeneration=0;
   function dismissTooltip(){
@@ -578,6 +616,9 @@
     else if(name==="clock")toggleClock();
     else if(name==="recenter")void window.tokenTrackerRecenter?.();
     else if(name==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
+    else if(name==="debug-preview")void previewDebugReport();
+    else if(name==="debug-copy")void copyDebugReport();
+    else if(name==="debug-issue")openDebugIssue();
   });
   document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);if(target?.dataset?.dashboardPlan)setPlanPrice(target.dataset.dashboardPlan,target.value);});
   window.addEventListener("message",event=>{
@@ -588,5 +629,5 @@
   });
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,workData,workHTML,workNote,loadLedger,state};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};
 })();

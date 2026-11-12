@@ -40,7 +40,7 @@ from PIL import Image
 
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
-from . import agent_links, product, reset_delivery, server as server_module
+from . import agent_links, debug_report, product, reset_delivery, server as server_module
 from . import ledger_service
 
 
@@ -2823,11 +2823,17 @@ def main(argv=None) -> None:
     parser.add_argument("--background", action="store_true", help="start hidden in the tray")
     parser.add_argument("--recenter", action="store_true",
                         help="recenter the widget once on startup")
+    parser.add_argument("--debug-report", nargs="?", const=debug_report.DEFAULT_OUTPUT, metavar="PATH",
+                        help="write a privacy-filtered debug report to PATH and exit")
     parser.add_argument("--install-handoff", help=argparse.SUPPRESS)
     parser.add_argument("--redirect-relaunch", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--launcher-appdata-ok", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--launcher-appdata-unknown", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.debug_report is not None:
+        # CLI only: no UI, no instance lock. Writes a file; the frozen app has no console to print to.
+        raise SystemExit(debug_report.write_cli(args.debug_report, port=HTTP_PORT))
+    debug_report.install_handler()
     # Wait for any setup transaction before taking the Instance lock or loading
     # provider policy. A timeout exits quietly so repeated Start-menu clicks do
     # not leave message-box processes behind.
