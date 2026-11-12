@@ -1,4 +1,4 @@
-# Branchglance 0.1.0 release checklist
+# Release checklist
 
 Manual end-to-end plan for a disposable Windows x64 VM and synthetic/test accounts. Record Windows build, WebView2 and .NET versions, Setup file hash, account/provider versions, results and evidence. Never capture private chat titles, prompt text, tokens, account identifiers or full paths in screenshots or logs.
 
@@ -20,8 +20,8 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 ### Upgrade from release candidate
 
 - [ ] Install the approved RC in a separate snapshot. Add synthetic local settings/history and record current version and integrations.
-- [ ] Run 1.0 Setup from File Explorer over the Branchglance-owned RC install. Confirm it recognizes the owned location and preserves settings/history.
-- [ ] Confirm the active release changes to 0.1.0 only after staging/self-check succeeds; interrupt at each approved failure point if the build provides a documented test hook, then verify the previous release remains launchable.
+- [ ] Run the candidate Setup from File Explorer over the Branchglance-owned RC install. Confirm it recognizes the owned location and preserves settings/history.
+- [ ] Confirm the active release changes to the new version only after staging/self-check succeeds; interrupt at each approved failure point if the build provides a documented test hook, then verify the previous release remains launchable.
 - [ ] Verify Start menu and Desktop shortcuts, optional sign-in Startup shortcut and uninstall registration after upgrade. Confirm locations are resolved from Windows known folders and shortcuts use the Live Stack icon.
 
 ### Startup at sign-in
@@ -43,7 +43,7 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 
 - [ ] Before consent, inspect Claude Code settings and local Branchglance state. Confirm Branchglance hooks are absent, no Claude hook events are collected, and Claude rows are not shown.
 - [ ] Enable Claude tracking in **Settings → Notifications**. Confirm the settings backup exists, only Branchglance-owned hook entries are added, the consent record names the settings file, and Claude rows appear in the same tree as Codex with orange accents.
-- [ ] Verify Claude Desktop's cached 5-hour and weekly values. Confirm stale or missing data stays unknown rather than becoming a fabricated current value.
+- [ ] Verify Claude's 5-hour and weekly values from live usage, Claude Code's usage cache and Claude Desktop's cache in turn. With Claude tracking off, confirm no request is sent to `api.anthropic.com`. Confirm stale or missing data stays unknown rather than becoming a fabricated current value.
 - [ ] Trigger a synthetic hook-reported child agent if available. Record observed coverage; do not infer that all real Claude subagents are captured.
 - [ ] From a synthetic Claude Code session, run `codex exec resume <thread>` and confirm the Codex job nests under that Claude chat while it runs and after it finishes.
 - [ ] From the same session, start a new `codex exec`, then call `Branchglance.exe --link-codex <thread> --codex-pid <pid>` while it runs. Confirm a receipt lands in `%LOCALAPPDATA%\Branchglance\codex-link-receipts\receipts.jsonl` and the job nests under the chat.
