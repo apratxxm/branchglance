@@ -100,8 +100,8 @@ Branchglance is in **alpha**: features are still being added and behaviour can c
 
 | Change | Bump | Example |
 |---|---|---|
-| New feature or a visible behaviour change | minor | 0.1.0 â†’ 0.2.0 |
-| Bug fix only | patch | 0.2.0 â†’ 0.2.1 |
+| New feature or a visible behaviour change | minor | 0.1.0 → 0.2.0 |
+| Bug fix only | patch | 0.2.0 → 0.2.1 |
 
 - The stage moves to **beta** once the planned feature set is in and releases are signed, and to **1.0** once it has been stable for daily use.
 - Every build has a build ID after a `+`, for example `0.2.0+910b6d3`. That's the commit it was built from.
