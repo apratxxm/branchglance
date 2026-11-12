@@ -2,8 +2,18 @@ from datetime import datetime, timezone
 import threading
 import time
 
-from token_tracker import limit_reset, provider_policy, providers, server
+import pytest
+
+from token_tracker import claude_identity, limit_reset, provider_policy, providers, server
 from token_tracker.provider_policy import load_policies
+
+
+@pytest.fixture
+def verified_claude(monkeypatch):
+    identity = claude_identity.Identity("test-account", "test-org", "test-epoch", "Test account")
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: (identity.generation, identity))
+    return identity
 
 
 def test_restored_limits_are_display_only_and_fresh_build_merges_per_window(tmp_path, monkeypatch):
@@ -85,7 +95,7 @@ def test_greeter_uses_its_source_not_the_restored_snapshot(tmp_path, monkeypatch
     assert not state["armed"] and state["nextGreetingAt"] is None and not calls
 
 
-def test_restored_claude_uses_fresh_memory_sample_per_window(monkeypatch):
+def test_restored_claude_uses_fresh_memory_sample_per_window(monkeypatch, verified_claude):
     class Policy:
         def allows(self, action):
             return action == "show"
@@ -94,6 +104,7 @@ def test_restored_claude_uses_fresh_memory_sample_per_window(monkeypatch):
     old = datetime.fromtimestamp(now - 60, timezone.utc).isoformat()
     current = datetime.fromtimestamp(now, timezone.utc).isoformat()
     cache = server.FastClaudeLimits()
+    cache.identity_generation = verified_claude.generation
     cache.value = {"fiveHour": {"percent": 12, "resetAt": now + 3600},
                    "weekly": {"percent": None}, "limitsUpdatedAt": current}
     cache.at = time.monotonic()
@@ -107,7 +118,7 @@ def test_restored_claude_uses_fresh_memory_sample_per_window(monkeypatch):
     assert snapshot["providers"][0]["fiveHour"]["percent"] == 90
 
 
-def test_restored_claude_starts_cold_read_without_waiting(tmp_path, monkeypatch):
+def test_restored_claude_starts_cold_read_without_waiting(tmp_path, monkeypatch, verified_claude):
     class Policy:
         def allows(self, action):
             return action == "show"
@@ -120,7 +131,8 @@ def test_restored_claude_starts_cold_read_without_waiting(tmp_path, monkeypatch)
         def snapshot(self):
             started.set()
             assert release.wait(10)
-            return {"fiveHour": {"percent": 12, "resetAt": now + 3600}, "limitsUpdatedAt": stamp}
+            return {"identityVerified": True, "identityGeneration": verified_claude.generation,
+                    "fiveHour": {"percent": 12, "resetAt": now + 3600}, "limitsUpdatedAt": stamp}
     monkeypatch.setattr(providers, "ClaudeLimitsProvider", Provider)
     (tmp_path / "plan-usage-history.json").write_text("{}", encoding="utf-8")
     snapshot = {"providers": [{"name": "Claude", "stale": True, "limitsUpdatedAt": stamp,
@@ -153,7 +165,7 @@ def test_restored_claude_thread_start_failure_keeps_fallback(monkeypatch):
     assert not cache.loading
 
 
-def test_restored_claude_retains_sample_past_memo_ttl_during_refresh(tmp_path, monkeypatch):
+def test_restored_claude_retains_sample_past_memo_ttl_during_refresh(tmp_path, monkeypatch, verified_claude):
     class Policy:
         def allows(self, action):
             return action == "show"
@@ -167,12 +179,14 @@ def test_restored_claude_retains_sample_past_memo_ttl_during_refresh(tmp_path, m
         def snapshot(self):
             started.set()
             assert release.wait(10)
-            return {"fiveHour": {"percent": None}, "weekly": {"percent": None}, "limitsUpdatedAt": current}
+            return {"identityVerified": True, "identityGeneration": verified_claude.generation,
+                    "fiveHour": {"percent": None}, "weekly": {"percent": None}, "limitsUpdatedAt": current}
     monkeypatch.setattr(providers, "ClaudeLimitsProvider", Provider)
     (tmp_path / "plan-usage-history.json").write_text("{}", encoding="utf-8")
     snapshot = {"providers": [{"name": "Claude", "stale": True, "limitsUpdatedAt": old,
                                "fiveHour": {"percent": 90, "resetAt": now + 3600, "lastKnown": True}}]}
     cache = server.FastClaudeLimits()
+    cache.identity_generation = verified_claude.generation
     cache.value = {"fiveHour": {"percent": 12, "resetAt": now + 3600}, "limitsUpdatedAt": current}
     cache.at = time.monotonic() - 3
     try:
@@ -185,6 +199,7 @@ def test_restored_claude_retains_sample_past_memo_ttl_during_refresh(tmp_path, m
         assert cache.condition.wait_for(lambda: not cache.loading, timeout=10)
     assert cache.overlay(snapshot)["providers"][0]["fiveHour"]["percent"] == 12
     normal = {"providers": [{"name": "Claude", "stale": False, "limitsUpdatedAt": current,
+                              "identityVerified": True, "identityGeneration": verified_claude.generation,
                               "fiveHour": {"percent": None}}]}
     assert cache.overlay(normal)["providers"][0]["fiveHour"]["percent"] == 12
     cache.retained["fiveHour"]["value"]["resetAt"] = now - 1
@@ -193,7 +208,7 @@ def test_restored_claude_retains_sample_past_memo_ttl_during_refresh(tmp_path, m
     assert cache.overlay(normal)["providers"][0]["fiveHour"]["percent"] is None
 
 
-def test_expired_retained_window_cannot_block_fresh_null(monkeypatch):
+def test_expired_retained_window_cannot_block_fresh_null(monkeypatch, verified_claude):
     class Policy:
         def allows(self, action):
             return action == "show"
@@ -203,6 +218,7 @@ def test_expired_retained_window_cannot_block_fresh_null(monkeypatch):
     fresh = datetime.fromtimestamp(now, timezone.utc).isoformat()
     old_epoch = datetime.fromisoformat(old).timestamp()
     cache = server.FastClaudeLimits()
+    cache.identity_generation = verified_claude.generation
     cache.retained = {
         "fiveHour": {"value": {"percent": 90, "resetAt": now - 1}, "observed": old, "at": old_epoch},
         "weekly": {"value": {"percent": 55, "resetAt": now + 3600}, "observed": old, "at": old_epoch},
@@ -213,7 +229,8 @@ def test_expired_retained_window_cannot_block_fresh_null(monkeypatch):
         five = {"percent": 90, "resetAt": now - 1}
         if marked:
             five["lastKnown"] = True
-        snapshot = {"providers": [{"name": "Claude", "limitsUpdatedAt": old, "fiveHour": five,
+        snapshot = {"providers": [{"name": "Claude", "identityVerified": True,
+                                   "identityGeneration": verified_claude.generation, "limitsUpdatedAt": old, "fiveHour": five,
                                    "weekly": {"percent": 55, "resetAt": now + 3600, "lastKnown": True}}]}
         result = cache.overlay(snapshot)["providers"][0]
         assert result["fiveHour"]["percent"] is None
@@ -222,10 +239,13 @@ def test_expired_retained_window_cannot_block_fresh_null(monkeypatch):
         assert "fiveHour" not in cache.retained and "weekly" in cache.retained
 
 
-def test_fast_claude_load_without_history_calls_snapshot(tmp_path, monkeypatch):
+def test_fast_claude_load_without_history_calls_snapshot(tmp_path, monkeypatch, verified_claude):
     class Provider:
         root = tmp_path
         def snapshot(self):
-            return {"name": "Claude", "fiveHour": {"percent": 12}}
+            return {"name": "Claude", "identityVerified": True, "identityGeneration": verified_claude.generation,
+                    "fiveHour": {"percent": 12}}
     monkeypatch.setattr(providers, "ClaudeLimitsProvider", Provider)
-    assert server.FastClaudeLimits()._load()["fiveHour"]["percent"] == 12
+    cache = server.FastClaudeLimits()
+    cache.identity_generation = verified_claude.generation
+    assert cache._load()["fiveHour"]["percent"] == 12

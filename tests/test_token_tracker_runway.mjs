@@ -209,7 +209,7 @@ assert.match(node('#sync-age').title,/Last successful refresh at/);
 assert.doesNotMatch(node('#sync-age').textContent,/stale|offline|unavailable|—/i);
 let html=node("#chat-list").innerHTML;
 assert.match(html,/Live parent/);
-assert.match(html,/ctx-tokens" title="160000 \/ 258400"/);
+assert.match(html,/ctx-tokens" title="Context occupancy: 160000 \/ 258400 tokens"/);
 assert.doesNotMatch(html,/title="160000 \/ 258400 tokens"/);
 assert.doesNotMatch(html,/runway-context-label|>Context</,"desktop quota readings omit the redundant Context label");
 assert.match(html,/runway-context-used t-attn">160K/);
@@ -483,7 +483,7 @@ for(const [percent,tone] of [[50,""],[51," t-attn"],[75," t-attn"],[76," t-err"]
   assert.match(contextRow,/class="runway-context-total">100<\/span>/);
 }
 const deltaContext=T.rowHTML({...root,contextDelta:1250,contextDeltaObservedAt:root.contextObservedAt});
-assert.match(deltaContext,/title="160000 \/ 258400; change since previous sample \+1\.25K tokens"/);
+assert.match(deltaContext,/title="Context occupancy: 160000 \/ 258400 tokens; change since previous sample \+1\.25K tokens"/);
 assert.doesNotMatch(T.rowHTML({...root,contextDelta:-500,contextDeltaObservedAt:ago(1)}),/change since previous sample/,"a delta from a different sample time is omitted");
 assert.doesNotMatch(T.rowHTML({...root,contextDelta:500,contextDeltaObservedAt:root.contextObservedAt,contextModel:"gpt-6-astra"}),/change since previous sample/);
 assert.match(cssRule('.runway-context-label,.runway-context-fraction,.runway-context-separator,.runway-context-total'),/color:var\(--ink\)/);
@@ -806,10 +806,11 @@ assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equ
 assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.notEqual(node('#r0-fiveHour-cd').textContent,'');
 assert.doesNotMatch(node('#r0-fiveHour-cd').className,/unknown/);
 {
-  const staleAt=ago(110),claude={name:"Claude",connected:true,fiveHour:{percent:14,resetAt:fixedNow/1000+3600},weekly:{percent:27,resetAt:fixedNow/1000+6*86400},limitsUpdatedAt:staleAt};
+  const staleAt=ago(110),claude={name:"Claude",connected:true,identityVerified:true,identityGeneration:"account-1",fiveHour:{percent:14,resetAt:fixedNow/1000+3600},weekly:{percent:27,resetAt:fixedNow/1000+6*86400},limitsUpdatedAt:staleAt};
   const fiveHour=T.resetView(claude,"fiveHour"),weekly=T.resetView(claude,"weekly");
   assert.equal(fiveHour.measured,false);assert.equal(fiveHour.lastKnown,true);assert.equal(fiveHour.usedLabel,"14%");assert.equal(fiveHour.lastKnownAge,"1h 50m ago");assert.equal(fiveHour.tone,"");
   assert.equal(fiveHour.tip,"Last reported by Claude Desktop 1h 50m ago");assert.notEqual(fiveHour.countdown,"");
+  assert.equal(T.resetView({...claude,identityVerified:false},"fiveHour").tip,"Account unverified · Last reported by Claude Desktop 1h 50m ago");
   assert.equal(weekly.lastKnown,true);assert.equal(weekly.usedLabel,"27%");
   const nearWeeklyLimit=T.resetView({...claude,limitsUpdatedAt:ago(6*24*60+23*60),weekly:{percent:27,resetAt:fixedNow/1000+3600}},"weekly");
   assert.equal(nearWeeklyLimit.lastKnown,true);assert.equal(nearWeeklyLimit.lastKnownAge,"6d 23h ago");

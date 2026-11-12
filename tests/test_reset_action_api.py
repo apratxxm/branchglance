@@ -269,7 +269,10 @@ def test_http_configuration_persists_until_fresh_available_reset_then_dispatches
         assert status == 200
         action = result["action"]
         assert action["mode"] == "continue" and action["armed"] is False and action["oneShot"] is True
-        assert action["lastRun"]["targets"] == [{"threadId": ONE, "status": "queued", "reason": None}]
+        generation = action["lastRun"]["armGeneration"]
+        assert generation
+        assert action["lastRun"]["targets"] == [{"threadId": ONE, "armGeneration": generation,
+                                                  "attempts": 1, "status": "queued", "reason": None}]
 
     # Duplicate polls and a second restart retain the terminal one-shot outcome.
     service.check_provider("Codex", available_sample)

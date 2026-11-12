@@ -62,7 +62,7 @@ T.render({ generatedAt: stamp(0), enabledProviders: ["Codex"], providers: [provi
 const parentHTML = T.rowHTML(T.state.forest.rows.find(chat => chat.id === parent.id));
 const childHTML = T.rowHTML(T.state.forest.rows.find(chat => chat.id === child.id));
 for (const slot of ["title", "timing", "status", "activity-column", "path-column", "tokens"]) assert.ok(parentHTML.includes(`data-runway-slot="${slot}"`), `parent has ${slot} slot`);
-assert.match(parentHTML, /title="160000 \/ 258400"/);
+assert.match(parentHTML, /title="Context occupancy: 160000 \/ 258400 tokens"/);
 assert.match(parentHTML, /Cache 80%/);
 assert.match(parentHTML, /runway-refined-elapsed">2:00/);
 assert.match(parentHTML, /runway-state-word runway-waiting-link[^>]*>Waiting/);
