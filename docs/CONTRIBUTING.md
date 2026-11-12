@@ -24,22 +24,13 @@ A source checkout keeps its state in `%LOCALAPPDATA%\TokenTracker`, separate fro
 
 ## Tests
 
-Python tests:
+Install the lint tool once (`python -m pip install ruff==0.14.4`), then run all checks from the repository root:
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+```text
+python scripts/run_checks.py
 ```
 
-UI tests. There is no npm install; each `.mjs` file runs directly under Node:
-
-```powershell
-Get-ChildItem tests -Filter *.mjs | Sort-Object Name | ForEach-Object {
-    node $_.FullName
-    if ($LASTEXITCODE -ne 0) { throw "UI test failed: $($_.Name)" }
-}
-```
-
-Both suites run on every push and pull request (see `.github/workflows/ci.yml`).
+Node.js and npm are required; the lint step runs pinned ESLint via `npx`. Use `--only python`, `--only node`, or `--only lint` to run a subset. CI runs the full command on every push and pull request.
 
 Rules for tests:
 
@@ -64,7 +55,7 @@ The output folder contains `BranchglanceSetup.exe`, the uninstaller, the launche
 .\build\releases\<version>\BranchglanceApp.exe --self-test
 ```
 
-Local builds are unsigned, so Windows SmartScreen may warn when you run them. Official releases are built and signed by the `Windows release` workflow; see the [code signing policy](CODE_SIGNING_POLICY.md).
+Local builds and v0.1.0 are unsigned, so Windows SmartScreen may warn. Release signing depends on workflow configuration; check each release for its signing status. See the [code signing policy](CODE_SIGNING_POLICY.md).
 
 If you fork the project to ship your own build, change the product name and icons in `token_tracker/product.py` and `assets/brand/`, so your build doesn't install over an official one.
 

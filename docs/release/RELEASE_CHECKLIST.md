@@ -2,6 +2,8 @@
 
 Manual end-to-end plan for a disposable Windows x64 VM and synthetic/test accounts. Record Windows build, WebView2 and .NET versions, Setup file hash, account/provider versions, results and evidence. Never capture private chat titles, prompt text, tokens, account identifiers or full paths in screenshots or logs.
 
+Use the [release record template](RELEASE_RECORD_TEMPLATE.md) to capture the evidence.
+
 ## Test record
 
 Use a clean, disposable Windows 10 build 19041+ or Windows 11 x64 VM. Confirm .NET Framework 4.8+ and WebView2 Runtime. Use a non-administrator account. Start from a VM snapshot and restore it after each provider scenario. For quota and greeting tests, use approved test accounts and stop if a real limit cannot be safely observed; do not force quota exhaustion or send a greeting without explicit test-owner authorization.
@@ -43,7 +45,7 @@ Record each item as **Pass**, **Fail** or **Not run**, with a short result and e
 
 - [ ] Before consent, inspect Claude Code settings and local Branchglance state. Confirm Branchglance hooks are absent, no Claude hook events are collected, and Claude rows are not shown.
 - [ ] Enable Claude tracking in **Settings → Notifications**. Confirm the settings backup exists, only Branchglance-owned hook entries are added, the consent record names the settings file, and Claude rows appear in the same tree as Codex with orange accents.
-- [ ] Verify Claude's 5-hour and weekly values from live usage, Claude Code's usage cache and Claude Desktop's cache in turn. With Claude tracking off, confirm no request is sent to `api.anthropic.com`. Confirm stale or missing data stays unknown rather than becoming a fabricated current value.
+- [ ] Verify Claude's 5-hour and weekly values from live usage and Claude Code's usage cache in turn. With Claude tracking or live usage off, confirm no request is sent to `api.anthropic.com`. Confirm stale or missing data stays unknown rather than becoming a fabricated current value.
 - [ ] Trigger a synthetic hook-reported child agent if available. Record observed coverage; do not infer that all real Claude subagents are captured.
 - [ ] From a synthetic Claude Code session, run `codex exec resume <thread>` and confirm the Codex job nests under that Claude chat while it runs and after it finishes.
 - [ ] From the same session, start a new `codex exec`, then call `Branchglance.exe --link-codex <thread> --codex-pid <pid>` while it runs. Confirm a receipt lands in `%LOCALAPPDATA%\Branchglance\codex-link-receipts\receipts.jsonl` and the job nests under the chat.

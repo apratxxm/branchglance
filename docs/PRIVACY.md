@@ -1,6 +1,6 @@
 # Privacy
 
-Branchglance runs on your machine. There is no Branchglance account, server, sync service or telemetry, and nothing it reads is sent to its maintainers.
+Branchglance runs on your machine. A local loopback HTTP server serves its UI. There is no Branchglance-hosted account, analytics or sync service, and nothing it reads is sent to its maintainers.
 
 ## What it reads
 

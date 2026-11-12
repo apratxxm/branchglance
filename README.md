@@ -20,13 +20,15 @@
   <img alt="Branchglance showing a tree of Codex and Claude Code chats with subagents, plus 5-hour and weekly limits" src="docs/images/widget.png" width="560">
 </p>
 
+> These docs describe `master`. For the latest release, use the docs at its release tag; features in [Unreleased](CHANGELOG.md) require a source build.
+
 ## Why
 
-Running several agent chats in parallel means constantly checking which one finished, which one is stuck on a question, and how close you are to a limit. Branchglance puts that in one glanceable window, built from data already on your machine. There is no account to create and no Branchglance server.
+Running several agent chats in parallel means constantly checking which one finished, which one is stuck on a question, and how close you are to a limit. Branchglance puts that in one glanceable window, built from data already on your machine. There is no Branchglance-hosted account or service.
 
 ## What it does
 
-> Items marked **(0.2.0)** are on `master` and arrive in the next release; release 0.1.0 does not include them.
+> Items marked **(0.2.0)** are in the development version.
 
 1. **One tree for both providers.** Every Codex and Claude Code chat with its subagents; Codex jobs started from a Claude chat nest under that chat. A status or parent link is shown only when there is evidence for it, otherwise it shows as unknown.
 2. **Needs-you queue.** Chats waiting for input are marked and counted. Click the count to jump to the next one.
@@ -51,6 +53,13 @@ All screenshots use synthetic sample data.
 
 **macOS (from source):** `git clone https://github.com/apratxxm/branchglance.git && cd branchglance && ./macos/build.sh install`. See the [macOS guide](macos/README.md).
 
+| Platform | Install method | Native verification | Known limits |
+|---|---|---|---|
+| Windows | Downloadable alpha installer or source | See each release record for tested environments | v0.1.0 is unsigned; SmartScreen may warn |
+| macOS | Source build | Not natively verified | No downloadable installer; live usage needs a credentials file |
+
+Local builds and v0.1.0 are unsigned. Signing of later releases depends on release configuration; check each release's signing status.
+
 Details, verifying the download and uninstalling: [Install guide](docs/INSTALL.md).
 
 ## Requirements
@@ -62,13 +71,17 @@ Details, verifying the download and uninstalling: [Install guide](docs/INSTALL.m
 
 ## Privacy
 
-- Branchglance reads local files on your machine: Codex session data, Claude Code transcripts and hook events, and the usage caches Claude Desktop and Claude Code keep. Transcript files are never uploaded.
-- **Claude usage request (0.2.0), only with Claude tracking on:** Branchglance reads Claude Code's OAuth token from `.credentials.json` in memory and asks `api.anthropic.com` for your account's usage. It never refreshes, logs or stores the token. It does not use the macOS Keychain; without a credentials file it falls back to the local caches.
+- Branchglance reads local files on your machine: Codex session data, Claude Code transcripts and hook events, and the usage cache Claude Code keeps. Transcript files are never uploaded.
+- **Claude usage request (0.2.0), only with Claude tracking and live usage enabled:** Branchglance reads Claude Code's OAuth token from `.credentials.json` in memory and asks `api.anthropic.com` for your account's usage. It never refreshes, logs or stores the token. It does not use the macOS Keychain; without a credentials file it falls back to the local caches.
 - Messages leave only when you enable them: reset greetings and queued Codex messages go through the provider's own CLI.
-- No Branchglance account, server or telemetry.
-- Claude tracking, Claude hooks, the usage ledger, greetings and sending are all off until you enable them.
+- A local loopback HTTP server serves the UI. There is no Branchglance-hosted account, analytics or sync service.
+- Claude tracking, live usage, Claude hooks, the usage ledger, greetings and sending are all off until you enable them.
 
 Full details: [Privacy](docs/PRIVACY.md) and [SECURITY.md](SECURITY.md).
+
+## Checks
+
+Install development dependencies and Ruff as described in [Contributing](docs/CONTRIBUTING.md), then run `python scripts/run_checks.py` from the repository root.
 
 ## Documentation
 

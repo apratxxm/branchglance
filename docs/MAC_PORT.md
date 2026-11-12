@@ -1,6 +1,6 @@
 # macOS port inventory
 
-This is the original inventory and migration plan for the macOS port. A notch app now builds from source (see the [macOS guide](../macos/README.md)); there is no macOS installer download yet, and the Windows widget and packaging path remain the primary platform. Shared Python reducers, API logic and vanilla JavaScript can remain common where their contracts are platform-neutral.
+**Historical inventory:** This is the original inventory and migration plan for the macOS port; its proposals are not current implementation status. The source-build path has not been natively verified. A notch app now builds from source (see the [macOS guide](../macos/README.md)); there is no macOS installer download yet, and the Windows widget and packaging path remain the primary platform. Shared Python reducers, API logic and vanilla JavaScript can remain common where their contracts are platform-neutral.
 
 ## Windows-specific surfaces and proposed seams
 
