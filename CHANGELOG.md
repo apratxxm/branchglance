@@ -14,6 +14,7 @@ Planned as 0.2.0.
 - Opt-in Claude greetings keep the 5-hour window rolling. Branchglance reads the limits Claude Code prints for each greeting.
 - Settings has a Report a bug section that previews a privacy-filtered debug report to copy into a GitHub issue. Nothing is sent automatically. From a source checkout, `--debug-report` writes the same report to a file.
 - A resumed Codex thread shows a ↻N badge after two or more resumes.
+- A separate Claude Code chat started from another Claude chat (for example with `claude -p`) nests under that chat when its process chain proves the parent. Agents started from a Codex thread stay top-level until Codex's per-thread environment can be verified.
 
 ### Changed
 
