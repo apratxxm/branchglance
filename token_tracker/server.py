@@ -1201,6 +1201,37 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "local Host required"}, 403)
             return
         parsed = urlparse(self.path)
+        if parsed.path in {"/api/features", "/api/statusline", "/api/claude-collection"}:
+            self._get_features_or_statusline(parsed)
+            return
+        if parsed.path in {"/api/provider-policy", "/api/debug-report", "/api/debug-report.json", "/api/identity"}:
+            self._get_provider_state(parsed)
+            return
+        if parsed.path in {"/api/stats", "/api/insights", "/api/ledger/status", "/api/ledger", "/api/ledger/export", "/api/live", "/api/today"}:
+            self._get_usage(parsed)
+            return
+        if parsed.path == "/api/open":
+            self._get_open(parsed)
+            return
+        if parsed.path in {"/api/avatars", "/api/limit-reset", "/api/quota"}:
+            self._get_codex_state(parsed)
+            return
+        if parsed.path == "/api/reset-action":
+            self._get_reset_action(parsed)
+            return
+        if parsed.path == "/healthz":
+            payload = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if parsed.path == "/":
+            self.path = "/runway.html"
+        super().do_GET()
+
+    def _get_features_or_statusline(self, parsed):
         if parsed.path in {"/api/features", "/api/statusline"}:
             if parsed.query or not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
@@ -1230,6 +1261,8 @@ class Handler(SimpleHTTPRequestHandler):
                 logging.getLogger(__name__).error("Claude Code collection status failed (%s)", type(exc).__name__)
                 self._send_json({"ok": False, "error": "Claude Code collection status is unavailable."}, 503)
             return
+
+    def _get_provider_state(self, parsed):
         if parsed.path == "/api/provider-policy":
             try:
                 from .provider_policy import public_policies
@@ -1282,6 +1315,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._send_json(_identity_payload())
             return
+
+    def _get_usage(self, parsed):
         if parsed.path == "/api/stats":
             query = parse_qs(parsed.query)
             force = query.get("refresh", [""])[0] == "1"
@@ -1364,6 +1399,8 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/today":
             self._send_json(today_usage())
             return
+
+    def _get_open(self, parsed):
         if parsed.path == "/api/open":
             # Jump to one chat in the Codex app. Only a strict thread id is accepted, and only the
             # codex://threads/ deep link is ever opened.
@@ -1393,6 +1430,8 @@ class Handler(SimpleHTTPRequestHandler):
             except (AttributeError, TypeError, OSError, subprocess.SubprocessError) as exc:
                 self._send_json({"ok": False, "error": str(exc)[:120]})
             return
+
+    def _get_codex_state(self, parsed):
         if parsed.path == "/api/avatars":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
@@ -1442,6 +1481,8 @@ class Handler(SimpleHTTPRequestHandler):
                 payload.pop("events", None)
             self._send_json(payload)
             return
+
+    def _get_reset_action(self, parsed):
         if parsed.path == "/api/reset-action":
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
@@ -1466,17 +1507,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "action": action, "threads": [], "threadsAvailable": False,
                                  "error": "Chat list is unavailable. Retry to refresh it."})
             return
-        if parsed.path == "/healthz":
-            payload = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-        if parsed.path == "/":
-            self.path = "/runway.html"
-        super().do_GET()
 
     def do_POST(self):
         parsed = urlparse(self.path)
