@@ -23,6 +23,11 @@ Planned as 0.2.0.
 
 ### Fixed
 
+- With several agents running, the expanded tree no longer flips between pages. It pages only when the rows cannot fit at the window's maximum height, and keeps the same page as the window resizes.
+- Claude incremental reads are no longer treated as rewrites on Python 3.12+ on Windows.
+- Live Claude usage requests honour the TLS context and have a whole-request deadline, and no longer fail when the response socket path is absent.
+- Shutdown stops background services in parallel under a bounded budget.
+- Quiet upgrades wait up to 60 seconds for a slow old instance (the quiet budget is now 90 seconds) and always give the relaunch its own health window.
 - Claude limits no longer go blank while a snapshot is being published.
 - Reset actions are more reliable: saves survive restarts, queued batches are reserved so they are not duplicated, and a failure before a message starts is told apart from one whose outcome is unknown.
 - A slow background snapshot can no longer overwrite newer data or limit peaks after a source change.
