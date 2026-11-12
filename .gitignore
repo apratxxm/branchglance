@@ -46,14 +46,3 @@ assets/brand/live-stack-v2-*.zip
 assets/brand/live-stack-v3/
 assets/brand/live-stack-v3-*.zip
 assets/brand/source/*-on-red.png
-
-# macOS notch app build output
-macos/build/
-macos/Resources/*.iconset/
-
-# Local review bundles; production assets live directly in assets/brand.
-assets/brand/live-stack-v2/
-assets/brand/live-stack-v2-*.zip
-assets/brand/live-stack-v3/
-assets/brand/live-stack-v3-*.zip
-assets/brand/source/*-on-red.png

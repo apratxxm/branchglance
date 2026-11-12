@@ -1,4 +1,4 @@
-﻿"""Claude Code rows in the Codex row contract, sourced from hook events.
+"""Claude Code rows in the Codex row contract, sourced from hook events.
 
 Execution (running / waiting / compacting / terminal) comes only from the hook
 event stream reduced by ``claude_events``. Transcripts supply identity, usage,
