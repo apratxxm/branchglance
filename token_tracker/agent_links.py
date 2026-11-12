@@ -47,6 +47,9 @@ _CLAUDE_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
 _RECEIPT_CONFLICTS: set[tuple[str, int, int]] = set()
 _CODEX_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
 _CODEX_PARENT_CONTRADICTIONS: set[tuple[str, int, int]] = set()
+# Last time each contradiction's identity was still tracked or offered, keyed by
+# (set label, identity); an identity untouched for RETENTION_SECONDS is forgotten.
+_CONTRADICTION_SEEN: dict[tuple[str, tuple[str, int, int]], float] = {}
 # Execution identities seen per thread in this app process, for the resume
 # badge. Never pruned by run retention; bounded by thread count.
 _OBSERVED_IDENTITIES: dict[str, set[tuple[int, int]]] = {}
@@ -1436,6 +1439,22 @@ def load_registry(path: Path, *, now: float | None = None) -> list[dict[str, Any
         return []
 
 
+def _prune_contradictions(label: str, contradictions: set[tuple[str, int, int]],
+                          relevant: Callable[[tuple[str, int, int]], bool], now: float) -> None:
+    # A contradiction stays while its identity could still be published. A
+    # registry read failure looks like absence, so absence must outlast the
+    # registry's own retention before the revocation is dropped.
+    for key in list(contradictions):
+        seen_key = (label, key)
+        if relevant(key):
+            _CONTRADICTION_SEEN[seen_key] = now
+        elif now - _CONTRADICTION_SEEN.setdefault(seen_key, now) > RETENTION_SECONDS:
+            contradictions.discard(key)
+            del _CONTRADICTION_SEEN[seen_key]
+    for seen_key in [k for k in _CONTRADICTION_SEEN if k[0] == label and k[1] not in contradictions]:
+        del _CONTRADICTION_SEEN[seen_key]
+
+
 def _instance_mutex_held() -> bool:
     try:
         if sys.platform == "darwin":
@@ -2254,11 +2273,9 @@ def apply_exact_links(
                 continue
             stopped_at = saved["stoppedAt"] = now
         if now - stopped_at >= STOPPED_RETENTION_SECONDS and identity[0] not in needed_ancestors:
+            # The contradiction outlives the saved row; _prune_contradictions drops it
+            # once the registry has stopped offering the old association.
             del _RUN_ROWS[identity]
-            # Forget the contradiction only once the registry no longer offers the old
-            # association; otherwise the history branch would republish it.
-            if not any(_run_identity(run) == identity[1:] for run in by_thread.get(identity[0], [])):
-                _CODEX_PARENT_CONTRADICTIONS.discard(identity)
             continue
         row = copy.deepcopy(saved["row"])
         if saved["parent"] not in claude_ids and saved.get("parentRow"):
@@ -2271,6 +2288,19 @@ def apply_exact_links(
             row.update(status="idle", stateDetail="stopped")
         retained.append(row)
     codex.setdefault("chats", []).extend(retained)
+    offered: set[tuple[str, int, int]] = set()
+    for thread, thread_runs in by_thread.items():
+        for run in thread_runs:
+            try:
+                offered.add((thread, *_run_identity(run)))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+    for label, contradictions in (("parent", _CODEX_PARENT_CONTRADICTIONS), ("receipt", _RECEIPT_CONFLICTS),
+                                  ("link", _CODEX_LINK_CONTRADICTIONS)):
+        _prune_contradictions(label, contradictions,
+                              lambda key: key in _RUN_ROWS or key in offered, now)
+    _prune_contradictions("claude", _CLAUDE_LINK_CONTRADICTIONS,
+                          lambda key: key[0] in claude_ids or key[0] in _CLAUDE_PROCESS_LINKS, now)
     if not _CODEX_ENV_PER_THREAD_VERIFIED:
         # Retained copies and per-thread collapse can reintroduce saved process
         # edges after the incoming provider rows were gated above.

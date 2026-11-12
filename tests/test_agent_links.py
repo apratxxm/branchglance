@@ -19,6 +19,7 @@ def isolate_relative_registry(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_links, "_RECEIPT_CONFLICTS", set())
     monkeypatch.setattr(agent_links, "_CODEX_LINK_CONTRADICTIONS", set())
     monkeypatch.setattr(agent_links, "_CODEX_PARENT_CONTRADICTIONS", set())
+    monkeypatch.setattr(agent_links, "_CONTRADICTION_SEEN", {})
     monkeypatch.setattr(agent_links, "_OBSERVED_IDENTITIES", {})
 
 
@@ -547,6 +548,46 @@ def test_contradicted_codex_parent_stays_revoked_for_idle_and_stopped_rows(tmp_p
     monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 1011)
     agent_links.apply_exact_links(providers, now=1012, **common)
     assert sid_a not in published_parents()
+
+    # The saved row expires but the registry still offers the old association:
+    # the revocation must outlive the row.
+    expired = 1012 + agent_links.STOPPED_RETENTION_SECONDS + 1
+    agent_links.apply_exact_links(providers, now=expired, **common)
+    assert run_key not in agent_links._RUN_ROWS
+    assert run_key in agent_links._CODEX_PARENT_CONTRADICTIONS
+    assert sid_a not in published_parents()
+    still_offered = expired + agent_links.RETENTION_SECONDS + 1
+    agent_links.apply_exact_links(providers, now=still_offered, **common)
+    assert run_key in agent_links._CODEX_PARENT_CONTRADICTIONS
+    assert sid_a not in published_parents()
+
+    # A registry that briefly reads empty (a failed read looks the same) does not
+    # drop the revocation; only absence for the registry's whole retention does.
+    common["registry_reader"] = lambda _: []
+    agent_links.apply_exact_links(providers, now=still_offered + 1, **common)
+    assert run_key in agent_links._CODEX_PARENT_CONTRADICTIONS
+    agent_links.apply_exact_links(providers, now=still_offered + agent_links.RETENTION_SECONDS + 2, **common)
+    assert run_key not in agent_links._CODEX_PARENT_CONTRADICTIONS
+    assert not agent_links._CONTRADICTION_SEEN
+
+
+def test_claude_link_contradiction_is_forgotten_only_after_its_session_is_gone(tmp_path, monkeypatch):
+    sid = "session-c"
+    key = (sid, 30, 3000)
+    monkeypatch.setattr(agent_links, "_CLAUDE_LINK_CONTRADICTIONS", {key})
+    common = dict(registry_path=tmp_path / "registry.json", permission_check=_allow_collection,
+                  registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
+                  verify=lambda *_: False, process_table_reader=lambda: {}, scan=lambda **_kwargs: [])
+    present = [{"name": "Claude", "chats": [{"id": sid}]}, {"name": "Codex", "chats": []}]
+    absent = [{"name": "Claude", "chats": []}, {"name": "Codex", "chats": []}]
+    agent_links.apply_exact_links(present, now=1000, **common)
+    agent_links.apply_exact_links(present, now=1000 + agent_links.RETENTION_SECONDS + 1, **common)
+    assert key in agent_links._CLAUDE_LINK_CONTRADICTIONS
+    gone = 1000 + agent_links.RETENTION_SECONDS + 2
+    agent_links.apply_exact_links(absent, now=gone, **common)
+    assert key in agent_links._CLAUDE_LINK_CONTRADICTIONS
+    agent_links.apply_exact_links(absent, now=gone + agent_links.RETENTION_SECONDS + 1, **common)
+    assert key not in agent_links._CLAUDE_LINK_CONTRADICTIONS
 
 
 def test_codex_parent_proof_detects_delayed_owner_switch():
