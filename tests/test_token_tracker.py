@@ -172,7 +172,7 @@ def test_claude_limits_stay_fresh_when_a_newer_response_repeats_the_same_usage(t
     assert provider._newest_live(repeat, now=later)["fiveHourPercent"] == 70
     # A replayed older response with the same value doesn't refresh the age.
     provider._newest_live(first, now=later + 1)
-    assert provider._last_live[str(provider.root)]["fiveHour"]["receivedAt"] == later
+    assert provider._last_live[(str(provider.root), None)]["fiveHour"]["receivedAt"] == later
 
 
 def test_usage_limits_preserve_zero_and_expose_absent_values_as_unknown(tmp_path):
