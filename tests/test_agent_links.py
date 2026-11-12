@@ -13,6 +13,10 @@ from token_tracker import agent_links
 def isolate_relative_registry(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_links, "_RUN_ROWS", {})
+    monkeypatch.setattr(agent_links, "_CLAUDE_PROCESS_LINKS", {})
+    monkeypatch.setattr(agent_links, "_CLAUDE_LINK_CONTRADICTIONS", set())
+    monkeypatch.setattr(agent_links, "_RECEIPT_CONFLICTS", set())
+    monkeypatch.setattr(agent_links, "_CODEX_LINK_CONTRADICTIONS", set())
     monkeypatch.setattr(agent_links, "_OBSERVED_IDENTITIES", {})
 
 
@@ -41,6 +45,108 @@ def test_resume_thread_parser_accepts_only_uuid_after_exec_resume():
     assert agent_links.parse_exec_invocation("codex.exe exec resume") is None
 
 
+def test_structured_argv_parser_preserves_prompt_tokens_and_resume_identity():
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    assert agent_links.parse_exec_argv(["codex", "exec", "resume", thread]) == ("resume", thread, (thread,))
+    assert agent_links.parse_exec_argv(["codex", "exec", f"resume {thread}"]) == ("resume", thread, (thread,))
+    assert agent_links.parse_exec_argv(["node", "C:\\node_modules\\@openai\\codex\\bin\\codex.js",
+                                        "exec", "resume", thread]) == ("resume", thread, (thread,))
+    prompt = ["codex", "exec", "a prompt with spaces", 'a "quoted" token', ""]
+    assert agent_links.parse_exec_argv(prompt) == ("exec", None, ())
+    assert agent_links.parse_exec_argv(["codex", "exec", "resume", thread + "x"]) is None
+
+
+def test_agent_recognizer_stops_on_unreadable_node_argv():
+    assert agent_links.classify_agent_process("node.exe", None) == "unknown"
+    assert agent_links.classify_agent_process("node.exe", ["node", "script.js"]) == "other"
+    assert agent_links.classify_agent_process("node.exe", ["node", "node_modules/@openai/codex/bin/codex.js"]) == "codex"
+
+
+def test_claude_launcher_requires_one_session_interval_for_direct_child_and_child():
+    parent_created, direct_created, child_created = map(_filetime, (900, 950, 1000))
+    table = {30: (20, "claude.exe"), 20: (10, "zsh"), 10: (1, "claude.exe"), 1: (0, "launchd")}
+    states = {
+        ("child", ""): {"pid_associations": [{"pid": 30, "created": child_created,
+                                               "sid": "child", "first": 1000, "last": 1000}]},
+        ("parent-a", ""): {"pid_associations": [{"pid": 10, "created": parent_created,
+                                                   "sid": "parent-a", "first": 900, "last": 1200}]},
+    }
+    found = agent_links.scan_claude_process_links(
+        claude_states=states, table=table, current_sid=b"sid",
+        equal_sid=lambda left, right: left == right, process_sid=lambda _pid: b"sid",
+        created=lambda pid: {30: child_created, 20: direct_created, 10: parent_created,
+                             1: _filetime(800)}[pid],
+        command_argv=lambda _pid: None)
+    assert len(found) == 1 and found[0]["parent_session_id"] == "parent-a"
+    states[("parent-b", "")] = {"pid_associations": [{"pid": 10, "created": parent_created,
+                                                        "sid": "parent-b", "first": 1000, "last": 1200}]}
+    states[("parent-a", "")]["pid_associations"][0]["last"] = 999
+    assert agent_links.scan_claude_process_links(
+        claude_states=states, table=table, current_sid=b"sid",
+        equal_sid=lambda left, right: left == right, process_sid=lambda _pid: b"sid",
+        created=lambda pid: {30: child_created, 20: direct_created, 10: parent_created,
+                             1: _filetime(800)}[pid], command_argv=lambda _pid: None) == []
+
+
+def test_claude_launcher_chain_change_between_snapshots_is_rejected():
+    parent_created, direct_created, child_created = map(_filetime, (900, 950, 1000))
+    first = {30: (20, "claude.exe"), 20: (10, "zsh"), 10: (1, "claude.exe"), 1: (0, "launchd")}
+    changed = {**first, 20: (11, "zsh")}
+    states = {
+        ("child", ""): {"pid_associations": [{"pid": 30, "created": child_created,
+                                               "sid": "child", "first": 1000, "last": 1000}]},
+        ("parent", ""): {"pid_associations": [{"pid": 10, "created": parent_created,
+                                                "sid": "parent", "first": 900, "last": 1200}]},
+    }
+    result = agent_links.scan_claude_process_links(
+        claude_states=states, table=first, table_reader=lambda: changed, current_sid=b"sid",
+        equal_sid=lambda left, right: left == right, process_sid=lambda _pid: b"sid",
+        created=lambda pid: {30: child_created, 20: direct_created, 10: parent_created,
+                             11: _filetime(850), 1: _filetime(800)}[pid],
+        command_argv=lambda _pid: None)
+    assert result == []
+
+
+def test_codex_launcher_switch_off_disables_environment_and_receipt_attribution(monkeypatch):
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", False)
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_created, direct_created, child_created = map(_filetime, (900, 950, 1000))
+    table = {30: (20, "claude.exe"), 20: (10, "zsh"), 10: (1, "codex.exe"), 1: (0, "launchd")}
+    states = {
+        ("child", ""): {"pid_associations": [{"pid": 30, "created": child_created,
+                                               "sid": "child", "first": 1000, "last": 1000}],
+                          "launcher_associations": [{"pid": 30, "created": child_created,
+                                                     "launcher_codex_thread_id": thread}]},
+    }
+    assert agent_links.scan_claude_process_links(
+        claude_states=states, table=table,
+        codex_threads=[{"id": thread, "runPid": 10, "runCreated": str(parent_created)}],
+        current_sid=b"sid", equal_sid=lambda left, right: left == right,
+        process_sid=lambda _pid: b"sid",
+        created=lambda pid: {30: child_created, 20: direct_created, 10: parent_created,
+                             1: _filetime(800)}[pid], command_argv=lambda _pid: None) == []
+
+
+def test_receipt_without_claude_parent_is_written_and_old_receipts_still_read(tmp_path, receipt_inbox_creation):
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    assert agent_links.initialize_receipt_inbox(tmp_path)
+    assert agent_links.write_receipt(thread, 22, environ={"CODEX_THREAD_ID": thread},
+                                     created=lambda _pid: 123, root=tmp_path,
+                                     permission_check=lambda _policies: True,
+                                     pid_check=lambda _pid, _thread: True)
+    old = {"thread_id": thread, "codex_pid": 23, "codex_created": 124,
+           "claude_session_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+           "recorded_at": 1, "method": "receipt"}
+    path = tmp_path / agent_links.INBOX_NAME / agent_links.RECEIPT_FILE
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(old) + "\n")
+    found = agent_links.read_receipts(tmp_path, permission_check=lambda _: True,
+                                      owner_check=lambda: True)
+    assert len(found) == 2
+    assert found[0]["thread_id"] == thread and "claude_session_id" not in found[0]
+    assert found[1]["claude_session_id"] == old["claude_session_id"]
+
+
 def test_process_scan_requires_exact_valid_ancestry_and_unique_session():
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     states = {("session-a", ""): {"pid_associations": {
@@ -53,6 +159,7 @@ def test_process_scan_requires_exact_valid_ancestry_and_unique_session():
                   command_line=lambda _pid: f"codex.exe exec resume {thread}", claude_states=states)
     found = agent_links.scan_codex_processes(**kwargs)
     assert found == [{"thread_id": thread, "codex_pid": 20, "codex_created": _filetime(5),
+                      "claude_pid": 10, "claude_created": 100,
                       "claude_session_id": "session-a", "method": "cmdline"}]
     assert agent_links.scan_codex_processes(**{**kwargs, "created": lambda pid: _filetime(5)}) == []
     ambiguous = {**states, ("session-b", ""): states[("session-a", "")]}
@@ -78,6 +185,7 @@ def test_fresh_exec_prompt_uuid_is_not_identity_but_resume_uuid_is():
     found = agent_links.scan_codex_processes(
         **kwargs, command_line=lambda _pid: f"codex.exe exec resume {thread}")
     assert found == [{"thread_id": thread, "codex_pid": 20, "codex_created": _filetime(5),
+                      "claude_pid": None, "claude_created": None,
                       "claude_session_id": None, "method": "unlinked"}]
     assert agent_links.scan_codex_processes(
         **kwargs, command_line=lambda _pid: "codex.exe app-server"
@@ -230,6 +338,89 @@ def test_receipt_missing_file_is_not_created(tmp_path):
     directory.mkdir()
     assert not _write_test_receipt(tmp_path)
     assert not (directory / agent_links.RECEIPT_FILE).exists()
+
+
+def test_codex_only_receipt_binds_child_run_without_a_parent(tmp_path, monkeypatch):
+    _, thread, providers, _ = _link_fixture()
+    row = providers[1]["chats"][0]
+    row.pop("runPid"); row.pop("runCreated")
+    receipt = {"thread_id": thread, "codex_pid": 22, "codex_created": 123,
+               "launcher_codex_thread_id": thread, "recorded_at": 100, "method": "receipt"}
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: True)
+    agent_links.apply_exact_links(
+        providers, root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [],
+        registry_writer=lambda *a, **k: True, receipts_reader=lambda _: [receipt],
+        process_table_reader=lambda: {22: (1, "codex.exe")},
+        current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid",
+        equal_sid=lambda left, right: left == right,
+        process_created_reader=lambda _pid: 123,
+        command_line=lambda _pid: f"codex.exe exec resume {thread}",
+        scan=lambda **_kwargs: [], hooks=lambda: {})
+    assert row["runPid"] == 22 and row["runVerified"] is True
+    assert "parentId" not in row
+
+
+def test_conflicting_receipts_revoke_frozen_parent_for_child_run(tmp_path, monkeypatch):
+    sid, thread, providers, _ = _link_fixture()
+    row = providers[1]["chats"][0]
+    row.update(parentId=sid, parentProvider="Claude", linkSource="process")
+    identity = (thread, 22, 123)
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {identity: {
+        "row": dict(row), "parent": sid, "parentProvider": "Claude", "stoppedAt": None,
+    }})
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: True)
+    receipts = [
+        {"thread_id": thread, "codex_pid": 22, "codex_created": 123,
+         "launcher_claude_session_id": sid,
+         "recorded_at": 100, "method": "receipt"},
+        {"thread_id": thread, "codex_pid": 22, "codex_created": 123,
+         "launcher_claude_session_id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+         "recorded_at": 101, "method": "receipt"},
+    ]
+    agent_links.apply_exact_links(
+        providers, root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [],
+        registry_writer=lambda *a, **k: True, receipts_reader=lambda _: receipts,
+        process_table_reader=lambda: {22: (1, "codex.exe")},
+        current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid",
+        equal_sid=lambda left, right: left == right,
+        process_created_reader=lambda _pid: 123,
+        command_line=lambda _pid: f"codex.exe exec resume {thread}",
+        scan=lambda **_kwargs: [], verify=lambda *_: True, hooks=lambda: {})
+    assert "parentId" not in row
+    assert agent_links._RUN_ROWS[identity]["parent"] is None
+
+
+def test_codex_receipt_gated_exact_launcher_links_only_when_switch_true(tmp_path, monkeypatch):
+    parent = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    child_thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_created, child_created = 100, 123
+    monkeypatch.setattr(agent_links, "_CODEX_ENV_PER_THREAD_VERIFIED", True)
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", float("-inf"))
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: True)
+    codex = {"name": "Codex", "chats": [
+        {"id": parent, "runPid": 10, "runCreated": str(parent_created)},
+        {"id": child_thread, "source": "exec", "status": "running", "executionStatus": "running"},
+    ]}
+    claude = {"name": "Claude", "chats": []}
+    receipt = {"thread_id": child_thread, "codex_pid": 30, "codex_created": child_created,
+               "launcher_codex_thread_id": parent, "recorded_at": 100, "method": "receipt"}
+    table = {30: (10, "codex.exe"), 10: (1, "codex.exe"), 1: (0, "explorer.exe")}
+    agent_links.apply_exact_links(
+        [claude, codex], root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
+        permission_check=_allow_collection, registry_reader=lambda _: [],
+        registry_writer=lambda *a, **k: True, receipts_reader=lambda _: [receipt],
+        process_table_reader=lambda: table, current_sid_reader=lambda: b"sid",
+        process_sid=lambda _pid: b"sid", equal_sid=lambda left, right: left == right,
+        process_created_reader=lambda pid: {30: child_created, 10: parent_created, 1: 1}[pid],
+        command_line=lambda _pid: f"codex.exe exec resume {child_thread}",
+        scan=lambda **_kwargs: [], hooks=lambda: {})
+    child, = [row for row in codex["chats"] if row["id"] == child_thread]
+    assert child["parentId"] == parent and child["parentProvider"] == "Codex"
+    assert child["linkSource"] == "process"
 
 
 def test_receipt_expected_creation_rejects_reused_or_exited_process(tmp_path, receipt_inbox_creation):
@@ -459,6 +650,13 @@ def _allow_collection(_policies):
     return True
 
 
+def _receipt_parent_proof(sid, parent_pid=10, parent_created=100):
+    return {(sid, ""): {"pid_associations": [{
+        "pid": parent_pid, "created": parent_created, "sid": sid,
+        "first": -11_644_473_700, "last": -11_644_473_500,
+    }]}}
+
+
 def test_unresolved_new_run_stays_top_level_when_old_run_is_retained(tmp_path, monkeypatch):
     sid, thread, providers, run = _link_fixture()
     old = dict(providers[1]["chats"][0], parentId=sid, parentProvider="Claude")
@@ -509,11 +707,13 @@ def test_newest_valid_live_receipt_binds_and_collapses_to_one_row(tmp_path, monk
         providers, root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
         permission_check=_allow_collection, registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
         receipts_reader=lambda root: agent_links.read_receipts(root, permission_check=_allow_collection, owner_check=lambda: True),
-        process_table_reader=lambda: {22: (1, "codex.exe"), 23: (1, "codex.exe")},
+        process_table_reader=lambda: {22: (10, "codex.exe"), 23: (11, "codex.exe"),
+                                      10: (1, "claude.exe"), 11: (1, "claude.exe"), 1: (0, "explorer.exe")},
         current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid", equal_sid=lambda a,b: a == b,
-        process_created_reader=lambda pid: {22: 123, 23: 124}[pid],
+        process_created_reader=lambda pid: {22: 123, 23: 124, 10: 100, 11: 101, 1: 1}[pid],
         command_line=lambda _: f"codex.exe exec resume {thread}",
-        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
+        scan=lambda **kw: [], verify=lambda *_: True,
+        hooks=lambda: {**_receipt_parent_proof(sid, 10, 100), **_receipt_parent_proof(newer_sid, 11, 101)},
     )
     current, = providers[1]["chats"]
     assert (current["runPid"], current["parentId"], current["runVerified"]) == (23, newer_sid, True)
@@ -640,11 +840,13 @@ def test_row_process_evidence_and_newer_receipt_collapse_to_newest_execution(tmp
         providers, root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
         permission_check=_allow_collection, registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
         receipts_reader=lambda root: agent_links.read_receipts(root, permission_check=_allow_collection, owner_check=lambda: True),
-        process_table_reader=lambda: {22: (1, "codex.exe"), 23: (1, "codex.exe")},
+        process_table_reader=lambda: {22: (10, "codex.exe"), 23: (11, "codex.exe"),
+                                      10: (1, "claude.exe"), 11: (1, "claude.exe"), 1: (0, "explorer.exe")},
         current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid", equal_sid=lambda a, b: a == b,
-        process_created_reader=lambda pid: {22: 123, 23: 124}[pid],
+        process_created_reader=lambda pid: {22: 123, 23: 124, 10: 100, 11: 101, 1: 1}[pid],
         command_line=lambda _: f"codex.exe exec resume {thread}",
-        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
+        scan=lambda **kw: [], verify=lambda *_: True,
+        hooks=lambda: {**_receipt_parent_proof(sid, 10, 100), **_receipt_parent_proof(newer_sid, 11, 101)},
     )
     current, = providers[1]["chats"]
     assert (current["runPid"], current["parentId"], current["runVerified"]) == (23, newer_sid, True)
@@ -694,11 +896,11 @@ def test_live_receipt_without_claude_parent_in_list_keeps_running_status(tmp_pat
         providers, root=tmp_path, now=200, registry_path=tmp_path / "registry.json",
         permission_check=_allow_collection, registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
         receipts_reader=lambda _root: [receipt],
-        process_table_reader=lambda: {22: (1, "codex.exe")},
+        process_table_reader=lambda: {22: (10, "codex.exe"), 10: (1, "claude.exe"), 1: (0, "explorer.exe")},
         current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid", equal_sid=lambda a, b: a == b,
-        process_created_reader=lambda pid: {22: 123}[pid],
+        process_created_reader=lambda pid: {22: 123, 10: 100, 1: 1}[pid],
         command_line=lambda _: f"codex.exe exec resume {thread}",
-        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
+        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: _receipt_parent_proof(sid),
     )
     assert (row["status"], row["executionStatus"]) == ("running", "running")
     assert "parentId" not in row
@@ -723,11 +925,11 @@ def test_parentless_binding_does_not_block_later_receipt_parent(tmp_path, monkey
         providers, root=tmp_path, now=107, registry_path=tmp_path / "registry.json",
         permission_check=_allow_collection, registry_reader=lambda _: [], registry_writer=lambda *a, **k: True,
         receipts_reader=lambda _root: [receipt],
-        process_table_reader=lambda: {22: (1, "codex.exe")},
+        process_table_reader=lambda: {22: (10, "codex.exe"), 10: (1, "claude.exe"), 1: (0, "explorer.exe")},
         current_sid_reader=lambda: b"sid", process_sid=lambda _: b"sid", equal_sid=lambda a, b: a == b,
-        process_created_reader=lambda pid: {22: 123}[pid],
+        process_created_reader=lambda pid: {22: 123, 10: 100, 1: 1}[pid],
         command_line=lambda _: f"codex.exe exec resume {thread}",
-        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
+        scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: _receipt_parent_proof(sid),
     )
     assert (row["parentId"], row["parentProvider"], row["runVerified"]) == (sid, "Claude", True)
 

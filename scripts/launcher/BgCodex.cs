@@ -86,11 +86,15 @@ public static class BgCodex
             lock (gate) { cancelled = true; running = helper; }
             if (running != null) try { running.Kill(); } catch { }
         }
-        public void Run(int pid, string thread, long created) {
+        public void Run(int pid, string thread, long created, string launcherClaude, string launcherCodex) {
             try {
                 string launcher = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Branchglance.exe");
                 if (!File.Exists(launcher)) return;
                 var start = new ProcessStartInfo(launcher) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, Arguments = "--link-codex " + Quote(thread) + " --codex-pid " + pid.ToString() + " --codex-created " + created.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+                if (launcherClaude != null) start.EnvironmentVariables["CLAUDE_CODE_SESSION_ID"] = launcherClaude;
+                else start.EnvironmentVariables.Remove("CLAUDE_CODE_SESSION_ID");
+                if (launcherCodex != null) start.EnvironmentVariables["CODEX_THREAD_ID"] = launcherCodex;
+                else start.EnvironmentVariables.Remove("CODEX_THREAD_ID");
                 using (var launched = Process.Start(start)) {
                     if (launched == null) return;
                     bool stop;
@@ -136,6 +140,10 @@ public static class BgCodex
     public static int Run(string[] args, Target target) {
         try {
             if (target == null) { Console.Error.WriteLine("bg-codex: Codex executable not found outside the current directory"); return 1; }
+            // Freeze launch provenance before the child can overwrite inherited
+            // Codex environment values.
+            string launcherClaude = Uuid(Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID"));
+            string launcherCodex = Uuid(Environment.GetEnvironmentVariable("CODEX_THREAD_ID"));
             bool observe = JsonExec(args);
             var start = new ProcessStartInfo(target.Executable) { UseShellExecute = false, Arguments = String.Join(" ", Array.ConvertAll(args, Quote)), RedirectStandardOutput = observe };
             if (target.PackageRoot != null) SetPackageEnvironment(start, target.PackageRoot, target.PackageEntry);
@@ -144,7 +152,7 @@ public static class BgCodex
                 if (child == null) return 1;
                 long created, exited, kernel, user; bool hasTime = GetProcessTimes(child.Handle, out created, out exited, out kernel, out user);
                 Thread receipt = null; ReceiptAttempt attempt = null; object sync = new object();
-                Action<string> enqueue = delegate(string id) { lock(sync) { if (receipt != null || !hasTime || id == null) return; attempt = new ReceiptAttempt(); int pid = child.Id; receipt = new Thread(() => attempt.Run(pid, id, created)); receipt.IsBackground = true; receipt.Start(); } };
+                Action<string> enqueue = delegate(string id) { lock(sync) { if (receipt != null || !hasTime || id == null) return; attempt = new ReceiptAttempt(); int pid = child.Id; receipt = new Thread(() => attempt.Run(pid, id, created, launcherClaude, launcherCodex)); receipt.IsBackground = true; receipt.Start(); } };
                 enqueue(Resume(args));
                 if (observe) {
                     var source = child.StandardOutput.BaseStream; var output = GetStdHandle(-11); byte[] chunk = new byte[8192]; var line = new MemoryStream(); bool discard = false; int n;

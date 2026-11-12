@@ -64,6 +64,7 @@ def _new_key(sid: str, aid: str) -> dict[str, Any]:
     return {
         "sid": sid, "aid": aid, "atype": None, "first": None, "last": None, "sub_activity": None,
         "pid": None, "pid_created": None, "pid_ts": -1.0, "pid_associations": [],
+        "launcher_associations": [],
         "workspace": None, "model": None, "model_ts": -1.0,
         "start": None, "start_source": None, "prompt": None, "prompt_id": None, "stop": None, "fail": None, "end": None,
         "end_reason": None, "interrupt": None, "idle": None,
@@ -141,6 +142,9 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
         process_sessions = file_state.setdefault("process_sessions", {})
         active = process_sessions.get(identity)
         if active is not None and active.get("sid") == sid:
+            if ts < active.get("observed_last", ts):
+                active["ambiguous"] = True
+            active["observed_last"] = ts
             active["last"] = max(active.get("last") or ts, ts)
         else:
             if active is not None:
@@ -148,13 +152,24 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
                 # another session must stay visible as an overlap.
                 active["last"] = max(active.get("last") or ts, ts)
             transition = {"pid": identity[0], "created": identity[1],
-                          "sid": sid, "first": ts, "last": ts}
+                          "sid": sid, "first": ts, "last": ts,
+                          "observed_last": ts, "ambiguous": False}
             root["pid_associations"].append(transition)
             while len(root["pid_associations"]) > _PID_ASSOCIATIONS_PER_SESSION:
                 root["pid_associations"].pop(0)
             process_sessions[identity] = transition
             while len(process_sessions) > _PROCESS_SESSION_LIMIT:
                 process_sessions.pop(next(iter(process_sessions)))
+        launcher_claude = record.get("launcher_claude_session_id")
+        launcher_codex = record.get("launcher_codex_thread_id")
+        if launcher_claude is not None or launcher_codex is not None:
+            root["launcher_associations"].append({
+                "pid": identity[0], "created": identity[1], "sid": sid,
+                "first": ts, "last": ts,
+                "launcher_claude_session_id": launcher_claude,
+                "launcher_codex_thread_id": launcher_codex,
+            })
+            del root["launcher_associations"][:-_PID_ASSOCIATIONS_PER_SESSION]
     # Process/workspace facts are session-wide; model facts belong to each agent.
     if isinstance(record.get("claude_pid"), int) and isinstance(record.get("claude_pid_created"), int) \
             and ts >= root["pid_ts"]:

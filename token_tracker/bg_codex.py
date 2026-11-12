@@ -80,19 +80,23 @@ def _codex_pid(root: int, deadline: float) -> int | None:
         time.sleep(0.05)
 
 
-def _link(child: subprocess.Popen, thread: str) -> None:
+def _link(child: subprocess.Popen, thread: str,
+          launcher_environment: dict[str, str] | None = None) -> None:
     try:
         from . import product
         from .agent_links import write_receipt
         from .macos_process import probe_process
         # Read the consent the app uses (the child already has its own environment copy).
         os.environ.setdefault(product.POLICY_FILE_ENV, str(product.hook_data_root() / "policy.json"))
+        if launcher_environment is None:
+            launcher_environment = {key: os.environ[key] for key in
+                                    ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID") if key in os.environ}
         pid = _codex_pid(child.pid, time.monotonic() + LINK_WAIT)
         if pid is None:
             return
         state, created = probe_process(pid)
         if state == "alive" and created is not None:
-            write_receipt(thread, pid, expected_created=created)
+            write_receipt(thread, pid, expected_created=created, environ=launcher_environment)
     except Exception:
         pass
 
@@ -102,6 +106,12 @@ def run(args: list[str], executable: str | None) -> int:
         print("bg-codex: Codex executable not found outside the current directory", file=sys.stderr)
         return 1
     observe = json_exec(args)
+    # Freeze inherited launcher provenance before the child is started. Codex
+    # may overwrite these values in its own process environment.
+    launcher_environment = {
+        key: os.environ[key] for key in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
+        if key in os.environ
+    }
     links: list[threading.Thread] = []
     lock = threading.Lock()
 
@@ -109,7 +119,7 @@ def run(args: list[str], executable: str | None) -> int:
         with lock:
             if thread is None or links:
                 return
-            worker = threading.Thread(target=_link, args=(child, thread), daemon=True)
+            worker = threading.Thread(target=_link, args=(child, thread, launcher_environment), daemon=True)
             links.append(worker)
             worker.start()
 

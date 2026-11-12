@@ -94,7 +94,8 @@ def test_consent_present_writes_one_allowlisted_line(data_env):
     record = json.loads(lines[0])
     allowed = {"ts", "event", "session_id", "agent_id", "prompt_id", "agent_type", "tool_name", "tool_use_id",
                "notification_type", "source", "reason", "trigger", "is_interrupt", "model",
-               "claude_pid", "claude_pid_created", "ask", "workspace"}
+               "claude_pid", "claude_pid_created", "launcher_claude_session_id",
+               "launcher_codex_thread_id", "ask", "workspace"}
     assert set(record) <= allowed
     text = lines[0]
     for forbidden in ("TOP-SECRET", "passwords", "private prompt", "dev", "secret-client", "transcript",
@@ -191,6 +192,51 @@ def test_nearest_claude_ancestor():
     assert claude_hook.nearest_claude_ancestor(table, 10) == 7
     assert claude_hook.nearest_claude_ancestor({10: (9, "python.exe")}, 10) is None
     assert claude_hook.nearest_claude_ancestor({1: (2, "a"), 2: (1, "b")}, 1) is None  # cycle safe
+
+
+def test_hook_claude_pid_mismatch_blocks_inherited_session_attribution(monkeypatch):
+    monkeypatch.setattr(claude_hook.os, "name", "nt")
+    monkeypatch.setattr(claude_hook.os, "getpid", lambda: 99)
+    monkeypatch.setattr(claude_hook, "_process_table", lambda: {99: (10, "python.exe"),
+                                                                  10: (1, "claude.exe"),
+                                                                  1: (0, "explorer.exe")})
+    monkeypatch.setattr(claude_hook, "process_created", lambda pid: 500 if pid == 10 else 1)
+    monkeypatch.setenv("CLAUDE_PID", "11")
+    assert claude_hook._claude_process() == (None, None)
+
+
+def test_hook_recognizer_stops_at_unreadable_node_host():
+    tree = {99: (20, "python.exe"), 20: (10, "node.exe"),
+            10: (1, "claude.exe"), 1: (0, "explorer.exe")}
+    assert claude_hook.nearest_agent_ancestor(tree, 99, argv_reader=lambda pid: None) is None
+
+
+def test_hook_does_not_follow_inherited_claude_pid_through_codex(monkeypatch):
+    from token_tracker import agent_links
+    monkeypatch.setattr(claude_hook.os, "name", "nt")
+    monkeypatch.setattr(claude_hook.os, "getpid", lambda: 99)
+    monkeypatch.setattr(claude_hook, "_process_table", lambda: {
+        99: (20, "python.exe"), 20: (10, "node.exe"), 10: (5, "codex.exe"),
+        5: (1, "claude.exe"), 1: (0, "explorer.exe"),
+    })
+    monkeypatch.setattr(agent_links, "_command_argv", lambda pid: [
+        "node.exe", "node_modules/@anthropic-ai/claude-code/cli.js"] if pid == 20 else None)
+    monkeypatch.setattr(claude_hook, "process_created", lambda pid: 100 + pid)
+    monkeypatch.setenv("CLAUDE_PID", "5")
+    assert claude_hook._claude_process() == (None, None)
+
+
+def test_hook_records_valid_launcher_ids_only(monkeypatch):
+    claude_sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    codex_thread = "01234567-89ab-cdef-0123-456789abcdef"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", claude_sid)
+    monkeypatch.setenv("CODEX_THREAD_ID", codex_thread)
+    record = claude_hook.build_record(PAYLOAD, NOW, 4242, 777)
+    assert record["launcher_claude_session_id"] == claude_sid
+    assert record["launcher_codex_thread_id"] == codex_thread
+    monkeypatch.setenv("CODEX_THREAD_ID", "not-a-uuid")
+    record = claude_hook.build_record(PAYLOAD, NOW, 4242, 777)
+    assert "launcher_codex_thread_id" not in record
 
 
 def test_workspace_label_is_drive_and_leaf():

@@ -186,12 +186,40 @@ def nearest_claude_ancestor(table: dict[int, tuple[int, str]], start: int, limit
     return None
 
 
+def nearest_agent_ancestor(table: dict[int, tuple[int, str]], start: int,
+                           argv_reader=None, limit: int = 16) -> tuple[int, str] | None:
+    """Return the nearest positively identified agent; unknown node hosts stop the walk."""
+    from .agent_links import classify_agent_process, _command_argv
+    argv_reader = argv_reader or _command_argv
+    pid, seen = start, set()
+    for _ in range(limit):
+        if pid in seen or pid not in table:
+            return None
+        seen.add(pid)
+        parent, name = table[pid]
+        try:
+            argv = argv_reader(pid) if name.casefold().endswith(("node", "node.exe", "bun", "bun.exe")) else None
+        except Exception:
+            argv = None
+        kind = classify_agent_process(name, argv)
+        if kind == "unknown":
+            return None
+        if kind in {"claude", "codex"}:
+            return pid, kind
+        pid = parent
+    return None
+
+
 def _claude_process() -> tuple[int, int] | tuple[None, None]:
     if os.name != "nt" and sys.platform != "darwin":
         return None, None
     try:
-        pid = nearest_claude_ancestor(_process_table(), os.getpid())
-        if pid is None:
+        found = nearest_agent_ancestor(_process_table(), os.getpid())
+        if found is None or found[1] != "claude":
+            return None, None
+        pid = found[0]
+        inherited_pid = os.environ.get("CLAUDE_PID")
+        if inherited_pid is not None and (not inherited_pid.isdigit() or int(inherited_pid) != pid):
             return None, None
         created = process_created(pid)
         return (pid, created) if created is not None else (None, None)
@@ -265,6 +293,14 @@ def build_record(payload: Any, now: float, claude_pid: int | None = None,
     if claude_pid and claude_created:
         record["claude_pid"] = int(claude_pid)
         record["claude_pid_created"] = int(claude_created)
+    # These are captured at hook time. The launcher wrapper similarly freezes
+    # the values before spawning Codex so child-side overwrites cannot rewrite
+    # the launch provenance.
+    for source, target in (("CLAUDE_CODE_SESSION_ID", "launcher_claude_session_id"),
+                           ("CODEX_THREAD_ID", "launcher_codex_thread_id")):
+        value = os.environ.get(source)
+        if isinstance(value, str) and _UUID.fullmatch(value):
+            record[target] = value.lower()
     if record.get("tool_name") == "ask":
         record["ask"] = True
     return record
