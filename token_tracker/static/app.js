@@ -1551,7 +1551,7 @@ function contextHTML(chat) {
   const tone=pct==null?'':pct>75?'err':pct>50?'attn':'';
   const delta=runwayContextDelta(chat,pair),deltaText=delta==null?'':'; change since previous sample '+(delta>0?'+':'')+fmt(delta)+' tokens';
   const title='Context occupancy: '+String(tokens)+' / '+(windowSize==null?'window size unknown':String(windowSize))+' tokens'+deltaText;
-  return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+(windowSize==null?'?':fmt(windowSize))+'</span></span></span>';
+  return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+(windowSize==null?'—':fmt(windowSize))+'</span></span></span>';
 }
 function warmCellHTML(chat) {
   const view=warmthView(chat);
@@ -2242,7 +2242,7 @@ function watcherPopoverHTML(name) {
   const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
   const phase=!watcher.enabled?"off":!watcher.running?"stopped":esc(PHASES[w.phase]||w.phase);
   const err=watcher.persistenceError||w.lastPollError||w.lastError;
-  const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">?</span>':'' )]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);
+  const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);
   return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
 }
 function openPopover(html, anchor) {

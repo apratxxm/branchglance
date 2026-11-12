@@ -752,6 +752,11 @@ T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:'<img src=x o
 const watcherMarkup=T.watcherPopoverHTML('Codex');
 assert.match(watcherMarkup,/&lt;img/);
 assert.doesNotMatch(watcherMarkup,/<img/);
+assert.match(watcherMarkup,/<span class="t-live">✓<\/span>/,'a verified greeting carries the verified marker');
+T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:"keepalive_scheduled",failedAttempts:0,unverifiedAttempts:2,lastError:"greeting was accepted but no new reset deadline was observed",nextGreetingAt:fixedNow/1000+600}}};
+assert.equal(T.watcherTone(T.state.watcher,"Codex").tone,"attn",'an unconfirmed greeting needs attention');
+T.state.watcher={enabled:true,running:true,persistenceError:"state persistence failed: disk full",providers:{Codex:{phase:"keepalive_scheduled"}}};
+assert.match(T.watcherPopoverHTML("Codex"),/state persistence failed: disk full/,'persistence errors appear in the popover');
 T.state.watcher=null;
 const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
 {
