@@ -400,6 +400,14 @@ def _clear_owned_restore_handoff(paths: Paths, token: str) -> None:
         ReleaseOps(paths.root).recover()
 
 
+# Quiet setup bounds stopping the old app, the staged self-test and the file swap.
+QUIET_SETUP_BUDGET = 60.0
+# The relaunch is budgeted separately: authenticated-health wait, then the
+# reserve used to terminate and confirm the restored tree if health never comes.
+RESTORE_HEALTH_WINDOW = 9.0
+RESTORE_TERMINATION_RESERVE = 5.0
+
+
 def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -> None:
     launcher = paths.root / LAUNCHER
     handoff = paths.root / ".cutover-handoff.json"
@@ -429,9 +437,13 @@ def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL)
         start = time.monotonic()
-        deadline = start + 9.0
+        deadline = start + RESTORE_HEALTH_WINDOW
         if lifecycle.deadline is not None:
-            deadline = min(deadline, lifecycle.deadline - 5.0)  # reserve time to terminate and confirm the tree
+            # Stopping the old app and installing may have used the whole quiet
+            # budget. The relaunch keeps its own full health window plus time to
+            # terminate and confirm the tree, so a slow exit cannot starve it.
+            lifecycle.deadline = max(lifecycle.deadline,
+                                     start + RESTORE_HEALTH_WINDOW + RESTORE_TERMINATION_RESERVE)
         identity = None
         while time.monotonic() < deadline:
             try:
@@ -519,7 +531,7 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
         _setup_preflight(paths, native, manifest, version_full, deadline, check_handoff=True)
         test_timeout = 30.0
         if deadline is not None:
-            test_timeout = deadline - time.monotonic() - 9.0  # reserve bounded restore health time
+            test_timeout = deadline - time.monotonic() - RESTORE_HEALTH_WINDOW  # keep the restore window
             if test_timeout <= 0:
                 raise SafetyError("Quiet setup deadline leaves no time for staged-release preflight")
             test_timeout = min(test_timeout, 15.0)
@@ -702,7 +714,7 @@ def main(argv=None, *, role: str = "setup", paths: Paths | None = None, native: 
     paths = paths or Paths.for_user()
     native = native or Native.real(paths)
     executable = Path(executable or sys.executable)
-    wait_deadline = time.monotonic() + 30.0 if args.quiet else None
+    wait_deadline = time.monotonic() + QUIET_SETUP_BUDGET if args.quiet else None
     try:
         stranded_appdata = None
         if role == "setup" and not (args.uninstall or args.rollback or args.uninstall_worker):

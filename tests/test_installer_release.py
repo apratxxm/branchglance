@@ -496,7 +496,7 @@ def test_quiet_setup_passes_one_deadline_to_install(tmp_path, monkeypatch):
     monkeypatch.setattr(app.time, "monotonic", lambda: 10.0)
     assert app.main(["--quiet", "--with-startup", "--payload", str(payload)],
                     paths=paths, native=object()) == 0
-    assert observed["deadline"] == 40.0
+    assert observed["deadline"] == 10.0 + app.QUIET_SETUP_BUDGET
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job object integration check")
@@ -656,6 +656,76 @@ def test_restart_rejects_matching_public_identity_without_authenticated_health(t
     assert events[1][1]["stdout"] is subprocess.DEVNULL and events[1][1]["stderr"] is subprocess.DEVNULL
     assert not (root / ".cutover-handoff.json").exists()
     assert ("tree-terminated",) in events and ("job-released",) in events
+
+
+def test_restore_keeps_its_own_health_window_when_earlier_phases_used_the_quiet_budget(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths, _restart_after_install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    clock = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(app.time, "sleep", lambda delta: clock.__setitem__(0, clock[0] + delta))
+    healthy_at = 100.0 + 7.0  # slower than the old leftover (deadline - 5) allowed
+    public = {"product": "Branchglance", "pid": 404, "build": "a", "stateRoot": str(paths.product_root / "state")}
+    class Control:
+        def health(self): return public if clock[0] >= healthy_at else None
+    class RestoreChild:
+        pid = 505
+        def terminate_tree(self, _timeout):
+            events.append(("tree-terminated",))
+            return True
+        def release_job(self): events.append(("job-released",))
+    native = SimpleNamespace(control=Control(), popen=lambda *a, **k: RestoreChild())
+    class SpentLifecycle:
+        install_handle = 1
+        instance_handle = 2
+        deadline = 100.0 + 1.0  # earlier phases left one second of the quiet budget
+        def release_instance(self): pass
+    lifecycle = SpentLifecycle()
+    _restart_after_install(paths, native, lifecycle)
+    assert events == [("job-released",)]
+    assert lifecycle.deadline >= 100.0 + app.RESTORE_HEALTH_WINDOW + app.RESTORE_TERMINATION_RESERVE
+
+
+def test_restore_that_never_becomes_healthy_is_still_terminated_after_a_spent_budget(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths, _restart_after_install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    clock = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(app.time, "sleep", lambda delta: clock.__setitem__(0, clock[0] + delta))
+    class Control:
+        def health(self): return None
+    class RestoreChild:
+        pid = 505
+        def terminate_tree(self, timeout):
+            events.append(("tree-terminated", timeout))
+            return True
+        def release_job(self): events.append(("job-released",))
+    native = SimpleNamespace(control=Control(), popen=lambda *a, **k: RestoreChild())
+    class SpentLifecycle:
+        install_handle = 1
+        instance_handle = 2
+        deadline = 100.0 + 1.0
+        def release_instance(self): pass
+    lifecycle = SpentLifecycle()
+    with pytest.raises(SafetyError, match="authenticated health"):
+        _restart_after_install(paths, native, lifecycle)
+    assert clock[0] - 100.0 >= app.RESTORE_HEALTH_WINDOW  # waited the whole window before giving up
+    assert events[0][0] == "tree-terminated" and events[0][1] > 4.0  # and kept the termination reserve
+    assert lifecycle.restore_child_terminated is True
 
 
 def test_setup_refuses_redirected_appdata_before_creating_product_folders(monkeypatch, tmp_path):
