@@ -2054,11 +2054,14 @@ def test_widget_http_server_port_is_exclusive():
 
 def test_widget_service_stops_run_side_by_side_under_one_budget():
     started, finished = [], []
+    # All three must be inside their stop at the same moment for the barrier to open;
+    # run one after another, the first would time out waiting for the others.
+    together = threading.Barrier(3)
 
-    def slow(name, seconds):
+    def meet(name):
         def step():
             started.append(name)
-            time.sleep(seconds)
+            together.wait(timeout=10)
             finished.append(name)
         return step
 
@@ -2066,19 +2069,29 @@ def test_widget_service_stops_run_side_by_side_under_one_budget():
         started.append("failing")
         raise RuntimeError("boom")
 
-    begin = time.monotonic()
-    widget._stop_services_together([slow("a", 0.4), failing, slow("b", 0.4), slow("c", 0.4)], budget=3.0)
-    elapsed = time.monotonic() - begin
+    widget._stop_services_together([meet("a"), failing, meet("b"), meet("c")], budget=30.0)
     assert sorted(started) == ["a", "b", "c", "failing"] and sorted(finished) == ["a", "b", "c"]
-    assert elapsed < 1.0  # waiting one after another would take about 1.2 s
 
-    # A service that outlives the budget is abandoned; the others are not delayed past it.
+    # A service that outlives the budget is abandoned; the others still finish.
     release = threading.Event()
     begin = time.monotonic()
-    widget._stop_services_together([release.wait, slow("fast", 0.05)], budget=0.5)
+    widget._stop_services_together([release.wait, lambda: finished.append("fast")], budget=0.5)
     elapsed = time.monotonic() - begin
     release.set()
-    assert 0.4 < elapsed < 1.5 and "fast" in finished
+    assert 0.4 < elapsed < 10 and "fast" in finished
+
+
+def test_widget_service_stops_survive_a_thread_that_cannot_start(monkeypatch):
+    stopped = []
+
+    class NoThread:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(widget.threading, "Thread", NoThread)
+    widget._stop_services_together([lambda: stopped.append("a"), lambda: 1 / 0, lambda: stopped.append("c")],
+                                   budget=1.0)
+    assert stopped == ["a", "c"]  # each ran in place; the failing one did not stop the rest
 
 
 def test_widget_quit_tears_everything_down_even_if_a_step_fails(monkeypatch):

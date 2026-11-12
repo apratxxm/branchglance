@@ -658,6 +658,90 @@ def test_restart_rejects_matching_public_identity_without_authenticated_health(t
     assert ("tree-terminated",) in events and ("job-released",) in events
 
 
+def _slow_instance_exit_harness(monkeypatch, exit_after):
+    """A running old app that releases its instance `exit_after` seconds after maintenance-exit."""
+    from branchglance_installer.lifecycle import INSTANCE_MUTEX
+    clock = [0.0]
+    monkeypatch.setattr("branchglance_installer.lifecycle.time.monotonic", lambda: clock[0])
+    sent = []
+
+    class Mutex:
+        def acquire(self, name, timeout):
+            if name == INSTANCE_MUTEX and sent and clock[0] < sent[0] + exit_after:
+                clock[0] += timeout  # the app still owns Instance for the whole wait
+                raise SafetyError("simulated Instance still held")
+            return name, "acquired"
+        def release(self, _handle): pass
+
+    class Control:
+        def identity(self): return {"pid": 1}
+        def maintenance_exit(self, timeout):
+            sent.append(clock[0])
+            return True
+
+    class Processes:
+        def wait_for_instance_exit(self, timeout):
+            remaining = sent[0] + exit_after - clock[0]
+            if remaining <= timeout:
+                clock[0] += max(0.0, remaining)
+                return True
+            clock[0] += timeout
+            return False
+    return clock, Mutex(), Control(), Processes()
+
+
+def test_quiet_setup_waits_out_an_old_build_that_takes_42_seconds_to_exit(monkeypatch):
+    from branchglance_installer import app
+    clock, mutex, control, processes = _slow_instance_exit_harness(monkeypatch, exit_after=42.0)
+    lifecycle = Lifecycle(mutex, control, processes, lambda: None, deadline=app.QUIET_SETUP_BUDGET,
+                          timeout=app.QUIET_SHUTDOWN_WAIT, late_exit_timeout=app.QUIET_LATE_EXIT_WAIT)
+    with lifecycle:
+        assert lifecycle.shutdown_confirmed  # Instance ownership proves the old app is gone
+    assert 42.0 <= clock[0] < app.QUIET_SETUP_BUDGET
+    # The unsized defaults would have refused at 30 s, which is what the quiet path used to do.
+    clock, mutex, control, processes = _slow_instance_exit_harness(monkeypatch, exit_after=42.0)
+    with pytest.raises(SafetyError, match="still running|did not release"):
+        with Lifecycle(mutex, control, processes, lambda: None, deadline=app.QUIET_SETUP_BUDGET):
+            pytest.fail("the default 20 s wait must not have confirmed the exit")
+
+
+def test_quiet_setup_stops_closed_when_the_old_app_never_exits(monkeypatch):
+    from branchglance_installer import app
+    clock, mutex, control, processes = _slow_instance_exit_harness(monkeypatch, exit_after=10 ** 6)
+    lifecycle = Lifecycle(mutex, control, processes, lambda: None, deadline=app.QUIET_SETUP_BUDGET,
+                          timeout=app.QUIET_SHUTDOWN_WAIT, late_exit_timeout=app.QUIET_LATE_EXIT_WAIT)
+    with pytest.raises(SafetyError):
+        with lifecycle:
+            pytest.fail("a still-running app must never be treated as stopped")
+    assert not lifecycle.shutdown_confirmed
+    assert clock[0] <= app.QUIET_SETUP_BUDGET
+
+
+def test_install_sizes_lifecycle_waits_only_for_a_quiet_deadline(tmp_path, monkeypatch):
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    seen = []
+
+    class Recorder:
+        def __init__(self, *args, **kwargs):
+            seen.append(kwargs)
+            raise SafetyError("recorded")
+
+    monkeypatch.setattr(app, "Lifecycle", Recorder)
+    for deadline in (time.monotonic() + app.QUIET_SETUP_BUDGET, None):
+        native = _fake_installer_native(paths, running=False, events=[])
+        with pytest.raises(SafetyError, match="recorded"):
+            install(paths, payload, native, startup=False, deadline=deadline)
+    assert seen[0]["timeout"] == app.QUIET_SHUTDOWN_WAIT and seen[0]["late_exit_timeout"] == app.QUIET_LATE_EXIT_WAIT
+    assert "timeout" not in seen[1] and "late_exit_timeout" not in seen[1]
+
+
 def test_restore_keeps_its_own_health_window_when_earlier_phases_used_the_quiet_budget(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from branchglance_installer import app

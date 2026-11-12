@@ -168,8 +168,12 @@ def _stop_services_together(steps, budget: float | None = None) -> None:
         def run(step=step) -> None:
             with suppress(Exception):
                 step()
-        thread = threading.Thread(target=run, name="shutdown-step", daemon=True)
-        thread.start()
+        try:
+            thread = threading.Thread(target=run, name="shutdown-step", daemon=True)
+            thread.start()
+        except Exception:
+            run()  # no thread to spare: stop this service here rather than skip it
+            continue
         threads.append(thread)
     end = time.monotonic() + budget
     for thread in threads:
@@ -2538,7 +2542,9 @@ class WidgetApp:
         self._stop_inspection_hotkey()
         # Each step is independent: one failure must not leave the process
         # alive with a destroyed tray or an undestroyed window.
-        _stop_services_together([lambda: self.limit_reset.stop(), _stop_claude_usage_refresher, lambda: self.ledger.stop()])
+        with suppress(Exception):
+            _stop_services_together([lambda: self.limit_reset.stop(), _stop_claude_usage_refresher,
+                                     lambda: self.ledger.stop()])
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()

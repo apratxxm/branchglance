@@ -401,7 +401,12 @@ def _clear_owned_restore_handoff(paths: Paths, token: str) -> None:
 
 
 # Quiet setup bounds stopping the old app, the staged self-test and the file swap.
-QUIET_SETUP_BUDGET = 60.0
+# An already-installed older build has been seen taking 42 s to release its
+# instance after maintenance-exit, so the quiet waits are sized from this budget
+# (Lifecycle still clamps every wait to what is left of it).
+QUIET_SETUP_BUDGET = 90.0
+QUIET_SHUTDOWN_WAIT = 60.0
+QUIET_LATE_EXIT_WAIT = 15.0
 # The relaunch is budgeted separately: authenticated-health wait, then the
 # reserve used to terminate and confirm the restored tree if health never comes.
 RESTORE_HEALTH_WINDOW = 9.0
@@ -542,9 +547,12 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
 
     failure = None
     try:
+        waits = {}
+        if deadline is not None:
+            waits = {"timeout": QUIET_SHUTDOWN_WAIT, "late_exit_timeout": QUIET_LATE_EXIT_WAIT}
         lifecycle = Lifecycle(native.mutex, native.control, native.processes, recover_abandoned,
                               before_stop=pre_stop,
-                              deadline=deadline)
+                              deadline=deadline, **waits)
         with lifecycle:
             try:
                 journal_record = Journal(paths.root).load() if paths.root.exists() else None
