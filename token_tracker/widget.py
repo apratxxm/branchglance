@@ -2824,6 +2824,10 @@ def _debug_report_target(path: str) -> Path:
     target = Path(path)
     if not product.is_frozen() or target.is_absolute():
         return target
+    # A drive- or root-relative path (C:report.md, or one starting with a backslash) is not absolute,
+    # but joining it would replace the Downloads prefix and land on the release drive, so drop its anchor.
+    if target.anchor:
+        target = target.relative_to(target.anchor)
     downloads = Path.home() / "Downloads"
     return (downloads if downloads.is_dir() else Path.home()) / target
 

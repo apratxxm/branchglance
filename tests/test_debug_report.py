@@ -755,6 +755,17 @@ def test_installed_cli_writes_relative_paths_to_downloads_not_the_release_folder
     assert not any(release.iterdir()), "an extra file in the release folder breaks the next launch"
 
 
+@pytest.mark.parametrize("argv_path", ["Z:report.md", chr(92) + "report.md"])
+def test_installed_cli_keeps_drive_or_root_relative_paths_in_downloads(monkeypatch, tmp_path, argv_path):
+    home = tmp_path / "home"
+    (home / "Downloads").mkdir(parents=True)
+    monkeypatch.setattr(widget.product, "is_frozen", lambda: True)
+    monkeypatch.setattr(widget.Path, "home", classmethod(lambda cls: home))
+    target = widget._debug_report_target(argv_path)
+    assert target.parent == home / "Downloads", "a drive-relative path must not resolve on the release drive"
+    assert target.name.endswith("report.md")
+
+
 def test_installed_cli_keeps_an_absolute_path(monkeypatch, tmp_path):
     out = tmp_path / "chosen" / "report.md"
     out.parent.mkdir()
