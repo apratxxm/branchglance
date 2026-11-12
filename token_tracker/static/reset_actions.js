@@ -17,6 +17,41 @@
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const message = (text, error=false) => { const el=$("#message"); el.textContent=text||""; el.classList.toggle("error",error); };
   const canChangeClaude = () => Boolean(settingsToken);
+  let featureValues={}, statuslineConnected=false;
+  async function loadFeatures() {
+    if(embedded)return;
+    try {
+      const [f,s]=await Promise.all([fetch('/api/features',{cache:'no-store'}),fetch('/api/statusline',{cache:'no-store'})]);
+      const data=await f.json(), line=await s.json();
+      if(!f.ok||!data.ok||!s.ok||!line.ok)throw new Error('Feature settings are unavailable.');
+      featureValues=data;statuslineConnected=Boolean(line.connected);
+      for(const name of ['live_usage','ledger','claude_send']) {
+        const input=$(`[data-feature="${name}"]`), note=$(`[data-feature-status="${name}"]`), value=data[name];
+        if(!input||!value)continue;
+        input.checked=Boolean(value.effective);input.disabled=!settingsToken||value.env_locked;
+        if(note)note.textContent=[value.env_locked?'Set by environment.':'',value.restart_pending?'Applies after restart.':'',name==='claude_send'?'Requires Claude collection consent; applies after restart.':''].filter(Boolean).join(' ');
+      }
+      const button=$('#statusline-toggle'),label=$('#statusline-state');
+      if(button){button.disabled=!settingsToken;button.textContent=statuslineConnected?'Disconnect Claude status line':'Connect Claude status line';}
+      if(label)label.textContent=statuslineConnected?'Status line: connected':'Status line: not connected';
+    } catch(e){const note=$('#feature-message');if(note)note.textContent=e.message;}
+  }
+  async function changeFeature(name,value) {
+    try {
+      const response=await fetch('/api/features',{method:'POST',headers:{'Content-Type':'application/json','X-Branchglance-Settings-Token':settingsToken},body:JSON.stringify({name,value})});
+      const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'Setting could not be saved.');
+      $('#feature-message').textContent='Setting saved.';
+    } catch(e){$('#feature-message').textContent=e.message;}
+    await loadFeatures();
+  }
+  async function toggleStatusline() {
+    try {
+      const response=await fetch('/api/statusline',{method:'POST',headers:{'Content-Type':'application/json','X-Branchglance-Settings-Token':settingsToken},body:JSON.stringify({action:statuslineConnected?'disconnect':'connect'})});
+      const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||'Status line could not be changed.');
+      $('#feature-message').textContent=data.reason||'Status line updated.';
+    } catch(e){$('#feature-message').textContent=e.message;}
+    await loadFeatures();
+  }
   async function loadClaudeGreeting() {
     try {
       const response=await fetch('/api/limit-reset',{cache:'no-store'}), data=await response.json();
@@ -230,6 +265,9 @@
   $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();loadLedger();});
   for(const provider of LEDGER_PROVIDERS)document.querySelector(`[data-purge="${provider}"]`)?.addEventListener("click",()=>purgeClick(provider));
   $('#claude-rearm')?.addEventListener('click',rearmClaudeGreeting);
+  for(const name of ['live_usage','ledger','claude_send']) $(`[data-feature="${name}"]`)?.addEventListener('change',e=>changeFeature(name,e.target.checked));
+  $('#statusline-toggle')?.addEventListener('click',toggleStatusline);
+  loadFeatures();
   load();loadClaude();loadLedger();loadClaudeGreeting();
   if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};
 })();

@@ -22,6 +22,16 @@
       <button id="claude-toggle" class="quiet" type="button" disabled>Checking…</button>
       <button id="claude-rearm" class="quiet" type="button" hidden>Re-arm Claude greeting</button>
     </section>
+    <section id="feature-settings" aria-labelledby="feature-heading">
+      <h2 id="feature-heading">Features</h2>
+      <p class="note">Live Claude usage uses your Claude Code sign-in to read usage from Anthropic. Anthropic's terms restrict third-party use of subscription sign-ins; this undocumented endpoint could break or be disallowed.</p>
+      <label><input type="checkbox" data-feature="live_usage" disabled> Live Claude usage</label><p class="note" data-feature-status="live_usage"></p>
+      <label><input type="checkbox" data-feature="ledger" disabled> By work usage history</label><p class="note" data-feature-status="ledger"></p>
+      <label><input type="checkbox" data-feature="claude_send" disabled> Send Claude greetings</label><p class="note" data-feature-status="claude_send"></p>
+      <p id="statusline-state" class="note" role="status">Checking status line…</p>
+      <button id="statusline-toggle" class="quiet" type="button" disabled>Connect Claude status line</button>
+      <p id="feature-message" class="message" role="status" aria-live="polite"></p>
+    </section>
     <section id="ledger-history" class="ledger-history" aria-labelledby="ledger-heading">
       <div><h2 id="ledger-heading">Saved usage history</h2><p id="ledger-note" class="note">Removes Branchglance's saved totals for this provider. Your transcripts stay on disk and are read again if you turn collection back on.</p></div>
       <div class="ledger-row"><span class="ledger-name">Claude Code</span><button class="quiet" type="button" data-purge="Claude" disabled>Delete saved history</button><p class="note" data-reason="Claude" hidden></p><p class="message" data-status="Claude" role="status" aria-live="polite"></p></div>

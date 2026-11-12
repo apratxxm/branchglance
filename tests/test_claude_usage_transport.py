@@ -24,6 +24,173 @@ REPO = Path(__file__).resolve().parents[1]
 HOST = "api.anthropic.com"
 TOKEN = "SENTINEL_TOKEN_abc"
 
+
+@pytest.fixture(autouse=True)
+def enable_transport_for_offline_tests(monkeypatch):
+    monkeypatch.setattr(api, "live_usage_allowed", lambda: True)
+
+
+def test_revoke_during_dns_never_sends(monkeypatch, tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    sent = []
+    def dns(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", 9))]
+    monkeypatch.setattr(socket, "getaddrinfo", dns)
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: sent.append("socket") or pytest.fail("socket opened after revoke"))
+    result = []
+    def run():
+        try:
+            api._request("/api/oauth/usage", TOKEN)
+        except RuntimeError:
+            result.append("revoked")
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(3)
+        api.ClaudeUsageRefresher(tmp_path).stop()
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive() and result == ["revoked"] and sent == []
+
+
+def test_revoke_during_response_discards_result(monkeypatch, tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    class Response:
+        status, headers, fp = 200, {}, None
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read1(self, size):
+            entered.set()
+            assert release.wait(3)
+            return b''
+    class Opener:
+        def open(self, *args, **kwargs): return Response()
+    monkeypatch.setattr(api, "_opener", lambda *a: Opener())
+    result = []
+    def run():
+        try:
+            result.append(api._request("/api/oauth/usage", TOKEN))
+        except RuntimeError:
+            result.append("revoked")
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(3)
+        api.ClaudeUsageRefresher(tmp_path).stop()
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive() and result == ["revoked"]
+
+
+def test_revoke_after_connect_before_sendall(monkeypatch, tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    sent = []
+    class Socket:
+        def sendall(self, data): sent.append(data)
+    connection = api._DeadlineConnection(HOST, deadline=time.monotonic() + 5)
+    def connect():
+        connection.sock = Socket()
+        entered.set()
+        assert release.wait(3)
+    monkeypatch.setattr(connection, "connect", connect)
+    result = []
+    def run():
+        try:
+            connection.send(b"request")
+        except OSError:
+            result.append("revoked")
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(3)
+        api.ClaudeUsageRefresher(tmp_path).stop()
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive() and result == ["revoked"] and sent == []
+
+
+def test_revoke_after_final_check_before_transmission_never_sends_after_cutoff(monkeypatch, tmp_path):
+    sent = []
+
+    class Socket:
+        closed = False
+
+        def sendall(self, data):
+            if self.closed:
+                raise OSError("socket shut down")
+            sent.append(api._transport_generation)
+
+        def shutdown(self, how):
+            self.closed = True
+
+        def close(self):
+            self.closed = True
+
+    connection = api._DeadlineConnection(HOST, deadline=time.monotonic() + 5)
+    admitted = connection.generation
+    connection.sock = connection._active_socket = Socket()
+    with api._registry_lock:
+        api._active_connections.add(connection)
+    entered, proceed = threading.Event(), threading.Event()
+    real_cancel = connection.cancel
+
+    def slow_cancel():
+        # Hold revocation inside its cancel step while the sender transmits.
+        entered.set()
+        proceed.wait(2)
+        real_cancel()
+
+    connection.cancel = slow_cancel
+    original = api.http.client.HTTPConnection.send
+    revoker = threading.Thread(target=api.ClaudeUsageRefresher(tmp_path).stop)
+
+    def pause_after_final_check(self, data):
+        revoker.start()
+        assert entered.wait(2)
+        try:
+            return original(self, data)
+        finally:
+            proceed.set()
+
+    monkeypatch.setattr(api.http.client.HTTPConnection, "send", pause_after_final_check)
+    try:
+        try:
+            connection.send(b"request")
+        except OSError:
+            pass
+        revoker.join(5)
+    finally:
+        proceed.set()
+        with api._registry_lock:
+            api._active_connections.discard(connection)
+    assert not revoker.is_alive()
+    # Any transmission happened before the cut-off; afterwards the socket is shut.
+    assert all(generation == admitted for generation in sent)
+    assert api._transport_generation > admitted
+    assert connection.cancelled.is_set()
+    with pytest.raises(OSError):
+        connection.send(b"again")
+
+
+def test_stop_actively_cancels_registered_transport(tmp_path):
+    cancelled = threading.Event()
+    class Connection:
+        def cancel(self): cancelled.set()
+    connection = Connection()
+    with api._transport_lock:
+        api._active_connections.add(connection)
+    try:
+        api.ClaudeUsageRefresher(tmp_path).stop()
+        assert cancelled.is_set()
+    finally:
+        with api._transport_lock:
+            api._active_connections.discard(connection)
+
 _OPENSSL_CONFIG = """[req]
 distinguished_name = dn
 x509_extensions = v3_req

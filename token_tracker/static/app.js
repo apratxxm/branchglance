@@ -387,8 +387,7 @@ function setNotch(expanded, treeSynced=false) {
   const wasExpanded=notch.expanded;
   const restoreLockedOpen=Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded&&!state.runwaySnapshotPainted);
   if(widgetLock.known&&widgetLock.locked)expanded=widgetLock.expanded;
-  // A routing alert reveal (auto-expanded only, same timer as a new question) can open an idle widget.
-  const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)||(notch.autoExpanded&&routingAlert)));
+  const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)));
   if(!canOpen)expanded=false;
   if(!expanded){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;notch.autoClosePending=false;if(!state.popover){notch.inspecting=false;if(!notch.keyboardInspecting)notch.manual=false;}}
   const closingQuestion=!expanded&&state.popover?.dataset?.action==='runway-question';
@@ -1602,7 +1601,7 @@ function resetView(provider, key) {
     tone:shownUsed==null||lastKnown?"":RUNWAY?(shownUsed>80?"err":shownUsed>50?"attn":""):shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
     // Keep the last-known age beside each independently rendered quota value.
     stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
-    tip:(provider.name==="Claude"&&provider.identityVerified!==true?"Account unverified · ":provider.name==="Claude"&&provider.identityLabel?provider.identityLabel+" · ":"")+(RUNWAY?(lastKnown?"Last reported by "+(provider.name==="Claude"?"Claude Desktop":provider.name)+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"))};
+    tip:(provider.name==="Claude"&&provider.identityVerified!==true?"Account unverified · ":provider.name==="Claude"&&provider.identityLabel?provider.identityLabel+" · ":"")+(RUNWAY?(lastKnown?"Last reported by "+provider.name+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"))};
 }
 function clearRunwayArrival(el) {
   if(!el)return;
@@ -1680,7 +1679,7 @@ function renderResets(providers) {
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
     else{const banked=$(id+"-banked"),view=bankedResetView(p.bankedResets);if(banked){if(banked.textContent!==view.text)banked.textContent=view.text;put(banked,"title",view.tip);attr(banked,"aria-label",view.tip);banked.hidden=!view.text;}}
   }));
-  if(RUNWAY){renderGreeterStatus(providers);evaluateRoutingAlerts(providers);}
+  if(RUNWAY){renderGreeterStatus(providers);}
 }
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;
@@ -1697,107 +1696,6 @@ function renderGreeterStatus(providers) {
   node.textContent=label;node.className="greeter-status"+(w.needsLogin||error?" error":"");
   node.title=(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
 }
-/* ---------- routing alerts ---------- */
-// Each rule fires once per low-quota crossing and re-arms after recovery or a reset.
-// Wording uses the bars' framing (percent USED) and names the window and its reset, so the alert and the bars agree.
-// A rule never suggests a lane that is out of quota: the lane it points at must have enough left.
-const ROUTING_REARM_POINTS=5;
-// A 5-hour window that resets within this many seconds is about to refill, so it does not count as low.
-const ROUTING_SOON_SECONDS=15*60;
-const ROUTING_WINDOW_LABEL={fiveHour:"5-hour",weekly:"weekly"};
-function routingDescribe(name,reading) {
-  const item=reading?.binding;if(!item)return name;
-  return name+" "+ROUTING_WINDOW_LABEL[item.key]+" "+Math.round(item.used)+"% used"+(item.countdown?" · resets "+item.countdown:"");
-}
-function routingBothMessage(readings) {
-  const order=["Codex","Claude"].map(name=>({name,item:readings[name]?.binding})).filter(row=>row.item?.countdown);
-  order.sort((a,b)=>(a.item.seconds??Infinity)-(b.item.seconds??Infinity));
-  if(order.length<2)return "Both low — hold big jobs until a window resets";
-  return "Both low — hold big jobs · "+order[0].name+" frees up in "+order[0].item.countdown+", "+order[1].name+" in "+order[1].item.countdown;
-}
-const ROUTING_RULES=[
-  // Claude low while Codex has plenty: Codex lanes take the work.
-  {id:"Claude",provider:"Claude",threshold:40,minimums:{Codex:50},message:(left,reading)=>routingDescribe("Claude",reading)+" — Terra builders, Sol reviews"},
-  // Codex low while Claude still has room: Claude workers take the work, Sol only reviews.
-  {id:"Codex",provider:"Codex",threshold:40,minimums:{Claude:40},message:(left,reading)=>routingDescribe("Codex",reading)+" — Haiku workers, Sol reviews only"},
-  // Both low: neither lane is a safe suggestion, so hold large jobs and say when each frees up.
-  {id:"Both",provider:"Codex",threshold:40,maximums:{Claude:40},also:["Claude"],message:(left,reading,readings)=>routingBothMessage(readings)}
-];
-const routingStates=new Map();
-let routingAlert=null;
-// "57m 00s" reads as "57m"; the alert is a sentence, not a stopwatch.
-function routingCountdown(text) {
-  const value=String(text||"");
-  if(/^\d+s$/.test(value))return "<1m";
-  return value.replace(/^(\d+m) \d+s$/,"$1");
-}
-function routingReading(provider) {
-  const windows={};
-  for(const key of ["fiveHour","weekly"]){
-    const view=resetView(provider,key);
-    // Stale or last-known values never trigger an alert.
-    if(view.measured&&view.hasValue&&!view.lastKnown&&!view.expired){
-      const seconds=view.resetTarget!=null?(view.resetTarget-Date.now())/1000:null;
-      windows[key]={key,used:view.usedPercent,left:100-view.usedPercent,resetTarget:view.resetTarget,countdown:routingCountdown(view.countdown),seconds,soon:key==="fiveHour"&&seconds!=null&&seconds<=ROUTING_SOON_SECONDS};
-    }
-  }
-  const all=Object.values(windows);
-  if(!all.length)return null;
-  // The window that matters: the lowest one that is not about to reset. If every window is refilling, nothing is low.
-  const counted=all.filter(item=>!item.soon);
-  const binding=counted.length?counted.reduce((lowest,item)=>item.left<lowest.left?item:lowest):null;
-  return {left:binding?binding.left:100,binding,windows};
-}
-function evaluateRoutingAlerts(providers, rules=ROUTING_RULES) {
-  if(!RUNWAY)return;
-  const readings=Object.fromEntries(providers.map(provider=>[provider.name,routingReading(provider)]));
-  let candidate=null;
-  for(const rule of rules){
-    const reading=readings[rule.provider];
-    if(!reading)continue;
-    const minimums=Object.entries(rule.minimums||{}),maximums=Object.entries(rule.maximums||{});
-    // Missing or stale supporting measurements cannot establish a match.
-    if(minimums.concat(maximums).some(([name])=>!readings[name]))continue;
-    const targets=Object.fromEntries(Object.entries(reading.windows).filter(([,item])=>item.resetTarget!=null).map(([key,item])=>[key,item.resetTarget]));
-    const below=reading.left<rule.threshold,previous=routingStates.get(rule.id);
-    const matches=below&&minimums.every(([name,minimum])=>readings[name].left>=minimum)&&maximums.every(([name,maximum])=>readings[name].left<maximum);
-    if(!previous){
-      // First reading is a baseline: an already matching rule does not reveal the widget.
-      routingStates.set(rule.id,{fired:matches,targets});
-      continue;
-    }
-    const resetChanged=Object.entries(targets).some(([key,target])=>previous.targets[key]!=null&&previous.targets[key]!==target);
-    if(previous.fired&&(reading.left>rule.threshold+ROUTING_REARM_POINTS||resetChanged))previous.fired=false;
-    previous.targets={...previous.targets,...targets};
-    if(!previous.fired&&matches){
-      previous.fired=true;
-      const shown=[rule.provider,...(rule.also||[])];
-      const suggestion={provider:rule.provider,providers:shown,message:rule.message(Math.max(0,Math.floor(reading.left)),reading,readings)};
-      const specificity=minimums.length+maximums.length;
-      if(!candidate||specificity>candidate.specificity)candidate={...suggestion,specificity};
-    }
-  }
-  if(candidate){
-    routingAlert={provider:candidate.provider,providers:candidate.providers,message:candidate.message};
-    expandForNewWork();
-  }
-  renderRoutingAlert();
-}
-function routingAlertInner(alert) {
-  const dots=alert.providers.map(name=>'<i class="routing-dot '+(/claude/i.test(name)?"claude":"codex")+'" aria-hidden="true"></i>').join("");
-  return '<span class="routing-alert-dots">'+dots+'</span><span class="routing-alert-text" title="'+esc(alert.message)+'">'+esc(alert.message)+'</span><button type="button" class="routing-alert-dismiss" data-action="routing-dismiss" aria-label="Dismiss routing alert" title="Dismiss"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button>';
-}
-// The alert lives in the toolbar band (#routing-alert, after the clock). While it shows, the toolbar's icon row is hidden,
-// so it covers no chat row and nothing below it moves; dismissing restores the icons.
-function renderRoutingAlert() {
-  const node=$("#routing-alert"),toolbar=$(".compact-toolbar");
-  if(!node)return;
-  if(toolbar?.classList?.toggle)toolbar.classList.toggle("has-routing-alert",Boolean(routingAlert));
-  if(!routingAlert){node.hidden=true;return;}
-  node.hidden=false;
-  const html=routingAlertInner(routingAlert);
-  if(node.innerHTML!==html)node.innerHTML=html;
-}
 function toolbarMenu(open) {
   const menu=$("#toolbar-menu"),button=$("#toolbar-more");if(!menu||!button)return;
   const next=open??menu.hidden;
@@ -1809,10 +1707,6 @@ document.addEventListener?.("pointerdown",event=>{const menu=$("#toolbar-menu");
 document.addEventListener?.("pointerdown",event=>{const view=$("#dashboard-view");if(dashboardState.open&&view&&!view.contains?.(event.target))closeDashboard();});
 window.addEventListener?.("blur",closeToolbarMenu);
 document.addEventListener?.("keydown",event=>{if(event.key==="Escape"){const menu=$("#toolbar-menu");if(menu&&!menu.hidden){closeToolbarMenu();$("#toolbar-more")?.focus?.({preventScroll:true});}}});
-function dismissRoutingAlert() {
-  routingAlert=null;renderRoutingAlert();
-}
-
 /* ---------- chat rows (layer 1) ---------- */
 function ringHTML(fraction, cls="ring") {
   const f=Math.max(0,Math.min(1,fraction??0)),c=2*Math.PI*1.6;
@@ -3226,7 +3120,6 @@ function handleClick(event) {
   if(!button)return;
   const {action,key}=button.dataset;
   if(RUNWAY&&action==='widget-lock'){void toggleWidgetLock();return;}
-  if(RUNWAY&&action==='routing-dismiss'){dismissRoutingAlert();return;}
   if(action==='toolbar-more'){toggleToolbarMenu();return;}
   if(action==='open-settings'){closeToolbarMenu();openDashboard('settings');return;}
   if(RUNWAY&&action==='jump-waiting'){jumpToWaiting();return;}
@@ -3294,7 +3187,7 @@ window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCou
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
-Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.evaluateRoutingAlerts=evaluateRoutingAlerts;window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.routingStates=routingStates;window.__tokenTrackerTest.getRoutingAlert=()=>routingAlert;window.__tokenTrackerTest.getRoutingNotch=()=>notch;window.__tokenTrackerTest.dismissRoutingAlert=dismissRoutingAlert;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
+Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   loadAvatars();
   document.addEventListener("click",handleClick);

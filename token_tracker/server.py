@@ -969,10 +969,9 @@ def _snapshot_cache_compatibility() -> str:
 
 
 class FastClaudeLimits:
-    """Bound repeated reads of Claude's local Desktop quota cache."""
+    """Bound repeated reads of Claude's account-bound quota sources."""
 
     TTL_SECONDS = 2.0
-    MAX_USAGE_HISTORY_BYTES = 1024 * 1024
 
     def __init__(self) -> None:
         self.condition = threading.Condition()
@@ -1007,9 +1006,6 @@ class FastClaudeLimits:
         try:
             from .providers import ClaudeLimitsProvider
             provider = ClaudeLimitsProvider()
-            history = provider.root / "plan-usage-history.json"
-            if history.exists() and history.stat().st_size > self.MAX_USAGE_HISTORY_BYTES:
-                return None
             limits = provider.snapshot()
             if not isinstance(limits, dict):
                 return None
@@ -1205,6 +1201,24 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "local Host required"}, 403)
             return
         parsed = urlparse(self.path)
+        if parsed.path in {"/api/features", "/api/statusline"}:
+            if parsed.query or not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return
+            try:
+                if parsed.path == "/api/features":
+                    from . import features, ledger_service
+                    from .provider_policy import policy_for
+                    policy_for("Claude")  # Resolve the startup send setting before reporting pending changes.
+                    data = {name: features.state(name) for name in features.ENV}
+                    data["ledger"]["restart_pending"] = ledger_service._RESTART_PENDING
+                else:
+                    from . import statusline_connect
+                    data = statusline_connect.status()
+                self._send_json({"ok": True, **data})
+            except Exception:
+                self._send_json({"ok": False, "error": "Settings status is unavailable."}, 503)
+            return
         if parsed.path == "/api/claude-collection":
             if parsed.query or not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
@@ -1429,14 +1443,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm"}
+        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}
         if not self._valid_local_host():
             if settings_mutation:
                 self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
             self._reject_post(parsed.path, {"ok": False, "error": "local Host required"}, 403)
             return
-        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm"}:
+        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}:
             self._reject_post(parsed.path, {"ok": False, "error": "not found"}, 404)
             return
         if not self._same_origin_request():
@@ -1467,6 +1481,43 @@ class Handler(SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json({"ok": False, "error": "invalid JSON"}, 400)
+            return
+        if parsed.path in {"/api/features", "/api/statusline"}:
+            with _SETTINGS_TOKEN_LOCK:
+                if not _settings_token_matches_locked(self.headers.get("X-Branchglance-Settings-Token")):
+                    self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                    return
+                try:
+                    if parsed.path == "/api/features":
+                        from . import features, ledger_service, claude_usage_api
+                        from .provider_policy import policy_for
+                        if (not isinstance(body, dict) or set(body) != {"name", "value"}
+                                or body["name"] not in features.ENV or type(body["value"]) is not bool):
+                            raise ValueError("Invalid feature setting.")
+                        policy_for("Claude")
+                        result = features.save(body["name"], body["value"])
+                        if body["name"] == "ledger":
+                            result["restart_pending"] = ledger_service.apply_feature(result["effective"])
+                        elif body["name"] == "live_usage":
+                            if result["effective"]:
+                                claude_usage_api.REFRESHER.start()
+                            else:
+                                claude_usage_api.REFRESHER.stop()
+                    else:
+                        from . import statusline_connect
+                        if not isinstance(body, dict) or set(body) != {"action"} or body["action"] not in {"connect", "disconnect"}:
+                            raise ValueError("Invalid status line action.")
+                        result = (statusline_connect.connect() if body["action"] == "connect"
+                                  else statusline_connect.disconnect())
+                except (ValueError, OSError) as exc:
+                    self._send_json({"ok": False, "error": str(exc) if isinstance(exc, ValueError) else "Settings could not be saved."}, 409)
+                    return
+                except Exception as exc:
+                    from .claude_hook_install import HookInstallError
+                    message = str(exc) if isinstance(exc, HookInstallError) else "Settings could not be changed."
+                    self._send_json({"ok": False, "error": message}, 409)
+                    return
+            self._send_json({"ok": True, **result})
             return
         if parsed.path == "/api/ledger/purge":
             self._purge_ledger(body)

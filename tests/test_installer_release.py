@@ -1567,6 +1567,25 @@ def test_uninstall_removes_owned_claude_hooks_and_consent_but_preserves_user_set
     assert paths.product_root.exists()
 
 
+@pytest.mark.parametrize("foreign", [False, True])
+def test_uninstall_disconnects_owned_statusline(tmp_path, monkeypatch, foreign):
+    from branchglance_installer.app import uninstall
+    from token_tracker import statusline_connect
+    _installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(settings.parent))
+    settings.write_text('{"model":"opus"}', encoding="utf-8")
+    statusline_connect.connect(root=paths.product_root / "state", path=settings, command="test-wrapper")
+    if foreign:
+        settings.write_text('{"model":"opus","statusLine":{"type":"command","command":"foreign"}}', encoding="utf-8")
+    result = uninstall(paths, native)
+    assert result["claudeIntegration"]["statusLine"]["changed"] is (not foreign)
+    expected = {"model": "opus"}
+    if foreign:
+        expected["statusLine"] = {"type": "command", "command": "foreign"}
+    assert json.loads(settings.read_text(encoding="utf-8")) == expected
+    assert not (paths.product_root / "state" / "statusline-chain.json").exists()
+
+
 def test_uninstall_malformed_claude_settings_are_untouched_and_reported(tmp_path, monkeypatch):
     from branchglance_installer.app import uninstall
     raw = b'{"hooks": [broken}'

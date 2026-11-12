@@ -2587,7 +2587,8 @@ class WidgetApp:
         # alive with a destroyed tray or an undestroyed window.
         with suppress(Exception):
             _stop_services_together([lambda: self.limit_reset.stop(), _stop_claude_usage_refresher,
-                                     lambda: self.ledger.stop()])
+                                     lambda: self.ledger.stop(),
+                                     lambda: ledger_service.current().stop() if isinstance(self.ledger, ledger_service.LedgerService) and ledger_service.current() is not None and ledger_service.current() is not self.ledger else None])
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()

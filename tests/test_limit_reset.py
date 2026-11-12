@@ -76,7 +76,8 @@ def no_real_cli(monkeypatch):
 
 
 def test_keepalive_fixture_never_reads_desktop(tmp_path, monkeypatch):
-    monkeypatch.setattr(limit_reset.ClaudeDesktopProvider, "_usage", lambda self: pytest.fail("real Desktop profile read"))
+    from token_tracker import providers
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: pytest.fail("real Desktop profile read"))
     watcher = make(tmp_path, Claude=Sender())
     watcher.check_provider("Claude", LimitSample(None, None, 0))
 
@@ -1010,12 +1011,8 @@ def test_forged_and_replayed_statusline_files_cannot_arm_or_send(tmp_path, monke
     root = tmp_path / 'sample'
     monkeypatch.setattr(claude_statusline, 'sample_paths', lambda: [root / claude_statusline.FILENAME])
     monkeypatch.setattr(claude_statusline.time, 'time', clock)
-    monkeypatch.setattr(limit_reset.ClaudeDesktopProvider, '_usage', lambda self: ([], {}))
-    calls = []
-    def desktop_usage(*args, **kwargs):
-        calls.append(kwargs)
-        return {'fiveHourPercent': None, 'weeklyPercent': None, 'observedAt': None, 'fiveHour': None, 'weekly': None}
-    monkeypatch.setattr(limit_reset, 'usage_info', desktop_usage)
+    from token_tracker import providers
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, '_usage', lambda self: pytest.fail("Desktop must not be read"))
     for used, reset in ((99, T0 + 100), (0, T0 + 18100)):
         payload = {'rate_limits': {'five_hour': {'used_percentage': used, 'resets_at': reset}}}
         claude_statusline.write(claude_statusline.parse(payload, now=clock()), root, now=clock())
@@ -1027,4 +1024,3 @@ def test_forged_and_replayed_statusline_files_cannot_arm_or_send(tmp_path, monke
     clock.advance(120)
     watcher.check_provider('Claude', limit_reset.claude_limit_sample())
     assert sender.calls == 1
-    assert calls == [{}, {}, {}]  # retain usage_info's original 90-second default

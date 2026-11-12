@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from token_tracker import limit_reset as lr
+from token_tracker import limit_reset as lr, providers
 from token_tracker.provider_policy import load_policies
 
 NOW = 1800000000.0
@@ -145,15 +145,14 @@ def test_greeting_limits_verify_and_persist(setup):
 
 
 def test_account_evidence_excludes_other_org(tmp_path, monkeypatch):
-    monkeypatch.setattr(lr.ClaudeDesktopProvider, "_usage", lambda self: ([{"org": "other"}], {}))
-    monkeypatch.setattr(lr, "usage_info", lambda *args, **kwargs: pytest.fail("mismatched Desktop org"))
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: ([{"org": "other"}], {}))
     watcher = lr.LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json", log_path=tmp_path / "events.jsonl", enabled=True, policies=POLICIES)
     result = watcher._claude_account_sample("org-a", NOW)
     assert result.reset_at is None and result.weekly_percent is None
 
 
 @pytest.mark.parametrize("sample_org,sample_fingerprint,accepted", [
-    ("org-a", "same", True), ("org-b", "same", False),
+    ("org-a", "same", True), ("org-b", "same", True),
     ("org-a", None, False), ("org-a", "other", False),
 ])
 def test_account_evidence_requires_matching_generation(tmp_path, monkeypatch, sample_org, sample_fingerprint, accepted):
@@ -161,7 +160,7 @@ def test_account_evidence_requires_matching_generation(tmp_path, monkeypatch, sa
     fingerprint = claude_identity.account_fingerprint("account-a", "org-a")
     identity = claude_identity.Identity("account-a", "org-a", "epoch-a", "", fingerprint, 0)
     monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
-    monkeypatch.setattr(lr, "_claude_desktop_data", lambda **kw: (sample_org, {}))
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: ([{"org": sample_org}], {}))
     monkeypatch.setattr(lr.claude_statusline, "read", lambda *a, **k: {
         "identityFingerprint": fingerprint if sample_fingerprint == "same" else sample_fingerprint,
         "five_hour": {"resets_at": NOW + 100, "used_percentage": 20, "receivedAt": NOW},
@@ -181,14 +180,13 @@ def test_account_evidence_fails_closed_without_identity(tmp_path, monkeypatch):
     assert sample.reset_at is None and sample.identity_generation is None
 
 
-@pytest.mark.parametrize("observed,accepted", [(199, False), (200, True), (201, True)])
+@pytest.mark.parametrize("observed,accepted", [(199, False), (200, False), (201, False)])
 def test_desktop_action_evidence_respects_identity_changed_at(tmp_path, monkeypatch, observed, accepted):
     from token_tracker import claude_identity
     fingerprint = claude_identity.account_fingerprint("account-a", "org-a")
     identity = claude_identity.Identity("account-a", "org-a", "epoch-a", "", fingerprint, 200)
     monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
-    monkeypatch.setattr(lr, "_claude_desktop_data", lambda **kw: ("org-a", {
-        "fiveHour": 2000, "fiveHourPercent": 20, "observedAt": observed}))
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: ([{"org": "org-a", "observedAt": observed, "u": {"fh": 20}}], {}))
     monkeypatch.setattr(lr.claude_statusline, "read", lambda *a, **k: {})
     watcher = lr.LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json",
                                    log_path=tmp_path / "events.jsonl", enabled=True, policies=POLICIES)
@@ -310,7 +308,7 @@ def test_missing_desktop_keeps_cli_evidence(tmp_path, monkeypatch):
     now = time.time()
     # An empty LOCALAPPDATA keeps provider discovery away from real Claude profiles.
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    monkeypatch.setattr(lr.ClaudeDesktopProvider, "_usage", lambda self: (_ for _ in ()).throw(FileNotFoundError("missing")))
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: (_ for _ in ()).throw(FileNotFoundError("missing")))
     monkeypatch.setattr(product, "state_root", lambda: tmp_path)
     monkeypatch.setattr(sl, "sample_paths", lambda: [])
     sl.write({"five_hour": {"used_percentage": 10, "resets_at": now + 100, "receivedAt": now}}, tmp_path, now=now, filename=sl.CLI_FILENAME, source="claude-cli", org_id="org-a", identity_fingerprint=lr.claude_identity.account_fingerprint("account-a", "org-a"))
@@ -330,7 +328,7 @@ def test_claude_code_cache_alone_drives_reset_evidence(tmp_path, monkeypatch, ca
     iso = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat()
     five_reset, week_reset = int(now) + 1000, int(now) + 86400
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    monkeypatch.setattr(lr.ClaudeDesktopProvider, "_usage", lambda self: (_ for _ in ()).throw(FileNotFoundError("missing")))
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: (_ for _ in ()).throw(FileNotFoundError("missing")))
     monkeypatch.setattr(product, "state_root", lambda: tmp_path)
     monkeypatch.setattr(sl, "sample_paths", lambda: [])
     config = Path(os.environ["CLAUDE_CONFIG_DIR"])
@@ -354,14 +352,14 @@ def test_claude_code_cache_alone_drives_reset_evidence(tmp_path, monkeypatch, ca
 def test_weekly_selects_newer_unexpired_window(tmp_path, monkeypatch):
     desktop = {"weekly": NOW - 1, "weeklyPercent": 100, "observedAt": NOW - 100}
     cli = {"identityFingerprint": lr.claude_identity.account_fingerprint("account-a", "org-a"), "seven_day": {"used_percentage": 10, "resets_at": NOW + 500, "receivedAt": NOW}}
-    monkeypatch.setattr(lr, "_claude_desktop_data", lambda **kwargs: ("org-a", desktop))
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: ([{"org": "org-a", "u": desktop}], {}))
     monkeypatch.setattr(lr.claude_statusline, "read", lambda *args, **kwargs: cli)
     watcher = lr.LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json", policies=POLICIES)
     assert watcher._claude_account_sample("org-a", NOW).weekly_percent == 10
     desktop["weekly"] = NOW + 200
     assert watcher._claude_account_sample("org-a", NOW).weekly_percent == 10
     desktop["weekly"] = NOW + 800
-    assert watcher._claude_account_sample("org-a", NOW).weekly_percent == 100
+    assert watcher._claude_account_sample("org-a", NOW).weekly_percent == 10
 
 
 def test_inner_auth_mismatch_never_starts_print(tmp_path, monkeypatch):
@@ -445,8 +443,7 @@ def test_widget_shows_cli_limits_without_desktop_history(tmp_path, monkeypatch):
     monkeypatch.setattr(sl, "sample_paths", lambda: [])
     monkeypatch.setattr(providers.ClaudeLimitsProvider, "_last_live", {})
     provider = providers.ClaudeLimitsProvider(str(tmp_path / "local"), auth_status=lambda cwd: {"ok": True, "orgId": "org-a"})
-    with pytest.raises(FileNotFoundError):
-        provider.snapshot()
+    assert provider.snapshot()["fiveHour"]["percent"] is None
     sl.write({"five_hour": {"used_percentage": 12, "resets_at": now + 600, "receivedAt": now}}, tmp_path, now=now, filename=sl.CLI_FILENAME, source="claude-cli", org_id="org-a", identity_fingerprint=lr.claude_identity.account_fingerprint("account-a", "org-a"))
     snapshot = provider.snapshot()
     assert snapshot["fiveHour"]["percent"] == 12
@@ -473,8 +470,7 @@ def test_widget_excludes_other_account_without_desktop(widget_cli, monkeypatch):
     monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("account-b", "org-b", "epoch-b", "", fingerprint, 0))
     local, _ = widget_cli
     provider = providers.ClaudeLimitsProvider(str(local), auth_status=lambda cwd: {"ok": True, "orgId": "org-b"})
-    with pytest.raises(FileNotFoundError):
-        provider.snapshot()
+    assert provider.snapshot()["fiveHour"]["percent"] is None
 
 
 def test_widget_uses_matching_identity_without_cli_auth(widget_cli):
@@ -503,8 +499,7 @@ def test_widget_missing_identity_excludes_cli(widget_cli, monkeypatch):
         return {"ok": False}
     providers_to_check = [providers.ClaudeLimitsProvider(str(local), auth_status=auth) for _ in range(2)]
     for provider in providers_to_check:
-        with pytest.raises(FileNotFoundError):
-            provider.snapshot()
+        assert provider.snapshot()["fiveHour"]["percent"] is None
     assert len(calls) == 0
 
 
@@ -531,8 +526,7 @@ def test_widget_no_fresh_cli_does_not_call_auth(widget_cli, tmp_path, monkeypatc
     local, now = widget_cli
     monkeypatch.setattr(sl.time, "time", lambda: now + 601)
     provider = providers.ClaudeLimitsProvider(str(local), auth_status=lambda cwd: pytest.fail("auth must not run"))
-    with pytest.raises(FileNotFoundError):
-        provider.snapshot()
+    assert provider.snapshot()["fiveHour"]["percent"] is None
 
 
 def test_auth_cache_expires_despite_two_second_polls(setup, monkeypatch):
