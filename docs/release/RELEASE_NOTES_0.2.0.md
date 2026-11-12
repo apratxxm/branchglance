@@ -26,4 +26,4 @@ Full list: [CHANGELOG](https://github.com/apratxxm/branchglance/blob/master/CHAN
 
 ## Privacy
 
-Branchglance reads local Codex and Claude Code data and has no account, server or telemetry. With Claude tracking on, it reads Claude Code's OAuth token in memory and asks `api.anthropic.com` for your usage; it never refreshes, logs or stores the token. Greetings and queued Codex messages are off by default and, when enabled, are sent through the provider's own CLI. Details: [Privacy](https://github.com/apratxxm/branchglance/blob/master/docs/PRIVACY.md).
+Branchglance reads local Codex and Claude Code data and serves its UI over a local loopback HTTP server and has no Branchglance-hosted account, analytics or sync service. With Claude tracking and live usage enabled, it reads Claude Code's OAuth token in memory and asks `api.anthropic.com` for your usage; it never refreshes, logs or stores the token. Greetings and queued Codex messages are off by default and, when enabled, are sent through the provider's own CLI. Details: [Privacy](https://github.com/apratxxm/branchglance/blob/master/docs/PRIVACY.md).

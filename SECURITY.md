@@ -10,11 +10,13 @@ Include what you found, how to reproduce it and what it affects. Expect a first 
 
 ## What Branchglance does with your data
 
-- It has no account, server or telemetry, and uploads nothing to Branchglance.
-- With Claude tracking on and Claude Code signed in, it sends Claude Code's OAuth token to `api.anthropic.com` to fetch your usage. It reads the token into memory from `.credentials.json`, and never refreshes, logs or stores it.
+- It serves its UI through a local loopback HTTP server, has no Branchglance-hosted account, analytics or sync service, and uploads nothing to Branchglance.
+- With Claude tracking and live usage enabled and Claude Code signed in, it sends Claude Code's OAuth token to `api.anthropic.com` to fetch your usage. It reads the token into memory from `.credentials.json`, and never refreshes, logs or stores it.
 - If you enable a reset greeting or Codex sending, it runs the provider's own CLI to send a short message to that provider.
 
 Full detail: [Privacy](docs/PRIVACY.md).
+
+Local builds and v0.1.0 are unsigned. Signing depends on release configuration; check each release for its signing status. See the [signing policy](docs/CODE_SIGNING_POLICY.md).
 
 ## Supported versions
 

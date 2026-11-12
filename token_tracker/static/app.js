@@ -2963,7 +2963,6 @@ function statsUrl(force) {
   // Runway needs every active root, including an older chat waiting for a reply.
   // Any server-side trimming can erase passive counts or their parent anchors.
   if(RUNWAY)return "/api/stats?background=1"+(force?"&refresh=1":"");
-  if(RUNWAY)return "/api/stats"+(force?"?refresh=1":"");
   const visible=visibleProviderNames(state.snapshot),pins=[...new Set([...state.pins,...(RUNWAY&&state.showHidden?state.hiddenChats:[])])]
     .filter(key=>{const split=String(key).indexOf(":");return split>0&&visible.has(String(key).slice(0,split));}).join(",");
   const query=parseQuery(state.query);
@@ -3069,12 +3068,6 @@ async function pollLive() {
       else void refresh(true);
     }
   }catch{markFail();}finally{state.liveBusy=false;}
-}
-function handleVisibilityChange() {
-  if(document.hidden)return;
-  if(RUNWAY)void loadQuota();
-
-  return refresh();
 }
 function setupResize() {
   document.querySelectorAll(".resize-edge").forEach(edge=>edge.addEventListener("pointerdown",async event=>{
@@ -3254,9 +3247,9 @@ function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTi
 window.tokenTrackerRefresh=refresh;
 window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
-  buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
+  nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,runwayBudgetPages,runwayPagingBudget,
-  normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
+  normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   loadAvatars();

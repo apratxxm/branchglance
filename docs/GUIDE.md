@@ -1,5 +1,7 @@
 # Branchglance walkthrough
 
+> These docs describe `master`. For the latest release, use the docs at its release tag; features in [Unreleased](../CHANGELOG.md) require a source build.
+
 A guide to every part of Branchglance and how it fits a day of running Codex and Claude Code in parallel. It is written for power users: people who keep several chats going at once, delegate to subagents, and hit usage limits.
 
 Behaviour below matches the current development version (0.2.0 in preparation). Where Branchglance only reports what it has observed, the guide says so.
@@ -109,10 +111,10 @@ Clear the query, or press Escape, to go back to the tree.
 
 ## Limits
 
-Each provider has a **5-hour** band and a **weekly** band. Both show percent used, from 0 to 100%. Turning amber at 50% and red at 70%, they give you time to plan before you hit a limit.
+Each provider has a **5-hour** band and a **weekly** band. Both show percent used, from 0 to 100%. Turning amber above 50% and red above 80%, they give you time to plan before you hit a limit.
 
 - The countdown shows when the provider said the limit resets. Zero on the countdown does not mean the limit has reset. Branchglance waits for a real sample that shows the reset.
-- Codex limits come from the local Codex app server. Claude limits come from Anthropic when [live usage](CONFIGURATION.md#claude-live-usage) is on, and otherwise from the usage caches Claude Code and Claude Desktop keep locally, or the status line helper. Claude readings are tied to the signed-in account.
+- Codex limits come from the local Codex app server. Claude limits come from Anthropic when [live usage](CONFIGURATION.md#claude-live-usage) is on, and otherwise from the usage cache Claude Code keeps locally, or the status line helper. Claude readings are tied to the signed-in account.
 - Codex **banked resets** (unused limit resets Codex reports as available) appear as a count beside the weekly bar, with their expiry in the tooltip, and drop off when they expire.
 - **Routing alerts:** when one provider has under 40% of a window left while the other has room, the widget shows a one-time heads-up naming the window and its reset, so you can send work to the other provider. It re-arms after recovery or a reset, and stale readings never trigger it.
 - The dot next to the Codex 5-hour label shows reset action status. Click it for details.

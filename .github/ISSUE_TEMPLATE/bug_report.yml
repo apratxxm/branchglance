@@ -2,32 +2,50 @@ name: Bug report
 description: Something in Branchglance is wrong, missing or confusing.
 labels: [bug]
 body:
-  - type: textarea
-    id: what
+  - type: markdown
     attributes:
-      label: What happened
-      description: What you saw, and what you expected instead.
+      value: Please redact tokens, emails, transcripts, paths and other private information from reports and attachments.
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
     validations:
       required: true
-  - type: textarea
-    id: steps
+  - type: dropdown
+    id: install
     attributes:
-      label: Steps to reproduce
-      placeholder: "1. Open the widget\n2. ..."
+      label: Install method
+      options: [Installer, Source]
+    validations:
+      required: true
   - type: input
     id: version
     attributes:
-      label: Branchglance version
-      description: Shown at the bottom of Settings, e.g. 0.2.0.
+      label: Branchglance version or commit
     validations:
       required: true
   - type: dropdown
     id: provider
     attributes:
-      label: Provider involved
-      options: [Codex, Claude Code, Both, Not sure]
+      label: Affected provider
+      options: [Codex, Claude Code, Both, None, Not sure]
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected and actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: List the steps or say "intermittent, no reliable repro".
+    validations:
+      required: true
   - type: textarea
     id: extra
     attributes:
       label: Screenshots or logs
-      description: Please remove prompts, paths and anything private first.
+      description: Redact tokens, emails, transcripts and private information first.
