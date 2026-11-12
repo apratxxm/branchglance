@@ -13,6 +13,7 @@ from token_tracker import agent_links
 def isolate_relative_registry(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(agent_links, "_RUN_ROWS", {})
+    monkeypatch.setattr(agent_links, "_OBSERVED_IDENTITIES", {})
 
 
 @pytest.fixture
@@ -458,7 +459,38 @@ def _allow_collection(_policies):
     return True
 
 
-def test_newest_valid_live_receipt_binds_and_older_run_remains(tmp_path, monkeypatch):
+def test_unresolved_new_run_stays_top_level_when_old_run_is_retained(tmp_path, monkeypatch):
+    sid, thread, providers, run = _link_fixture()
+    old = dict(providers[1]["chats"][0], parentId=sid, parentProvider="Claude")
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", {(thread, 22, 123): {
+        "row": old, "parent": sid, "parentProvider": "Claude", "parentRow": {"id": sid}, "stoppedAt": None}})
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    # Older than the retained run, so only the unresolved rule keeps it authoritative.
+    providers[1]["chats"][0].update(runPid=21, runCreated="122")
+    agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [run],
+                                 verify=lambda *_: False)
+    row, = providers[1]["chats"]
+    assert row["runBindingUnresolved"] is True
+    assert not row.get("parentId")
+    assert row["resumeCount"] == 2
+    assert "firstSeenAt" not in row
+
+
+def test_single_observed_run_uses_its_registry_first_seen(tmp_path, monkeypatch):
+    _, _, providers, run = _link_fixture()
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: [run],
+                                 verify=lambda *_: True)
+    row, = providers[1]["chats"]
+    assert "resumeCount" not in row
+    assert row["firstSeenAt"] == "1970-01-01T00:00:01+00:00"
+
+
+def test_newest_valid_live_receipt_binds_and_collapses_to_one_row(tmp_path, monkeypatch):
     sid, thread, providers, _ = _link_fixture()
     newer_sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
     providers[0]["chats"].append({"id": newer_sid})
@@ -483,9 +515,10 @@ def test_newest_valid_live_receipt_binds_and_older_run_remains(tmp_path, monkeyp
         command_line=lambda _: f"codex.exe exec resume {thread}",
         scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
     )
-    current, old = providers[1]["chats"]
+    current, = providers[1]["chats"]
     assert (current["runPid"], current["parentId"], current["runVerified"]) == (23, newer_sid, True)
-    assert old["retainedRun"] and old["runPid"] == 22 and old["parentId"] == sid
+    assert current["resumeCount"] == 2
+    assert current["firstSeenAt"] == "1970-01-01T00:02:03+00:00"
 
 
 def test_ambiguous_scan_without_receipt_is_unknown(tmp_path, monkeypatch):
@@ -544,7 +577,7 @@ def test_native_child_links_unique_retained_ancestor(monkeypatch):
     parent = {"provider": "Codex", "id": "parent", "retainedRun": True, "runPid": 22, "runCreated": "123"}
     child = {"provider": "Codex", "id": "child", "parentId": "parent", "parentProvider": "Codex"}
     graph = agent_links.snapshot_graph([parent, child])
-    assert graph["edges"]["Codex:child"] == "Codex:parent:run:22:123"
+    assert graph["edges"]["Codex:child"] == "Codex:parent"
 
 
 def test_terminal_thread_does_not_inherit_an_old_run_without_process_identity(tmp_path, monkeypatch):
@@ -559,8 +592,9 @@ def test_terminal_thread_does_not_inherit_an_old_run_without_process_identity(tm
     assert row["runVerified"] is None
 
 
-def test_two_live_runs_for_one_thread_binds_row_evidence_run(tmp_path, monkeypatch):
+def test_two_live_runs_for_one_thread_collapse_to_newest_execution(tmp_path, monkeypatch):
     sid, _, providers, run = _link_fixture()
+    providers[1]["chats"][0].update(tokens=5, contextTokens=7, toolCalls=3)
     other = {**run, "codex_pid": 23, "codex_created": 124}
     monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", 105)
     agent_links.apply_exact_links(providers, now=106, registry_path=tmp_path / "registry.json",
@@ -568,8 +602,12 @@ def test_two_live_runs_for_one_thread_binds_row_evidence_run(tmp_path, monkeypat
                                  verify=lambda *_: True, registry_writer=lambda *a, **k: True)
     row = providers[1]["chats"][0]
     assert row["parentId"] == sid
-    assert row["runPid"] == 22
+    assert row["runPid"] == 23
+    assert row["resumeCount"] == 2
     assert row["runVerified"] is True
+    # The current row is the base: the newer execution's metric-less copy never replaces it.
+    assert (row["tokens"], row["contextTokens"], row["toolCalls"]) == (5, 7, 3)
+    assert not row.get("retainedRun") and not row.get("metricsUnavailable")
 
 
 def test_one_live_registry_run_without_row_process_evidence_binds_receipt(tmp_path, monkeypatch):
@@ -585,7 +623,7 @@ def test_one_live_registry_run_without_row_process_evidence_binds_receipt(tmp_pa
     assert row["runVerified"] is True
 
 
-def test_row_process_evidence_keeps_its_run_and_newer_receipt_is_retained(tmp_path, monkeypatch):
+def test_row_process_evidence_and_newer_receipt_collapse_to_newest_execution(tmp_path, monkeypatch):
     sid, thread, providers, _ = _link_fixture()
     newer_sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
     providers[0]["chats"].append({"id": newer_sid})
@@ -608,9 +646,9 @@ def test_row_process_evidence_keeps_its_run_and_newer_receipt_is_retained(tmp_pa
         command_line=lambda _: f"codex.exe exec resume {thread}",
         scan=lambda **kw: [], verify=lambda *_: True, hooks=lambda: {},
     )
-    current, newer = providers[1]["chats"]
-    assert (current["runPid"], current["parentId"], current["runVerified"]) == (22, sid, True)
-    assert newer["retainedRun"] and newer["runPid"] == 23 and newer["parentId"] == newer_sid
+    current, = providers[1]["chats"]
+    assert (current["runPid"], current["parentId"], current["runVerified"]) == (23, newer_sid, True)
+    assert current["resumeCount"] == 2
 
 
 def test_running_exec_without_link_history_keeps_its_status(tmp_path, monkeypatch):
@@ -1186,3 +1224,86 @@ def test_current_run_is_not_retained_again_when_its_claude_parent_leaves_the_lis
     assert len(second) == 1
     assert second[0]["runPid"] == 22 and second[0].get("parentId") is None
     assert second[0]["status"] == "running"
+
+
+def _stopped_run(thread, sid, row, stopped_at=100):
+    old = dict(row, title="old", tokens=1, parentId=sid, parentProvider="Claude", runPid=22, runCreated="123")
+    return {(thread, 22, 123): {"row": old, "parent": sid, "parentProvider": "Claude",
+                                "parentRow": {"id": sid}, "stoppedAt": stopped_at}}
+
+
+def _collapse(providers, tmp_path, monkeypatch, runs, now=106):
+    monkeypatch.setattr(agent_links, "_LAST_FULL_SCAN_AT", now - 1)
+    monkeypatch.setattr(agent_links, "_instance_mutex_held", lambda: False)
+    agent_links.apply_exact_links(providers, now=now, registry_path=tmp_path / "registry.json",
+                                 permission_check=_allow_collection, registry_reader=lambda _: list(runs),
+                                 verify=lambda *_: False)
+    return providers[1]["chats"]
+
+
+def test_thread_running_again_is_not_replaced_by_its_stopped_run(tmp_path, monkeypatch):
+    sid, thread, providers, run = _link_fixture()
+    current = providers[1]["chats"][0]
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", _stopped_run(thread, sid, current))
+    current.clear()
+    current.update(id=thread, source="vscode", title="new", status="running", executionStatus="running")
+    row, = _collapse(providers, tmp_path, monkeypatch, [run])
+    assert (row["title"], row["status"]) == ("new", "running")
+    assert not row.get("retainedRun") and not row.get("stoppedAt")
+    assert not row.get("parentId"), "a stopped execution's parent cannot prove the new activity"
+
+
+def test_finished_run_keeps_current_data_and_takes_the_stopped_execution(tmp_path, monkeypatch):
+    sid, thread, providers, run = _link_fixture()
+    current = providers[1]["chats"][0]
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", _stopped_run(thread, sid, current))
+    current.clear()
+    current.update(id=thread, source="exec", title="new", tokens=9, status="completed", executionStatus="idle")
+    row, = _collapse(providers, tmp_path, monkeypatch, [run])
+    assert (row["title"], row["tokens"], row["status"]) == ("new", 9, "completed")
+    assert row["retainedRun"] is True and row["stoppedAt"]
+    assert (row["parentId"], row["runPid"]) == (sid, 22)
+
+
+def test_resume_count_survives_run_retention_expiry(tmp_path, monkeypatch):
+    sid, thread, providers, _ = _link_fixture()
+    current = providers[1]["chats"][0]
+    runs = _stopped_run(thread, sid, current, stopped_at=0)
+    newer = dict(runs[(thread, 22, 123)], row=dict(runs[(thread, 22, 123)]["row"], runPid=23, runCreated="124"))
+    runs[(thread, 23, 124)] = newer
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", runs)
+    current.pop("runPid"); current.pop("runCreated")
+    row, = _collapse(providers, tmp_path, monkeypatch, [])
+    assert row["resumeCount"] == 2
+    row, = _collapse(providers, tmp_path, monkeypatch, [], now=106 + agent_links.STOPPED_RETENTION_SECONDS)
+    assert not agent_links._RUN_ROWS, "retention expired"
+    assert row["resumeCount"] == 2
+
+
+@pytest.mark.parametrize("state", [
+    {"status": "needs input"},
+    {"status": "unavailable", "executionStatus": "unavailable", "previousStatus": "running"},
+    {"status": "idle", "executionStatus": "idle", "activityAt": "1970-01-01T00:01:44+00:00"},
+    {"status": "idle", "telemetryUnavailable": True, "previousStatus": "running"},
+])
+def test_thread_newer_than_its_stopped_run_is_not_marked_stopped(tmp_path, monkeypatch, state):
+    sid, thread, providers, run = _link_fixture()
+    current = providers[1]["chats"][0]
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", _stopped_run(thread, sid, current))
+    current.clear()
+    current.update(id=thread, source="vscode", title="new", **state)
+    row, = _collapse(providers, tmp_path, monkeypatch, [run])
+    assert row["title"] == "new" and row.get("stateDetail") != "stopped"
+    assert not row.get("retainedRun") and not row.get("parentId")
+
+
+def test_finished_thread_with_leftover_previous_status_is_still_stopped(tmp_path, monkeypatch):
+    sid, thread, providers, run = _link_fixture()
+    current = providers[1]["chats"][0]
+    monkeypatch.setattr(agent_links, "_RUN_ROWS", _stopped_run(thread, sid, current))
+    current.clear()
+    current.update(id=thread, source="vscode", title="new", status="idle", executionStatus="idle",
+                   previousStatus="running", activityAt="1970-01-01T00:01:39+00:00")
+    row, = _collapse(providers, tmp_path, monkeypatch, [run])
+    assert row["title"] == "new"
+    assert row["retainedRun"] is True and row["stoppedAt"] and row["parentId"] == sid

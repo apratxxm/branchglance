@@ -773,7 +773,7 @@ const fmt = value => safeNumber(value) == null ? "—" : compact.format(Number(v
 const money = value => { const n=safeNumber(value); return n==null ? "—" : "$"+(n>=1000 ? compact.format(n) : n>=100 ? Math.round(n) : n.toFixed(n>=10?1:2)); };
 const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[char]);
 const stamp = value => typeof value==="number" ? (value<1e12?value*1000:value) : Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
-const keyOf = chat => chat.provider + ":" + chat.id + (chat.provider==='Codex'&&chat.retainedRun===true&&Number.isSafeInteger(chat.runPid)&&chat.runPid>0&&typeof chat.runCreated==='string'&&/^[0-9]+$/.test(chat.runCreated)?':run:'+chat.runPid+':'+chat.runCreated:'');
+const keyOf = chat => chat.provider + ":" + chat.id;
 const treeParentKey = chat => Object.prototype.hasOwnProperty.call(chat||{},"treeParentKey") ? (typeof chat.treeParentKey==="string"&&chat.treeParentKey?chat.treeParentKey:null) : chat?.parentId!=null ? chat.provider+":"+chat.parentId : null;
 const hasTreeParent = chat => Boolean(treeParentKey(chat));
 const pad2 = n => String(n).padStart(2,"0");
@@ -1964,7 +1964,8 @@ function runwayTelemetryHTML(chat,agent=false) {
   const childNameStatus=agent&&!REFINED?'<span data-runway-slot="name-status" class="runway-name-status'+(childDotTone?' t-'+childDotTone:'')+'"'+(!status?' aria-hidden="true"':'')+'>'+(status?runwayStatusDot(status,childDotTone):'')+'</span>':'';
   const activityHTML=RUNWAY?runwayActivityHTML(chat):'';
   const displayTitle=runwayTitle(chat,agent);
-  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+(REFINED?messageLane:'')+childNameStatus+'</span>';
+  const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
+  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+(REFINED?messageLane:'')+childNameStatus+'</span>';
   const context=contextHTML(chat);
   const elapsed=currentEvidence&&ownCurrent&&!statusUnavailable?runwayStateElapsed(chat):'—';
   const elapsedHTML=elapsed!=='—'?'<span data-runway-slot="elapsed" class="runway-state-elapsed" title="Elapsed in current state">'+esc(elapsed)+'</span>':'';
@@ -2901,7 +2902,7 @@ function handleVisibilityChange() {
 
   return refresh();
 }
-const LIVE_FIELDS=["runPid","runCreated","runVerified","runBindingUnresolved","retainedRun","stoppedAt","contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
+const LIVE_FIELDS=["resumeCount","firstSeenAt","runPid","runCreated","runVerified","runBindingUnresolved","retainedRun","stoppedAt","contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
 // A live row is qualified as "<Provider>:<id>"; ids may themselves contain ":" (Claude subagents).
 function liveIdentity(item) {
   if(!item||typeof item.id!=='string'||!item.id||typeof item.key!=='string')return null;
@@ -2932,7 +2933,7 @@ function applyLive(snapshot, live) {
       if(known.has(item.key))continue;
        // A detail-pending row carries identity and lineage only: it inserts without a status, so it cannot read as a transition.
        const record={id:item.id,key:item.key};
-       for(const field of ['runPid','runCreated','runVerified','runBindingUnresolved','retainedRun','stoppedAt'])if(item[field]!==undefined)record[field]=item[field];
+       for(const field of ['resumeCount','firstSeenAt','runPid','runCreated','runVerified','runBindingUnresolved','retainedRun','stoppedAt'])if(item[field]!==undefined)record[field]=item[field];
        const fields=item.detailPending?['parentId','parentKey','title','agentName','agentRole','workspace','workspaceKind','source']:['parentId','parentKey','title','agentName','agentRole','workspace','workspaceKind','source','status','statusSource','telemetryUnavailable','metricsUnavailable','previousStatus','lastValidAt','stateDetail','failureReason','activity','activityUnavailable','executionStatus','executionSource','executionObservedAt','executionSince','executionCompactionStartedAt','executionTerminalAt','executionActivity','activeRunStartedAt','stateSince','runStartedAt','runEndedAt','updatedAt','activityAt','pendingQuestion','pendingQuestionAt','pendingQuestionId','pendingQuestionIds','questionId','questionResolutionAt','pendingOptions','model','contextTokens','contextWindow','contextPercent','contextObservedAt','contextModel','contextDelta','contextDeltaObservedAt','latestRequest','latestRequestAt','latestUpdate','latestUpdateAt','trackerUpdate','trackerUpdateAt','latestMessageAt','latestMessageDirection','latestMessageSourceId','latestMessageTargetId','toolCalls','filesEdited','fileChanges','recentTokens','usageUpdatedAt','lastRequest','attentionSince','compactionStartedAt','statusObservedAt','modelChangeAt','resumable','sessionId'];for(const field of fields)if(item[field]!==undefined)record[field]=item[field];
       target.chats.push(record);known.add(item.key);changed=true;
     }
@@ -2949,6 +2950,7 @@ function applyLive(snapshot, live) {
       }
       if(JSON.stringify(next.pendingOptions||[])!==JSON.stringify(chat.pendingOptions||[])){chat.pendingOptions=next.pendingOptions||[];changed=true;}
       if(stamp(next.activityAt)>stamp(chat.updatedAt)){chat.updatedAt=next.activityAt;changed=true;}
+      for(const field of ['resumeCount','firstSeenAt'])if(next[field]===undefined&&chat[field]!==undefined){delete chat[field];changed=true;}
       for(const field of LIVE_FIELDS){
         if(next[field]!==undefined&&JSON.stringify(next[field])!==JSON.stringify(chat[field])){chat[field]=next[field];changed=true;}
       }
@@ -2956,11 +2958,8 @@ function applyLive(snapshot, live) {
     const parent=snapshotParentKey(provider,chat,snapshot.graph?.edges||null);
     if(!parent)oldestShown=Math.min(oldestShown,stamp(chat.updatedAt));
   }
-  if(RUNWAY&&live.complete===true)for(const provider of snapshot.providers||[]){
-    const before=provider.chats.length;
-    provider.chats=provider.chats.filter(chat=>!chat.retainedRun||byKey.has(keyOf({...chat,provider:provider.name})));
-    if(provider.chats.length!==before)changed=true;
-  }
+  // Retention is decided server-side: a retained row carries its thread key, so
+  // dropping it here when a live poll omits the thread would remove the whole thread.
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
   const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!snapshotParentKey(p,c,snapshot.graph?.edges||null)).length,0);
   const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(!RUNWAY||(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})())&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);

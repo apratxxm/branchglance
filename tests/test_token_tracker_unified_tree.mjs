@@ -34,7 +34,7 @@ const claudeParent={id:"op",key:"Claude:op",parentKey:null,title:"Branchglance l
 
 {
   const {T}=boot();
-  const stopped={id:'old',key:'Codex:old:run:42:133000000000000000',provider:'Codex',parentKey:'Claude:op',
+  const stopped={id:'old',key:'Codex:old',provider:'Codex',parentKey:'Claude:op',
     retainedRun:true,runPid:42,runCreated:'133000000000000000',stoppedAt:ago(1),runStartedAt:ago(3),
     status:'idle',stateDetail:'stopped',executionStatus:'idle',model:'gpt-6.1-sol',contextModel:'gpt-6.1-sol',
     contextTokens:1000,contextWindow:2000,contextObservedAt:ago(2),updatedAt:ago(2)};
@@ -50,12 +50,22 @@ const claudeParent={id:"op",key:"Claude:op",parentKey:null,title:"Branchglance l
 {
   const {T}=boot();
   const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[{name:'Codex',chats:[{id:'thread',status:'running'}]}]};
-  const old={id:'thread',key:'Codex:thread:run:42:123',provider:'Codex',retainedRun:true,runPid:42,runCreated:'123',runVerified:false,stoppedAt:ago(1),status:'idle'};
+  const old={id:'thread',key:'Codex:thread',provider:'Codex',retainedRun:true,runPid:42,runCreated:'123',runVerified:false,stoppedAt:ago(1),status:'idle'};
   assert.equal(T.applyLive(snapshot,{generatedAt:ago(0),chats:[old],complete:true}).changed,true);
-  assert.equal(snapshot.providers[0].chats.length,2);
+  assert.equal(snapshot.providers[0].chats.length,1);
   assert.ok(snapshot.providers[0].chats.some(row=>row.retainedRun&&row.stoppedAt===old.stoppedAt));
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'thread',key:'Codex:thread',provider:'Codex',status:'running',retainedRun:null,stoppedAt:null,resumeCount:2}],complete:true});
+  assert.equal(snapshot.providers[0].chats.length,1);
+  assert.equal(snapshot.providers[0].chats[0].retainedRun,null,'a new run clears retained state');
+  assert.equal(snapshot.providers[0].chats[0].resumeCount,2);
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'thread',key:'Codex:thread',provider:'Codex',status:'running'}],complete:true});
+  assert.equal(snapshot.providers[0].chats[0].resumeCount,undefined,'absent count clears an earlier badge');
+}
+{
+  const {T}=boot();
+  const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[{name:'Codex',chats:[{id:'thread',key:'Codex:thread',provider:'Codex',retainedRun:true,stoppedAt:ago(1),status:'idle'}]}]};
   T.applyLive(snapshot,{generatedAt:ago(0),chats:[],complete:true});
-  assert.equal(snapshot.providers[0].chats.length,1,'expired retained run is removed');
+  assert.equal(snapshot.providers[0].chats.length,1,'a live poll that omits a retained thread does not remove the thread');
 }
 const codexLuna={id:"luna",key:"Codex:luna",parentKey:"Claude:op",title:"dashboard pass",agentName:"luna",model:"gpt-6-luna",status:"running",updatedAt:ago(1),workspace:"D:\\work\\sample-app",...quota};
 const codexSol={id:"sol",key:"Codex:sol",parentKey:"Codex:luna",title:"review pass",agentName:"sol",model:"gpt-6.1-sol",status:"running",updatedAt:ago(2),workspace:"D:\\work\\sample-app",...quota};

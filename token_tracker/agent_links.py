@@ -42,6 +42,10 @@ _LAST_FULL_SCAN_AT = float("-inf")
 _UNLINKED_LOCK = threading.Lock()
 _UNLINKED_EXECUTIONS: dict[tuple[str, int, int], dict[str, Any]] = {}
 _RUN_ROWS: dict[tuple[str, int, int], dict[str, Any]] = {}
+# Execution identities seen per thread in this app process, for the resume
+# badge. Never pruned by run retention; bounded by thread count.
+_OBSERVED_IDENTITIES: dict[str, set[tuple[int, int]]] = {}
+_OBSERVED_IDENTITY_LIMIT = 4096
 STOPPED_RETENTION_SECONDS = 15 * 60
 _LOG = logging.getLogger(__name__)
 
@@ -68,10 +72,6 @@ def snapshot_graph(rows: Iterable[dict[str, Any]], *, delta: bool = False) -> di
         if not isinstance(provider, str) or not isinstance(identity, str):
             continue
         key = f"{provider}:{identity}"
-        if provider == "Codex" and row.get("retainedRun") is True:
-            pid, created = row.get("runPid"), row.get("runCreated")
-            if type(pid) is int and pid > 0 and isinstance(created, str) and created.isascii() and created.isdigit():
-                key += f":run:{pid}:{created}"
         row["key"] = key
         indexed[key] = row
     current: dict[str, str | None] = {}
@@ -79,10 +79,6 @@ def snapshot_graph(rows: Iterable[dict[str, Any]], *, delta: bool = False) -> di
         parent_id = row.get("parentId")
         parent_provider = row.get("parentProvider") or row.get("provider") or row.get("providerName")
         parent_key = f"{parent_provider}:{parent_id}" if isinstance(parent_id, str) and parent_id else None
-        if parent_key not in indexed and parent_provider == "Codex" and parent_key:
-            retained = [candidate for candidate in indexed if candidate.startswith(parent_key + ":run:")]
-            if len(retained) == 1:
-                parent_key = retained[0]
         if parent_key not in indexed:
             parent_key = None
         row["parentKey"] = parent_key
@@ -908,6 +904,45 @@ def _run_identity(run: dict[str, Any]) -> tuple[int, int]:
     return int(run["codex_pid"]), int(run["codex_created"])
 
 
+_RUN_FIELDS = ("runPid", "runCreated", "runVerified")
+_LINEAGE_FIELDS = ("parentId", "parentProvider", "parentLinkMethod")
+_STOP_FIELDS = ("retainedRun", "stoppedAt", "runEndedAt", "executionTerminalAt")
+_ACTIVE_STATES = frozenset({"running", "waiting", "active", "working", "thinking", "compacting",
+                            "needs input", "needs-input", "needs_input"})
+# A gap in telemetry is not evidence that the thread stopped.
+_UNSETTLED_STATES = frozenset({"unavailable", "unknown"})
+
+
+def _epoch(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) / (1000 if value > 1e12 else 1)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() if value else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _row_outlives_stop(row: dict[str, Any], stopped: dict[str, Any]) -> bool:
+    """True when the current row is active, unsettled, or has activity newer
+    than the stopped execution: that execution then describes nothing current."""
+    states = {str(row.get(field) or "").lower() for field in ("status", "executionStatus")}
+    if states & (_ACTIVE_STATES | _UNSETTLED_STATES) or bool(row.get("pendingQuestion")):
+        return True
+    # previousStatus describes the state before a telemetry gap; a settled row may
+    # carry a leftover value, so it only counts while telemetry is unavailable.
+    if row.get("telemetryUnavailable") and str(row.get("previousStatus") or "").lower() in _ACTIVE_STATES:
+        return True
+    stopped_at = _epoch(stopped.get("stoppedAt"))
+    activity = [stamp for field in ("activityAt", "runStartedAt", "activeRunStartedAt")
+                if (stamp := _epoch(row.get(field))) is not None]
+    return stopped_at is not None and bool(activity) and max(activity) > stopped_at
+
+
+def _execution_order(row: dict[str, Any]) -> tuple[int, int, bool]:
+    identity = _row_identity(row)
+    return (identity[1], identity[0], bool(row.get("retainedRun"))) if identity else (-1, -1, False)
+
+
 def _row_identity(row: dict[str, Any]) -> tuple[int, int] | None:
     try:
         return int(row["runPid"]), int(row["runCreated"])
@@ -1340,3 +1375,65 @@ def apply_exact_links(
             row.update(status="idle", stateDetail="stopped")
         retained.append(row)
     codex.setdefault("chats", []).extend(retained)
+    # One row per thread. The current provider row is the base: a retained copy
+    # is frozen at its last live poll and never replaces fresher data. Only
+    # execution and lineage fields come from the newest execution, an
+    # unresolved current row stays authoritative (an older run's parent cannot
+    # prove its lineage), and a stopped execution never overrides a current row
+    # that is active again under another (or no) execution.
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in codex["chats"]:
+        grouped.setdefault(str(row.get("id") or "").lower(), []).append(row)
+    collapsed = []
+    for thread, rows in grouped.items():
+        if not thread:
+            collapsed.extend(rows)
+            continue
+        executions = [row for row in rows if _row_identity(row) is not None]
+        newest = max(executions, key=_execution_order) if executions else None
+        current_rows = [row for row in rows if not row.get("retainedRun")]
+        if current_rows:
+            selected = max(current_rows, key=_execution_order)
+            stopped = bool(newest and newest.get("stoppedAt"))
+            if stopped and newest is not selected and _row_identity(selected) == _row_identity(newest):
+                # The current row still names the execution that was verified
+                # dead: its process claim is stale, so the frozen run stands.
+                selected = newest
+            elif (newest is not None and newest is not selected and not selected.get("runBindingUnresolved")
+                    and not (stopped and _row_outlives_stop(selected, newest))):
+                fields = _RUN_FIELDS if id(selected) in native_rows else _RUN_FIELDS + _LINEAGE_FIELDS
+                for field in fields:
+                    if field in newest:
+                        selected[field] = newest[field]
+                    else:
+                        selected.pop(field, None)
+                if stopped:
+                    for field in _STOP_FIELDS:
+                        if field in newest:
+                            selected[field] = newest[field]
+                    if str(selected.get("status") or "").lower() not in {"failed", "completed"}:
+                        selected.update(status="idle", stateDetail="stopped")
+        else:
+            selected = newest or rows[-1]
+        identities = {identity for row in rows if (identity := _row_identity(row)) is not None}
+        identities.update((pid, created) for (tid, pid, created) in _RUN_ROWS if tid == thread)
+        identities.update(_run_identity(run) for run in verified_by_thread.get(thread, []))
+        with _UNLINKED_LOCK:
+            identities.update((pid, created) for (tid, pid, created) in _UNLINKED_EXECUTIONS if tid == thread)
+        # Every execution observed in this app process counts, even after its
+        # retained copy expires; registry history from earlier sessions does not.
+        observed = _OBSERVED_IDENTITIES.pop(thread, set()) | identities
+        _OBSERVED_IDENTITIES[thread] = observed
+        while len(_OBSERVED_IDENTITIES) > _OBSERVED_IDENTITY_LIMIT:
+            _OBSERVED_IDENTITIES.pop(next(iter(_OBSERVED_IDENTITIES)))
+        selected.pop("resumeCount", None)
+        if len(observed) >= 2:
+            selected["resumeCount"] = len(observed)
+        selected.pop("firstSeenAt", None)
+        selected_identity = _row_identity(selected)
+        matches = [run for run in by_thread.get(thread, []) if _run_identity(run) == selected_identity]
+        if matches:
+            first_seen = min(float(run["first_seen"]) for run in matches)
+            selected["firstSeenAt"] = datetime.fromtimestamp(first_seen, timezone.utc).isoformat()
+        collapsed.append(selected)
+    codex["chats"] = collapsed

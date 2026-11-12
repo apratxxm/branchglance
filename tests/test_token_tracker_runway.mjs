@@ -125,6 +125,9 @@ const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true
 context.window.addEventListener=()=>{};context.document.addEventListener=()=>{};
 vm.createContext(context);vm.runInContext(app,context);
 const T=context.window.__tokenTrackerTest,ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
+assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times">↻2<\/span>/);
+assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread',resumeCount:1},false), /runway-resume-badge/);
+assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread'},false), /runway-resume-badge/);
  assert.equal(T.openDashboard(),false,"the dashboard entry is limited to the compact widget profile");
 assert.equal(T.writeInspectLayoutWidth(500),true);
 assert.equal(context.document.documentElement.style['--runway-inspect-clock-axis'],'250px');

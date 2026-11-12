@@ -423,3 +423,14 @@ def test_live_discovery_refreshes_replaced_claude_path_and_parent(claude_live, m
     assert providers._LIVE_INDEX[key]["title"] == "latest title"
     assert providers._LIVE_INDEX[key]["agentName"] == "latest agent"
     assert providers._LIVE_INDEX[key]["parentId"] == "latest-session"
+
+
+def test_live_overlay_sends_explicit_nulls_for_cleared_execution_fields(lineage_roster):
+    # Absent means "no change" to the client; only an explicit null clears a stale value.
+    live = providers.live_state(budget_seconds=-1)
+    codex = [chat for chat in live["chats"] if chat["key"].startswith("Codex:")]
+    assert codex
+    for chat in codex:
+        for field in ("retainedRun", "stoppedAt", "runPid", "runBindingUnresolved", "parentId", "parentProvider"):
+            assert field in chat, (chat["key"], field)
+        assert chat["retainedRun"] is None and chat["stoppedAt"] is None

@@ -5275,25 +5275,26 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
             grouped = [{"name": name, "chats": [chat for chat in chats
                                                  if str(chat.get("key") or "").startswith(name + ":")]}
                        for name in ("Claude", "Codex")]
-            original_rows = {id(row) for row in chats}
+            original_order = {str(row.get("key")): index for index, row in enumerate(chats)}
             apply_exact_links(grouped)
-            linked = {str(row.get("key")): row
-                      for provider in grouped for row in provider["chats"] if not row.get("retainedRun")}
-            for chat in chats:
-                if chat.get("key") in linked:
-                    source = linked[chat["key"]]
-                    for field in ("parentId", "parentProvider", "parentLinkMethod", "runPid", "runCreated", "runVerified", "runBindingUnresolved"):
-                        if field in source:
-                            chat[field] = source[field]
-                        else:
-                            chat.pop(field, None)
+            linked = [row for row in chats if not str(row.get("key") or "").startswith(("Claude:", "Codex:"))]
             for provider in grouped:
                 for row in provider["chats"]:
-                    if id(row) not in original_rows:
-                        row["provider"] = provider["name"]
-                        if not row.get("key"):
-                            row["key"] = f"{provider['name']}:{row['id']}"
-                        chats.append(row)
+                    if not isinstance(row.get("id"), str) or not row["id"]:
+                        linked.append(row)
+                        continue
+                    row["provider"] = provider["name"]
+                    row["key"] = f"{provider['name']}:{row['id']}"
+                    # The thread key survives execution changes, so clear stale
+                    # execution and lineage fields in the live overlay.
+                    for field in ("retainedRun", "stoppedAt",
+                                  "runPid", "runCreated", "runVerified", "runBindingUnresolved",
+                                  "parentId", "parentProvider", "parentLinkMethod"):
+                        row.setdefault(field, None)
+                    linked.append(row)
+            # A collapsed thread keeps its thread key's position, whichever execution was selected.
+            linked.sort(key=lambda row: original_order.get(str(row.get("key")), len(original_order)))
+            chats = linked
         except Exception:
             pass
     for chat in chats:
