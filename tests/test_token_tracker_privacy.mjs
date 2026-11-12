@@ -10,7 +10,7 @@ const hiddenLoader = app.slice(app.indexOf("function loadHiddenChats() {"), app.
 function harness(initial = {}) {
   const storage = new Map(Object.entries(initial)), writes = [], reads = [];
   const document = { hidden: false, activeElement: null, querySelector() { return null; }, querySelectorAll() { return []; }, addEventListener() {} };
-  const context = { window: { __TOKEN_TRACKER_TEST__: true, __TOKEN_TRACKER_RUNWAY__: true }, document,
+  const context = { window: { __TOKEN_TRACKER_TEST__: true, __TOKEN_TRACKER_RUNWAY__: true, __TOKEN_TRACKER_REFINED__: true, __TOKEN_TRACKER_COMPACT__: true }, document,
     localStorage: { getItem(key) { reads.push(key); return storage.has(key) ? storage.get(key) : null; }, setItem(key, value) { writes.push([key, String(value)]); storage.set(key, String(value)); } },
     Intl, Date, Math, Number, JSON, AbortController, AbortSignal, setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; } };
   vm.createContext(context); vm.runInContext(app, context);

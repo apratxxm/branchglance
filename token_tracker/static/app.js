@@ -1,16 +1,13 @@
 const $ = (selector, root = document) => root.querySelector(selector);
-const RUNWAY = Boolean(window.__TOKEN_TRACKER_RUNWAY__);
-const REFINED = RUNWAY&&window.__TOKEN_TRACKER_REFINED__===true;
-const COMPACT = REFINED&&window.__TOKEN_TRACKER_COMPACT__===true;
 const RUNWAY_REFRESH_ICON='<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4.8A4.5 4.5 0 1 0 10 7"/><path d="M7.7 2.2H10v2.3"/></svg>';
 function preferredClockCycle(){try{return localStorage.getItem('branchglanceClockFormat')==='24'?'h23':'h12';}catch{return 'h12';}}
-let compactClockFormatter=COMPACT?new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:preferredClockCycle()}):null;
+let compactClockFormatter=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:preferredClockCycle()});
 const compact = new Intl.NumberFormat("en", { notation: "compact", maximumSignificantDigits: 3 });
 function loadPins() { try { const current=JSON.parse(localStorage.getItem("tokenTrackerPinsV2") || "null"); if(Array.isArray(current))return new Set(current.filter(k=>typeof k==="string"));const old=JSON.parse(localStorage.getItem("tokenTrackerPins") || "{}");return new Set(Object.entries(old||{}).filter(([,id])=>typeof id==="string").map(([provider,id])=>provider+":"+id)); } catch { return new Set(); } }
 function loadDismissed() { try { const list=JSON.parse(localStorage.getItem("tokenTrackerDismissed")||"[]"); return new Set(Array.isArray(list)?list.slice(-200):[]); } catch { return new Set(); } }
 function saveDismissed() { while(state.dismissed.size>200)state.dismissed.delete(state.dismissed.values().next().value);try{localStorage.setItem("tokenTrackerDismissed",JSON.stringify([...state.dismissed]));}catch{} }
-const WINDOWS=RUNWAY?[1,7,30]:[1,2,5,7];
-function loadWindow() { try { const days=Number(localStorage.getItem(RUNWAY?"tokenTrackerRunwayWindow":"tokenTrackerWindow")); return WINDOWS.includes(days)?days:1; } catch { return 1; } }
+const WINDOWS=[1,7,30];
+function loadWindow() { try { const days=Number(localStorage.getItem("tokenTrackerRunwayWindow")); return WINDOWS.includes(days)?days:1; } catch { return 1; } }
 const SOURCES=["Codex","Claude"],SOURCE_KEY="branchglanceSource",SOURCE_MANUAL_AT_KEY="branchglanceSourceManualAt";
 const STARTUP_CALM_MS=30000,STARTUP_STARTED_AT=Date.now();
 function loadSource() { try { const value=localStorage.getItem(SOURCE_KEY); return SOURCES.includes(value)?value:"Codex"; } catch { return "Codex"; } }
@@ -32,7 +29,7 @@ const state = { snapshot:null, refreshedAt:null, lastOkAt:null, failSince:null, 
   snapshotCache:null,snapshotCacheInvalid:false,watcherFetchError:null,watcherAcceptedSequence:new Map(),
   liveBusy:false, structuralRefreshAt:0, lastWatcherFetchAt:0, outsideSeen:new Map(), pendingOutside:new Map(), refreshPending:false, refreshPendingForce:false, pointerInList:false, lastOrder:null, agentLive:new Map(), finishedAt:new Map(), analyticsOpen:false,
   agentOpen:new Set(), agentCollapsed:new Set(), agentDetails:new Set(), agentSearchClosed:new Set(), rosterQuery:"", expandedQuestions:new Set(),
-  hiddenChats:RUNWAY?loadHiddenChats():new Set(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, graphlessBootstrapTimer:null, graphlessBootstrapSnapshot:null, graphlessBootstrapAttempts:0, graphlessBootstrapTimedOut:false, graphlessBootstrapFallback:false, refreshing:false, initialBootstrapPending:RUNWAY&&!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
+  hiddenChats:loadHiddenChats(), showHidden:false, bootstrapRetryTimer:null, bootstrapRetryMs:2000, graphlessBootstrapTimer:null, graphlessBootstrapSnapshot:null, graphlessBootstrapAttempts:0, graphlessBootstrapTimedOut:false, graphlessBootstrapFallback:false, refreshing:false, initialBootstrapPending:!window.__TOKEN_TRACKER_TEST__, foregroundLivePending:false, modelVersions:new Map(), runwaySnapshotPainted:false, startupCalmUntil:STARTUP_STARTED_AT+STARTUP_CALM_MS, liveAcceptedGeneratedAt:null, liveSampleAccepted:false, liveRecoveryPending:false, seenQuestions:new Set(), providerPolicyGeneration:null,providerPolicy:null,providerPolicyReady:false,
   source:loadSource(), sourceManualAt:loadSourceManualAt(), sourceAttention:new Set(), sourceLive:new Set(), sourceBase:new Map(), sourceSwitching:false, sourceHeightHold:null, sourceRelease:null, notchOpeningTimer:null, policyWarnings:[] };
 const watcherLoader={promise:null,pending:false,sequence:0,successSequence:0,errorSequence:0};
 const watcherAcceptedQuota=new Map();
@@ -43,7 +40,6 @@ const quotaLoader={promise:null,sequence:0,retryAfter:0,retryMs:2000,unsupported
 const providerPolicyLoader={promise:null};
 const RUNWAY_EVIDENCE_MAX_AGE_MS=8000;
 function runwayCurrentEvidenceFresh(now=Date.now()) {
-  if(!RUNWAY)return true;
   const anchor=state.liveSampleAccepted?state.liveAcceptedGeneratedAt:stamp(state.snapshot?.generatedAt);
   return Number.isFinite(anchor)&&anchor>0&&anchor<=now&&now-anchor<=RUNWAY_EVIDENCE_MAX_AGE_MS;
 }
@@ -64,7 +60,7 @@ function trackerSnippet(text) {
   }catch{return null;}
 }
 const notch={active:0,expanded:false,mode:'idle',manual:false,keyboardInspecting:false,inspecting:false,hover:false,hoverSuppressed:false,contentHover:false,timer:null,inspectTimer:null,exitTimer:null,autoTimer:null,autoExpanded:false,autoClosePending:false,sent:null,activeKeys:null,workStates:new Map(),pointerX:null,pointerY:null,globalPointerX:null,globalPointerY:null};
-const widgetLock={known:Boolean(window.__TOKEN_TRACKER_TEST__),locked:false,expanded:false,revision:-1,pending:false,dragRegions:[]};
+const widgetLock={known:Boolean(window.__TOKEN_TRACKER_TEST__),locked:false,expanded:false,revision:-1,pending:false};
 const keepOpenState={known:false,value:false,revision:-1,pending:false,loading:false,error:false};
 const compactBridge={busy:false,pending:null,inFlightSignature:null,appliedSignature:null};
 const dashboardState={open:false,returnMode:null,restoreMode:null};
@@ -72,8 +68,8 @@ let compactInputModality='pointer';
 const lockIcon=locked=>locked?'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 4 0V5"/></svg>':'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 3.6-1.2"/></svg>';
 function updateWidgetLockButton() {
   const button=$('#widget-lock');if(!button)return;
-  const label=COMPACT?(widgetLock.locked?'Release position':'Hold position'):(widgetLock.locked?'Unlock widget':'Lock widget');
-  const title=COMPACT?label+'. Prevents automatic repositioning; you can still drag.':label;
+  const label=widgetLock.locked?'Release position':'Hold position';
+  const title=label+'. Prevents automatic repositioning; you can still drag.';
   button.disabled=widgetLock.pending||!widgetLock.known;
   button.setAttribute?.('aria-pressed',String(widgetLock.locked));button.setAttribute?.('aria-label',label);button.title=title;
   if(button.innerHTML!==lockIcon(widgetLock.locked))button.innerHTML=lockIcon(widgetLock.locked);
@@ -87,12 +83,11 @@ function updateKeepOpenButton() {
   button.setAttribute?.('aria-label',label);button.title=label;
 }
 function applyKeepOpen(value) {
-  if(!COMPACT||!value||typeof value.keepOpen!=='boolean'||!Number.isSafeInteger(value.keepOpenRevision)||value.keepOpenRevision<0||value.keepOpenRevision<keepOpenState.revision)return false;
+  if(!value||typeof value.keepOpen!=='boolean'||!Number.isSafeInteger(value.keepOpenRevision)||value.keepOpenRevision<0||value.keepOpenRevision<keepOpenState.revision)return false;
   keepOpenState.known=true;keepOpenState.value=value.keepOpen;keepOpenState.revision=value.keepOpenRevision;keepOpenState.error=false;
   updateKeepOpenButton();setNotch(notch.expanded,true);return true;
 }
 async function syncKeepOpen() {
-  if(!COMPACT)return null;
   const api=window.pywebview?.api?.get_keep_open;
   if(typeof api!=='function'){updateKeepOpenButton();return null;}
   keepOpenState.loading=true;updateKeepOpenButton();
@@ -101,7 +96,7 @@ async function syncKeepOpen() {
   finally{keepOpenState.loading=false;updateKeepOpenButton();}
 }
 async function setKeepOpen(value) {
-  if(!COMPACT||keepOpenState.pending||keepOpenState.loading||!keepOpenState.known||typeof value!=='boolean')return false;
+  if(keepOpenState.pending||keepOpenState.loading||!keepOpenState.known||typeof value!=='boolean')return false;
   const api=window.pywebview?.api?.set_keep_open;if(typeof api!=='function')return false;
   const expectedRevision=keepOpenState.revision;keepOpenState.pending=true;keepOpenState.error=false;updateKeepOpenButton();
   try{const result=await api(value,expectedRevision);if(!applyKeepOpen(result))return false;return keepOpenState.value===value;}
@@ -110,13 +105,11 @@ async function setKeepOpen(value) {
 }
 async function toggleKeepOpen(){if(keepOpenState.pending||keepOpenState.loading)return false;return setKeepOpen(!keepOpenState.value);}
 function compactHasFocus(){
-  if(!COMPACT)return false;
   const widget=$('.widget'),active=document.activeElement;if(!widget?.contains?.(active))return false;
   const tag=String(active?.tagName||'').toUpperCase(),editable=tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||Boolean(active?.isContentEditable);
   return editable||Boolean(active?.closest?.('.popover,.ch-search'))||compactInputModality==='keyboard';
 }
 function compactModeForState(){
-  if(!COMPACT)return notch.expanded?'inspect':'idle';
   if(dashboardState.open)return 'dashboard';
   if(dashboardState.restoreMode)return dashboardState.restoreMode;
   const focus=compactHasFocus(),explicit=notch.manual||notch.keyboardInspecting||state.searchOpen||Boolean(state.popover);
@@ -125,7 +118,7 @@ function compactModeForState(){
   return 'controls';
 }
 function blurPointerToolbarFocus(mode){
-  if(!COMPACT||mode==='inspect'||mode==='controls'||compactInputModality!=='pointer')return;
+  if(mode==='inspect'||mode==='controls'||compactInputModality!=='pointer')return;
   const active=document.activeElement,tag=String(active?.tagName||'').toUpperCase();
   if(active?.closest?.('.compact-toolbar')&&!['INPUT','TEXTAREA','SELECT'].includes(tag)&&!active?.isContentEditable&&!active?.closest?.('.popover,.ch-search'))active.blur?.();
 }
@@ -148,30 +141,11 @@ function sendCompactNotch(api,args,signature){
   };
   void drain();
 }
-function syncWidgetDragRegions(locked) {
-  if(COMPACT)return;
-  if(locked){
-    if(!widgetLock.dragRegions.length)widgetLock.dragRegions=Array.from(document.querySelectorAll?.('.pywebview-drag-region')||[]).filter(node=>node.classList?.contains?.('pywebview-drag-region'));
-    for(const node of widgetLock.dragRegions)node.classList?.remove?.('pywebview-drag-region');
-  }else{
-    for(const node of widgetLock.dragRegions)node.classList?.add?.('pywebview-drag-region');
-    widgetLock.dragRegions=[];
-  }
-}
 function applyWidgetLock(value) {
-  if(!RUNWAY||!value||typeof value.locked!=='boolean'||typeof value.expanded!=='boolean'||!Number.isSafeInteger(value.revision)||value.revision<0||value.revision<widgetLock.revision)return false;
+  if(!value||typeof value.locked!=='boolean'||typeof value.expanded!=='boolean'||!Number.isSafeInteger(value.revision)||value.revision<0||value.revision<widgetLock.revision)return false;
   widgetLock.known=true;widgetLock.revision=value.revision;widgetLock.locked=value.locked;widgetLock.expanded=value.expanded;
-  if(COMPACT&&typeof value.keepOpen==='boolean'&&Number.isSafeInteger(value.keepOpenRevision))applyKeepOpen({keepOpen:value.keepOpen,keepOpenRevision:value.keepOpenRevision});
-  syncWidgetDragRegions(widgetLock.locked);updateWidgetLockButton();
-  if(widgetLock.locked&&!COMPACT){
-    clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
-    notch.inspectTimer=notch.exitTimer=notch.autoTimer=notch.timer=null;
-    notch.manual=false;notch.keyboardInspecting=false;notch.inspecting=false;notch.autoExpanded=false;notch.autoClosePending=false;
-  }
-  if(!COMPACT&&!state.runwaySnapshotPainted&&widgetLock.locked&&widgetLock.expanded){
-    notch.expanded=false;setNotch(false);return true;
-  }
-  setNotch(COMPACT?notch.expanded:widgetLock.expanded,true);return true;
+  if(typeof value.keepOpen==='boolean'&&Number.isSafeInteger(value.keepOpenRevision))applyKeepOpen({keepOpen:value.keepOpen,keepOpenRevision:value.keepOpenRevision});
+  updateWidgetLockButton();setNotch(notch.expanded,true);return true;
 }
 async function syncWidgetLock() {
   const initial=!widgetLock.known;
@@ -187,7 +161,7 @@ async function setWidgetLock(locked) {
   const expectedRevision=widgetLock.revision;
   widgetLock.pending=true;updateWidgetLockButton();
   try{
-    const result=COMPACT?await api(locked,notch.expanded,null,expectedRevision):await api(locked,notch.expanded,notch.expanded?notchHeight():null,expectedRevision);
+    const result=await api(locked,notch.expanded,null,expectedRevision);
     if(!applyWidgetLock(result))return false;
     return widgetLock.locked===locked;
   }catch{return false;}
@@ -204,7 +178,7 @@ async function recenterWidget(){
   }catch{return false;}
 }
 function openDashboard(tab){
-  if(!COMPACT||dashboardState.open)return false;
+  if(dashboardState.open)return false;
   dashboardState.returnMode=notch.mode||'controls';dashboardState.restoreMode=null;dashboardState.open=true;
   window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:tab==='settings'?'settings':'insights'});
   setNotch(notch.expanded);return true;
@@ -235,7 +209,7 @@ function notchChromeHeight() {
   const visibleHeight=selector=>{const node=$(selector);if(!node||node.hidden||node.getAttribute?.('aria-hidden')==='true')return 0;const rects=node.getClientRects?.();if(rects&&rects.length===0)return 0;return node.offsetHeight||0;};
   const fixed=['.titlebar','.resets','#weekly-resets','.totals','#strip'].reduce((sum,selector)=>sum+visibleHeight(selector),0)+
     (state.searchOpen?visibleHeight('#chats-head'):0);
-  return fixed+(REFINED?16:0);
+  return fixed+16;
 }
 // Tallest the compact widget can become on the current monitor, in CSS px.
 function runwayMaxNotchHeight() {
@@ -245,51 +219,42 @@ function runwayMaxNotchHeight() {
   return max;
 }
 function notchHeight() {
-  if(COMPACT){
-    if(notch.mode==='dashboard')return window.TokenTrackerDashboard?.windowHeight?.()||608;
-    if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
-    if(notch.mode==='idle')return 100;
-    if(notch.mode==='rest')return 100;
-    if(notch.mode==='controls')return 110;
-  }
+  if(notch.mode==='dashboard')return window.TokenTrackerDashboard?.windowHeight?.()||608;
+  if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
+  if(notch.mode==='idle'||notch.mode==='rest')return 100;
+  if(notch.mode==='controls')return 110;
   const list=$('#chat-list');
-  if(!notch.expanded||!list?.querySelectorAll)return REFINED?148:96;
+  if(!notch.expanded||!list?.querySelectorAll)return 148;
   const chrome=notchChromeHeight();
   // The list's own content height includes variable wrapped rows and the empty state,
   // while avoiding the flex-filled height of its parent layout.
   const children=[...list.children||[]];
-  const content=(RUNWAY&&REFINED&&COMPACT&&children.length?children.reduce((sum,node)=>sum+(node.offsetHeight||0),0):0)||list.scrollHeight||[...list.querySelectorAll('.chat')].reduce((sum,row)=>sum+(row.offsetHeight||0),0)||children.reduce((sum,node)=>sum+(node.offsetHeight||0),0);
-  const measured=Math.max(REFINED?148:96,Math.ceil(chrome+content));
-  return COMPACT?Math.min(runwayMaxNotchHeight(),Math.max(114,measured)):measured;
+  const content=(children.length?children.reduce((sum,node)=>sum+(node.offsetHeight||0),0):0)||list.scrollHeight||[...list.querySelectorAll('.chat')].reduce((sum,row)=>sum+(row.offsetHeight||0),0)||children.reduce((sum,node)=>sum+(node.offsetHeight||0),0);
+  const measured=Math.max(148,Math.ceil(chrome+content));
+  return Math.min(runwayMaxNotchHeight(),Math.max(114,measured));
 }
 function scheduleNotchSize() {
-  if(!RUNWAY||typeof requestAnimationFrame!=='function')return;
+  if(typeof requestAnimationFrame!=='function')return;
   cancelAnimationFrame(notch.frame);notch.frame=requestAnimationFrame(()=>{const changed=syncRunwayTreeConnectors();if(changed){scheduleNotchSize();return;}setNotch(notch.expanded,true);});
 }
-function runwayTreePathGeometry(rootRect, entries, refined=false) {
-  const byIdentity=new Map(entries.map(entry=>[entry.provider+':'+entry.id,entry])),paths=[],dots=new Map(),messagePositions=[];let bottom=0;
-  for(const entry of entries){
-    const rowRect=entry.messageRect||entry.rowRect,nameRect=entry.nameRect;
-    if(!rowRect||!nameRect||rowRect.width<=0||nameRect.width<=0)continue;
-    const x=rootRect.left-rowRect.left+2,y=nameRect.top-rowRect.top+Math.min(nameRect.height||19,19)/2-5;
-    if(Number.isFinite(x)&&Number.isFinite(y))messagePositions.push({key:entry.key,x,y});
-  }
+function runwayTreePathGeometry(rootRect, entries) {
+  const byIdentity=new Map(entries.map(entry=>[entry.provider+':'+entry.id,entry])),paths=[],dots=new Map();let bottom=0;
   for(const child of entries){
     const parentKey=Object.prototype.hasOwnProperty.call(child,'parentKey')?child.parentKey:child.parentId?child.provider+':'+child.parentId:null;
     if(!parentKey)continue;
     const parent=entries.find(entry=>entry.key===parentKey)||byIdentity.get(parentKey);
     const parentRect=parent?.glanceRect||parent?.rowRect;
     if(!parent?.nameRect||!parentRect||!child.nameRect||!child.glanceRect||parentRect.width<=0||child.glanceRect.width<=0)continue;
-    const parentDot=refined?parent.dotRect:null,childDot=refined?child.dotRect:null;
+    const parentDot=parent.dotRect,childDot=child.dotRect;
     const px=Math.max(0,parentDot?.width?parentDot.left-rootRect.left+parentDot.width/2:parentRect.left-rootRect.left+2),py=parentDot?.height?parentDot.top-rootRect.top+parentDot.height/2:parent.nameRect.top-rootRect.top+Math.min(parent.nameRect.height||19,19)/2;
     const cx=Math.max(0,childDot?.width?childDot.left-rootRect.left+childDot.width/2:child.glanceRect.left-rootRect.left+2),cy=childDot?.height?childDot.top-rootRect.top+childDot.height/2:child.nameRect.top-rootRect.top+Math.min(child.nameRect.height||19,19)/2;
     if(![px,py,cx,cy].every(Number.isFinite)||cy<0)continue;
-    if(refined){const direction=Math.sign(cx-px)||1,r=Math.max(0,Math.min(8,Math.abs(cx-px),Math.abs(cy-py)/2));paths.push({d:r?`M${px} ${py}V${cy-r}Q${px} ${cy} ${px+direction*r} ${cy}H${cx}`:`M${px} ${py}V${cy}H${cx}`,from:parentKey,to:child.key||child.id,endY:cy});}
-    else paths.push({d:`M${px} ${py}V${cy}H${cx}`,from:parentKey,to:child.key||child.id,endY:cy});
+    const direction=Math.sign(cx-px)||1,r=Math.max(0,Math.min(8,Math.abs(cx-px),Math.abs(cy-py)/2));
+    paths.push({d:r?`M${px} ${py}V${cy-r}Q${px} ${cy} ${px+direction*r} ${cy}H${cx}`:`M${px} ${py}V${cy}H${cx}`,from:parentKey,to:child.key||child.id,endY:cy});
     for(const [x,y] of [[px,py],[cx,cy]])dots.set(x+':'+y,{cx:x,cy:y});
     bottom=Math.max(bottom,cy);
   }
-  return {width:Math.max(1,rootRect.width),height:Math.max(1,Math.ceil(bottom+2)),paths,dots:[...dots.values()],messagePositions};
+  return {width:Math.max(1,rootRect.width),height:Math.max(1,Math.ceil(bottom+2)),paths,dots:[...dots.values()]};
 }
 let treeScrollFrame=null,treeScrollListenerAttached=false;
 function scheduleRunwayTreeScrollSync(){
@@ -299,12 +264,12 @@ function scheduleRunwayTreeScrollSync(){
 // Scrolling only changes which parent rows are stuck; connector geometry is measured from the unstuck position, so it never needs redrawing here.
 function syncRunwayRootStuck(){
   const list=$('#chat-list');if(!realDom(list))return;
-  const inspect=COMPACT&&notch.mode==='inspect',rows=[];
+  const inspect=notch.mode==='inspect',rows=[];
   for(const root of list.children){if(!root.classList?.contains('chat'))continue;const row=root.querySelector?.('.row');if(row)rows.push([row,inspect&&row.getBoundingClientRect().top-root.getBoundingClientRect().top>1]);}
   for(const [row,stuck] of rows)cls(row,'runway-root-stuck',stuck);
 }
 function setupRunwayTreeScrollSync(){
-  if(treeScrollListenerAttached||!RUNWAY||!COMPACT)return;
+  if(treeScrollListenerAttached)return;
   const list=$('#chat-list');if(!list?.addEventListener)return;
   list.addEventListener('scroll',scheduleRunwayTreeScrollSync,{passive:true});
   $('.layout')?.addEventListener?.('scroll',scheduleRunwayTreeScrollSync,{passive:true});treeScrollListenerAttached=true;
@@ -316,26 +281,18 @@ function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
     let rootRect=root.getBoundingClientRect?.();const row=root.querySelector?.('.row');let rowRect=row?.getBoundingClientRect?.();
     if(!rootRect||!row||!rowRect)continue;
     if(updateTallRoot){
-      const tallRoot=COMPACT&&notch.mode==='inspect'&&layoutHeight>0&&rowRect.height>Math.max(50,layoutHeight/3),hasTallClass=Boolean(row.classList?.contains?.('runway-tall-root'));
+      const tallRoot=notch.mode==='inspect'&&layoutHeight>0&&rowRect.height>Math.max(50,layoutHeight/3),hasTallClass=Boolean(row.classList?.contains?.('runway-tall-root'));
       if(tallRoot!==hasTallClass){row.classList?.toggle?.('runway-tall-root',tallRoot);tallRootChanged=true;rootRect=root.getBoundingClientRect?.()||rootRect;rowRect=row.getBoundingClientRect?.()||rowRect;}
     }
-    const stuckOffset=COMPACT&&notch.mode==='inspect'?rowRect.top-rootRect.top:0;
+    const stuckOffset=notch.mode==='inspect'?rowRect.top-rootRect.top:0;
     row.classList?.toggle?.('runway-root-stuck',stuckOffset>1);
     // Measure a stuck parent where it sits unstuck, so the tree does not change as the list scrolls.
     const unstick=rect=>rect&&stuckOffset>1?{left:rect.left,right:rect.right,width:rect.width,height:rect.height,top:rect.top-stuckOffset,bottom:rect.bottom-stuckOffset}:rect;
     rowRect=unstick(rowRect);
     const visible=[...root.querySelectorAll('.ag.runway-agent[data-sub]')].filter(el=>!el._leaving&&el.getClientRects?.().length!==0);
-    const entries=[{key:root.dataset.key,...(()=>{const item=state.forest?.rows.find(candidate=>candidate.key===root.dataset.key),name=row.querySelector?.('.r-title'),anchor=REFINED?row.querySelector?.('.runway-refined-tree-anchor'):null;return {provider:item?.provider,id:item?.id,parentKey:treeParentKey(item),rowRect,messageRect:rowRect,nameRect:unstick(name?.getBoundingClientRect?.()),dotRect:unstick(anchor?.getBoundingClientRect?.())};})()}];
-    for(const el of visible){const item=state.forest?.rows.find(candidate=>candidate.key===el.dataset.sub),glance=el.querySelector?.('.runway-agent-glance'),name=el.querySelector?.('.runway-agent-name'),anchor=REFINED?glance?.querySelector?.('.runway-refined-tree-anchor'):null;if(item)entries.push({key:item.key,provider:item.provider,id:item.id,parentKey:el.dataset.visibleParent||treeParentKey(item),rowRect:el.getBoundingClientRect?.(),messageRect:glance?.getBoundingClientRect?.(),nameRect:name?.getBoundingClientRect?.(),glanceRect:glance?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()});}
-    const geometry=runwayTreePathGeometry(rootRect,entries,REFINED),paths=geometry.paths.map(path=>path.d),dots=geometry.dots;
-    if(!REFINED){
-      for(const target of [row,...visible.map(el=>el.querySelector?.('.runway-agent-glance'))])target?.querySelector?.('[data-runway-slot="message-lane"]')?.removeAttribute('data-message-positioned');
-      for(const position of geometry.messagePositions){
-        const entry=entries.find(item=>item.key===position.key),target=position.key===root.dataset.key?row:visible.find(el=>el.dataset.sub===position.key)?.querySelector?.('.runway-agent-glance'),slot=target?.querySelector?.('[data-runway-slot="message-lane"]');
-        if(!entry||!target?.style||!slot)continue;
-        target.style.setProperty('--message-offset-x',position.x+'px');target.style.setProperty('--message-offset-y',position.y+'px');slot.setAttribute('data-message-positioned','true');
-      }
-    }
+    const entries=[{key:root.dataset.key,...(()=>{const item=state.forest?.rows.find(candidate=>candidate.key===root.dataset.key),name=row.querySelector?.('.r-title'),anchor=row.querySelector?.('.runway-refined-tree-anchor');return {provider:item?.provider,id:item?.id,parentKey:treeParentKey(item),rowRect,messageRect:rowRect,nameRect:unstick(name?.getBoundingClientRect?.()),dotRect:unstick(anchor?.getBoundingClientRect?.())};})()}];
+    for(const el of visible){const item=state.forest?.rows.find(candidate=>candidate.key===el.dataset.sub),glance=el.querySelector?.('.runway-agent-glance'),name=el.querySelector?.('.runway-agent-name'),anchor=glance?.querySelector?.('.runway-refined-tree-anchor');if(item)entries.push({key:item.key,provider:item.provider,id:item.id,parentKey:el.dataset.visibleParent||treeParentKey(item),rowRect:el.getBoundingClientRect?.(),messageRect:glance?.getBoundingClientRect?.(),nameRect:name?.getBoundingClientRect?.(),glanceRect:glance?.getBoundingClientRect?.(),dotRect:anchor?.getBoundingClientRect?.()});}
+    const geometry=runwayTreePathGeometry(rootRect,entries),paths=geometry.paths.map(path=>path.d),dots=geometry.dots;
     let svg=[...root.children].find(el=>el.classList?.contains('runway-tree-connectors'));
     if(!paths.length){svg?.remove();continue;}
     const {width,height}=geometry;
@@ -353,79 +310,38 @@ function put(el,key,value){if(el&&el[key]!==value)el[key]=value;}
 function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttribute?.(name,value);}
 function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
-  if(!RUNWAY)return;
-  if(COMPACT){
-    const mode=compactModeForState();
-    if(notch.mode&&notch.mode!==mode)closeToolbarMenu();
-    if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
-    if(mode==='inspect'){
-      if(notch.mode!=='inspect'){inspectLayoutGeneration++;inspectWidthCorrectionUsed=false;clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}
-      applyInspectLayoutWidth(monitorState.current);
-    }else if(notch.mode==='inspect')cancelInspectLayoutReconcile();
-    blurPointerToolbarFocus(mode);
-    const wasExpanded=notch.expanded;
-    notch.mode=mode;notch.expanded=mode==='inspect';
-    if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
-    const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
-    if(dashboardView){put(dashboardView,'hidden',!dashboardVisible);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
-    const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
-    if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
-    for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
-    for(const name of ['idle','rest','controls','inspect','dashboard'])cls(document.body,'compact-'+name,mode===name);
-    if(document.body?.dataset&&document.body.dataset.notchMode!==mode)document.body.dataset.notchMode=mode;
-    cls(document.body,'notch-expanded',notch.expanded);
-    cls(document.body,'notch-collapsed',!notch.expanded);
-    cls(document.body,'notch-auto-open',notch.autoExpanded&&notch.expanded);
-    cls(document.body,'notch-inspecting',mode==='inspect');
-    if(notch.expanded&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
-    renderRunwayCounts(notch.counts);
-    const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
-    if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded||mode==='dashboard',height,reduced,mode],signature);}
-    if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
-    return;
-  }
+  const mode=compactModeForState();
+  if(notch.mode&&notch.mode!==mode)closeToolbarMenu();
+  if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
+  if(mode==='inspect'){
+    if(notch.mode!=='inspect'){inspectLayoutGeneration++;inspectWidthCorrectionUsed=false;clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}
+    applyInspectLayoutWidth(monitorState.current);
+  }else if(notch.mode==='inspect')cancelInspectLayoutReconcile();
+  blurPointerToolbarFocus(mode);
   const wasExpanded=notch.expanded;
-  const restoreLockedOpen=Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded&&!state.runwaySnapshotPainted);
-  if(widgetLock.known&&widgetLock.locked)expanded=widgetLock.expanded;
-  const canOpen=Boolean(widgetLock.known&&state.runwaySnapshotPainted&&(notch.active>0||(widgetLock.locked&&widgetLock.expanded)));
-  if(!canOpen)expanded=false;
-  if(!expanded){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;notch.autoClosePending=false;if(!state.popover){notch.inspecting=false;if(!notch.keyboardInspecting)notch.manual=false;}}
-  const closingQuestion=!expanded&&state.popover?.dataset?.action==='runway-question';
-  if(closingQuestion)closePopover({restoreFocus:false,updateNotch:false});
-  notch.expanded=Boolean(expanded&&canOpen&&(widgetLock.known&&widgetLock.locked?widgetLock.expanded:(notch.active||notch.manual||notch.inspecting||notch.autoExpanded||state.popover)));
+  notch.mode=mode;notch.expanded=mode==='inspect';
   if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
+  const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
+  if(dashboardView){put(dashboardView,'hidden',!dashboardVisible);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
   const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
-  if(hidden&&(closingQuestion||sections.some(section=>section.contains?.(document.activeElement))))$('#sync-age')?.focus?.({preventScroll:true});
+  if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
   for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
-  document.body?.classList?.toggle('notch-expanded',notch.expanded);
-  document.body?.classList?.toggle('notch-collapsed',!notch.expanded);
-  document.body?.classList?.toggle('notch-auto-open',Boolean(notch.autoExpanded&&notch.expanded));
-  document.body?.classList?.toggle('notch-inspecting',Boolean((notch.inspecting||notch.manual||state.popover)&&notch.expanded));
+  for(const name of ['idle','rest','controls','inspect','dashboard'])cls(document.body,'compact-'+name,mode===name);
+  if(document.body?.dataset&&document.body.dataset.notchMode!==mode)document.body.dataset.notchMode=mode;
+  cls(document.body,'notch-expanded',notch.expanded);
+  cls(document.body,'notch-collapsed',!notch.expanded);
+  cls(document.body,'notch-auto-open',notch.autoExpanded&&notch.expanded);
+  cls(document.body,'notch-inspecting',mode==='inspect');
   if(notch.expanded&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
   renderRunwayCounts(notch.counts);
-  const api=window.pywebview?.api?.set_notch;
-  const height=notchHeight(),reduced=reducedMotion(),signature=notch.expanded+':'+height+':'+reduced;
-  if(api&&widgetLock.known&&!restoreLockedOpen&&notch.sent!==signature){notch.sent=signature;Promise.resolve(api(notch.expanded,height,reduced)).catch(()=>{notch.sent=null;});}
+  const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
+  if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded||mode==='dashboard',height,reduced,mode],signature);}
+  if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
 }
 function expandForNewWork() {
-  if((!widgetLock.known||widgetLock.locked)&&!COMPACT)return;
-  if(COMPACT){
-    if(notch.autoTimer!=null){notch.autoExpanded=true;setNotch(true);return;}
-    notch.autoExpanded=true;setNotch(true);notch.autoClosePending=false;
-    notch.autoTimer=setTimeout(()=>{notch.autoTimer=null;if(state.popover){notch.autoClosePending=true;return;}notch.autoExpanded=false;setNotch(false);},3000);
-    return;
-  }
   if(notch.autoTimer!=null){notch.autoExpanded=true;setNotch(true);return;}
-  setNotch(true);
-  notch.autoExpanded=true;setNotch(true);
-  notch.autoClosePending=false;
-  notch.autoTimer=setTimeout(()=>{
-    notch.autoTimer=null;
-    // New-work reveals end on schedule unless the user explicitly inspected it.
-    if(state.popover){notch.autoClosePending=true;return;}
-    notch.autoExpanded=false;
-    if(notch.inspecting||notch.manual)setNotch(true);else setNotch(false);
-  },3000);
+  notch.autoExpanded=true;setNotch(true);notch.autoClosePending=false;
+  notch.autoTimer=setTimeout(()=>{notch.autoTimer=null;if(state.popover){notch.autoClosePending=true;return;}notch.autoExpanded=false;setNotch(false);},3000);
 }
 // Reveal only on subagent lifecycle (started, finished, back after finishing) and on new questions;
 // messages, turns and token updates never pop the widget. A status flap shorter than
@@ -483,87 +399,45 @@ function syncCompactNotch(count,items) {
   if(newWork)expandForNewWork();else setNotch(false);
 }
 function syncNotch(count,items=[]) {
-
-  if(COMPACT){syncCompactNotch(count,items);return;}
-  const current=new Map(items.map(item=>typeof item==="string"?[item,{key:item,active:true}]:[item.key,item]));
-  const activeKeys=new Set([...current.values()].filter(item=>item.active).map(item=>item.key));
-  if(!runwayCurrentEvidenceFresh()){
-    notch.active=0;
-    clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
-    notch.inspectTimer=notch.exitTimer=notch.autoTimer=notch.timer=null;
-    notch.hover=false;notch.contentHover=false;notch.manual=false;notch.inspecting=false;notch.keyboardInspecting=false;notch.autoExpanded=false;notch.autoClosePending=false;
-    if(state.popover?.dataset?.action==='runway-question')closePopover({restoreFocus:false,updateNotch:false});
-    setNotch(Boolean(widgetLock.known&&widgetLock.locked&&widgetLock.expanded));return;
-  }
-  const lifecycle=lifecycleStates(current);
-  const newWork=notch.activeKeys===null?activeKeys.size>0:lifecycle.changed;
-  const nextStates=lifecycle.next;
-  notch.workStates=nextStates;
-  notch.activeKeys=activeKeys;
-  notch.active=count;
-  if(widgetLock.known&&widgetLock.locked){
-    clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
-    notch.inspectTimer=notch.exitTimer=notch.autoTimer=notch.timer=null;
-    notch.hover=false;notch.contentHover=false;notch.manual=false;notch.inspecting=false;notch.keyboardInspecting=false;notch.autoExpanded=false;notch.autoClosePending=false;
-    if(state.popover?.dataset?.action==='runway-question')closePopover({restoreFocus:false,updateNotch:false});
-    setNotch(widgetLock.expanded);return;
-  }
-  if(!count){
-    clearTimeout(notch.inspectTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.timer);
-    notch.inspectTimer=notch.exitTimer=notch.autoTimer=notch.timer=null;
-    notch.hover=false;notch.contentHover=false;notch.manual=false;notch.inspecting=false;notch.keyboardInspecting=false;notch.autoExpanded=false;notch.autoClosePending=false;
-    if(state.popover?.dataset?.action==='runway-question')closePopover({restoreFocus:false,updateNotch:false});
-    setNotch(false);return;
-  }
-  if(!count&&!notch.keyboardInspecting&&!state.popover)notch.manual=false;
-  if(count&&newWork)expandForNewWork();
-  else if(!count&&notch.autoExpanded&&notch.autoTimer!=null&&!notch.keyboardInspecting&&!notch.inspecting&&!state.popover)setNotch(true);
-  else setNotch((count||notch.keyboardInspecting||notch.inspecting||state.popover)&&(notch.expanded||notch.inspecting||notch.manual));
+  syncCompactNotch(count,items);
 }
 function setupNotch() {
-  if(!RUNWAY)return;
   setupRunwayTreeScrollSync();
-  if(!widgetLock.known)syncWidgetDragRegions(true);
   const widget=$('.widget');
-  const pointerPoint=event=>COMPACT&&Number.isFinite(event.screenX)&&Number.isFinite(event.screenY)?{x:event.screenX,y:event.screenY}:{x:event.clientX,y:event.clientY};
+  const pointerPoint=event=>Number.isFinite(event.screenX)&&Number.isFinite(event.screenY)?{x:event.screenX,y:event.screenY}:{x:event.clientX,y:event.clientY};
   const inHeader=event=>{
     if(event.target?.closest?.('.titlebar'))return true;
     const rect=$('.titlebar')?.getBoundingClientRect?.();
     return Boolean(rect&&event.clientX>=rect.left&&event.clientX<=rect.right&&event.clientY>=rect.top&&event.clientY<=rect.bottom);
   };
-  const scheduleInspect=()=>{if((!COMPACT&&(!widgetLock.known||widgetLock.locked))||notch.inspectTimer!=null||!state.runwaySnapshotPainted||(!COMPACT&&!notch.active))return;notch.inspectTimer=setTimeout(()=>{notch.inspectTimer=null;if((COMPACT||widgetLock.known&&!widgetLock.locked)&&notch.hover&&(!COMPACT?notch.contentHover:!notch.hoverSuppressed)&&state.runwaySnapshotPainted&&(COMPACT||notch.active)){notch.inspecting=true;setNotch(true);}},COMPACT?60:120);};
-  const leave=()=>{if(!COMPACT&&(!widgetLock.known||widgetLock.locked))return;clearTimeout(notch.exitTimer);notch.exitTimer=setTimeout(()=>{
+  const scheduleInspect=()=>{if(notch.inspectTimer!=null||!state.runwaySnapshotPainted)return;notch.inspectTimer=setTimeout(()=>{notch.inspectTimer=null;if(notch.hover&&!notch.hoverSuppressed&&state.runwaySnapshotPainted){notch.inspecting=true;setNotch(true);}},60);};
+  const leave=()=>{clearTimeout(notch.exitTimer);notch.exitTimer=setTimeout(()=>{
     if(!notch.hover&&!compactHasFocus())closeToolbarMenu();
-    if(COMPACT){
-      const held=keepOpenState.value||state.searchOpen||Boolean(state.popover);
-      if(!notch.hover&&!compactHasFocus()&&!notch.keyboardInspecting&&!held){const wasInspecting=notch.inspecting||notch.manual;notch.inspecting=false;notch.manual=false;if(wasInspecting){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;}}
-      setNotch(false);return;
-    }
-    if(widgetLock.known&&!widgetLock.locked&&!notch.hover&&!notch.keyboardInspecting&&!state.popover){const wasInspecting=notch.inspecting||notch.manual;notch.inspecting=false;notch.manual=false;if(wasInspecting){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;setNotch(false);}else if(!notch.autoExpanded)setNotch(false);}
-  },COMPACT?110:160);};
-  widget.addEventListener('pointerenter',event=>{if(!COMPACT&&(!widgetLock.known||widgetLock.locked))return;const point=pointerPoint(event),deliberateEntry=notch.globalPointerX!=null&&notch.globalPointerY!=null&&Math.hypot(point.x-notch.globalPointerX,point.y-notch.globalPointerY)>=4;notch.hover=true;notch.contentHover=!inHeader(event);notch.pointerX=point.x;notch.pointerY=point.y;clearTimeout(notch.exitTimer);clearTimeout(notch.timer);if(COMPACT){if(!notch.hoverSuppressed&&deliberateEntry)scheduleInspect();setNotch(false);}else if(notch.contentHover&&(!notch.autoExpanded||deliberateEntry))scheduleInspect();});
+    const held=keepOpenState.value||state.searchOpen||Boolean(state.popover);
+    if(!notch.hover&&!compactHasFocus()&&!notch.keyboardInspecting&&!held){const wasInspecting=notch.inspecting||notch.manual;notch.inspecting=false;notch.manual=false;if(wasInspecting){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;}}
+    setNotch(false);
+  },110);};
+  widget.addEventListener('pointerenter',event=>{const point=pointerPoint(event),deliberateEntry=notch.globalPointerX!=null&&notch.globalPointerY!=null&&Math.hypot(point.x-notch.globalPointerX,point.y-notch.globalPointerY)>=4;notch.hover=true;notch.contentHover=!inHeader(event);notch.pointerX=point.x;notch.pointerY=point.y;clearTimeout(notch.exitTimer);clearTimeout(notch.timer);if(!notch.hoverSuppressed&&deliberateEntry)scheduleInspect();setNotch(false);});
   widget.addEventListener('pointermove',event=>{
-    if(!COMPACT&&(!widgetLock.known||widgetLock.locked))return;
     const point=pointerPoint(event),moved=notch.pointerX!=null&&Math.hypot(point.x-notch.pointerX,point.y-notch.pointerY)>=4;
-    if(!COMPACT||moved||notch.inspecting){notch.pointerX=point.x;notch.pointerY=point.y;}
+    if(moved||notch.inspecting){notch.pointerX=point.x;notch.pointerY=point.y;}
     notch.contentHover=notch.hover&&!inHeader(event);
-    if(!notch.contentHover&&!COMPACT){clearTimeout(notch.inspectTimer);notch.inspectTimer=null;}
-    else if(moved&&!notch.keyboardInspecting&&!notch.inspecting&&(!COMPACT||!notch.hoverSuppressed))scheduleInspect();
-    if(COMPACT)setNotch(false);
+    if(moved&&!notch.keyboardInspecting&&!notch.inspecting&&!notch.hoverSuppressed)scheduleInspect();
+    setNotch(false);
   });
-  widget.addEventListener('pointerleave',()=>{if(!COMPACT&&(!widgetLock.known||widgetLock.locked))return;notch.hover=false;notch.hoverSuppressed=false;notch.contentHover=false;clearTimeout(notch.inspectTimer);notch.inspectTimer=null;leave();});
-  widget.addEventListener('focusin',()=>{if(COMPACT){clearTimeout(notch.exitTimer);notch.exitTimer=null;setNotch(false);}});
-  widget.addEventListener('focusout',event=>{if(COMPACT&&event.relatedTarget&&widget.contains?.(event.relatedTarget))return;leave();});
-  const closeInspection=()=>{if(!COMPACT&&(!widgetLock.known||widgetLock.locked))return;notch.keyboardInspecting=false;notch.inspecting=false;notch.manual=false;notch.contentHover=false;if(COMPACT){clearTimeout(notch.inspectTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.timer);notch.inspectTimer=notch.autoTimer=notch.exitTimer=notch.timer=null;notch.autoExpanded=false;notch.autoClosePending=false;notch.hoverSuppressed=notch.hover;if(compactHasFocus())document.activeElement?.blur?.();}if(!state.popover)setNotch(false);};
-  if(COMPACT){document.addEventListener('pointerdown',()=>{compactInputModality='pointer';},true);document.addEventListener('keydown',()=>{compactInputModality='keyboard';},true);}
+  widget.addEventListener('pointerleave',()=>{notch.hover=false;notch.hoverSuppressed=false;notch.contentHover=false;clearTimeout(notch.inspectTimer);notch.inspectTimer=null;leave();});
+  widget.addEventListener('focusin',()=>{clearTimeout(notch.exitTimer);notch.exitTimer=null;setNotch(false);});
+  widget.addEventListener('focusout',event=>{if(event.relatedTarget&&widget.contains?.(event.relatedTarget))return;leave();});
+  const closeInspection=()=>{notch.keyboardInspecting=false;notch.inspecting=false;notch.manual=false;notch.contentHover=false;clearTimeout(notch.inspectTimer);clearTimeout(notch.autoTimer);clearTimeout(notch.exitTimer);clearTimeout(notch.timer);notch.inspectTimer=notch.autoTimer=notch.exitTimer=notch.timer=null;notch.autoExpanded=false;notch.autoClosePending=false;notch.hoverSuppressed=notch.hover;if(compactHasFocus())document.activeElement?.blur?.();if(!state.popover)setNotch(false);};
+  document.addEventListener('pointerdown',()=>{compactInputModality='pointer';},true);document.addEventListener('keydown',()=>{compactInputModality='keyboard';},true);
   document.addEventListener('pointermove',event=>{const point=pointerPoint(event);notch.globalPointerX=point.x;notch.globalPointerY=point.y;},true);
-  window.tokenTrackerInspect=()=>{if((!COMPACT&&(!widgetLock.known||widgetLock.locked))||!state.runwaySnapshotPainted||(!COMPACT&&!notch.active))return false;notch.keyboardInspecting=true;notch.manual=true;notch.inspecting=true;clearTimeout(notch.exitTimer);setNotch(true);if(widget&&!widget.hasAttribute?.('tabindex'))widget.setAttribute?.('tabindex','-1');widget?.focus?.({preventScroll:true});return true;};
+  window.tokenTrackerInspect=()=>{if(!state.runwaySnapshotPainted)return false;notch.keyboardInspecting=true;notch.manual=true;notch.inspecting=true;clearTimeout(notch.exitTimer);setNotch(true);if(widget&&!widget.hasAttribute?.('tabindex'))widget.setAttribute?.('tabindex','-1');widget?.focus?.({preventScroll:true});return true;};
   window.tokenTrackerCloseInspection=closeInspection;
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!state.popover&&!state.searchOpen){closeInspection();}});
-  window.addEventListener('pywebviewready',()=>{notch.sent=null;if(COMPACT){compactBridge.appliedSignature=null;compactBridge.pending=null;void syncKeepOpen();}void syncWidgetLock().then(()=>syncMonitors());});
+  window.addEventListener('pywebviewready',()=>{notch.sent=null;compactBridge.appliedSignature=null;compactBridge.pending=null;void syncKeepOpen();void syncWidgetLock().then(()=>syncMonitors());});
   if(window.pywebview?.api?.get_widget_lock)void syncWidgetLock().then(()=>syncMonitors());
   $('#monitor-toggle')?.addEventListener('click',toggleMonitor);
-  updateWidgetLockButton();if(COMPACT){updateKeepOpenButton();void syncKeepOpen();}
+  updateWidgetLockButton();updateKeepOpenButton();void syncKeepOpen();
   syncMonitors();
   setInterval(syncMonitors,10000);
   setNotch(false);
@@ -653,7 +527,7 @@ function applyInspectLayoutWidth(monitor){
   return changed;
 }
 function armInspectLayoutReconcile(signature){
-  if(!COMPACT||notch.mode!=='inspect'||signature!==inspectExpectedSignature
+  if(notch.mode!=='inspect'||signature!==inspectExpectedSignature
       ||inspectRequestResizeGeneration!==inspectResizeGeneration||compactBridge.busy||compactBridge.pending
       ||compactBridge.inFlightSignature||compactBridge.appliedSignature!==signature||inspectWidthCorrectionUsed)return;
   clearInspectLayoutTimer();
@@ -689,52 +563,27 @@ function applyMonitorResult(result,requestGeneration,selectionGeneration){
   return true;
 }
 function setupWindowDrag() {
-  if(!RUNWAY)return;
-  if(COMPACT){
-    let gesture=null,queue=Promise.resolve();
-    document.addEventListener('mousedown',event=>{
-      if(!widgetLock.known||event.button!==0||gesture||!event.target?.closest?.('.compact-toolbar.pywebview-drag-region,.compact-summary.pywebview-drag-region')||event.target.closest('button,input,textarea,select,a,[role="button"],[data-action],[contenteditable="true"]'))return;
-      const api=window.pywebview?.api;
-      if(typeof api?.begin_drag!=='function'||typeof api?.end_drag!=='function')return;
-      let release;
-      const current={ended:false,commit:false,released:new Promise(resolve=>{release=resolve;})};current.release=release;gesture=current;
-      const operation=queue.then(async()=>{
-        const result=await api.begin_drag('compact-v1');
-        if(!result||result.accepted!==true||!Number.isSafeInteger(result.generation))return false;
-        if(!current.ended)await current.released;
-        await api.end_drag(result.generation,current.commit);return true;
-      });
-      queue=operation.catch(()=>false);
-    },true);
-    const endCompact=event=>{
-      if(!gesture||(event?.type==='mouseup'&&event.button!==0))return;
-      const current=gesture;gesture=null;current.commit=event?.type==='mouseup'&&event.button===0;current.ended=true;current.release();
-    };
-    document.addEventListener('mouseup',endCompact,true);window.addEventListener('mouseup',endCompact,true);
-    document.addEventListener('pointercancel',endCompact,true);window.addEventListener('blur',endCompact,true);
-    return;
-  }
   let gesture=null,queue=Promise.resolve();
   document.addEventListener('mousedown',event=>{
-    if(!widgetLock.known||widgetLock.locked||event.button!==0||gesture||!event.target?.closest?.('.pywebview-drag-region')||event.target.closest('button,input,textarea,select,a,[role="button"]'))return;
+    if(!widgetLock.known||event.button!==0||gesture||!event.target?.closest?.('.compact-toolbar.pywebview-drag-region,.compact-summary.pywebview-drag-region')||event.target.closest('button,input,textarea,select,a,[role="button"],[data-action],[contenteditable="true"]'))return;
     const api=window.pywebview?.api;
-    if(!api?.begin_drag||!api?.end_drag)return;
-    const current={x:event.clientX,y:event.clientY,moved:false,api};
-    current.started=queue.then(()=>api.begin_drag()).catch(()=>false);
-    queue=current.started;gesture=current;
+    if(typeof api?.begin_drag!=='function'||typeof api?.end_drag!=='function')return;
+    let release;
+    const current={ended:false,commit:false,released:new Promise(resolve=>{release=resolve;})};current.release=release;gesture=current;
+    const operation=queue.then(async()=>{
+      const result=await api.begin_drag('compact-v1');
+      if(!result||result.accepted!==true||!Number.isSafeInteger(result.generation))return false;
+      if(!current.ended)await current.released;
+      await api.end_drag(result.generation,current.commit);return true;
+    });
+    queue=operation.catch(()=>false);
   },true);
-  document.addEventListener('mousemove',event=>{
-    if(gesture&&Math.hypot(event.clientX-gesture.x,event.clientY-gesture.y)>=2)gesture.moved=true;
-  },true);
-  const end=event=>{
+  const endCompact=event=>{
     if(!gesture||(event?.type==='mouseup'&&event.button!==0))return;
-    const current=gesture;gesture=null;
-    queue=current.started.then(started=>started===false?false:current.api.end_drag(current.moved)).catch(()=>false);
+    const current=gesture;gesture=null;current.commit=event?.type==='mouseup'&&event.button===0;current.ended=true;current.release();
   };
-  document.addEventListener('mouseup',end,true);
-  window.addEventListener('mouseup',end,true);
-  document.addEventListener('pointercancel',end,true);
-  window.addEventListener('blur',end,true);
+  document.addEventListener('mouseup',endCompact,true);window.addEventListener('mouseup',endCompact,true);
+  document.addEventListener('pointercancel',endCompact,true);window.addEventListener('blur',endCompact,true);
 }
 async function syncMonitors() {
   const requestGeneration=++monitorRequestGeneration,selectionGeneration=monitorSelectionGeneration;
@@ -875,11 +724,11 @@ function plainOptionsHTML(options) {
 function optionsHTML(options, thread) {
   const opts=Array.isArray(options)?options:[];
   const t=thread?' data-thread="'+esc(thread)+'"':'';
-  return '<div class="q-opts">'+(opts.length?'<span class="q-action-note">Open Codex to answer · queue is a later message</span>':'')+opts.map((text,i)=>'<div class="q-choice"><button class="q-opt" data-action="answer" data-answer="'+esc(text)+'"'+t+' aria-label="Open Codex to answer: '+esc(text)+'" title="Open this task in Codex and select the choice in its question prompt. The choice is also copied for reference."><b>'+(i+1)+'</b>'+(RUNWAY?'<span>Open in Codex</span> · ':'')+esc(text)+ICON.check+'</button><button class="q-open q-queue" data-action="queue-answer" data-answer="'+esc(text)+'"'+t+' title="Queue this as a message for the next turn. It will not answer the pending question."><span>Queue to chat</span></button></div>').join("")+
+  return '<div class="q-opts">'+(opts.length?'<span class="q-action-note">Open Codex to answer · queue is a later message</span>':'')+opts.map((text,i)=>'<div class="q-choice"><button class="q-opt" data-action="answer" data-answer="'+esc(text)+'"'+t+' aria-label="Open Codex to answer: '+esc(text)+'" title="Open this task in Codex and select the choice in its question prompt. The choice is also copied for reference."><b>'+(i+1)+'</b><span>Open in Codex</span> · '+esc(text)+ICON.check+'</button><button class="q-open q-queue" data-action="queue-answer" data-answer="'+esc(text)+'"'+t+' title="Queue this as a message for the next turn. It will not answer the pending question."><span>Queue to chat</span></button></div>').join("")+
     (thread?'<button class="q-open" data-action="open"'+t+' title="Open this chat in Codex">'+ICON.open+'<span>'+(opts.length?"Open":"Answer in Codex")+'</span>'+ICON.check+'</button>':'')+'</div>';
 }
 const QUESTION_STALE_MS=24*60*60*1000;
-const isAsking = chat => (!RUNWAY||(!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS)))&&(Boolean(chat.pendingQuestion)||normalizeStatus(chat.status)==="needs-input");
+const isAsking = chat => (!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS))&&(Boolean(chat.pendingQuestion)||normalizeStatus(chat.status)==="needs-input");
 // A failure is only actionable while it is recent (30 min).
 const recentFail = chat => chat.status==="failed"&&Date.now()-stamp(chat.updatedAt)<FAIL_WINDOW_MS;
 const needsAttention = chat => isAsking(chat)||recentFail(chat);
@@ -887,7 +736,7 @@ const agentLive = chat => chat.status==="running"||chat.status==="compacting"||c
 const runwayTerminated = chat => Boolean(chat.deleted||chat.isDeleted)||[chat.stateDetail,chat.sourceStatus].some(value=>/^(?:completed|finished|stopped|interrupted|deleted|expired)$/i.test(String(value||'')));
 const runwayWaiting = chat => !chat.telemetryUnavailable&&!runwayTerminated(chat)&&isAsking(chat);
 function runwayExecutionView(chat) {
-  if(!RUNWAY||runwayWaiting(chat)||runwayTerminated(chat)||chat.telemetryUnavailable||stamp(chat.executionTerminalAt))return null;
+  if(runwayWaiting(chat)||runwayTerminated(chat)||chat.telemetryUnavailable||stamp(chat.executionTerminalAt))return null;
   const status=normalizeStatus(chat.executionStatus),source=chat.executionSource;
   if(!['running','compacting'].includes(status)||!['transcript','app','hook'].includes(source))return null;
   const observed=stamp(chat.executionObservedAt),age=Date.now()-observed;
@@ -898,13 +747,13 @@ function runwayExecutionView(chat) {
 const runwayEffectiveStatus = chat => {
   const execution=runwayExecutionView(chat);
   if(execution)return execution.status;
-  if(RUNWAY&&chat.executionStatus!==undefined)return runwayWaiting(chat)?'needs-input':['idle','failed'].includes(normalizeStatus(chat.executionStatus))?normalizeStatus(chat.executionStatus):'unknown';
+  if(chat.executionStatus!==undefined)return runwayWaiting(chat)?'needs-input':['idle','failed'].includes(normalizeStatus(chat.executionStatus))?normalizeStatus(chat.executionStatus):'unknown';
   return normalizeStatus(chat.status);
 };
 const runwayRunning = chat => !runwayTerminated(chat)&&!runwayWaiting(chat)&&(chat.executionStatus!==undefined?Boolean(runwayExecutionView(chat)):['running','compacting'].includes(chat.status));
 const runwayActive = chat => runwayRunning(chat)||runwayWaiting(chat);
 function runwayActivityEvidence(chat) {
-  if(!RUNWAY||runwayTerminated(chat))return {status:'inactive',activity:null};
+  if(runwayTerminated(chat))return {status:'inactive',activity:null};
   if(!runwayCurrentEvidenceFresh())return {status:chat.telemetryUnavailable?'unavailable':'stale',activity:null};
   if(Object.prototype.hasOwnProperty.call(chat,'executionStatus')){
     const normalized=normalizeStatus(chat.executionStatus),status=normalized==='needs-input'?'waiting':normalized,source=chat.executionSource;
@@ -946,12 +795,12 @@ function jumpToWaiting() {
   if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>requestAnimationFrame(reveal));else reveal();
 }
 function renderRunwayCounts(counts) {
-  const nodes=[$('#notch-counts'),...(COMPACT?[$('#compact-counts')]:[])].filter(Boolean);if(!nodes.length)return;
+  const nodes=[$('#notch-counts'),...[$('#compact-counts')]].filter(Boolean);if(!nodes.length)return;
   if(!counts){for(const node of nodes){if(node._runwayCountHTML!==''){node.innerHTML='';node._runwayCountHTML='';}if(node.title)node.title='';if(node.getAttribute?.('aria-label'))node.removeAttribute?.('aria-label');}return;}
   const chatsWord=counts.roots===1?'chat':'chats';
   const label=counts.roots+' chat group'+(counts.roots===1?'':'s')+', '+counts.total+' active, '+counts.waiting+' waiting';
   const badge=(slot,value,unit,tone,path,meaning,visible=true)=>{if(unit==='chat'||unit==='chats')meaning='visible chat groups';const hidden=visible?'':' aria-hidden="true"';const jump=slot==='waiting'&&visible?' data-action="jump-waiting" role="button" tabindex="0"':'';return '<span data-count-slot="'+slot+'" class="runway-count runway-count-'+slot+' t-'+tone+(visible?'':' is-empty')+'"'+hidden+jump+' aria-label="'+value+' '+meaning+(jump?', show the first':'')+'" title="'+value+' '+meaning+(jump?' · click to show':'')+'"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="'+path+'"/></svg><span class="count-value">'+(visible?value:'')+'</span><span class="count-unit">'+(visible?unit:'')+'</span></span>';};
-  const html=badge('groups',counts.roots,chatsWord,'live','M2 2h8v6H5l-3 2Z',chatsWord,!COMPACT||counts.roots>0)+badge('active',counts.total,'active','live','M3 1v8h6M3 4h6M9 2v4M9 7v4','active',!COMPACT||counts.total>0)+badge('waiting',counts.waiting,'waiting','attn','M6 2v5M6 9h.01','waiting',Boolean(counts.waiting));
+  const html=badge('groups',counts.roots,chatsWord,'live','M2 2h8v6H5l-3 2Z',chatsWord,counts.roots>0)+badge('active',counts.total,'active','live','M3 1v8h6M3 4h6M9 2v4M9 7v4','active',counts.total>0)+badge('waiting',counts.waiting,'waiting','attn','M6 2v5M6 9h.01','waiting',Boolean(counts.waiting));
   for(const node of nodes){
     if(node._runwayCountHTML!==html){node.innerHTML=html;node._runwayCountHTML=html;}
     if(node.title!==label)node.title=label;
@@ -1053,13 +902,6 @@ async function loadAvatars() {
 }
 
 /* ---------- data ---------- */
-function providerActivity(provider, days) {
-  if(!Array.isArray(provider.activity))return null;
-  const end=new Date();end.setHours(0,0,0,0);
-  const start=new Date(end);start.setDate(start.getDate()-days+1);
-  return provider.activity.reduce((sum,item)=>{const date=new Date(item.date+"T00:00:00");return date>=start && date<=end ? sum+(safeNumber(item.value)||0) : sum;},0);
-}
-const connectedActivity = (provider, days) => provider.connected===false ? null : providerActivity(provider, days);
 const knownSum = values => values.every(value=>value==null) ? null : values.reduce((sum,value)=>sum+(value||0),0);
 function resetAt(item, observedAt) {
   if(safeNumber(item.resetAt)!=null)return Number(item.resetAt)*1000;
@@ -1116,7 +958,6 @@ function syncProviderPolicyGeneration(snapshot) {
   }
 }
 function loadProviderPolicy() {
-  if(!RUNWAY)return Promise.resolve(false);
   if(providerPolicyLoader.promise)return providerPolicyLoader.promise;
   const operation=(async()=>{
     let policy=null;
@@ -1140,31 +981,22 @@ function loadProviderPolicy() {
 // Sources the switch can offer: visible chat providers under policy, in a fixed order.
 function sourceNames(snapshot) { const visible=visibleProviderNames(snapshot);return SOURCES.filter(name=>visible.has(name)); }
 function effectiveSource(snapshot) { const names=sourceNames(snapshot);return names.includes(state.source)?state.source:(names[0]||"Codex"); }
-const runwaySource = snapshot => RUNWAY?sourceNames(snapshot):["Codex"];
+const runwaySource = snapshot => sourceNames(snapshot);
 function providersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=(snapshot?.providers||[]);
-  const names=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
-  return names.filter(name=>visible.has(name)).map(name=>available.find(p=>p.name===name)||{name,connected:false,chats:[]});
+  return runwaySource(snapshot).filter(name=>visible.has(name)).map(name=>available.find(p=>p.name===name)||{name,connected:false,chats:[]});
 }
 // Chat providers plus providers shown only as quota meters (reset block and alerts).
 function limitProvidersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=snapshot?.providers||[];
-  const enabled=RUNWAY?runwaySource(snapshot):(snapshot?.enabledProviders||["Codex"]);
-  if(RUNWAY){
-    const names=sourceNames(snapshot);
-    return names.flatMap(name=>{
-      const provider=available.find(item=>item.name===name),bootstrap=quotaBootstrap.providers[name];
-      const hasQuota=item=>Boolean(item&&["fiveHour","weekly"].some(key=>{
-        const value=item[key];return value&&typeof value==="object"&&(safeNumber(value.percent)!=null||resetAt(value,item.limitsUpdatedAt)!=null);
-      }));
-      const selected=hasQuota(provider)?provider:hasQuota(bootstrap)?bootstrap:null;
-      return selected?[selected]:[];
-    });
-  }
-  const names=[...enabled,...(RUNWAY?[]:(snapshot?.limitProviders||[]).filter(name=>!enabled.includes(name)))].filter(name=>visible.has(name));
-  return [...new Set(names)].map(name=>{
-    const provider=available.find(item=>item.name===name);if(provider)return provider;
-    return {...(quotaBootstrap.providers[name]||{name,connected:false,chats:[]}),name,limitsOnly:!enabled.includes(name)};
+  const names=sourceNames(snapshot).filter(name=>visible.has(name));
+  return names.flatMap(name=>{
+    const provider=available.find(item=>item.name===name),bootstrap=quotaBootstrap.providers[name];
+    const hasQuota=item=>Boolean(item&&["fiveHour","weekly"].some(key=>{
+      const value=item[key];return value&&typeof value==="object"&&(safeNumber(value.percent)!=null||resetAt(value,item.limitsUpdatedAt)!=null);
+    }));
+    const selected=hasQuota(provider)?provider:hasQuota(bootstrap)?bootstrap:null;
+    return selected?[selected]:[];
   });
 }
 function snapshotParentKey(provider, raw, edges=null) {
@@ -1191,7 +1023,7 @@ function buildForest(providers, graph=undefined) {
   const map=new Map();
   for(const provider of providers)for(const raw of provider.chats||[]) {
     const chat={...raw,provider:provider.name,status:normalizeStatus(raw.status),children:[]};
-    if(RUNWAY)chat.sourceStatus=raw.status;
+    chat.sourceStatus=raw.status;
     if(raw.statusSource==="unavailable"){chat.status="unknown";chat.telemetryUnavailable=true;}
     const fallbackKey=keyOf(chat),validKey=typeof raw.key==="string"&&raw.key===fallbackKey?raw.key:fallbackKey;
     chat.key=validKey;
@@ -1217,10 +1049,10 @@ function buildForest(providers, graph=undefined) {
     chat.highestContext=Math.max(-1,...[chat,...chat.descendants].map(c=>safeNumber(c.contextPercent)??-1));
     chat.priority=Math.min(...[chat,...chat.descendants].map(runwayRank));
     const list=$('#chat-list'),interacting=state.pointerInList||list?.contains?.(document.activeElement)||state.popover?.dataset?.action==='runway-question';
-    if(!RUNWAY||!interacting)chat.children.sort((a,b)=>b.latest-a.latest);
+    if(!interacting)chat.children.sort((a,b)=>b.latest-a.latest);
   }
   roots.forEach(root=>aggregate(root,root));
-  if(RUNWAY){
+  {
     placeRows([...map.values()]);
     const byPlace=(a,b)=>rowPlace.rank.get(a.key)-rowPlace.rank.get(b.key);
     const visit=chat=>{chat.children.sort(byPlace);chat.descendants=[];for(const child of chat.children){visit(child);chat.descendants.push(child,...child.descendants);}};
@@ -1238,7 +1070,7 @@ function placeRows(rows) {
 }
 function stabilizeRunwayForest(forest, previous) {
   const container=$('#chat-list'),interacting=state.pointerInList||container?.contains?.(document.activeElement)||state.popover?.dataset?.action==='runway-question';
-  if(!RUNWAY||!interacting||!previous)return;
+  if(!interacting||!previous)return;
   const oldRows=new Map(previous.rows.map(chat=>[chat.key,chat]));
   for(const parent of forest.rows){
     if(parent.children.length<2)continue;
@@ -1266,21 +1098,18 @@ function matchesQuery(chat, query) {
   if(query.flags.has("running")&&chat.status!=="running")return false;
   if(query.flags.has("failed")&&chat.status!=="failed")return false;
   if(query.flags.has("hidden")&&!state.hiddenChats.has(chat.key))return false;
-  return !query.text||[chat.title,agentLabel(chat),chat.model,modelLabel(chat),chat.workspace,...(RUNWAY?[chat.assignment,chat.objective,chat.latestRequest,chat.latestUpdate]:[])].join(" ").toLowerCase().includes(query.text);
+  return !query.text||[chat.title,agentLabel(chat),chat.model,modelLabel(chat),chat.workspace,chat.assignment,chat.objective,chat.latestRequest,chat.latestUpdate].join(" ").toLowerCase().includes(query.text);
 }
 const inWindow = (chat, days) => Date.now()-chat.latest<=days*86400000;
 // Latest tree-wide activity first. Pins keep older chats in view but never reorder the timeline.
 function visibleRoots(forest, days=state.windowDays) {
   const query=parseQuery(state.query);
-  const byLatest=[...forest.roots].sort((a,b)=>b.latest-a.latest);
-  if(RUNWAY)return [...forest.roots].sort((a,b)=>(rowPlace.rank.get(a.key)??0)-(rowPlace.rank.get(b.key)??0)).filter(chat=>{
+  return [...forest.roots].sort((a,b)=>(rowPlace.rank.get(a.key)??0)-(rowPlace.rank.get(b.key)??0)).filter(chat=>{
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||(REFINED&&COMPACT&&chat.descendants.some(runwayActionable)))&&matches;
+      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||chat.descendants.some(runwayActionable))&&matches;
   });
-  const keep=chat=>query.active ? [chat,...chat.descendants].some(c=>matchesQuery(c,query)) : state.pins.has(chat.key)||(RUNWAY&&state.showHidden&&state.hiddenChats.has(chat.key))||inWindow(chat,days);
-  return byLatest.filter(chat=>(!RUNWAY||state.showHidden||!state.hiddenChats.has(chat.key))&&keep(chat));
 }
 function nextWindowWithChats(forest) {
   for(const days of WINDOWS.filter(d=>d>state.windowDays)) {
@@ -1313,20 +1142,20 @@ function warmthView(chat) {
 // One shared staleness rule: after STALE_AFTER_MS without a successful refresh the widget says so once ("Updated 3m ago")
 // and elapsed timers stop at the last good update instead of counting on or going blank.
 const STALE_AFTER_MS=60000;
-const dataIsStale=()=>Boolean(RUNWAY&&state.lastOkAt&&Date.now()-state.lastOkAt>=STALE_AFTER_MS);
+const dataIsStale=()=>Boolean(state.lastOkAt&&Date.now()-state.lastOkAt>=STALE_AFTER_MS);
 const clockNow=()=>dataIsStale()?state.lastOkAt:Date.now();
 function runInfo(chat) {
-  if(RUNWAY&&chat.retainedRun===true){
+  if(chat.retainedRun===true){
     const start=stamp(chat.activeRunStartedAt||chat.runStartedAt||chat.executionSince),end=stamp(chat.stoppedAt);
     return start&&end>=start?{live:false,seconds:(end-start)/1000}:null;
   }
-  const execution=RUNWAY?runwayExecutionView(chat):null;
+  const execution=runwayExecutionView(chat);
   if(execution){
     const start=stamp(chat.executionSince),now=clockNow();
     return start&&start<=now?{seconds:Math.max(0,(now-start)/1000),live:true}:null;
   }
-  if(RUNWAY&&chat.executionStatus!==undefined)return null;
-  const start=stamp(RUNWAY&&agentLive(chat)?chat.activeRunStartedAt||chat.runStartedAt:chat.runStartedAt);
+  if(chat.executionStatus!==undefined)return null;
+  const start=stamp(agentLive(chat)?chat.activeRunStartedAt||chat.runStartedAt:chat.runStartedAt);
   if(!start)return null;
   const live=agentLive(chat)&&!chat.runEndedAt;
   const end=live?clockNow():stamp(chat.runEndedAt)||chat.latest||stamp(chat.updatedAt)||start;
@@ -1370,8 +1199,8 @@ function attentionItems(forest, providers, watcher=state.watcher, now=Date.now()
   }
   for(const chat of rows) {
     const target=(chat.root||chat).key,sub=hasTreeParent(chat)?chat.key:"";
-    if(RUNWAY&&!state.showHidden&&state.hiddenChats.has(target))continue;
-    if(RUNWAY&&runwayTerminated(chat))continue;
+    if(!state.showHidden&&state.hiddenChats.has(target))continue;
+    if(runwayTerminated(chat))continue;
     if(isAsking(chat)) {
       const since=stamp(chat.attentionSince)||stamp(chat.pendingQuestionAt)||stamp(chat.updatedAt);
       const dismiss=questionDismissToken(chat);
@@ -1385,19 +1214,13 @@ function attentionItems(forest, providers, watcher=state.watcher, now=Date.now()
       clearResolvedQuestionDismissals(chat);
     if(recentFail(chat)) {
       const dismiss="failed:"+chat.key+":"+chat.updatedAt;
-      if(!state.dismissed.has(dismiss))items.push({key:"failed:"+chat.key,kind:"failed",tone:"err",label:chat.stateDetail==="interrupted"?"Stopped":"Failed",title:pathTitle(chat),fact:ageShort(stamp(chat.updatedAt)),tip:chat.failureReason||chat.stateDetail||"",target,sub,...(RUNWAY&&isCodexChat(chat)?{thread:chat.id}:{}),dismiss,sort:-stamp(chat.updatedAt)});
+      if(!state.dismissed.has(dismiss))items.push({key:"failed:"+chat.key,kind:"failed",tone:"err",label:chat.stateDetail==="interrupted"?"Stopped":"Failed",title:pathTitle(chat),fact:ageShort(stamp(chat.updatedAt)),tip:chat.failureReason||chat.stateDetail||"",target,sub,...(isCodexChat(chat)?{thread:chat.id}:{}),dismiss,sort:-stamp(chat.updatedAt)});
     }
     const pct=safeNumber(chat.contextPercent);
     if(pct!=null&&pct>=90&&now-chat.latest<ACTIVE_WINDOW_MS) {
       const dismiss="context:"+chat.key+":"+(chat.compactions||0);
       const left=safeNumber(chat.contextWindow)!=null&&safeNumber(chat.contextTokens)!=null?fmt(Math.max(0,chat.contextWindow-chat.contextTokens))+" left":"";
-      if(!state.dismissed.has(dismiss))items.push({key:"context:"+chat.key,kind:"context",tone:"err",label:"Usage",labelMono:Math.round(pct)+"%",title:pathTitle(chat),fact:left,target,sub,...(RUNWAY&&isCodexChat(chat)?{thread:chat.id}:{}),dismiss,sort:-pct});
-    }
-    if(!RUNWAY&&!chat.parentId) {
-      const warmth=warmthView(chat),penalty=coldPenalty(chat);
-      const dismiss="cooling:"+chat.key+":"+chat.usageUpdatedAt;
-      if(warmth.kind==="cooling"&&safeNumber(chat.contextTokens)>=COOLING_MIN_TOKENS&&!state.dismissed.has(dismiss))
-        items.push({key:"cooling:"+chat.key,kind:"cooling",tone:"attn",label:"Cold in",labelMono:warmth.text,title:chat.title||"Untitled",fact:"+"+fmt(penalty)+" if cold",target,dismiss,ring:warmth.fraction,sort:warmth.left});
+      if(!state.dismissed.has(dismiss))items.push({key:"context:"+chat.key,kind:"context",tone:"err",label:"Usage",labelMono:Math.round(pct)+"%",title:pathTitle(chat),fact:left,target,sub,...(isCodexChat(chat)?{thread:chat.id}:{}),dismiss,sort:-pct});
     }
   }
   return items.sort((a,b)=>KIND_ORDER[a.kind]-KIND_ORDER[b.kind]||a.sort-b.sort);
@@ -1411,11 +1234,11 @@ function stripItemHTML(item) {
     (item.copy?'<button class="chip" data-action="copy" data-copy="'+esc(item.copy)+'" title="Copy">'+esc(item.copy)+ICON.copy+ICON.check+'</button>':'')+
     (item.dismiss?'<button class="icon-btn si-x" data-action="dismiss" data-dismiss="'+esc(item.dismiss)+'" aria-label="'+dismissLabel+'" title="'+dismissLabel+'">'+ICON.close+'</button>':'')+
     '</div>'+(item.kind==="ask"?askHTML(item):item.line2?'<div class="si-q">'+richText(item.line2)+'</div>':'')+
-    (RUNWAY&&item.sub&&item.thread&&item.kind!=='ask'?'<div class="runway-alert-actions"><button class="q-open" data-action="open" data-thread="'+esc(item.thread)+'">'+ICON.open+'Open agent'+ICON.check+'</button></div>':'')+'</div>';
+    (item.sub&&item.thread&&item.kind!=='ask'?'<div class="runway-alert-actions"><button class="q-open" data-action="open" data-thread="'+esc(item.thread)+'">'+ICON.open+'Open agent'+ICON.check+'</button></div>':'')+'</div>';
 }
 // A free-text question keeps its action on the question line; only answer choices get a chip row.
 function askHTML(item) {
-  if(RUNWAY) {
+  {
     const expanded=state.expandedQuestions.has(item.key);
     const summary='<button class="runway-question-toggle" data-action="toggle-question" data-question="'+esc(item.key)+'" aria-expanded="'+expanded+'"><span class="runway-question-title">'+(item.line2?richText(item.line2):'Waiting for your input')+'</span><span class="runway-expand-label">'+(expanded?'Hide':'Details')+'</span></button>';
     if(!expanded)return '<div class="runway-question">'+summary+'</div>';
@@ -1429,9 +1252,9 @@ function askHTML(item) {
 }
 function renderStrip(items) {
   const node=$("#strip");if(!node)return;
-  if(RUNWAY){node.replaceChildren?.();node.innerHTML="";node.hidden=true;node.classList?.remove("open");return;}
+  {node.replaceChildren?.();node.innerHTML="";node.hidden=true;node.classList?.remove("open");return;}
   node.hidden=false;
-  const limit=RUNWAY?1:3,over=items.length-limit;
+  const limit=1,over=items.length-limit;
   const entries=items.map((item,i)=>({key:item.key,cls:"si t-"+item.tone+" k-"+item.kind+(i>=limit&&!state.stripOpen?" over":""),
     attrs:{role:item.target?"button":null,tabindex:item.target?"0":null,"data-action":item.target?"jump":null,"data-target":item.target||null,"data-sub":item.sub||null,title:item.tip||item.line2||item.title||null},
     html:stripItemHTML(item),item}));
@@ -1450,7 +1273,7 @@ function beginNotchOpening() {
   const body=document.body;if(typeof body?.classList?.add!=='function')return;
   for(const row of document.querySelectorAll?.('.runway-row-enter')||[])clearRunwayArrival(row);
   body.classList.add('notch-opening');
-  let milliseconds=COMPACT?383:331;
+  let milliseconds=383;
   try{
     const raw=window.getComputedStyle?.(body)?.getPropertyValue?.('--notch-open-suppression')?.trim();
     const match=raw?.match(/^(\d+(?:\.\d+)?)(ms|s)$/);
@@ -1477,7 +1300,7 @@ const realDom = node => Boolean(node&&node.children&&typeof document.createEleme
 function attrString(attrs) { return Object.entries(attrs||{}).filter(([,v])=>v!=null).map(([k,v])=>' '+k+'="'+esc(v)+'"').join(""); }
 function syncPatchedAttributes(current,next) {
   const oldEvent=current.getAttribute?.('data-model-change-at'),newEvent=next.getAttribute?.('data-model-change-at');
-  if(RUNWAY&&oldEvent&&newEvent&&oldEvent!==newEvent&&current.matches?.('.runway-model-name.model-changed')&&next.matches?.('.runway-model-name.model-changed')){current.classList.remove('model-changed');void current.offsetWidth;}
+  if(oldEvent&&newEvent&&oldEvent!==newEvent&&current.matches?.('.runway-model-name.model-changed')&&next.matches?.('.runway-model-name.model-changed')){current.classList.remove('model-changed');void current.offsetWidth;}
   const message=current.matches?.('.runway-message-indicator')&&next.matches?.('.runway-message-indicator');
   const sameMessage=message&&current.getAttribute('data-message-at')===next.getAttribute('data-message-at');
   if(message&&!sameMessage&&state.runwaySnapshotPainted)runwayMotionOnce(current,'message-arrived','runway-message-dot-arrival','.runway-message-dots i:nth-child(3)');
@@ -1488,7 +1311,7 @@ function syncPatchedAttributes(current,next) {
   }
 }
 function animateInsertedMessageBadges(el) {
-  if(!RUNWAY||!state.runwaySnapshotPainted||state.sourceSwitching)return;
+  if(!state.runwaySnapshotPainted||state.sourceSwitching)return;
   const messages=[...(el.matches?.('.runway-message-indicator')?[el]:[]),...(el.querySelectorAll?.('.runway-message-indicator')||[])];
   for(const message of messages)runwayMotionOnce(message,'message-arrived','runway-message-dot-arrival','.runway-message-dots i:nth-child(3)');
 }
@@ -1549,7 +1372,7 @@ function patchKeyed(container, entries, {enter,exit}={}) {
     if(!el){el=document.createElement("div");el.dataset.key=entry.key;fresh=true;}
     if(el.className!==entry.cls)el.className=entry.cls;
     for(const [k,v] of Object.entries(entry.attrs||{})){if(v==null)el.removeAttribute(k);else if(el.getAttribute(k)!==String(v))el.setAttribute(k,v);}
-    if(el._html!==entry.html){if(RUNWAY&&(entry.cls.includes('runway-agent')))runwayPatchContent(el,entry.html);else el.innerHTML=entry.html;el._html=entry.html;syncBreath(el);}
+    if(el._html!==entry.html){if(entry.cls.includes('runway-agent'))runwayPatchContent(el,entry.html);else el.innerHTML=entry.html;el._html=entry.html;syncBreath(el);}
     el._entry=entry;
     const next=prev?prev.nextSibling:container.firstChild;
     if(next!==el)container.insertBefore(el,next);
@@ -1568,10 +1391,10 @@ function syncBreath(el) {
 /* ---------- reset block ---------- */
 function watcherTone(watcher, name) {
   const w=watcher?.providers?.[name];
-  if(!watcher||!w)return {tone:"mute",tip:RUNWAY?"":"Auto-greet unavailable"};
+  if(!watcher||!w)return {tone:"mute",tip:""};
   if(!watcher.enabled||!watcher.running)return {tone:"mute",tip:"Auto-greet off"};
   const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
-  const tip=RUNWAY?["Auto-greet",next?clock(next*1000):null,last?"last "+clock(last)+(verified?" ✓":""):null].filter(Boolean).join(" · "):"Auto-greet "+(next?clock(next*1000):"—")+(last?" · last "+clock(last)+(verified?" ✓":""):"");
+  const tip=["Auto-greet",next?clock(next*1000):null,last?"last "+clock(last)+(verified?" ✓":""):null].filter(Boolean).join(" · ");
   if(w.needsLogin||w.phase==="needs_login"||w.lastPollError||w.failedAttempts>0)return {tone:"err",tip};
   if(w.lastError){
     if(w.unverifiedAttempts>0&&/no new reset deadline was observed/i.test(w.lastError))return {tone:"attn",tip:tip+" · greeting sent, reset unconfirmed"};
@@ -1586,11 +1409,11 @@ function resetView(provider, key) {
   // A sample stamped up to a minute ahead of this clock (clock skew, a paused page) counts as fresh, not as missing.
   const sampled=stamp(quotaAt),rawAge=sampled?Date.now()-sampled:null,age=rawAge!=null&&rawAge<0&&rawAge>=-60000?0:rawAge;
   const unverified=provider.name==="Claude"&&provider.identityVerified!==true;
-  const measured=!unverified&&item.lastKnown!==true&&(!RUNWAY||(provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000));
+  const measured=!unverified&&item.lastKnown!==true&&provider.connected!==false&&used!=null&&sampled&&age!=null&&age>=0&&age<=600000;
   const observedParts=used!=null&&sampled&&age!=null&&age>=0?resetParts(item,quotaAt,key):{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const maxAge=key==="weekly"?7*86400000:86400000;
-  const lastKnown=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>=0&&(unverified?age<maxAge:item.lastKnown===true?(observedParts.target!=null&&observedParts.seconds>0):age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0)));
-  const expired=Boolean(RUNWAY&&!measured&&used!=null&&sampled&&age!=null&&age>600000&&observedParts.target!=null&&observedParts.seconds<=0);
+  const lastKnown=Boolean(!measured&&used!=null&&sampled&&age!=null&&age>=0&&(unverified?age<maxAge:item.lastKnown===true?(observedParts.target!=null&&observedParts.seconds>0):age>600000&&age<maxAge&&(observedParts.target==null||observedParts.seconds>0)));
+  const expired=Boolean(!measured&&used!=null&&sampled&&age!=null&&age>600000&&observedParts.target!=null&&observedParts.seconds<=0);
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const hasReset=Boolean((measured&&parts.target)||(lastKnown&&parts.target&&parts.seconds>0));
@@ -1598,10 +1421,10 @@ function resetView(provider, key) {
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
   return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,resetTarget:hasReset&&parts.target!=null?Number(parts.target):null,
-    tone:shownUsed==null||lastKnown?"":RUNWAY?(shownUsed>80?"err":shownUsed>50?"attn":""):shownUsed>=70?"err":shownUsed>=50?"attn":"",day:RUNWAY&&!hasReset?"":parts.day,time:RUNWAY&&!hasReset?"":parts.time,countdown:RUNWAY?(hasReset?runwayCountdown:""):parts.countdown,due:parts.due,
+    tone:shownUsed==null||lastKnown?"":shownUsed>80?"err":shownUsed>50?"attn":"",day:!hasReset?"":parts.day,time:!hasReset?"":parts.time,countdown:hasReset?runwayCountdown:"",due:parts.due,
     // Keep the last-known age beside each independently rendered quota value.
-    stale:RUNWAY?"":key==="fiveHour"&&provider.connected!==false&&used!=null&&(age==null||age>600000)?"sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"):"",
-    tip:(provider.name==="Claude"&&provider.identityVerified!==true?"Account unverified · ":provider.name==="Claude"&&provider.identityLabel?provider.identityLabel+" · ":"")+(RUNWAY?(lastKnown?"Last reported by "+provider.name+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):""):"Quota sampled "+(sampled?ageShort(sampled)+" ago":"\u2014"))};
+    stale:"",
+    tip:(provider.name==="Claude"&&provider.identityVerified!==true?"Account unverified · ":provider.name==="Claude"&&provider.identityLabel?provider.identityLabel+" · ":"")+(lastKnown?"Last reported by "+provider.name+" "+lastKnownAge:sampled&&measured?"Quota sample at "+clock(sampled):"")};
 }
 function clearRunwayArrival(el) {
   if(!el)return;
@@ -1610,14 +1433,14 @@ function clearRunwayArrival(el) {
   el._runwayArrivalEnd=null;el.classList?.remove('runway-row-enter');
 }
 function runwayArrivalEnter(el) {
-  if(!el||reducedMotion()||state.sourceSwitching||document.body?.classList?.contains?.('notch-opening')||COMPACT&&Date.now()<state.startupCalmUntil)return;
+  if(!el||reducedMotion()||state.sourceSwitching||document.body?.classList?.contains?.('notch-opening')||Date.now()<state.startupCalmUntil)return;
   clearRunwayArrival(el);el.classList.add('runway-row-enter');
   const finish=event=>{if(event&& (event.target!==el||event.animationName!=='runway-row-arrival'))return;clearRunwayArrival(el);};
   el._runwayArrivalEnd=finish;el.addEventListener?.('animationend',finish);
   el._runwayArrivalTimer=setTimeout(()=>finish(),350);
 }
 function runwayMotionOnce(el,className,animationName,targetSelector=null) {
-  if(!el||reducedMotion()||COMPACT&&Date.now()<state.startupCalmUntil)return;
+  if(!el||reducedMotion()||Date.now()<state.startupCalmUntil)return;
   el._runwayMotionHandlers||=new Map();
   const previous=el._runwayMotionHandlers.get(className);if(previous){el.removeEventListener?.('animationend',previous.finish);el.removeEventListener?.('animationcancel',previous.cancel);}
   el.classList?.remove(className);void el.offsetWidth;
@@ -1634,9 +1457,9 @@ function runwayMotionOnce(el,className,animationName,targetSelector=null) {
 }
 function runwayExit(el) {
   if(!el)return;
-  if(reducedMotion()||COMPACT&&Date.now()<state.startupCalmUntil||el.getClientRects&&el.getClientRects().length===0){el.remove();return;}
+  if(reducedMotion()||Date.now()<state.startupCalmUntil||el.getClientRects&&el.getClientRects().length===0){el.remove();return;}
   el._leaving=true;clearRunwayArrival(el);el.classList?.add('runway-exit');
-  const finish=event=>{if(event?.animationName!=='runway-row-exit')return;el.removeEventListener?.('animationend',finish);el.removeEventListener?.('animationcancel',finish);el.remove();if(COMPACT)scheduleNotchSize();};
+  const finish=event=>{if(event?.animationName!=='runway-row-exit')return;el.removeEventListener?.('animationend',finish);el.removeEventListener?.('animationcancel',finish);el.remove();scheduleNotchSize();};
   el.addEventListener?.('animationend',finish);el.addEventListener?.('animationcancel',finish);
   setTimeout(()=>{if(el.isConnected)finish({animationName:'runway-row-exit'});},250);
 }
@@ -1650,7 +1473,7 @@ function bankedResetView(banked) {
   return {text:"↻ "+count,tip:Math.round(count)+" banked reset"+(count===1?"":"s")+(lines.length?": "+lines.join("; "):"")};
 }
 function renderResets(providers) {
-  const node=$("#resets"),weeklyNode=REFINED?$("#weekly-resets"):null;if(!node)return;
+  const node=$("#resets"),weeklyNode=$("#weekly-resets");if(!node)return;
   const shape=providers.map(p=>p.name).join("|");
   node.dataset.providerCount=String(providers.length);if(weeklyNode)weeklyNode.dataset.providerCount=String(providers.length);
   if(node.dataset.shape!==shape) {
@@ -1659,27 +1482,25 @@ function renderResets(providers) {
       const id="r"+i+"-"+key,providerClass=p.name==="Claude"?"provider-claude":"provider-codex";
       return '<div id="'+id+'-row" class="rr rr-'+key+' '+providerClass+'"><div class="rr-head"><span class="rr-label">'+(key==="fiveHour"?"5-hour":"Weekly")+'</span><span class="rr-provider" id="'+id+'-name">'+esc(p.name)+'</span>'+
         (key==="fiveHour"&&p.name==="Codex"?'<button class="greet t-mute" id="'+id+'-greet" data-action="watcher" data-provider="'+esc(p.name)+'" aria-label="Auto-greet status"><i></i></button>':'')+
-        '<span class="rr-stale" id="'+id+'-stale"></span>'+(key==="weekly"?'<span class="rr-banked" id="'+id+'-banked" hidden></span>':'')+'<span class="rr-left" id="'+id+'-left">'+(RUNWAY?'<span class="rr-value"><b>\uFFFD</b><i>used</i></span>':'\uFFFD')+'</span></div>'+
+        '<span class="rr-stale" id="'+id+'-stale"></span>'+(key==="weekly"?'<span class="rr-banked" id="'+id+'-banked" hidden></span>':'')+'<span class="rr-left" id="'+id+'-left"><span class="rr-value"><b>\uFFFD</b><i>used</i></span></span></div>'+
         '<div class="rr-moment"><span class="rr-day" id="'+id+'-day"></span><span class="rr-time" id="'+id+'-time">\uFFFD:\uFFFD</span><span class="rr-cd" id="'+id+'-cd"></span></div>'+
         '<div class="meter" role="progressbar" aria-label="'+(key==="fiveHour"?"5-hour":"weekly")+' limit used" aria-valuemin="0" aria-valuemax="100" id="'+id+'-meter"><i id="'+id+'-bar"></i></div></div>';
     }).join("");
-    if(REFINED){node.innerHTML=markup("fiveHour");if(weeklyNode)weeklyNode.innerHTML=markup("weekly");}
-    else node.innerHTML=markup("fiveHour")+markup("weekly");
+    node.innerHTML=markup("fiveHour");if(weeklyNode)weeklyNode.innerHTML=markup("weekly");
   }
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
     const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");put(row,"title",view.tip);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
-    if(RUNWAY){const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;put(left,"title",view.tip);}}
-    else set("-left",view.usedText);
+    const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;put(left,"title",view.tip);}
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
-    const left=$(id+"-left");put(left,"className","rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.tip);
-    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));if(RUNWAY){const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}}
+    put(left,"className","rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.tip);
+    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}
     const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
     else{const banked=$(id+"-banked"),view=bankedResetView(p.bankedResets);if(banked){if(banked.textContent!==view.text)banked.textContent=view.text;put(banked,"title",view.tip);attr(banked,"aria-label",view.tip);banked.hidden=!view.text;}}
   }));
-  if(RUNWAY){renderGreeterStatus(providers);}
+  renderGreeterStatus(providers);
 }
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;
@@ -1724,20 +1545,13 @@ function runwayContextDelta(chat,pair=runwayContextPair(chat)) {
   return Boolean(pair.observed&&observed===pair.observed&&chat.contextModel===chat.model&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&typeof delta==='number'&&Number.isFinite(delta))?delta:null;
 }
 function contextHTML(chat) {
-  if(RUNWAY) {
-    const pair=runwayContextPair(chat),tokens=pair.tokens,windowSize=pair.windowSize;
-    if(tokens==null)return '';
-    const pct=windowSize>0?tokens*100/windowSize:null;
-    const tone=pct==null?'':pct>75?'err':pct>50?'attn':'';
-    const delta=runwayContextDelta(chat,pair),deltaText=delta==null?'':'; change since previous sample '+(delta>0?'+':'')+fmt(delta)+' tokens';
-    const title='Context occupancy: '+String(tokens)+' / '+(windowSize==null?'window size unknown':String(windowSize))+' tokens'+deltaText;
-    return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+(windowSize==null?'—':fmt(windowSize))+'</span></span></span>';
-  }
-  const pct=safeNumber(chat.contextPercent);
-  const title='';
-  if(pct==null)return '<span class="ctx"'+title+'><span class="meter-s"></span><span class="ctx-pct t-mute">—</span></span>';
-  const tone=contextTone(pct);
-  return '<span class="ctx'+(tone?" t-"+tone:"")+'"'+title+'><span class="meter-s"><i style="width:'+Math.max(0,Math.min(100,pct))+'%"></i></span><span class="ctx-pct">'+Math.round(pct)+'%</span></span>';
+  const pair=runwayContextPair(chat),tokens=pair.tokens,windowSize=pair.windowSize;
+  if(tokens==null)return '';
+  const pct=windowSize>0?tokens*100/windowSize:null;
+  const tone=pct==null?'':pct>75?'err':pct>50?'attn':'';
+  const delta=runwayContextDelta(chat,pair),deltaText=delta==null?'':'; change since previous sample '+(delta>0?'+':'')+fmt(delta)+' tokens';
+  const title='Context occupancy: '+String(tokens)+' / '+(windowSize==null?'window size unknown':String(windowSize))+' tokens'+deltaText;
+  return '<span class="ctx-tokens" title="'+esc(title)+'"><span class="runway-context-fraction"><span class="runway-context-used'+(tone?' t-'+tone:'')+'">'+fmt(tokens)+'</span><span class="runway-context-separator"> / </span><span class="runway-context-total">'+(windowSize==null?'?':fmt(windowSize))+'</span></span></span>';
 }
 function warmCellHTML(chat) {
   const view=warmthView(chat);
@@ -1832,15 +1646,7 @@ function runwayDetailHTML(chat, agent=false) {
     (agent&&owner?'<div class="runway-owner">'+esc('Delegated by '+owner)+'</div>':'');
 }
 function rowHTML(chat) {
-  const st=rollup(chat);
-  if(RUNWAY)return runwayTelemetryHTML(chat,false);
-  const stateText=RUNWAY?runwayStatus(chat,st):st.word;
-  return glyphHTML(st)+
-    '<span class="r-title">'+esc(chat.title||"Untitled")+'</span>'+subCountHTML(chat)+
-    '<span class="r-age" title="Latest activity">'+ageShort(chat.latest)+'</span>'+
-    '<span class="r-meta"><span class="r-model">'+esc(modelLabel(chat))+'</span>'+contextHTML(chat)+'</span>'+
-    '<span class="r-state t-'+(st.wordTone||st.tone)+'"'+(st.title?' title="'+esc(st.title)+'"':'')+'>'+esc(stateText)+(st.via&&stateText?ICON.branch:"")+'</span>'+
-    warmCellHTML(chat);
+  return runwayTelemetryHTML(chat,false);
 }
 
 /* ---------- stat strip (section N) ---------- */
@@ -1961,11 +1767,10 @@ function runwayTelemetryHTML(chat,agent=false) {
   const messageContents=hasRecentMessage?'<span data-runway-slot="message" class="runway-message-indicator" data-message-at="'+messageAt+'" style="--message-age:-'+Math.max(0,messageAge||0)+'ms" title="Recent message'+(directionText?' · '+directionText:'')+' · visible for 10 seconds" aria-label="Recent message'+(directionText?' · '+directionText:'')+'">'+ICON.message+'<span class="runway-message-dots" aria-hidden="true"><i></i><i></i><i></i></span></span>':'';
   const messageLane='<span data-runway-slot="message-lane" class="runway-message-slot">'+messageContents+'</span>';
   const childDotTone=runwayWaiting(chat)?'attn':runwayRunning(chat)?'live':tone;
-  const childNameStatus=agent&&!REFINED?'<span data-runway-slot="name-status" class="runway-name-status'+(childDotTone?' t-'+childDotTone:'')+'"'+(!status?' aria-hidden="true"':'')+'>'+(status?runwayStatusDot(status,childDotTone):'')+'</span>':'';
-  const activityHTML=RUNWAY?runwayActivityHTML(chat):'';
+  const activityHTML=runwayActivityHTML(chat);
   const displayTitle=runwayTitle(chat,agent);
   const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
-  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+(REFINED?messageLane:'')+childNameStatus+'</span>';
+  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
   const elapsed=currentEvidence&&ownCurrent&&!statusUnavailable?runwayStateElapsed(chat):'—';
   const elapsedHTML=elapsed!=='—'?'<span data-runway-slot="elapsed" class="runway-state-elapsed" title="Elapsed in current state">'+esc(elapsed)+'</span>':'';
@@ -1984,9 +1789,9 @@ function runwayTelemetryHTML(chat,agent=false) {
   const objective=agent?runwayObjective(chat):'';
   const visibleActivity=activityHTML.replace(/<[^>]*>/g,'');
   const objectiveSlot=objective&&esc(objective)!==visibleActivity?'<div data-runway-slot="objective" class="runway-agent-objective">'+esc(objective)+'</div>':'';
-  if(REFINED){
+  {
     const stateIcon=runwayStatusGlyph(status==='Waiting'?'needs-input':status==='Compacting'?'compacting':status==='Running'||status==='Agents running'?'running':statusCode);
-    const visibleStatus=COMPACT&&status==='Agents running'?'Agents active':status;
+    const visibleStatus=status==='Agents running'?'Agents active':status;
      const stateContent=status?((status==='Waiting'&&waitingTarget?stateIcon+'<button class="runway-state-word runway-waiting-link" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">Waiting</button>':stateIcon+'<span class="runway-state-word"'+(visibleStatus!==status?' aria-label="'+esc(status)+'" title="'+esc(status)+'"':'')+'>'+esc(visibleStatus)+'</span>')):'';
     const treeAnchor='<span data-runway-slot="tree-anchor" class="runway-name-status runway-refined-tree-anchor t-'+tone+'" aria-hidden="true">'+(status?runwayStatusDot(status,tone):'')+'</span>';
     const elapsedTarget=ownCurrent||chat.retainedRun===true?chat:waitingTarget;
@@ -2010,8 +1815,8 @@ function runwayTelemetryHTML(chat,agent=false) {
     const tokenPlaceholder=awaitingSample?'<span class="runway-refined-context t-mute" title="No usable context sample yet for this run">—</span>':'';
      return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+(agent?'':cleanPath)+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+tokenPlaceholder+'</span></div>';
   }
-  return agent?messageLane+topline+'<span class="runway-agent-secondary">'+modelTiming+'</span>'+contextSlot+objectiveSlot:messageLane+topline+modelTiming+contextSlot;
 }
+
 function runwayQuestionPopover(chat) {
   if(!runwayCurrentEvidenceFresh()||chat?.telemetryUnavailable)return '';
   if(!chat||!runwayWaiting(chat))return '';
@@ -2061,19 +1866,12 @@ const sortAgents = agents => [...agents].sort((a,b)=>(isAsking(b)-isAsking(a))||
 const isWorking = a => agentLive(a)||isAsking(a);
 // Auto-review/guardian sessions are internal bookkeeping; surface them only when they need a reply.
 const runwayActionable = a => runwayCurrentEvidenceFresh()&&!runwayTerminated(a)&&(runwayWaiting(a)||recentFail(a)||runwayEffectiveStatus(a)==='failed');
-const isVisibleAgent = a => RUNWAY?(a.retainedRun===true||runwayVisibleActive(a)||(REFINED&&COMPACT&&runwayActionable(a))):isAutoReview(a)?isAsking(a):isWorking(a);
+const isVisibleAgent = a => a.retainedRun===true||runwayVisibleActive(a)||runwayActionable(a);
 function trayState(chat) {
   return chat.descendants.some(isVisibleAgent)?"active":"resting";
 }
 function agentRowEntry(agent, query, visibleParent=null, visibleDepth=null) {
-  if(RUNWAY)return {key:agent.key,cls:'ag runway-agent'+(query.active&&matchesQuery(agent,query)?' match':''),attrs:{'data-sub':agent.key,'data-provider':agent.provider,'data-visible-parent':visibleParent,style:'--agent-depth:'+Math.max(0,(visibleDepth??agent.depth??1)-1)},html:'<div class="runway-agent-glance">'+runwayTelemetryHTML(agent,true)+'</div>'};
-  const st=ownState(agent),stats=agentStats(agent),fin=noteLiveness(agent,stats.live);
-  const tip=["context "+(safeNumber(agent.contextPercent)==null?"—":Math.round(agent.contextPercent)+"%"),ageShort(agent.latest)+(agent.latest&&ageShort(agent.latest)!=="now"?" ago":""),agent.reasoningEffort?"effort "+agent.reasoningEffort:null,"click to copy resume"].filter(Boolean).join(" · ");
-  return {key:agent.key,cls:"ag"+(stats.live?" is-live":" is-done")+(isAsking(agent)?" asks":"")+(query.active&&matchesQuery(agent,query)?" match":""),
-    attrs:{role:"button",tabindex:"0","data-action":resumeCommand(agent)?"copy":null,"data-copy":resumeCommand(agent)||null,"data-sub":agent.key,title:tip},
-    html:'<span class="ag-1">'+glyphHTML(st)+'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span><span class="ag-model" title="'+esc(agent.model||"")+'">'+esc(agentModelLabel(agent))+'</span><span class="ag-state t-'+(st.wordTone||st.tone)+'">'+esc(st.word)+'</span>'+ICON.check+'</span>'+
-      '<span class="ag-2">'+statStripHTML(stats,{live:stats.live,fin})+'</span>'+
-      (agent.pendingQuestion?'<span class="ag-q">'+richText(agent.pendingQuestion)+'</span>':'')};
+  return {key:agent.key,cls:'ag runway-agent'+(query.active&&matchesQuery(agent,query)?' match':''),attrs:{'data-sub':agent.key,'data-provider':agent.provider,'data-visible-parent':visibleParent,style:'--agent-depth:'+Math.max(0,(visibleDepth??agent.depth??1)-1)},html:'<div class="runway-agent-glance">'+runwayTelemetryHTML(agent,true)+'</div>'};
 }
 function denseRowEntry(agent) {
   const stats=agentStats(agent);
@@ -2083,48 +1881,20 @@ function denseRowEntry(agent) {
 function trayEntries(chat, query) {
   const allDescendants=chat.descendants||[],byParent=new Map([chat,...allDescendants].map(a=>[a.key,a]));
   const hiddenStopped=a=>{const parent=byParent.get(treeParentKey(a));return Boolean(parent&&runwayRunning(parent)&&(runwayTerminated(a)||a.stateDetail==='stopped'||a.executionTerminalAt));};
-  const visible=a=>!hiddenStopped(a)&&isVisibleAgent(a);
-  const needed=new Set(allDescendants.filter(visible).map(a=>a.key));
-  if(RUNWAY){const byKey=new Map(allDescendants.map(a=>[a.key,a]));for(const key of [...needed]){let row=byKey.get(key),seen=new Set();while(row){const parent=treeParentKey(row);if(!parent||seen.has(parent)||!byKey.has(parent))break;seen.add(parent);needed.add(parent);row=byKey.get(parent);}}}
-  const agents=RUNWAY?allDescendants.filter(a=>needed.has(a.key)):sortAgents(allDescendants.filter(isVisibleAgent));
+  const needed=new Set(allDescendants.filter(a=>!hiddenStopped(a)&&isVisibleAgent(a)).map(a=>a.key));
+  const byKey=new Map(allDescendants.map(a=>[a.key,a]));
+  for(const key of [...needed]){let row=byKey.get(key),seen=new Set();while(row){const parent=treeParentKey(row);if(!parent||seen.has(parent)||!byKey.has(parent))break;seen.add(parent);needed.add(parent);row=byKey.get(parent);}}
+  const agents=allDescendants.filter(a=>needed.has(a.key));
   agents.forEach(a=>{if(state.agentLive.get(a.key)!==agentStats(a).live)noteLiveness(a,agentStats(a).live);});
-  if(RUNWAY&&REFINED&&COMPACT){
-    // Reparent visible agents across inactive nodes without changing forest order.
-    const all=new Map(chat.descendants.map(a=>[a.key,a])),visible=new Map(agents.map(a=>[a.key,a]));
-    const children=new Map();
-    for(const agent of agents){
-      let parent=treeParentKey(agent),seen=new Set([agent.key]);
-      while(parent!==chat.key&&!visible.has(parent)&&all.has(parent)&&!seen.has(parent)){seen.add(parent);parent=treeParentKey(all.get(parent));}
-      if(!visible.has(parent))parent=chat.key;
-      if(!children.has(parent))children.set(parent,[]);
-      children.get(parent).push(agent);
-    }
-    const entries=[];
-    function visit(parent,depth=1){
-      for(const agent of children.get(parent.key)||[]){entries.push(agentRowEntry(agent,query,parent.key,depth));visit(agent,depth+1);}
-    }
-    visit(chat);return entries;
-  }
-  if(RUNWAY){const entries=[];const visit=parent=>{for(const agent of agents.filter(a=>treeParentKey(a)===parent.key)){entries.push(agentRowEntry(agent,query));visit(agent);}};visit(chat);for(const agent of agents)if(!entries.some(e=>e.key===agent.key))entries.push(agentRowEntry(agent,query));return entries;}
-  // Agents with no recorded usage (bare auto-review shells) never get a stats strip.
-  const empty=a=>!agentLive(a)&&!recentFail(a)&&!isAsking(a)&&agentStats(a).tokens==null&&!agentStats(a).tools;
-  const full=agents.filter(a=>!empty(a)&&isWorking(a));
-  const totals=totalStats(agents);
-  return [...full.map(a=>agentRowEntry(a,query)),
-    {key:"__total",cls:"ag total",attrs:{},html:'<span class="ag-2">'+statStripHTML(totals,{live:totals.live,lead:'<span class="s s-n" title="'+agents.length+' agents"><b>Σ '+agents.length+'</b></span>'})+'</span>'}];
+  const all=new Map(allDescendants.map(a=>[a.key,a])),visible=new Map(agents.map(a=>[a.key,a]));
+  const children=new Map();
+  for(const agent of agents){let parent=treeParentKey(agent),seen=new Set([agent.key]);while(parent!==chat.key&&!visible.has(parent)&&all.has(parent)&&!seen.has(parent)){seen.add(parent);parent=treeParentKey(all.get(parent));}if(!visible.has(parent))parent=chat.key;if(!children.has(parent))children.set(parent,[]);children.get(parent).push(agent);}
+  const entries=[];
+  function visit(parent,depth=1){for(const agent of children.get(parent.key)||[]){entries.push(agentRowEntry(agent,query,parent.key,depth));visit(agent,depth+1);}}
+  visit(chat);return entries;
 }
-function runwayAgentsExpanded(chat) {
-  if(RUNWAY)return true;
-  const query=parseQuery(state.query);
-  return state.agentOpen.has(chat.key)||!state.agentCollapsed.has(chat.key)||(!state.agentSearchClosed.has(chat.key)&&query.active&&chat.descendants.some(a=>isVisibleAgent(a)&&matchesQuery(a,query)));
-}
-function traySummaryHTML(chat) {
-  if(RUNWAY)return '';
-  const agents=sortAgents(chat.descendants.filter(isVisibleAgent)),totals=totalStats(agents);
-  if(!agents.length)return "";
-  const marks=agents.slice(0,5).map(a=>'<span class="stk">'+markFor(a)+'</span>').join("")+(agents.length>5?'<span class="stk-more">+'+(agents.length-5)+'</span>':'');
-  return '<div class="sum-line"><span class="stack">'+marks+'</span>'+statStripHTML({...totals,live:false},{live:false})+'</div>';
-}
+function runwayAgentsExpanded(chat) { return true; }
+function traySummaryHTML(chat) { return ''; }
 
 /* ---------- layer 2 ---------- */
 function blockerHTML(chat) {
@@ -2146,93 +1916,42 @@ function cacheFact(chat) {
   if(view.kind==="cold")return {text:"cold",tone:""};
   return {text:"—",tone:""};
 }
-function panelHTML(chat) {
-  if(RUNWAY)return '';
-  const pct=safeNumber(chat.contextPercent),tone=contextTone(pct),cache=cacheFact(chat),stats=agentStats(chat);
-  const lead=chat.status==="running"&&chat.latestUpdate?'<div class="l2-update" title="'+esc(chat.latestUpdate)+'">'+esc(chat.latestUpdate)+'</div>'
-    :chat.status==="quiet"?'<div class="l2-update">no writes '+ageShort(chat.latest)+'</div>':"";
-  const facts='<div class="facts"><div><span class="f-l">Usage</span><span class="f-v'+(tone?" t-"+tone:"")+'">'+fmt(chat.contextTokens)+' / '+fmt(chat.contextWindow)+'</span></div>'+
-    '<div title="Cache warmth · last request hit rate"><span class="f-l">Cache</span><span class="f-v'+(cache.tone?" t-"+cache.tone:"")+'">'+esc(cache.text)+'</span></div>'+
-    '<div title="'+esc(fmt(chat.contextTokens))+' prompt re-billed at full price instead of the 90%-off cached rate"><span class="f-l">If cold</span><span class="f-v">+'+fmt(coldPenalty(chat))+'</span></div></div>';
-  const meta=[RUNWAY?runwayModelLabel(chat):modelLabel(chat),chat.reasoningEffort,chat.turns!=null?chat.turns+" turns":null,!RUNWAY&&chat.todayTokens?fmt(chat.todayTokens)+" today":null,chat.compactions?chat.compactions+" compaction"+(chat.compactions===1?"":"s"):null].filter(Boolean).join(" · ");
-  const pinned=state.pins.has(chat.key);
-  return blockerHTML(chat)+lead+facts+(RUNWAY?"":'<div class="l2-strip">'+statStripHTML(stats,{live:stats.live})+'</div>')+
-    '<div class="meta">'+esc(meta)+'</div>'+
-    '<div class="l2-foot"><span class="path" title="'+esc(chat.workspace||"")+'"><bdi>'+esc(chat.workspace||"")+'</bdi></span>'+
-    '<button class="ghost" data-action="pin" data-key="'+esc(chat.key)+'" aria-pressed="'+pinned+'">'+(pinned?"Unpin":"Pin")+'</button>'+
-    (resumeCommand(chat)?'<button class="ghost" data-action="copy" data-copy="'+esc(resumeCommand(chat))+'" title="Copy '+esc(resumeCommand(chat))+'">'+ICON.copy+ICON.check+'resume</button>':'')+'</div>';
-}
+function panelHTML(chat) { return ''; }
 
 /* ---------- chat list ---------- */
 function chatBlockHTML(chat, query) {
-  // Fallback markup (tests / no DOM): same structure the keyed patcher builds.
-  const open=state.open.has(chat.key);
-  const tray=chat.descendants.some(isVisibleAgent)?(RUNWAY?'<div class="tray '+(runwayAgentsExpanded(chat)?'runway-expanded':'runway-collapsed')+'"><div class="tray-sum">'+traySummaryHTML(chat)+'</div><div class="tray-full"><div class="tray-clip">'+(runwayAgentsExpanded(chat)?trayEntries(chat,query).map(e=>'<div class="'+e.cls+'" data-key="'+esc(e.key)+'"'+attrString(e.attrs)+'>'+e.html+'</div>').join(''):'')+'</div></div></div>':trayState(chat)==="resting"?'<div class="tray resting"><div class="tray-sum">'+traySummaryHTML(chat)+'</div></div>'
-    :'<div class="tray active"><div class="tray-full">'+trayEntries(chat,query).map(e=>'<div class="'+e.cls+'" data-key="'+esc(e.key)+'"'+attrString(e.attrs)+'>'+e.html+'</div>').join("")+'</div></div>'):"";
-  if(RUNWAY)return '<div class="chat" data-key="'+esc(chat.key)+'" data-provider="'+esc(chat.provider)+'"><div class="row">'+rowHTML(chat)+'</div>'+tray+'</div>';
-  return '<div class="chat'+(state.pins.has(chat.key)?" pinned":"")+'" data-key="'+esc(chat.key)+'"><button class="row" data-action="toggle-chat" data-key="'+esc(chat.key)+'" aria-expanded="'+open+'" title="'+esc(chat.title||"")+'">'+rowHTML(chat)+'</button>'+
-    (open?'<div class="l2 open"><div class="l2-in">'+panelHTML(chat)+'</div></div>':'')+tray+'</div>';
+  const tray=chat.descendants.some(isVisibleAgent)?'<div class="tray runway-expanded"><div class="tray-sum"></div><div class="tray-full"><div class="tray-clip">'+trayEntries(chat,query).map(e=>'<div class="'+e.cls+'" data-key="'+esc(e.key)+'"'+attrString(e.attrs)+'>'+e.html+'</div>').join('')+'</div></div></div>':'';
+  return '<div class="chat" data-key="'+esc(chat.key)+'" data-provider="'+esc(chat.provider)+'"><div class="row">'+rowHTML(chat)+'</div>'+tray+'</div>';
 }
 function emptyHTML(forest, providers) {
-  const searching=parseQuery(state.query).active;
-  // The compact tree lists only active chats, and this runs only when none is listed, so it counts as empty.
-  if(COMPACT){if(searching)return '<div class="empty">No matches</div>';forest={...forest,rows:[]};}
-  if(!forest.rows.length) {
-    const down=providers.filter(p=>p.connected===false);
-    // Visible provider(s) with no chats: one quiet line, no icon or button. A disconnected provider keeps its "No data" text.
-    return down.length?'<div class="empty">No data</div>':'<div class="empty tree-empty">No active chats</div>';
-  }
   if(parseQuery(state.query).active)return '<div class="empty">No matches</div>';
-  const next=nextWindowWithChats(forest);
-  return '<div class="empty">Nothing in '+state.windowDays+'d'+(next?'<button class="ghost" data-action="window" data-days="'+next.days+'">'+next.days+'d · '+next.count+' chat'+(next.count===1?"":"s")+'</button>':'')+'</div>';
+  const down=providers.filter(p=>p.connected===false);
+  return down.length?'<div class="empty">No data</div>':'<div class="empty tree-empty">No active chats</div>';
 }
 function updateChatEl(el, chat, query) {
-  const [row,l2,tray]=el.children,inner=l2.firstElementChild;
-  const pinned=!RUNWAY&&state.pins.has(chat.key);
-  el.classList.toggle("pinned",pinned);
-  if(RUNWAY&&el.dataset.provider!==chat.provider)el.dataset.provider=chat.provider;
+  const [row,,tray]=el.children;
+  if(el.dataset.provider!==chat.provider)el.dataset.provider=chat.provider;
   const html=rowHTML(chat);
   if(row._html!==html) {
     const next=rollup(chat).key,prevState=el.dataset.state;
-    if(RUNWAY)runwayPatchContent(row,html);else row.innerHTML=html;row._html=html;syncBreath(row);
-    if(!RUNWAY&&prevState&&prevState!==next&&!reducedMotion()){row.classList.remove("changed");void row.offsetWidth;row.classList.add("changed");}
-    if(RUNWAY&&REFINED&&prevState&&prevState!==next)runwayMotionOnce(el,'state-changed','runway-status-change');
+    runwayPatchContent(row,html);row._html=html;syncBreath(row);
+    if(prevState&&prevState!==next)runwayMotionOnce(el,'state-changed','runway-status-change');
     el.dataset.state=next;
   }
   const previousQuestionToken=el.dataset.questionToken;
-  const questionToken=RUNWAY&&runwayWaiting(chat)?questionDismissToken(chat):'';
-  if(RUNWAY&&REFINED&&state.runwaySnapshotPainted&&previousQuestionToken!==undefined&&questionToken&&previousQuestionToken!==questionToken)
+  const questionToken=runwayWaiting(chat)?questionDismissToken(chat):'';
+  if(state.runwaySnapshotPainted&&previousQuestionToken!==undefined&&questionToken&&previousQuestionToken!==questionToken)
     runwayMotionOnce(el,'question-arrived','runway-question-arrival','.runway-refined-title>.r-title,.runway-refined-title>.runway-agent-name,.runway-refined-status .runway-state-glyph');
-  if(RUNWAY)el.dataset.questionToken=questionToken;
+  el.dataset.questionToken=questionToken;
   row.title=chat.title||"";
-  const open=!RUNWAY&&state.open.has(chat.key);
-  if(!RUNWAY)row.setAttribute("aria-expanded",String(open));
-  if(open) {
-    const panel=panelHTML(chat);
-    if(inner._html!==panel){if(RUNWAY)runwayPatchContent(inner,panel);else inner.innerHTML=panel;inner._html=panel;syncBreath(inner);}
-    if(!l2.classList.contains("open")){clearTimeout(l2._timer);void l2.offsetHeight;l2.classList.add("open");}
-  } else if(l2.classList.contains("open")) {
-    l2.classList.remove("open");clearTimeout(l2._timer);
-    l2._timer=setTimeout(()=>{if(!l2.classList.contains("open")){inner.innerHTML="";inner._html="";}},260);
-  }
-  // Agent tray: always visible; resting trays collapse to one summary line and expand when the tree wakes.
-  const has=chat.descendants.some(isVisibleAgent),mode=has?trayState(chat):"none";
+  const has=chat.descendants.some(isVisibleAgent);
   tray.hidden=!has;
   if(!has)return;
-  const [sum,full]=tray.children;
-  if(RUNWAY){
-    const expanded=runwayAgentsExpanded(chat);
-    if(tray.dataset.previewExpanded!==String(expanded)){tray.dataset.previewExpanded=String(expanded);tray.className="tray "+(expanded?"runway-expanded":"runway-collapsed");}
-    const summary=traySummaryHTML(chat);
-    if(sum.firstElementChild._html!==summary){runwayPatchContent(sum.firstElementChild,summary);sum.firstElementChild._html=summary;}
-  patchKeyed(full.firstElementChild,expanded?trayEntries(chat,query):[],{enter:el=>{if(state.runwaySnapshotPainted)runwayArrivalEnter(el);},exit:runwayExit});
-    return;
-  }
-  if(tray.dataset.mode!==mode){tray.dataset.mode=mode;if(tray._init)void tray.offsetHeight;tray.className="tray "+mode;}
-  tray._init=true;
+  const [sum,full]=tray.children,expanded=runwayAgentsExpanded(chat);
+  if(tray.dataset.previewExpanded!==String(expanded)){tray.dataset.previewExpanded=String(expanded);tray.className='tray '+(expanded?'runway-expanded':'runway-collapsed');}
   const summary=traySummaryHTML(chat);
-  if(sum.firstElementChild._html!==summary){sum.firstElementChild.innerHTML=summary;sum.firstElementChild._html=summary;}
-    patchKeyed(full.firstElementChild,mode==="active"||full.firstElementChild.children.length?trayEntries(chat,query):[],{exit:runwayExit});
+  if(sum.firstElementChild._html!==summary){runwayPatchContent(sum.firstElementChild,summary);sum.firstElementChild._html=summary;}
+  patchKeyed(full.firstElementChild,expanded?trayEntries(chat,query):[],{enter:el=>{if(state.runwaySnapshotPainted)runwayArrivalEnter(el);},exit:runwayExit});
 }
 // Attention per source, independent of which forest is on screen. A new run or waiting question in an
 // unselected source flags that segment (never switches); selecting the source clears the flag.
@@ -2254,7 +1973,6 @@ function trackSourceAttention(name, items, selected, fresh) {
   else if(newWork)state.sourceAttention.add(name);
 }
 function updateSourceSwitch() {
-  if(!RUNWAY)return;
   const group=$('#source-switch');if(!group){window.TokenTrackerDashboard?.setSource?.(effectiveSource(state.snapshot));return;}
   const policyReady=validPublicProviderPolicy(state.snapshot?.providerPolicies)||state.providerPolicyReady,names=policyReady?sourceNames(state.snapshot):SOURCES,visible=names.length>=2;
   const current=state.snapshot?effectiveSource(state.snapshot):policyReady&&names.includes(state.source)?state.source:'Codex';
@@ -2273,11 +1991,10 @@ function updateSourceSwitch() {
     if(segment.getAttribute?.('aria-label')!==label)segment.setAttribute?.('aria-label',label);
     const dot=segment.querySelector?.('.source-dot');dot?.setAttribute?.('aria-hidden',String(!flagged&&!live));
   }
-  const body=document.body;if(!(RUNWAY)&&body?.dataset&&body.dataset.source!==current)body.dataset.source=current;
   window.TokenTrackerDashboard?.setSource?.(current);
 }
 function setSource(name,{persist=true,manual=true}={}) {
-  if(!RUNWAY||!SOURCES.includes(name)||!policyForSources(state.snapshot)||!sourceNames(state.snapshot).includes(name))return false;
+  if(!SOURCES.includes(name)||!policyForSources(state.snapshot)||!sourceNames(state.snapshot).includes(name))return false;
   if(manual){state.sourceManualAt=Date.now();if(persist)try{localStorage.setItem(SOURCE_KEY,name);localStorage.setItem(SOURCE_MANUAL_AT_KEY,String(state.sourceManualAt));}catch{}}
   state.source=name;state.sourceAttention.delete(name);updateSourceSwitch();
   if(!state.snapshot)renderQuotaState();
@@ -2306,7 +2023,7 @@ function revealSourceSnapshot(list,snapshot,done) {
 }
 function selectSourceForNewWork(items) {
   // Fresh work determines the auto-open source; only an explicit active inspection locks the current view.
-  if(!COMPACT||!state.snapshot||notch.manual||notch.keyboardInspecting||state.searchOpen||state.popover||(widgetLock.locked&&widgetLock.expanded))return false;
+  if(!state.snapshot||notch.manual||notch.keyboardInspecting||state.searchOpen||state.popover||(widgetLock.locked&&widgetLock.expanded))return false;
   const available=sourceNames(state.snapshot),candidates=(items||[]).filter(item=>available.includes(item.provider));
   if(!candidates.length)return false;
   candidates.sort((a,b)=>Number(Boolean(b.waiting))-Number(Boolean(a.waiting))||(b.activityAt||0)-(a.activityAt||0));
@@ -2318,14 +2035,14 @@ function renderChats(providers) {
   scheduleNotchSize();
   const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
   let roots=visibleRoots(forest);const query=parseQuery(state.query);
-  if(RUNWAY&&state.rosterQuery!==state.query){state.agentSearchClosed.clear();state.rosterQuery=state.query;}
+  if(state.rosterQuery!==state.query){state.agentSearchClosed.clear();state.rosterQuery=state.query;}
   state.forest=forest;
-  if(RUNWAY&&state.popover?.dataset?.action==='runway-question'&&!runwayCurrentEvidenceFresh())closePopover({restoreFocus:true});
-  if(RUNWAY&&state.popover?.dataset?.action==='runway-question'){
+  if(state.popover?.dataset?.action==='runway-question'&&!runwayCurrentEvidenceFresh())closePopover({restoreFocus:true});
+  if(state.popover?.dataset?.action==='runway-question'){
     const source=forest.rows.find(item=>item.key===state.popover.dataset.key);
     if(!source||!runwayWaiting(source)||!source.pendingQuestion||state.popover.__questionId!==(source.pendingQuestionId??source.questionId??null)||state.popover.__questionAt!==(source.pendingQuestionAt||null)||state.popover.__questionText!==source.pendingQuestion||state.popover.__questionOptions!==JSON.stringify(source.pendingOptions||[]))closePopover({restoreFocus:true});
   }
-  if(RUNWAY){
+  {
     const counts=runwayCounts(forest);
 
     {
@@ -2351,7 +2068,7 @@ function renderChats(providers) {
       if(evidenceFresh)for(const item of workItems)if(item.questionId){if(state.seenQuestions.size>500)state.seenQuestions.clear();state.seenQuestions.add(item.questionId);}
       syncNotch(activeCount,workItems);
       updateSourceSwitch();
-    const available=activeCount>0||roots.length>0||state.hiddenChats.size>0||COMPACT&&(keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus());
+    const available=activeCount>0||roots.length>0||state.hiddenChats.size>0||keepOpenState.value||state.searchOpen||Boolean(state.popover)||compactHasFocus();
     const header=$('#chats-head'),searchToggle=$('#search-toggle');
     if(header)header.hidden=!available;if(searchToggle)searchToggle.hidden=!available;
     if(!available){state.query='';state.searchOpen=false;const input=$('#chat-search');if(input)input.value='';header?.classList?.remove('searching');}
@@ -2361,21 +2078,21 @@ function renderChats(providers) {
   const count=$("#chat-count");
   if(count){count.textContent=String(roots.length);count.title=hidden>0&&!query.active?hidden+" older hidden":"";}
   const result=$("#result-count");if(result)result.textContent=roots.length+" / "+forest.roots.length;
-  const hiddenToggle=$('#hidden-chats-toggle');if(RUNWAY&&hiddenToggle){const hiddenCount=state.hiddenChats.size;hiddenToggle.hidden=!hiddenCount;hiddenToggle.textContent=(state.showHidden?'Hide hidden':'Show hidden')+' ('+hiddenCount+')';hiddenToggle.setAttribute('aria-pressed',String(state.showHidden));}
+  const hiddenToggle=$('#hidden-chats-toggle');if(hiddenToggle){const hiddenCount=state.hiddenChats.size;hiddenToggle.hidden=!hiddenCount;hiddenToggle.textContent=(state.showHidden?'Hide hidden':'Show hidden')+' ('+hiddenCount+')';hiddenToggle.setAttribute('aria-pressed',String(state.showHidden));}
   const warm=providers.find(p=>p.cacheWarmth)?.cacheWarmth,rule=$("#warm-rule");
   if(rule){rule.textContent=warm?"warm ≤"+Math.round(warm.warmSeconds/60)+"m":"";rule.title=warm?"Reply within "+Math.round(warm.warmSeconds/60)+"m to keep the cache · cold after "+runSpan(warm.coldSeconds).replace(" 00m","h").replace(/^(\d+)h (\d+)m$/,"$1h $2m")+(warm.learned?" · learned from "+warm.samples+" resumes":""):"";}
   const seg=$("#window-seg");if(seg?.style)seg.style.setProperty("--i",String(WINDOWS.indexOf(state.windowDays)));
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
   // The compact tree always paints its empty state (the list is hidden by CSS while the widget is collapsed), never a blank panel.
-  const searchCanShowEmpty=COMPACT;
+  const searchCanShowEmpty=true;
   if(!realDom(list)) {
-    const html=(roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers));
+    const html=(roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):emptyHTML(forest,providers));
     if(list.innerHTML!==html)list.innerHTML=html;
     return;
   }
   if(!roots.length){
-    const noActive=RUNWAY&&!notch.active&&!searchCanShowEmpty,html=noActive?'':emptyHTML(forest,providers);
+    const html=emptyHTML(forest,providers);
     if(list._empty!==html){
       for(const el of [...list.children])if(el.classList.contains('chat')){if(!el._leaving)runwayExit(el);}else el.remove();
       if(html)list.insertAdjacentHTML?.('beforeend',html);list._empty=html;
@@ -2391,7 +2108,7 @@ function renderChats(providers) {
   const focused=list.contains?.(document.activeElement),readingQuestion=Boolean(state.popover&&state.popover.dataset?.action==='runway-question');
   if((state.pointerInList||focused||readingQuestion)&&state.lastOrder){const kept=state.lastOrder.filter(k=>byKey.has(k));order=[...kept,...order.filter(k=>!kept.includes(k))];}
   const existing=new Map([...list.children].filter(el=>!el._leaving).map(el=>[el.dataset.key,el]));
-  const scroller=RUNWAY&&!(REFINED&&COMPACT&&notch.mode==='inspect')?list.closest?.('.layout'):list;
+  const scroller=notch.mode!=='inspect'?list.closest?.('.layout'):list;
   const scrollTopBefore=scroller?.scrollTop||0,scrollRect=scroller?.getBoundingClientRect?.();
   const anchor=[...existing].find(([key,el])=>byKey.has(key)&&(()=>{const rect=el.getBoundingClientRect?.();return rect&&(!scrollRect||rect.bottom>scrollRect.top);})())?.[1];
   const anchorTop=anchor?.getBoundingClientRect?.().top;
@@ -2401,9 +2118,9 @@ function renderChats(providers) {
     let el=existing.get(k);
     const fresh=!el;
     if(!el){el=document.createElement("div");el.className="chat";el.dataset.key=k;
-      el.innerHTML=(RUNWAY?'<div class="row"></div>':'<button class="row" data-action="toggle-chat" data-key="'+esc(k)+'"></button>')+'<div class="l2"><div class="l2-in"></div></div><div class="tray"><div class="tray-sum"><div class="tray-clip"></div></div><div class="tray-full"><div class="tray-clip"></div></div></div>';}
+      el.innerHTML='<div class="row"></div><div class="l2"><div class="l2-in"></div></div><div class="tray"><div class="tray-sum"><div class="tray-clip"></div></div><div class="tray-full"><div class="tray-clip"></div></div></div>';}
     updateChatEl(el,byKey.get(k),query);
-    if(fresh&&RUNWAY&&state.runwaySnapshotPainted&&!state.sourceSwitching)runwayArrivalEnter(el);
+    if(fresh&&state.runwaySnapshotPainted&&!state.sourceSwitching)runwayArrivalEnter(el);
     const next=prev?prev.nextSibling:list.firstChild;
     if(next!==el)list.insertBefore(el,next);
     prev=el;
@@ -2414,14 +2131,7 @@ function renderChats(providers) {
 
 /* ---------- footer, title bar, popover ---------- */
 function renderTotals(providers) {
-  if(RUNWAY){const node=$('#totals');if(node){node.innerHTML='';node.hidden=true;}return;}
-  const node=$("#totals");if(!node)return;
-  const cells=[["Today",1],["7d",7],["30d",30]].map(([label,days])=>'<span class="tt"><span>'+label+'</span> <b>'+fmt(knownSum(providers.map(p=>connectedActivity(p,days))))+'</b></span>').join("");
-  const savings=knownSum(providers.map(p=>p.connected===false?null:safeNumber(p.cache?.cacheSavings)));
-  const cache=providers.find(p=>p.cache)?.cache;
-  const tip=cache?(cache.percent!=null?cache.percent+"% hit · ":"")+fmt(cache.read)+" cached · "+fmt(cache.uncachedInput)+" fresh · "+fmt(cache.output)+" out"+(cache.priceBasis?" · "+cache.priceBasis:""):"";
-  const html=(RUNWAY?"":cells)+'<span class="tt tt-saved" title="'+esc(tip)+'"><span>'+(RUNWAY?"cache est.":"saved")+'</span> <b>'+money(savings)+'</b></span>';
-  if(node.innerHTML!==html)node.innerHTML=html;
+  const node=$('#totals');if(node){node.innerHTML='';node.hidden=true;}
 }
 function analyticsHTML(snapshot) {
   const provider=(snapshot?.providers||[]).find(item=>item.name==="Codex");
@@ -2453,7 +2163,7 @@ function analyticsHTML(snapshot) {
   return html;
 }
 function renderAnalytics(snapshot) { const node=$("#analytics");if(node&&!node.hidden){const html=analyticsHTML(snapshot);if(node.innerHTML!==html)node.innerHTML=html;} }
-function syncCompactClock(){if(!COMPACT)return;const localTime=compactClockFormatter.format(new Date());for(const node of [$('#compact-clock'),$('#toolbar-clock')])if(node&&node.textContent!==localTime)node.textContent=localTime;}
+function syncCompactClock(){const localTime=compactClockFormatter.format(new Date());for(const node of [$('#compact-clock'),$('#toolbar-clock')])if(node&&node.textContent!==localTime)node.textContent=localTime;}
 window.TokenTrackerSetClockFormat=value=>{if(!['12','24'].includes(String(value)))return false;try{localStorage.setItem('branchglanceClockFormat',String(value));}catch{}compactClockFormatter=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:String(value)==='24'?'h23':'h12'});syncCompactClock();return true;};
 const SNAPSHOT_FAILURE_CATEGORIES=new Set(['timeout','io_error','invalid_snapshot','worker_start_failed','build_failed']);
 function isoObservationTime(value,now=Date.now()){
@@ -2500,17 +2210,12 @@ function renderUpdatedMarker() {
   document.body?.classList?.toggle("data-stale",stale);
 }
 function renderTitle(providers) {
-  const name=$("#brand-name");if(name)name.textContent=RUNWAY?"Branchglance":providers.map(p=>p.name).join(" · ")||"Codex";
+  const name=$("#brand-name");if(name)name.textContent="Branchglance";
   syncCompactClock();
   renderUpdatedMarker();
   const age=$("#sync-age");if(!age)return;
-  if(state.refreshing||state.loading||state.initialBootstrapPending){if(COMPACT){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();}else age.textContent="";age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
-  if(RUNWAY){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=REFINED?refreshControlTitle():(state.lastOkAt?"Last successful refresh at "+clock(state.lastOkAt):"Refresh usage");age.className="sync-age";age.setAttribute?.("aria-busy","false");return;}
-  age.className="sync-age";age.setAttribute?.("aria-busy","false");
-  if(!state.lastOkAt){age.textContent=state.failSince?"offline":"—";age.className="sync-age"+(state.failSince?" t-err":"");return;}
-  const seconds=Math.floor((Date.now()-state.lastOkAt)/1000);
-  age.textContent=seconds<10?"now":seconds<60?seconds+"s":"stale "+ageShort(state.lastOkAt);
-  age.className="sync-age"+(seconds>=60?" t-attn":"");
+  if(state.refreshing||state.loading||state.initialBootstrapPending){if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();age.className="sync-age is-loading";age.setAttribute?.("aria-busy","true");return;}
+  if(age.innerHTML!==RUNWAY_REFRESH_ICON)age.innerHTML=RUNWAY_REFRESH_ICON;age.title=refreshControlTitle();age.className="sync-age";age.setAttribute?.("aria-busy","false");
 }
 const PHASES={account_changed:"Account changed, re-arm to keep greeting",waiting_for_exhaustion:"waiting for limit",armed_waiting_for_reset:"armed for reset",reset_observed_sending:"sending",needs_login:"sign-in expired",blocked_weekly:"held · weekly used",greeting_sent:"greeting sent",keepalive_scheduled:"scheduled",greeting_verifying:"verifying"};
 function applyIdentityPayload(payload) {
@@ -2533,16 +2238,12 @@ async function loadIdentityPolicyWarnings(anchor) {
 }
 function watcherPopoverHTML(name) {
   const watcher=state.watcher,w=watcher?.providers?.[name];
-  if(!watcher||!w)return (RUNWAY?'':'<dl class="pop-facts"><dt>phase</dt><dd>unavailable</dd></dl>')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
+  if(!watcher||!w)return policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
   const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
-  const phase=!watcher.enabled?"off":!watcher.running?"stopped":esc(PHASES[w.phase]||w.phase||(RUNWAY?"":"watching"));
+  const phase=!watcher.enabled?"off":!watcher.running?"stopped":esc(PHASES[w.phase]||w.phase);
   const err=watcher.persistenceError||w.lastPollError||w.lastError;
-  if(RUNWAY){const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';}
-  return '<dl class="pop-facts"><dt>phase</dt><dd>'+phase+'</dd><dt>next</dt><dd>'+(next?dayWord(next*1000)+" "+clock(next*1000):"—")+'</dd>'+
-    '<dt>last</dt><dd>'+(last?clock(last)+(verified?' <span class="t-live">✓ verified</span>':" unverified"):"—")+'</dd><dt>fails</dt><dd'+(w.failedAttempts?' class="t-err"':'')+'>'+(w.failedAttempts||0)+'</dd>'+
-    (err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>'+
-    (err&&watcher.logPath?'<button class="ghost" data-action="copy" data-copy="'+esc(watcher.logPath)+'">'+ICON.copy+ICON.check+'log</button>':'')+
-    policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
+  const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">?</span>':'' )]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);
+  return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
 }
 function openPopover(html, anchor) {
   const pop=$("#popover");if(!pop)return;
@@ -2552,7 +2253,7 @@ function openPopover(html, anchor) {
   const place=()=>{const r=anchor.getBoundingClientRect?.(),w=pop.offsetWidth||240,h=pop.offsetHeight||0;if(r){pop.style.left=Math.max(8,Math.min(window.innerWidth-w-8,r.left))+"px";pop.style.top=Math.max(8,Math.min(window.innerHeight-h-8,r.bottom+6))+"px";}};
   place();
   if(anchor?.dataset?.action==='runway-question'){
-    const scroller=REFINED&&COMPACT&&notch.mode==='inspect'?$('#chat-list'):(anchor.closest?.('.layout')||$('.layout'));
+    const scroller=notch.mode==='inspect'?$('#chat-list'):(anchor.closest?.('.layout')||$('.layout'));
     pop.__questionResize=place;window.addEventListener?.('resize',place);scroller?.addEventListener?.('scroll',place,{passive:true});
     pop.__questionCleanup=()=>{window.removeEventListener?.('resize',place);scroller?.removeEventListener?.('scroll',place);};
     pop.querySelector?.('.runway-question-close')?.focus?.();
@@ -2580,7 +2281,7 @@ function closePopover({restoreFocus=false,updateNotch=true}={}) {
 /* ---------- render ---------- */
 function renderStripNow() { if(state.snapshot)renderStrip(attentionItems(state.forest,limitProvidersFor(state.snapshot))); }
 function initialActiveSource(snapshot){
-  if(!COMPACT||!runwayCurrentEvidenceFresh())return null;
+  if(!runwayCurrentEvidenceFresh())return null;
   const candidates=[];
   for(const provider of snapshot?.providers||[]){
     if(!sourceNames(snapshot).includes(provider.name))continue;
@@ -2597,7 +2298,7 @@ function initialActiveSource(snapshot){
   return candidates[0]?.provider||null;
 }
 function render(snapshot) {
-  const firstRunwayPaint=COMPACT&&!state.runwaySnapshotPainted;
+  const firstRunwayPaint=!state.runwaySnapshotPainted;
   const graph=snapshot?.graph?.edges;
   const hasGraph=Boolean(graph&&typeof graph==='object'&&!Array.isArray(graph));
   const graphlessHold=firstRunwayPaint&&state.initialBootstrapPending&&!hasGraph;
@@ -2618,10 +2319,10 @@ function render(snapshot) {
   acceptSnapshotCache(snapshot);
   reconcileSnapshotQuotas(snapshot);
   state.snapshot=snapshot;
-  if(RUNWAY)state.initialBootstrapPending=false;
+  state.initialBootstrapPending=false;
   if(firstRunwayPaint){const activeSource=initialActiveSource(snapshot);if(activeSource)state.source=activeSource;}
   if(!state.lastOkAt)state.lastOkAt=Date.now();
-  if(RUNWAY)state.runwaySnapshotPainted=true;
+  state.runwaySnapshotPainted=true;
   const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot);
   const chatProviders=graphlessFallback?providers.map(provider=>({...provider,chats:(provider.chats||[]).map(chat=>({...chat,
     parentKey:null,parentId:null,status:'unknown',statusSource:'unavailable',telemetryUnavailable:true,
@@ -2640,11 +2341,11 @@ function render(snapshot) {
 function renderLoading() {
   syncCompactClock();
   const list=$("#chat-list");
-  if(list)list.innerHTML=RUNWAY?'':Array.from({length:6},()=>'<div class="sk"><i></i><i></i></div>').join("");
-  if(RUNWAY){const header=$('#chats-head'),search=$('#search-toggle');if(header)header.hidden=true;if(search)search.hidden=true;}
-  if(RUNWAY)updateSourceSwitch();
+  if(list)list.innerHTML='';
+  const header=$('#chats-head'),search=$('#search-toggle');if(header)header.hidden=true;if(search)search.hidden=true;
+  updateSourceSwitch();
   renderQuotaState();
-  if(RUNWAY){const greeter=$("#runway-greeter-status");if(greeter)greeter.textContent="";}
+  const greeter=$("#runway-greeter-status");if(greeter)greeter.textContent="";
 }
 function tick() {
   syncCompactClock();
@@ -2790,7 +2491,7 @@ function quotaBootstrapTargets(){
   return [...providers,...sourceNames(state.snapshot).filter(name=>!present.has(name)).map(name=>quotaBootstrap.providers[name]).filter(Boolean)];
 }
 function loadQuota(){
-  if(!RUNWAY||document.hidden||quotaLoader.unsupported||Date.now()<quotaLoader.retryAfter)return Promise.resolve(false);
+  if(document.hidden||quotaLoader.unsupported||Date.now()<quotaLoader.retryAfter)return Promise.resolve(false);
   if(quotaLoader.promise)return quotaLoader.promise;
   const sequence=++quotaLoader.sequence;
   const request=(async()=>{
@@ -2863,7 +2564,7 @@ async function pollToday() {
 async function refresh(force=false) {
   if(state.loading){state.refreshPending=true;state.refreshPendingForce=state.refreshPendingForce||force;return;}
   clearBootstrapRetry();
-  if(RUNWAY)syncMonitors();
+  syncMonitors();
   const requestedUrl=statsUrl(force),selection=statsUrl(false);
   state.loading=true;state.refreshing=true;renderTitle(providersFor(state.snapshot||{providers:[]}));
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),25000);
@@ -2888,21 +2589,15 @@ async function refresh(force=false) {
 function statsUrl(force) {
   // Runway needs every active root, including an older chat waiting for a reply.
   // Any server-side trimming can erase passive counts or their parent anchors.
-  if(RUNWAY)return "/api/stats?background=1"+(force?"&refresh=1":"");
-  const visible=visibleProviderNames(state.snapshot),pins=[...new Set([...state.pins,...(RUNWAY&&state.showHidden?state.hiddenChats:[])])]
-    .filter(key=>{const split=String(key).indexOf(":");return split>0&&visible.has(String(key).slice(0,split));}).join(",");
-  const query=parseQuery(state.query);
-  const status=query.flags.has("running")?"running":query.flags.size?"attention":"";
-  return "/api/stats?limit="+CHAT_LIMIT+(RUNWAY?"&range="+state.windowDays+"d":"")+(pins?"&pins="+encodeURIComponent(pins):"")+
-    (query.text?"&q="+encodeURIComponent(query.text):"")+(status?"&status="+status:"")+(force?"&refresh=1":"");
+  return "/api/stats?background=1"+(force?"&refresh=1":"");
 }
 function handleVisibilityChange() {
   if(document.hidden)return;
-  if(RUNWAY)void loadQuota();
+  void loadQuota();
 
   return refresh();
 }
-const LIVE_FIELDS=["resumeCount","firstSeenAt","runPid","runCreated","runVerified","runBindingUnresolved","retainedRun","stoppedAt","contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...(RUNWAY?["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"]:[]),...(RUNWAY?["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]:[])];
+const LIVE_FIELDS=["resumeCount","firstSeenAt","runPid","runCreated","runVerified","runBindingUnresolved","retainedRun","stoppedAt","contextTokens","contextWindow","contextPercent","recentTokens","usageUpdatedAt","lastRequest","toolCalls","filesEdited","fileChanges","runStartedAt","runEndedAt","pendingQuestionId","questionId","attentionSince","pendingQuestionAt","model",...["latestRequest","latestRequestAt","latestUpdate","latestUpdateAt","trackerUpdate","trackerUpdateAt","activeRunStartedAt","stateSince","compactionStartedAt","executionStatus","executionSource","executionObservedAt","executionSince","executionCompactionStartedAt","executionTerminalAt","executionActivity","statusObservedAt","telemetryUnavailable","metricsUnavailable","previousStatus","lastValidAt","statusSource","latestMessageAt","latestMessageDirection","latestMessageSourceId","latestMessageTargetId","contextObservedAt","contextModel","contextDelta","contextDeltaObservedAt","modelChangeAt","stateDetail","failureReason","activity","activityUnavailable","resumable","sessionId"],...["parentId","parentKey","title","agentName","agentRole","workspace","workspaceKind","source","pendingQuestionIds","questionResolutionAt"]];
 // A live row is qualified as "<Provider>:<id>"; ids may themselves contain ":" (Claude subagents).
 function liveIdentity(item) {
   if(!item||typeof item.id!=='string'||!item.id||typeof item.key!=='string')return null;
@@ -2914,17 +2609,17 @@ function applyLive(snapshot, live) {
   if(!snapshot||!live||stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
   restrictSnapshotProviders(snapshot);
   let graphChanged=false;
-  if(RUNWAY&&live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
+  if(live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
     const incoming=Number(live.graph.revision),current=Number(snapshot.graph?.revision);
     if(!snapshot.graph||Number.isFinite(incoming)&&(!Number.isFinite(current)||incoming>current)){snapshot.graph=live.graph;graphChanged=true;}
   }
-  const validKnown=item=>!RUNWAY||liveIdentity(item)!==null;
+  const validKnown=item=>liveIdentity(item)!==null;
   const byKey=new Map((live.chats||[]).filter(validKnown).map(item=>[item.key,item]));
   let changed=graphChanged,oldestShown=Infinity;
   const initiallyLoaded=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>keyOf({...chat,provider:provider.name}))));
   // Unseen rows are inserted per provider; providers hidden by policy are already absent from the snapshot.
   const liveTargets=new Map();
-  if(RUNWAY)for(const name of SOURCES){const target=(snapshot.providers||[]).find(provider=>provider.name===name);if(target&&Array.isArray(target.chats))liveTargets.set(name,{target,known:new Set(target.chats.map(chat=>keyOf({...chat,provider:name})))});}
+  for(const name of SOURCES){const target=(snapshot.providers||[]).find(provider=>provider.name===name);if(target&&Array.isArray(target.chats))liveTargets.set(name,{target,known:new Set(target.chats.map(chat=>keyOf({...chat,provider:name})))});}
   if(liveTargets.size){
     for(const item of live.chats||[]){
       const owner=liveIdentity(item),entry=owner&&liveTargets.get(owner);
@@ -2942,9 +2637,9 @@ function applyLive(snapshot, live) {
     const key=keyOf({...chat,provider:provider.name});
     const next=byKey.get(key);
     // A detail-pending row is only a placeholder: rows on screen keep their detail, and no transition is read from it.
-    if(next&&!next.detailPending&&(RUNWAY||chat.statusSource!=="app"||stamp(next.activityAt)>stamp(snapshot.generatedAt))){
+    if(next&&!next.detailPending){
       if(next.telemetryUnavailable!==undefined&&chat.telemetryUnavailable!==Boolean(next.telemetryUnavailable)){chat.telemetryUnavailable=Boolean(next.telemetryUnavailable);changed=true;}
-      if(next.status){if((chat.statusSource!=="unavailable"||next.telemetryUnavailable===false||next.statusSource!=="unavailable")&&normalizeStatus(next.status)!==normalizeStatus(chat.status)){chat.status=next.status;changed=true;}if(RUNWAY)chat.sourceStatus=next.status;}
+      if(next.status){if((chat.statusSource!=="unavailable"||next.telemetryUnavailable===false||next.statusSource!=="unavailable")&&normalizeStatus(next.status)!==normalizeStatus(chat.status)){chat.status=next.status;changed=true;}chat.sourceStatus=next.status;}
       if((next.pendingQuestion||null)!==(chat.pendingQuestion||null)||(next.pendingQuestionAt||null)!==(chat.pendingQuestionAt||null)){
         chat.pendingQuestion=next.pendingQuestion||null;chat.pendingQuestionAt=next.pendingQuestionAt||null;changed=true;
       }
@@ -2962,12 +2657,12 @@ function applyLive(snapshot, live) {
   // dropping it here when a live poll omits the thread would remove the whole thread.
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
   const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!snapshotParentKey(p,c,snapshot.graph?.edges||null)).length,0);
-  const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(!RUNWAY||(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})())&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
+  const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})()&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
   return {changed,outside};
 }
 async function pollLive() {
   if(document.hidden)return;
-  if(RUNWAY)void loadQuota();
+  void loadQuota();
   if(state.liveBusy||(state.loading&&(!state.snapshot)))return;
   state.liveBusy=true;
   try{
@@ -3069,24 +2764,23 @@ function togglePin(key) {
 function setWindow(days) {
   if(!WINDOWS.includes(days))return;
   state.windowDays=days;
-  try{localStorage.setItem(RUNWAY?"tokenTrackerRunwayWindow":"tokenTrackerWindow",String(days));}catch{}
+  try{localStorage.setItem("tokenTrackerRunwayWindow",String(days));}catch{}
 }
 function openSearch(open) {
   state.searchOpen=open;
   const header=$("#chats-head"),toggle=$("#search-toggle"),input=$("#chat-search");
-  if(COMPACT&&open){if(header)header.hidden=false;if(toggle)toggle.hidden=false;}
+  if(open){if(header)header.hidden=false;if(toggle)toggle.hidden=false;}
   header?.classList?.toggle("searching",open);
-  if(COMPACT)setNotch(false);
+  setNotch(false);
   if(open)input?.focus?.();
-  else {if(state.query){state.query="";if(input)input.value="";queueSelectionRefresh();}if(COMPACT&&$('.widget')?.contains?.(document.activeElement))$('#sync-age')?.focus?.({preventScroll:true});}
+  else {if(state.query){state.query="";if(input)input.value="";queueSelectionRefresh();}if($('.widget')?.contains?.(document.activeElement))$('#sync-age')?.focus?.({preventScroll:true});}
 }
 function jumpTo(target, sub) {
   if(parseQuery(state.query).active&&state.forest&&!visibleRoots(state.forest).some(c=>c.key===target))openSearch(false);
   const chat=state.forest?.roots.find(c=>c.key===target);
   if(chat&&!inWindow(chat,state.windowDays)&&!state.pins.has(chat.key))setWindow(WINDOWS.find(d=>inWindow(chat,d))||7);
-  if(RUNWAY)closeRunwayDetails();
-  if(!RUNWAY||!sub)state.open.add(target);
-  if(RUNWAY&&sub){state.agentOpen.add(target);state.agentCollapsed.delete(target);state.agentSearchClosed.delete(target);state.agentDetails.add(sub);}
+  closeRunwayDetails();
+  if(sub){state.agentOpen.add(target);state.agentCollapsed.delete(target);state.agentSearchClosed.delete(target);state.agentDetails.add(sub);}
   if(state.snapshot)renderChats(providersFor(state.snapshot));
   const list=$("#chat-list");if(!realDom(list))return;
   const el=[...list.children].find(e=>e.dataset.key===target);if(!el)return;
@@ -3105,40 +2799,40 @@ function handleClick(event) {
   if(pop&&!pop.hidden&&!(pop.contains?.(event.target))&&button?.dataset.action!=="watcher")closePopover();
   if(!button)return;
   const {action,key}=button.dataset;
-  if(RUNWAY&&action==='widget-lock'){void toggleWidgetLock();return;}
+  if(action==='widget-lock'){void toggleWidgetLock();return;}
   if(action==='toolbar-more'){toggleToolbarMenu();return;}
   if(action==='open-settings'){closeToolbarMenu();openDashboard('settings');return;}
-  if(RUNWAY&&action==='jump-waiting'){jumpToWaiting();return;}
-  if(RUNWAY&&action==='source'){setSource(button.dataset.source);return;}
-  if(RUNWAY&&action==='dashboard'){openDashboard();return;}
-  if(COMPACT&&action==='keep-open'){void toggleKeepOpen();return;}
+  if(action==='jump-waiting'){jumpToWaiting();return;}
+  if(action==='source'){setSource(button.dataset.source);return;}
+  if(action==='dashboard'){openDashboard();return;}
+  if(action==='keep-open'){void toggleKeepOpen();return;}
 
-  if(action==="toggle-chat"){const was=state.open.has(key);if(RUNWAY)closeRunwayDetails();was?state.open.delete(key):state.open.add(key);if(RUNWAY)renderStripNow();}
+  if(action==="toggle-chat"){const was=state.open.has(key);closeRunwayDetails();was?state.open.delete(key):state.open.add(key);renderStripNow();}
   else if(action==="pin"){togglePin(key);closePopover();queueSelectionRefresh();}
   else if(action==="copy"){copyText(button.dataset.copy,button);closePopover();return;}
   // Answering: copy the chosen option, then open that exact chat in Codex so it is one paste away.
   else if(action==="answer"){copyAndOpenAnswer(button.dataset.thread,button.dataset.answer,button);return;}
   else if(action==="queue-answer"){queueAnswer(button.dataset.thread,button.dataset.answer,button);return;}
   else if(action==="open"){openInCodex(button.dataset.thread,button);return;}
-  else if(RUNWAY&&action==="runway-question"){
+  else if(action==="runway-question"){
     const chat=state.forest?.rows.find(item=>item.key===key);if(!chat||!runwayWaiting(chat))return;
     if(!isCodexChat(chat)){
       notch.manual=true;setNotch(true);openPopover(runwayQuestionPopover(chat),button);button.__questionId=chat.pendingQuestionId??chat.questionId??null;button.__questionAt=chat.pendingQuestionAt||null;button.__questionText=chat.pendingQuestion;button.__questionOptions=JSON.stringify(chat.pendingOptions||[]);return;
     }
     openInCodex(chat.id,button);return;
   }
-  else if(RUNWAY&&action==="close-popover"){closePopover({restoreFocus:true});return;}
+  else if(action==="close-popover"){closePopover({restoreFocus:true});return;}
   else if(action==="jump"){jumpTo(button.dataset.target,button.dataset.sub);return;}
   else if(action==="dismiss"){state.dismissed.add(button.dataset.dismiss);saveDismissed();const item=button.closest?.(".si");if(item)item._dismissed=true;renderStripNow();return;}
   else if(action==="strip-more"){state.stripOpen=!state.stripOpen;renderStripNow();return;}
-  else if(action==="toggle-question"){const question=button.dataset.question,was=state.expandedQuestions.has(question);if(RUNWAY)closeRunwayDetails();if(!was)state.expandedQuestions.add(question);renderStripNow();if(RUNWAY&&state.snapshot)renderChats(providersFor(state.snapshot));return;}
-  else if(action==="toggle-agents"){const target=button.dataset.key;const chat=state.forest?.roots.find(c=>c.key===target);const expanded=RUNWAY&&chat?runwayAgentsExpanded(chat):state.agentOpen.has(target);if(expanded){state.agentOpen.delete(target);state.agentCollapsed.add(target);state.agentSearchClosed.add(target);}else{state.agentOpen.add(target);state.agentCollapsed.delete(target);state.agentSearchClosed.delete(target);}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
-  else if(RUNWAY&&action==='hide-chat'){state.hiddenChats.has(key)?state.hiddenChats.delete(key):state.hiddenChats.add(key);saveHiddenChats();if(state.snapshot)renderChats(providersFor(state.snapshot));renderStripNow();return;}
-  else if(RUNWAY&&action==='show-hidden'){state.showHidden=!state.showHidden;if(state.snapshot)renderChats(providersFor(state.snapshot));renderStripNow();queueSelectionRefresh();return;}
-  else if(action==="toggle-agent-details"){const was=state.agentDetails.has(key);if(RUNWAY)closeRunwayDetails();was?state.agentDetails.delete(key):state.agentDetails.add(key);if(RUNWAY)renderStripNow();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
+  else if(action==="toggle-question"){const question=button.dataset.question,was=state.expandedQuestions.has(question);closeRunwayDetails();if(!was)state.expandedQuestions.add(question);renderStripNow();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
+  else if(action==="toggle-agents"){const target=button.dataset.key;const chat=state.forest?.roots.find(c=>c.key===target);const expanded=chat?runwayAgentsExpanded(chat):state.agentOpen.has(target);if(expanded){state.agentOpen.delete(target);state.agentCollapsed.add(target);state.agentSearchClosed.add(target);}else{state.agentOpen.add(target);state.agentCollapsed.delete(target);state.agentSearchClosed.delete(target);}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
+  else if(action==='hide-chat'){state.hiddenChats.has(key)?state.hiddenChats.delete(key):state.hiddenChats.add(key);saveHiddenChats();if(state.snapshot)renderChats(providersFor(state.snapshot));renderStripNow();return;}
+  else if(action==='show-hidden'){state.showHidden=!state.showHidden;if(state.snapshot)renderChats(providersFor(state.snapshot));renderStripNow();queueSelectionRefresh();return;}
+  else if(action==="toggle-agent-details"){const was=state.agentDetails.has(key);closeRunwayDetails();was?state.agentDetails.delete(key):state.agentDetails.add(key);renderStripNow();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="analytics"){state.analyticsOpen=!state.analyticsOpen;if(state.snapshot)renderAnalytics(state.snapshot);return;}
-  else if(action==="window"){setWindow(Number(button.dataset.days));if(RUNWAY)queueSelectionRefresh();}
-  else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);if(html){openPopover(html,button);if(RUNWAY)void loadIdentityPolicyWarnings(button);}else closePopover();}return;}
+  else if(action==="window"){setWindow(Number(button.dataset.days));queueSelectionRefresh();}
+  else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);if(html){openPopover(html,button);void loadIdentityPolicyWarnings(button);}else closePopover();}return;}
   else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(api?.open_reset_actions)api.open_reset_actions();else window.open?.("/reset_actions.html","_blank","noopener");return;}
   else if(action==="search"){openSearch(!state.searchOpen);}
   else if(action==="search-close"){openSearch(false);}
@@ -3146,7 +2840,7 @@ function handleClick(event) {
   if(state.snapshot)renderChats(providersFor(state.snapshot));
 }
 function handleContextMenu(event) {
-  if(RUNWAY)return;
+  return;
   const row=event.target.closest?.(".chat > .row");
   if(!row)return;
   event.preventDefault();
@@ -3158,27 +2852,27 @@ function handleKey(event) {
   const typing=/INPUT|TEXTAREA/.test(event.target?.tagName||"");
   if(event.key==="Escape"){
     if(dashboardState.open){event.preventDefault();event.stopImmediatePropagation?.();closeDashboard();return;}
-    if(state.popover){closePopover({restoreFocus:true});if(COMPACT){event.preventDefault();event.stopImmediatePropagation?.();}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
-    if(state.searchOpen){openSearch(false);if(COMPACT){event.preventDefault();event.stopImmediatePropagation?.();}if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
-    if(!COMPACT&&state.snapshot)renderChats(providersFor(state.snapshot));return;
+    if(state.popover){closePopover({restoreFocus:true});event.preventDefault();event.stopImmediatePropagation?.();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
+    if(state.searchOpen){openSearch(false);event.preventDefault();event.stopImmediatePropagation?.();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
+    return;
   }
   if(!typing&&(event.key==="/"||(event.ctrlKey&&event.key.toLowerCase()==="k"))){event.preventDefault();openSearch(true);return;}
   if(!typing&&(event.key==="Enter"||event.key===" ")&&event.target?.getAttribute?.("role")==="button"){event.preventDefault();event.target.click();}
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
-  normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
+  normalizeStatus,statusRank,contextTone,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,isAsking,runwayVisibleActive,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
   loadAvatars();
   document.addEventListener("click",handleClick);
   document.addEventListener("contextmenu",handleContextMenu);
   document.addEventListener("keydown",handleKey);
-  window.addEventListener?.('resize',()=>{if(COMPACT){noteInspectViewportResize();refreshInspectCssScale();}scheduleNotchSize();},{passive:true});
+  window.addEventListener?.('resize',()=>{noteInspectViewportResize();refreshInspectCssScale();scheduleNotchSize();},{passive:true});
   window.visualViewport?.addEventListener?.('resize',()=>{if(refreshInspectCssScale()&&notch.mode==='inspect'){noteInspectViewportResize();scheduleNotchSize();}},{passive:true});
   $("#chat-search")?.addEventListener("input",event=>{state.query=event.target.value;if(state.snapshot)renderChats(providersFor(state.snapshot));queueSelectionRefresh();});
   $("#chat-list")?.addEventListener("pointerenter",()=>{state.pointerInList=true;});
@@ -3190,6 +2884,6 @@ if(!window.__TOKEN_TRACKER_TEST__){
     $("#window-close")?.addEventListener("click",()=>window.pywebview?.api?.close?.());
   }
   $(".widget").classList.add("loading");
-  setupNotch();setupWindowDrag();renderLoading();if(RUNWAY){void loadProviderPolicy();void loadQuota();}refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);setInterval(pollToday,TODAY_REFRESH_MS);
+  setupNotch();setupWindowDrag();renderLoading();void loadProviderPolicy();void loadQuota();refresh();setInterval(tick,1000);setInterval(()=>{if(!document.hidden)refresh();},FULL_REFRESH_MS);setInterval(pollLive,LIVE_MS);setInterval(pollToday,TODAY_REFRESH_MS);
   document.addEventListener("visibilitychange",handleVisibilityChange);
 }

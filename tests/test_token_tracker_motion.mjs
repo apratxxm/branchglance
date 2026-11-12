@@ -22,7 +22,7 @@ assert.match(refined,/data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refine
 assert.match(css,/\.ch-search\{display:flex;align-items:center/);
 assert.match(refined,/@keyframes compact-layout-reveal\{from\{opacity:0;transform:translateY\(3px\);\}to\{opacity:1;transform:translateY\(0\);\}\}/);
 assert.doesNotMatch(refined,/compact-content-enter/);
-assert.match(app,/COMPACT\?60:120/);assert.match(app,/COMPACT\?110:160/);
+assert.match(app,/notch\.inspectTimer=setTimeout\([\s\S]*?,60\);/);assert.match(app,/notch\.exitTimer=setTimeout\([\s\S]*?,110\);/);
 assert.match(css,/--motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms/);
 assert.match(css,/--ease-standard:cubic-bezier\(\.16,1,\.3,1\)/);
 assert.match(css,/--motion-open-list:240ms; --notch-open-delay:91ms; --notch-open-suppression:331ms/);

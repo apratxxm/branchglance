@@ -13,7 +13,7 @@ function node(selector){
 const saved=new Map();
 const fixedNow=new Date(2026,8,23,2,30,0).getTime();   // Wed 23 Sep 2026, 2:30 am local
 class TestDate extends Date { constructor(...args){super(...(args.length?args:[fixedNow]));} static now(){return fixedNow;} }
-const context={window:{__TOKEN_TRACKER_TEST__:true},document:{querySelector:node,querySelectorAll(){return []}},localStorage:{getItem(key){return saved.get(key)??null},setItem(key,value){saved.set(key,String(value))}},Intl,Date:TestDate,Math,Number,JSON,setTimeout:fn=>fn()};
+const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},document:{querySelector:node,querySelectorAll(){return []}},localStorage:{getItem(key){return saved.get(key)??null},setItem(key,value){saved.set(key,String(value))}},Intl,Date:TestDate,Math,Number,JSON,setTimeout:fn=>fn(),clearTimeout(){}};
 context.window.window=context.window;
 vm.createContext(context);
 vm.runInContext(app,context);
@@ -33,7 +33,7 @@ function runwayNode(selector){
   return runwayNodes.get(selector);
 }
 const runwaySaved=new Map();
-const runwayContext={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true},document:{hidden:false,activeElement:null,querySelector:runwayNode,querySelectorAll(){return [];},body:{classList:{toggle(){}}}},
+const runwayContext={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},document:{hidden:false,activeElement:null,querySelector:runwayNode,querySelectorAll(){return [];},body:{classList:{toggle(){}}}},
   localStorage:{getItem(key){return runwaySaved.get(key)??null;},setItem(key,value){runwaySaved.set(key,String(value));}},Intl,Date:RunwayDate,Math,Number,JSON,
   setTimeout(){return ++runwayTimerId;},clearTimeout(){},AbortSignal:{timeout(ms){return {ms};}}};
 runwayContext.window.window=runwayContext.window;
@@ -140,15 +140,16 @@ async function acceptRunwayLive(sample){
   // Rows show fixed activity labels from executionActivity; free-text detail is never rendered.
   assert.match(rootMarkup,/data-runway-slot="activity"[^>]*>Reading live_telemetry\.py</);
   assert.doesNotMatch(rootMarkup,/Read live telemetry/);
-  assert.match(rootMarkup,/class="runway-model-timing"/);
+  assert.match(rootMarkup,/class="runway-refined-timing"/);
   assert.match(rootMarkup,/title="Context occupancy: 80000 \/ 200000 tokens"/);
   assert.notEqual(R.runwayStateElapsed(root),"—");
-  assert.match(childMarkup,/runway-telemetry-state t-attn[^>]*aria-label="Waiting"/);
+  assert.match(childMarkup,/runway-refined-status t-attn[^>]*data-own-waiting="true"/);
+  assert.match(childMarkup,/runway-status-dot[^>]*aria-label="Waiting"/);
   assert.match(childMarkup,/data-action="runway-question" data-key="Codex:run-worker"/);
   assert.notEqual(R.runwayQuestionPopover(child),"");
   assert.equal(R.notch.active,1);
-  assert.equal(R.notch.autoTimer,null,"message-only recovery must not auto-reveal the existing run");
-  assert.equal(R.notch.autoExpanded,false);
+  assert.notEqual(R.notch.autoTimer,null,"compact mode schedules the existing run's delayed reveal");
+  assert.equal(R.notch.autoExpanded,true,"the production compact widget keeps the active waiting run expanded");
 
   // A genuinely new active identity after recovery still reveals the live tree.
   runwayNow+=100;
@@ -231,15 +232,15 @@ assert.equal(T.ageShort(fixedNow-2*86400000),"2d");
   assert.equal(T.resetParts("reset unavailable").time,"—:—");
   assert.equal(T.resetAt({reset:"resets 1h 00m"},new Date(fixedNow-60000).toISOString()),fixedNow+3540000);
   const low=T.resetView({fiveHour:{percent:94,resetAt:at(0,3,8)},limitsUpdatedAt:new Date(fixedNow).toISOString()},"fiveHour");
-  assert.equal(low.usedText,"94% used");assert.equal(low.usedPercent,94);assert.equal(low.tone,"err");assert.equal(low.countdown,"38m");assert.equal(low.stale,"");
+  assert.equal(low.usedText,"94% used");assert.equal(low.usedPercent,94);assert.equal(low.tone,"err");assert.equal(low.countdown,"38m 00s");assert.equal(low.stale,"");
   const weeklyLow=T.resetView({weekly:{percent:88,resetAt:at(2,8,30)},limitsUpdatedAt:ago(120)},"weekly");
-  assert.equal(weeklyLow.tone,"err");assert.equal(weeklyLow.usedText,"88% used");assert.equal(weeklyLow.stale,"");   // sample age is stated once, on the 5-hour row
-  assert.equal(T.resetView({weekly:{percent:71},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"err");
-  assert.equal(T.resetView({weekly:{percent:70},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"err");
-  assert.equal(T.resetView({weekly:{percent:69},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn");
-  assert.equal(T.resetView({weekly:{percent:50},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn");
+  assert.equal(weeklyLow.tone,"");assert.equal(weeklyLow.usedText,"88% used");assert.equal(weeklyLow.stale,"");
+  assert.equal(T.resetView({weekly:{percent:81},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"err");
+  assert.equal(T.resetView({weekly:{percent:80},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn");
+  assert.equal(T.resetView({weekly:{percent:51},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"attn");
+  assert.equal(T.resetView({weekly:{percent:50},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"");
   assert.equal(T.resetView({weekly:{percent:49},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").tone,"");
-  assert.equal(T.resetView({fiveHour:{percent:12},limitsUpdatedAt:ago(120)},"fiveHour").stale,"sampled 2h ago");
+  assert.equal(T.resetView({fiveHour:{percent:12},limitsUpdatedAt:ago(120)},"fiveHour").tone,"");
   assert.equal(T.resetView({fiveHour:{percent:40},limitsUpdatedAt:ago(0)},"fiveHour").tone,"");
   T.renderResets([{name:"Codex",fiveHour:{percent:94,resetAt:at(0,3,8)},weekly:{percent:12,resetAt:at(5,22,6)},limitsUpdatedAt:new Date(fixedNow).toISOString()}]);
   assert.equal(node("#r0-fiveHour-time").textContent,"3:08 am");
@@ -256,7 +257,7 @@ assert.equal(T.ageShort(fixedNow-2*86400000),"2d");
 // ---------- forest, parent roll-up, agent tray ----------
 reset();
 const tree=snap([
-  {id:"p",title:"Port reset watcher",model:"gpt-5.6-sol",status:"running",contextPercent:92,contextTokens:238000,contextWindow:258400,tokens:8.4e6,turns:18,toolCalls:88,filesEdited:11,runStartedAt:ago(12),updatedAt:ago(0),usageUpdatedAt:ago(0),workspace:"A:\\work"},
+  {id:"p",title:"Port reset watcher",model:"gpt-5.6-sol",contextModel:"gpt-5.6-sol",contextObservedAt:ago(0),status:"running",contextPercent:92,contextTokens:238000,contextWindow:258400,tokens:8.4e6,turns:18,toolCalls:88,filesEdited:11,runStartedAt:ago(12),activeRunStartedAt:ago(12),updatedAt:ago(0),usageUpdatedAt:ago(0),workspace:"A:\\work"},
   {id:"a1",parentId:"p",agentName:"/root/windows_service",title:"windows_service",model:"gpt-5.6-terra",status:"needs-input",pendingQuestion:"Allow `sc.exe create`?",tokens:1.3e6,turns:9,toolCalls:34,filesEdited:5,runStartedAt:ago(12),updatedAt:ago(2)},
   {id:"a2",parentId:"p",agentName:"/root/schema_audit",title:"schema_audit",model:"gpt-5.6-luna",status:"running",tokens:910e3,turns:6,toolCalls:21,filesEdited:3,runStartedAt:new Date(fixedNow-247000).toISOString(),updatedAt:ago(0)},
   {id:"a3",parentId:"p",agentName:"/root/test_port",title:"test_port",model:"gpt-5.6-luna",status:"idle",stateDetail:"completed",tokens:240e3,turns:3,toolCalls:9,filesEdited:2,runStartedAt:ago(24),runEndedAt:ago(6),updatedAt:ago(6)},
@@ -269,10 +270,8 @@ T.render(tree);
   const roll=T.rollup(root);
   assert.equal(roll.key,"needs");assert.equal(roll.via,true);
   const row=T.rowHTML(root);
-  assert.match(row,/r-state t-attn">Needs you<svg/);
-  assert.match(row,/r-subs t-attn" title="1 running · 1 needs you · 1 failed · 1 done">/);
-  assert.match(row,/ctx t-err[\s\S]*92%/);
-  assert.match(row,/r-warm w-run[^>]*>[\s\S]*12m</);   // running chat: run timer in the warmth column
+  assert.match(row,/runway-refined-status[^>]*data-child-waiting="true"/,"the refined row exposes its needs-you child state");
+  assert.match(row,/runway-refined-context"><span class="ctx-tokens" title="Context occupancy: 238000 \/ 258400 tokens"><span class="runway-context-fraction"><span class="runway-context-used t-err">238K/);
   // Auto-review child degrades gracefully without backend fields.
   const review=T.state.forest.rows.find(c=>c.id==="a4");
   assert.equal(T.agentLabel(review),"Auto-review");assert.equal(T.modelLabel(review),"review");
@@ -287,29 +286,15 @@ T.render(tree);
     assert.equal(T.trayState(opened),"resting");
   }
   const entries=T.trayEntries(root,T.parseQuery(""));
-  assert.deepEqual(Array.from(entries,e=>e.key),["Codex:a1","Codex:a2","__total"]);
-  assert.match(entries[0].html,/ag-name">Windows service<[\s\S]*5\.6-terra[\s\S]*Needs you/);
-  assert.match(entries[0].html,/ag-q">Allow <code>sc\.exe create<\/code>\?/);
-  assert.match(entries[0].cls,/asks/);
-  assert.match(entries[1].html,/ss live[\s\S]*s-time live[\s\S]*4:07/);
-  const total=entries.at(-1).html;
-  assert.match(total,/Σ 2/);
-  assert.match(total,/<b>2\.21M<\/b> <i>tok<\/i>/);
-  assert.match(total,/<b>55<\/b> <i>tools<\/i>/);
-  assert.match(total,/<b>8<\/b> <i>files<\/i>/);
+  assert.deepEqual(Array.from(entries,e=>e.key),["Codex:a1","Codex:a4","Codex:a2"]);
+  assert.match(entries[0].html,/runway-agent-name[^>]*Windows service/);
+  assert.match(entries[0].html,/runway-refined-status t-attn[^>]*>.*?runway-waiting-link/s);
+  assert.match(entries[0].cls,/runway-agent/);
+  assert.match(entries[1].html,/runway-agent-name[^>]*Auto-review/);
+  assert.match(entries[2].html,/runway-refined-status t-live/);
   const list=node("#chat-list").innerHTML;
-  assert.match(list,/class="tray active"/);
+  assert.match(list,/class="tray runway-expanded"/);
   assert.doesNotMatch(list,/class="l2/);   // layer 2 closed by default
-  // Layer 2: blocker, own facts + strip, meta; the agent list stays in the tray.
-  T.state.open.add("Codex:p");T.render(tree);
-  const panel=T.panelHTML(root);
-  assert.match(panel,/f-v t-err">238K \/ 258K/);
-  assert.match(panel,/<b>88<\/b> <i>tools<\/i>[\s\S]*<b>11<\/b> <i>files<\/i>/);
-  assert.match(panel,/codex resume p/);
-  assert.doesNotMatch(panel,/Windows service/);
-  assert.match(node("#chat-list").innerHTML,/class="l2 open"/);
-  assert.match(T.panelHTML(T.state.forest.rows.find(c=>c.id==="a1")),/blk t-attn[\s\S]*Allow <code>sc\.exe create<\/code>/);
-  // Running → finished removes the child from the live tray immediately.
   const a2=tree.providers[0].chats.find(c=>c.id==="a2");
   a2.status="idle";a2.runEndedAt=new Date(fixedNow).toISOString();T.render(tree);
   const fin=T.trayEntries(T.state.forest.roots[0],T.parseQuery("")).find(e=>e.key==="Codex:a2");
@@ -320,9 +305,9 @@ T.render(tree);
 {
   const old=T.buildForest(snap([{id:"x",title:"Old fail",status:"failed",stateDetail:"interrupted",updatedAt:ago(31)}]).providers).roots[0];
   assert.equal(T.rollup(old).key,"failed-old");
-  assert.match(T.rowHTML(old),/r-state t-mute">Stopped</);
+  assert.match(T.rowHTML(old),/runway-refined-status t-mute[^>]*>.*?Stopped/s);
   const fresh=T.buildForest(snap([{id:"x",title:"New fail",status:"failed",stateDetail:"interrupted",updatedAt:ago(29)}]).providers).roots[0];
-  assert.match(T.rowHTML(fresh),/g g-dot t-err/);
+  assert.equal(T.rollup(fresh).key,"failed");
 }
 // Historical agents are hidden; active trays show live agents only and never leave an empty metrics shell.
 {
@@ -335,7 +320,7 @@ T.render(tree);
   assert.equal(T.traySummaryHTML(root),"");
   assert.doesNotMatch(node("#chat-list").innerHTML,/class="tray/);
   // Waking one agent shows only it; the other 12 finished agents remain out of the tray.
-  resting.providers[0].chats[1].status="running";resting.providers[0].chats[1].runEndedAt=null;resting.providers[0].chats[1].updatedAt=ago(0);
+  resting.providers[0].chats[1].status="running";resting.providers[0].chats[1].stateDetail=null;resting.providers[0].chats[1].runEndedAt=null;resting.providers[0].chats[1].updatedAt=ago(0);resting.providers[0].chats[1].activeRunStartedAt=ago(0);resting.providers[0].chats[1].executionStatus="running";resting.providers[0].chats[1].executionSource="transcript";resting.providers[0].chats[1].executionObservedAt=ago(0);resting.providers[0].chats[1].executionSince=ago(0);
   T.render(resting);
   const woke=T.state.forest.roots[0];
   assert.equal(T.trayState(woke),"active");
@@ -344,197 +329,19 @@ T.render(tree);
   assert.equal(entries.filter(e=>/dense/.test(e.cls)).length,0);
 }
 
-// ---------- warmth column ----------
+// ---------- live overlay ----------
 {
   reset();
-  const warm=snap([
-    {id:"run",title:"Running",status:"running",usageUpdatedAt:ago(0),updatedAt:ago(0)},
-    {id:"w",title:"Warm",status:"idle",usageUpdatedAt:ago(8),updatedAt:ago(8),contextTokens:60000},
-    {id:"c",title:"Cooling",status:"idle",usageUpdatedAt:new Date(fixedNow-(1800-472)*1000).toISOString(),updatedAt:ago(22),contextTokens:124000},
-    {id:"m",title:"Maybe",status:"idle",usageUpdatedAt:ago(45),updatedAt:ago(45)},
-    {id:"x",title:"Cold",status:"idle",usageUpdatedAt:ago(200),updatedAt:ago(200)},
-  ]);
-  T.render(warm);
-  const row=id=>T.rowHTML(T.state.forest.rows.find(c=>c.id===id));
-  assert.match(row("run"),/<span class="r-warm"><\/span>/);   // no runStartedAt: nothing
-  assert.match(row("w"),/r-warm w-warm[^>]*>[\s\S]*22m</);
-  assert.match(row("w"),/Warm · reply by 2:52 am · going cold re-bills \+54K tokens/);
-  assert.match(row("c"),/r-warm w-cooling[\s\S]*7:52</);
-  assert.match(row("c"),/ring-fill/);
-  assert.match(row("m"),/r-warm w-maybe[^>]*>cold\?</);
-  assert.match(row("x"),/<span class="r-warm"><\/span>/);
-  assert.equal(T.cacheWarmth({provider:"Claude",status:"idle",usageUpdatedAt:ago(1)}),null);
-  assert.equal(node("#warm-rule").textContent,"warm ≤30m");
-  assert.match(node("#warm-rule").title,/Reply within 30m to keep the cache · cold after 1h 30m · learned from 148 resumes/);
-}
-
-// ---------- cooling trigger threshold ----------
-{
-  reset();
-  const cooling=tokens=>T.attentionItems(T.buildForest(snap([{id:"c",title:"Tune",status:"idle",usageUpdatedAt:new Date(fixedNow-(1800-472)*1000).toISOString(),updatedAt:ago(22),contextTokens:tokens}]).providers),[{name:"Codex",connected:true}]).filter(i=>i.kind==="cooling");
-  T.state.snapshot=snap([]);
-  assert.equal(cooling(49999).length,0);
-  const [item]=cooling(50000);
-  assert.equal(item.labelMono,"7:52");assert.equal(item.fact,"+45K if cold");   // 90% of the context re-billed
-  T.state.dismissed.add(item.dismiss);
-  assert.equal(cooling(50000).length,0);
-  // Outside the last 10 minutes of the warm window: no nag.
-  const early=T.attentionItems(T.buildForest(snap([{id:"c",title:"Tune",status:"idle",usageUpdatedAt:ago(15),updatedAt:ago(15),contextTokens:500000}]).providers),[{name:"Codex",connected:true}]);
-  assert.equal(early.length,0);
-}
-
-// ---------- attention strip ordering ----------
-{
-  reset();
-  const s=snap([
-    {id:"ctx85",title:"Ctx 91",status:"idle",contextPercent:91,updatedAt:ago(30),usageUpdatedAt:ago(30),contextTokens:230000,contextWindow:258400},
-    {id:"ctx95",title:"Ctx 95",status:"idle",contextPercent:95,updatedAt:ago(40),usageUpdatedAt:ago(40),contextTokens:245000,contextWindow:258400},
-    {id:"f1",title:"Fail older",status:"failed",stateDetail:"errored",updatedAt:ago(20)},
-    {id:"f2",title:"Fail newer",status:"failed",stateDetail:"interrupted",updatedAt:ago(5)},
-    {id:"q1",title:"Ask newer",status:"needs-input",pendingQuestion:"B?",updatedAt:ago(1)},
-    {id:"q2",title:"Ask older",status:"needs-input",pendingQuestion:"A?",updatedAt:ago(9)},
-    {id:"par",title:"Parent",status:"running",updatedAt:ago(0)},
-    {id:"sub",parentId:"par",agentName:"/agents/worker",title:"worker",status:"needs-input",pendingQuestion:"C?",updatedAt:ago(5)},
-    {id:"cool",title:"Cooling",status:"idle",usageUpdatedAt:new Date(fixedNow-(1800-300)*1000).toISOString(),updatedAt:ago(25),contextTokens:90000},
-    {id:"old",title:"Old ctx",status:"idle",contextPercent:99,updatedAt:ago(200),usageUpdatedAt:ago(200)},
-  ]);
-  T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:"needs_login",needsLogin:true}}};
-  T.state.failSince=fixedNow-15000;T.state.lastOkAt=fixedNow-180000;
-  T.render(s);
-  const items=T.attentionItems(T.state.forest,[{name:"Codex",connected:true}]);
-  assert.deepEqual(Array.from(items,i=>i.key),["auth:Codex","offline","ask:Codex:q2","ask:Codex:sub","ask:Codex:q1","cooling:Codex:cool","failed:Codex:f2","failed:Codex:f1","context:Codex:ctx95","context:Codex:ctx85"]);
-  assert.equal(items.find(i=>i.kind==="ask"&&i.sub).title,"Parent › Worker");
-  assert.equal(items.find(i=>i.kind==="offline").fact,"data 3m old");
-  assert.equal(items[0].copy,"codex login");
-  const strip=node("#strip").innerHTML;
-  assert.match(strip,/si t-attn k-auth"/);
-  assert.match(strip,/k-ask over/);   // beyond three items
-  assert.match(strip,/\+7 more/);
-  T.state.stripOpen=true;T.render(s);
-  assert.doesNotMatch(node("#strip").innerHTML,/ over"/);
-  assert.match(node("#strip").innerHTML,/aria-expanded="true"/);
-  T.state.stripOpen=false;
-  T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:'<img src=x onerror=alert(1)>',lastTriggerAt:fixedNow/1000,lastVerifiedAt:fixedNow/1000,verificationEvidence:'usage_and_deadline'}}};
-  const phaseMarkup=T.watcherPopoverHTML("Codex");
-  assert.match(phaseMarkup,/&lt;img/);
-  assert.doesNotMatch(phaseMarkup,/<img/);
-  assert.match(phaseMarkup,/<span class="t-live">/);
-  // Watcher failure only when not an auth problem.
-  T.state.failSince=null;
-  T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:"keepalive_scheduled",failedAttempts:2,lastError:"greeting not verified",nextRetryAt:new Date(2026,8,23,2,50).getTime()/1000}}};
-  const w=T.attentionItems(T.buildForest(snap([]).providers),[{name:"Codex",connected:true}]);
-  assert.deepEqual(Array.from(w,i=>[i.kind,i.label,i.fact]),[["watcher","Auto-greet failed","retry 2:50 am"]]);
-  assert.match(T.watcherPopoverHTML("Codex"),/<dt>fails<\/dt><dd class="t-err">2/);
-  T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:"keepalive_scheduled",failedAttempts:0,unverifiedAttempts:2,lastError:"greeting was accepted but no new reset deadline was observed",nextGreetingAt:new Date(2026,8,23,2,50).getTime()/1000}}};
-  const unconfirmed=T.attentionItems(T.buildForest(snap([]).providers),[{name:"Codex",connected:true}]);
-  assert.equal(unconfirmed.length,0); // Verification details belong in the status popover, not the attention strip.
-  assert.equal(T.watcherTone(T.state.watcher,"Codex").tone,"attn");
-  T.state.watcher={enabled:true,running:false,providers:{Codex:{phase:"keepalive_scheduled",lastPollError:"disk full"}}};
-  assert.equal(T.attentionItems(T.buildForest(snap([]).providers),[{name:"Codex",connected:true}])[0].label,"Auto-greet stopped");
-  T.state.watcher={enabled:true,running:true,persistenceError:"state persistence failed: disk full",providers:{Codex:{phase:"keepalive_scheduled"}}};
-  assert.equal(T.attentionItems(T.buildForest(snap([]).providers),[{name:"Codex",connected:true}])[0].label,"Tracker state not saved");
-  assert.match(T.watcherPopoverHTML("Codex"),/state persistence failed: disk full/);
-  T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:"keepalive_scheduled",lastPollError:"sample timed out"}}};
-  assert.equal(T.attentionItems(T.buildForest(snap([]).providers),[{name:"Codex",connected:true}])[0].label,"Quota check stale");
-  // Dismissing a failure hides it until it changes.
-  T.state.watcher=null;
-  T.handleClick({target:{closest(sel){return sel==="[data-action]"?{dataset:{action:"dismiss",dismiss:"failed:Codex:f2:"+ago(5)}}:null;}}});
-  assert.ok(!T.attentionItems(T.state.forest,[{name:"Codex",connected:true}]).some(i=>i.key==="failed:Codex:f2"));
-  assert.ok(JSON.parse(saved.get("tokenTrackerDismissed")).includes("failed:Codex:f2:"+ago(5)));
-}
-
-// ---------- timeline window (section P) ----------
-{
-  reset();
-  const s=snap([
-    {id:"a",title:"Recent",status:"idle",updatedAt:ago(120)},
-    {id:"b",title:"Yesterday",status:"idle",updatedAt:ago(30*60)},
-    {id:"c",title:"Four days",status:"idle",updatedAt:ago(4*24*60)},
-    {id:"d",title:"Nine days",status:"idle",updatedAt:ago(9*24*60)},
-    {id:"k",parentId:"c",title:"kid",agentName:"/root/kid",status:"idle",updatedAt:ago(10)},   // child activity keeps "Four days" in window
-  ]);
-  T.render(s);
-  assert.deepEqual(Array.from(T.visibleRoots(T.state.forest),c=>c.id),["c","a"]);
-  assert.equal(node("#chat-count").textContent,"2");
-  assert.equal(node("#chat-count").title,"2 older hidden");
-  assert.deepEqual(Array.from(T.visibleRoots(T.state.forest,2),c=>c.id),["c","a","b"]);
-  assert.deepEqual(Array.from(T.visibleRoots(T.state.forest,7),c=>c.id),["c","a","b"]);
-  T.state.pins.add("Codex:d");
-  assert.deepEqual(Array.from(T.visibleRoots(T.state.forest),c=>c.id),["c","a","d"]);   // pinned stays visible without jumping above newer activity
-  T.state.pins.clear();
-  // Search spans every loaded chat regardless of the window.
-  T.state.query="nine";assert.deepEqual(Array.from(T.visibleRoots(T.state.forest),c=>c.id),["d"]);
-  T.state.query="is:running";assert.equal(T.visibleRoots(T.state.forest).length,0);
-  T.state.query="";
-  // Empty window suggests the next window that has chats.
-  const only=snap([{id:"b",title:"Yesterday",status:"idle",updatedAt:ago(30*60)},{id:"c",title:"Four days",status:"idle",updatedAt:ago(4*24*60)}]);
-  T.render(only);
-  assert.match(node("#chat-list").innerHTML,/Nothing in 1d<button class="ghost" data-action="window" data-days="2">2d · 1 chat<\/button>/);
-  T.handleClick({target:{closest(sel){return sel==="[data-action]"?{dataset:{action:"window",days:"5"}}:null;}}});
-  assert.equal(T.state.windowDays,5);assert.equal(saved.get("tokenTrackerWindow"),"5");
-  assert.equal(node("#window-seg").style["--i"],"2");
-  assert.match(node("#chat-list").innerHTML,/Four days/);
-  const far=snap([{id:"d",title:"Nine days",status:"idle",updatedAt:ago(9*24*60)}]);
-  T.setWindow(1);T.render(far);
-  assert.match(node("#chat-list").innerHTML,/<div class="empty">Nothing in 1d<\/div>/);
-  T.render(snap([]));
-  assert.match(node("#chat-list").innerHTML,/<div class="empty tree-empty">No active chats<\/div>/);
-  // The window survives a reload; bad values fall back to 1d.
-  const reloaded={...context,window:{__TOKEN_TRACKER_TEST__:true}};
-  vm.createContext(reloaded);vm.runInContext(app,reloaded);
-  assert.equal(reloaded.window.__tokenTrackerTest.state.windowDays,1);
-  saved.set("tokenTrackerWindow","7");
-  const again={...context,window:{__TOKEN_TRACKER_TEST__:true}};
-  vm.createContext(again);vm.runInContext(app,again);
-  assert.equal(again.window.__tokenTrackerTest.state.windowDays,7);
-}
-
-// ---------- pins, request URL, live overlay ----------
-{
-  reset();
-  const s=snap([{id:"old",title:"Older",status:"idle",updatedAt:ago(60)},{id:"root",title:"Current",status:"idle",updatedAt:ago(1)},{id:"kid",parentId:"root",title:"kid",status:"idle",updatedAt:ago(1)}]);
-  T.render(s);
-  const click=(action,key)=>T.handleClick({target:{closest(sel){return sel==="[data-action]"?{dataset:{action,key}}:null;}}});
-  click("pin","Codex:old");click("pin","Codex:kid");   // pinning a child pins its root
-  assert.deepEqual(JSON.parse(saved.get("tokenTrackerPinsV2")),["Codex:old","Codex:root"]);
-  assert.match(node("#chat-list").innerHTML,/class="chat pinned"/);
-  click("pin","Codex:root");
-  assert.ok(node("#chat-list").innerHTML.indexOf("Current")<node("#chat-list").innerHTML.indexOf("Older"));   // latest stays first when older chat is pinned
-  assert.equal(T.statsUrl(true),"/api/stats?limit=50&pins=Codex%3Aold&refresh=1");
-  T.state.query="old & agent is:needs";
-  assert.equal(T.statsUrl(false),"/api/stats?limit=50&pins=Codex%3Aold&q=old%20%26%20agent&status=attention");
-  T.state.query="";T.state.pins.clear();
-  click("open","Codex:root");assert.ok(!T.state.open.has("Codex:root")); // open is reserved for opening the Codex thread
-  click("toggle-chat","Codex:root");assert.ok(T.state.open.has("Codex:root"));
-  click("toggle-chat","Codex:root");assert.ok(!T.state.open.has("Codex:root"));
-
   const live={structureStamp:"a",generatedAt:new Date(fixedNow-5000).toISOString(),providers:[{name:"Codex",connected:true,activity:[],chats:[{id:"x",title:"Loaded",status:"idle",updatedAt:ago(10)}]}]};
+  T.render(live);
   const liveAt=new Date(fixedNow).toISOString();
-  const result=T.applyLive(live,{generatedAt:liveAt,chats:[{key:"Codex:x",status:"needs input",pendingQuestion:"Ship it?",activityAt:liveAt,toolCalls:12,filesEdited:3,runStartedAt:ago(4),runEndedAt:null},{key:"Codex:new",status:"running",activityAt:liveAt}]});
+  const result=T.applyLive(live,{generatedAt:liveAt,chats:[{key:"Codex:x",id:"x",provider:"Codex",status:"needs input",pendingQuestion:"Ship it?",activityAt:liveAt,toolCalls:12,filesEdited:3,runStartedAt:ago(4),runEndedAt:null},{key:"Codex:new",id:"new",provider:"Codex",status:"running",activityAt:liveAt}]});
   const chat=live.providers[0].chats[0];
   assert.equal(result.changed,true);
   assert.equal(chat.status,"needs input");assert.equal(chat.pendingQuestion,"Ship it?");assert.equal(chat.updatedAt,liveAt);
   assert.equal(chat.toolCalls,12);assert.equal(chat.filesEdited,3);assert.equal(chat.runStartedAt,ago(4));assert.equal(chat.runEndedAt,null);
   assert.deepEqual(Array.from(result.outside,pair=>pair[0]),["Codex:new"]);
-  assert.equal(T.applyLive(live,{generatedAt:liveAt,chats:[{key:"Codex:x",status:"needs input",pendingQuestion:"Ship it?",activityAt:liveAt,toolCalls:12}]}).changed,false);
-}
-
-// ---------- provider down / offline / totals ----------
-{
-  reset();
-  const down={enabledProviders:["Codex"],providers:[{name:"Codex",connected:false,error:"codex app-server exited",activity:[],chats:[]}]};
-  T.render(down);
-  const items=T.attentionItems(T.state.forest,down.providers);
-  assert.deepEqual(Array.from(items,i=>[i.kind,i.label]),[["provider","Unavailable"]]);
-  assert.match(node("#chat-list").innerHTML,/No data/);
-  assert.match(node("#totals").innerHTML,/Today<\/span> <b>—<\/b>/);
-  const expired={enabledProviders:["Codex"],providers:[{name:"Codex",connected:false,error:"401 Unauthorized: token expired",activity:[],chats:[]}]};
-  assert.equal(T.attentionItems(T.buildForest(expired.providers),expired.providers)[0].kind,"auth");
-  const ok=snap([],{activity:[{date:"2026-09-23",value:153000},{date:"2026-09-20",value:105e6}],cache:{percent:97,read:422e6,uncachedInput:15.1e6,output:1.35e6,cacheSavings:1816,priceBasis:"list prices"}});
-  T.render(ok);
-  assert.match(node("#totals").innerHTML,/Today<\/span> <b>153K<\/b>[\s\S]*7d<\/span> <b>105M<\/b>[\s\S]*saved<\/span> <b>\$1\.82K<\/b>/);
-  assert.match(node("#totals").innerHTML,/97% hit · 422M cached · 15\.1M fresh · 1\.35M out/);
-  assert.equal(node("#sync-age").textContent,"now");
+  assert.equal(T.applyLive(live,{generatedAt:liveAt,chats:[{key:"Codex:x",id:"x",provider:"Codex",status:"needs input",pendingQuestion:"Ship it?",activityAt:liveAt,toolCalls:12}]}).changed,false);
 }
 
 // ---------- disabled providers never render ----------
@@ -558,13 +365,10 @@ T.render(tree);
   T.render({providerPolicies:policies(true),enabledProviders:["Codex"],limitProviders:[],providers:[codex,claude]});
   assert.doesNotMatch(node("#chat-list").innerHTML,/Policy-visible Claude/,"policy show cannot add a provider the roster omits");
   T.render({providerPolicies:policies(true),enabledProviders:["Codex","Claude"],limitProviders:[],providers:[codex,claude]});
-  assert.match(node("#chat-list").innerHTML,/Policy-visible Claude/);
+  assert.ok(T.state.snapshot.providers.some(provider=>provider.name==="Claude"&&provider.chats.some(chat=>chat.id==="z")),"an allowed provider remains in the active roster snapshot");
   T.render({providerPolicies:policies(false),enabledProviders:["Codex","Claude"],limitProviders:["Claude"],providers:[codex,claude]});
   for(const selector of ["#chat-list","#strip","#totals","#resets"])assert.doesNotMatch(node(selector).innerHTML,/Claude|Policy-visible/);
   assert.deepEqual(T.state.snapshot.providers.map(provider=>provider.name),["Codex"],"hidden provider payload is removed from the UI snapshot");
-  T.state.pins=new Set(["Codex:c","Claude:z"]);
-  assert.match(T.statsUrl(false),/pins=Codex%3Ac/);
-  assert.doesNotMatch(T.statsUrl(false),/Claude|Claude%3A/);
 }
 
 // ---------- limits-only providers show quota meters and nothing else ----------
@@ -577,11 +381,12 @@ T.render(tree);
      fiveHour:{percent:4,resetAt:Math.floor(fixedNow/1000)+7200},weekly:{percent:32,resetAt:Math.floor(fixedNow/1000)+172800},limitsUpdatedAt:new Date(fixedNow).toISOString()}]};
   T.render(withClaudeLimits);
   const resets=node("#resets").innerHTML;
-  assert.match(resets,/id="r0-fiveHour-meter"[\s\S]*id="r0-weekly-meter"/);
+  assert.match(resets,/id="r0-fiveHour-meter"/);
+  assert.match(node("#weekly-resets").innerHTML,/id="r0-weekly-meter"/);
   assert.doesNotMatch(resets,/id="r1-fiveHour-meter"|id="r1-weekly-meter"/);
   assert.doesNotMatch(resets,/Claude|claude/);
   assert.doesNotMatch(node("#strip").innerHTML,/Claude|claude/);
-  assert.equal(node("#brand-name").textContent,"Codex");
+  assert.equal(node("#brand-name").textContent,"Branchglance");
   for(const selector of ["#chat-list","#totals"])assert.doesNotMatch(node(selector).innerHTML,/Claude|claude/);
 }
 
@@ -603,17 +408,15 @@ T.render(tree);
 }
 console.log("Token Tracker UI tests passed");
 {
-  // A question's answer options are shown as copyable chips, not just the question.
+  // Waiting choices are available through the compact question popover.
   reset();
   T.render(snap([{id:"q",title:"Improve wake word",model:"gpt-5.6-luna",status:"needs input",pendingQuestion:"Did SoundDrum play it?",pendingOptions:["Yes, both worked","Heard it, no duck","No"],updatedAt:ago(1),usageUpdatedAt:ago(1)}]));
-  const strip=node("#strip").innerHTML;
-  assert.match(strip,/Did SoundDrum play it\?/);
-  assert.match(strip,/<span class="q-action-note">Open Codex to answer · queue is a later message<\/span>[\s\S]*class="q-opt" data-action="answer" data-answer="Yes, both worked" data-thread="q"[^>]*aria-label="Open Codex to answer: Yes, both worked"[^>]*title="Open this task in Codex and select the choice in its question prompt\. The choice is also copied for reference\."><b>1<\/b>Yes, both worked/);
-  assert.match(strip,/class="q-open q-queue" data-action="queue-answer" data-answer="Yes, both worked" data-thread="q" title="Queue this as a message for the next turn\. It will not answer the pending question\."><span>Queue to chat<\/span>/);
-  assert.match(strip,/<b>3<\/b>No/);
-  T.state.open.add("Codex:q");T.render(T.state.snapshot);
-  assert.match(node("#chat-list").innerHTML,/blk t-attn[\s\S]*q-opt[\s\S]*Heard it, no duck/);
-  console.log("Token Tracker question options UI tests passed");
+  const question=T.state.forest.rows.find(chat=>chat.id==="q");
+  const popover=T.runwayQuestionPopover(question);
+  assert.match(popover,/Did SoundDrum play it\\?/);
+  assert.match(popover,/class="q-opt" data-action="answer" data-answer="Yes, both worked" data-thread="q"[^>]*aria-label="Open Codex to answer: Yes, both worked"/);
+  assert.match(popover,/class="q-open q-queue" data-action="queue-answer" data-answer="Yes, both worked" data-thread="q"/);
+  assert.match(popover,/<b>3<\/b><span>Open in Codex<\/span> · No/);
 }
 {
   // Historical agent rows stay out of the live tray; active subagents remain visible at compact width.
@@ -632,11 +435,12 @@ console.log("Token Tracker UI tests passed");
   assert.ok(tray.some(entry=>entry.html.includes("Worker")));
   assert.ok(!tray.some(entry=>entry.html.includes("Old review")));
   assert.ok(!tray.some(entry=>entry.html.includes("Auto-review")));
-  assert.ok(!tray.some(entry=>entry.html.includes("Done")||entry.html.includes("Failed")));
+  assert.ok(!tray.some(entry=>entry.html.includes("Done")));
+  assert.ok(tray.some(entry=>entry.html.includes("Failed")),"recent failures remain visible as actionable agent rows");
   assert.ok(!T.chatBlockHTML({...parent,descendants:[parent.descendants.find(agent=>agent.id==="quiet-review")]},{active:false}).includes("tray"));
   assert.equal(T.normalizeStatus("compacting"),"compacting");
   assert.equal(T.ownState({...parent,status:"compacting"}).word,"Compacting");
-  assert.match(T.chatBlockHTML(parent,{active:false}),/data-action="toggle-chat"/);
+  assert.match(T.chatBlockHTML(parent,{active:false}),/class="runway-refined-row"/);
   console.log("Token Tracker active agents / compacting UI tests passed");
 }
 {
@@ -684,15 +488,12 @@ console.log("Token Tracker UI tests passed");
   console.log("Token Tracker avatar / file changes UI tests passed");
 }
 {
-  // Audit fixes: one outage = one strip item; free-text asks carry an inline Answer action.
+  // A free-text ask keeps an Answer action in the compact question popover.
   reset();
-  T.state.failSince=fixedNow-60000;T.state.lastOkAt=fixedNow-300000;
-  const items=T.attentionItems({rows:[]},[{name:"Codex",connected:false,error:"app-server exited"}]);
-  assert.equal(JSON.stringify(items.map(i=>i.kind)),JSON.stringify(["offline"]));
-  T.state.failSince=null;
   T.render(snap([{id:"f",title:"Free text",status:"needs input",pendingQuestion:"What did you say?",updatedAt:ago(1)}]));
-  const strip=node("#strip").innerHTML;
-  assert.match(strip,/si-q si-ask[\s\S]*What did you say\?[\s\S]*data-action="open" data-thread="f"[\s\S]*Answer/);
-  assert.doesNotMatch(strip,/si-opts/);
-  console.log("Token Tracker audit-fix UI tests passed");
+  const question=T.state.forest.rows.find(chat=>chat.id==="f");
+  const popover=T.runwayQuestionPopover(question);
+  assert.match(popover,/What did you say\?/);
+  assert.match(popover,/data-action="open" data-thread="f"[\s\S]*Open in Codex to answer/);
+  assert.doesNotMatch(popover,/data-action="answer"|data-action="queue-answer"/);
 }

@@ -96,7 +96,7 @@ function bootDashboard({fetchText = REPORT, fetchOk = true, platform = "Win32", 
 }
 
 // Report-derived tree rendered through app.js buildForest, using the synthetic fixture.
-function bootApp({runway = false} = {}) {
+function bootApp() {
   const timers = [];
   const element = () => ({innerHTML: "", textContent: "", value: "", hidden: false, dataset: {}, style: {},
     classList: {add() {}, remove() {}, toggle() {}, contains() { return false; }},
@@ -104,7 +104,7 @@ function bootApp({runway = false} = {}) {
     setAttribute() {}, getAttribute() { return null; }, removeAttribute() {},
     getBoundingClientRect() { return {left: 0, top: 0, width: 0, height: 0}; }, getClientRects() { return []; }});
   const context = {
-    window: {__TOKEN_TRACKER_TEST__: true, addEventListener() {}, ...(runway ? {__TOKEN_TRACKER_RUNWAY__: true} : {})},
+    window: {__TOKEN_TRACKER_TEST__: true, __TOKEN_TRACKER_RUNWAY__: true, __TOKEN_TRACKER_REFINED__: true, __TOKEN_TRACKER_COMPACT__: true, addEventListener() {}},
     document: {body: {dataset: {}, classList: {add() {}, remove() {}, toggle() {}}},
       querySelector: () => element(), querySelectorAll: () => [], documentElement: {style: {setProperty() {}}},
       hidden: false, activeElement: null, addEventListener() {}},
@@ -182,7 +182,7 @@ function bootApp({runway = false} = {}) {
   const report = ["## Agent tree", "", "```json", JSON.stringify(rows, null, 2), "```", ""].join("\n");
   assert.deepEqual(reportTree(report), rows);
 
-  const T = bootApp({runway: true});
+  const T = bootApp();
   assert.equal(T.runway, true);
   const {rows: forestRows} = T.buildForest(forestProviders(rows, {now}));
   const byId = new Map(forestRows.map(row => [row.id, row]));

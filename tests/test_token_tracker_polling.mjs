@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 const app = fs.readFileSync(new URL("../token_tracker/static/app.js", import.meta.url), "utf8");
 const baseNow = Date.parse("2026-10-21T10:00:00.000Z");
-assert.match(app,/renderLoading\(\);if\(RUNWAY\)\{void loadProviderPolicy\(\);void loadQuota\(\);\}refresh\(\)/,"desktop startup loads policy and quota beside the unchanged full-stat refresh");
+assert.match(app,/renderLoading\(\);void loadProviderPolicy\(\);void loadQuota\(\);refresh\(\)/,"desktop startup loads policy and quota before the full-stat refresh");
 
 function harness(fetchImpl = async () => ({ ok: true, json: async () => ({ providers: {} }) }), fakeTimers = false) {
   let now = baseNow, fetcher = fetchImpl;
@@ -21,7 +21,7 @@ function harness(fetchImpl = async () => ({ ok: true, json: async () => ({ provi
   class TestDate extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
   const document = { hidden: false, activeElement: null, querySelector: node, querySelectorAll: () => [], addEventListener() {},
     body: { dataset: {}, classList: { toggle() {} } } };
-  const context = { window: { __TOKEN_TRACKER_TEST__: true, __TOKEN_TRACKER_RUNWAY__: true, __TOKEN_TRACKER_REFINED__: true }, document,
+  const context = { window: { __TOKEN_TRACKER_TEST__: true, __TOKEN_TRACKER_RUNWAY__: true, __TOKEN_TRACKER_REFINED__: true, __TOKEN_TRACKER_COMPACT__: true }, document,
     localStorage: { getItem(key) { return key === "tokenTrackerRunwayHiddenSeedV1" ? "1" : null; }, setItem() {} },
     fetch: (...args) => fetcher(...args), Intl, Date: TestDate, Math, Number, JSON, AbortController, AbortSignal,
     setTimeout(fn,delay) { const id=nextTimer++;if(fakeTimers)timers.set(id,{fn,delay});return id; }, clearTimeout(id) { timers.delete(id); }, setInterval() { return 1; } };

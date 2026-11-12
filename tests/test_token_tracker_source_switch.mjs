@@ -38,7 +38,7 @@ assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 58px/);
 assert.doesNotMatch(refined,/compact-toolbar \.notch-counts\{display:none/,"the toolbar keeps its chat, active and waiting counts");
 assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);
 
-function boot(initialStorage={}, {compact=false}={}) {
+function boot(initialStorage={}) {
   const nodes=new Map(),saved=new Map(Object.entries(initialStorage)),timers=new Map();let sequence=0;
   const node=selector=>{
     if(!nodes.has(selector))nodes.set(selector,{innerHTML:"",textContent:"",value:"",hidden:false,title:"",className:"",dataset:{},attributes:{},offsetHeight:0,
@@ -53,7 +53,7 @@ function boot(initialStorage={}, {compact=false}={}) {
   };
   const segments=[segment("Codex"),segment("Claude")];
   class TestDate extends Date {constructor(...args){super(...(args.length?args:[fixedNow]));}static now(){return fixedNow;}}
-  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:compact,__TOKEN_TRACKER_COMPACT__:compact},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:selector=>selector==="#source-switch"?null:node(selector),
+  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:selector=>selector==="#source-switch"?null:node(selector),
     querySelectorAll(){return [];},documentElement:{style:{setProperty(){}}},hidden:false,activeElement:null},
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))},fetch:async()=>({ok:true,json:async()=>({ok:true})}),Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,
     setTimeout:callback=>{timers.set(++sequence,callback);return sequence;},clearTimeout:id=>timers.delete(id),setInterval(){return 0;}};
@@ -303,14 +303,14 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.match(node("#chat-list").innerHTML,/Codex c1/);
 }
 
-// A new question on an already-running hidden session is a separate transition.
+// A new question on an already-running provider remains visible in the unified tree.
 {
   const {T,timers}=boot({branchglanceSource:"Claude"});
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running())]}));
   T.setSource("Codex");
   const timer=T.notch.autoTimer;timers.get(timer)?.();
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({status:"needs-input",pendingQuestion:"Continue?",pendingQuestionAt:ago(0),pendingQuestionId:"q-1"}))]}));
-  assert.equal(T.state.source,"Codex");
+  assert.ok(T.state.forest.rows.find(chat=>chat.key==="Claude:s1"));
   assert.equal(T.state.sourceAttention.size,0,"all visible providers are on screen in the unified tree");
   assert.ok(T.state.forest.rows.find(chat=>chat.key==="Claude:s1").pendingQuestion);
   assert.equal(T.notch.autoExpanded,true,"the question transition reveals despite the unchanged run");
