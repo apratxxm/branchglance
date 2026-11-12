@@ -181,7 +181,17 @@ def test_unpriced_model_names_never_escape_private_identifiers(tmp_path):
 
 
 def test_snapshot_refresh_records_limit_peak_without_insights_request(monkeypatch, tmp_path):
+    from token_tracker import claude_identity
+
     snapshot, now = _fixture()
+    account = tmp_path / "account.json"
+    account.write_text(json.dumps({"oauthAccount": {"accountUuid": "test-account", "organizationUuid": "test-org"}}))
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json")
+    identity = authority.refresh_passive(account)
+    assert identity is not None
+    monkeypatch.setattr(claude_identity, "AUTHORITY", authority)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(account))
+    snapshot["providers"][0].update(identityVerified=True, identityGeneration=identity.generation)
     observed_now = datetime.now(timezone.utc).isoformat()
     for provider in snapshot["providers"]:
         provider["limitsUpdatedAt"] = observed_now
