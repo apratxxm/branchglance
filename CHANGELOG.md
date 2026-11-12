@@ -12,7 +12,8 @@ Planned as 0.2.0.
 - Claude limits also refresh from the usage cache Claude Code keeps in its own config, so they stay current without Claude Desktop or the status line helper. Readings are used only when they match the signed-in account.
 - Banked Codex limit resets are shown beside the weekly bar; ones that expire while the widget is open are dropped.
 - Opt-in Claude greetings keep the 5-hour window rolling. Branchglance reads the limits Claude Code prints for each greeting.
-- Large trees scroll within the expanded window, and a stopped chat stays visible for 15 minutes.
+- Settings has a Report a bug section that previews a privacy-filtered debug report to copy into a GitHub issue. Nothing is sent automatically. From a source checkout, `--debug-report` writes the same report to a file.
+- A resumed Codex thread shows a ↻N badge after two or more resumes.
 
 ### Changed
 
@@ -20,15 +21,17 @@ Planned as 0.2.0.
 - Settings controls By work, Claude greetings, and status-line connection; an existing status line is left untouched.
 - Removed routing alerts and their automatic widget expansion.
 - Branchglance now finds Claude's settings in `CLAUDE_CONFIG_DIR` when set (same as Claude Code); the old `CLAUDE_HOME` variable no longer locates settings; if it is set, uninstalling an install from before targets were recorded leaves hooks in place rather than guess.
-
 - A Codex job nests under a Claude chat only when its parent is proven by a receipt or verified process lineage. Unverifiable candidates now stay unresolved instead of being guessed.
 - Subagent rows keep their parent's timing and workspace columns.
 - Claude readings are tied to the account they came from. Switching accounts no longer shows the old account's limits, and a reset armed on one account is not carried to another.
 - Privacy text is exact: Branchglance does read Claude Code's OAuth token, in memory, for live usage. See [Privacy](docs/PRIVACY.md).
+- A resumed Codex thread is one tree row instead of one row per run.
+- The per-parent "+N more" pager is gone: every child row shows in forest order, and the tree list scrolls within the window's maximum height.
+- A stopped Codex run stays in the tree for 15 minutes after it stops, unless a row under it is still shown.
+- Stopped child agents under a running parent are hidden unless a row under them is still shown.
 
 ### Fixed
 
-- With several agents running, the expanded tree no longer flips between pages. It pages only when the rows cannot fit at the window's maximum height, and keeps the same page as the window resizes.
 - Claude incremental reads are no longer treated as rewrites on Python 3.12+ on Windows.
 - Live Claude usage requests honour the TLS context and have a whole-request deadline, and no longer fail when the response socket path is absent.
 - Shutdown stops background services in parallel under a bounded budget.
@@ -39,6 +42,9 @@ Planned as 0.2.0.
 - A run whose Claude parent is gone is no longer retained again, and an exec row keeps its status when it cannot be linked.
 - Limit-reset detection handles stale baselines and candidate readings more strictly.
 - Setup and uninstall are safer on unusual folders and names: Unicode paths are handled byte-exactly and a folder is only removed once it is proven to be Branchglance's own.
+- Running agent rows show elapsed time from the first known start instead of a dash.
+- Per-chat scratch folders show as "scratch" instead of their path, and POSIX paths no longer get a drive prefix.
+- A rejected settings change (feature, status-line or greeting request) gets its error response instead of a dropped connection.
 
 ### Security
 
@@ -46,6 +52,8 @@ Planned as 0.2.0.
 - The launcher authenticates widget relaunch requests within one install, and release builds ship without the test report.
 - The local avatar and limit-reset endpoints check the request origin.
 - Codex processes Branchglance starts are contained from the moment they are created, and retention cleanup on macOS no longer follows links.
+- Installing or removing Claude hooks refuses, before any backup or write, a change that would alter a setting or hook Branchglance does not own.
+- Revoking live Claude usage cancels a request in progress, and no request is sent after the revocation.
 
 ## [0.1.0] - 2026-11-03
 
