@@ -467,9 +467,24 @@ def _in_build_scope(function: Any) -> Any:
     return wrapper
 
 
+def _stat_ctime_ns(stat: os.stat_result) -> int:
+    """File creation/change stamp that agrees between ``os.stat`` and ``os.fstat``.
+
+    Python 3.12+ on Windows reports a different ``st_ctime`` for a path stat (file
+    creation time) and a handle stat (last change time), so comparing the two made
+    every incremental read look like a rewrite. ``st_birthtime_ns`` (creation time)
+    is identical for both there; earlier Windows versions and other platforms keep
+    using ``st_ctime_ns``, which already agrees between the two calls.
+    """
+    if os.name == "nt":
+        birth = getattr(stat, "st_birthtime_ns", None)
+        if birth is not None:
+            return birth
+    return getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000))
+
+
 def _fingerprint_of(stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino,
-            getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000)))
+    return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, _stat_ctime_ns(stat))
 
 
 def _stat_fresh(path: Path) -> os.stat_result:
@@ -547,9 +562,7 @@ _JSONL_PATH_LOCKS = tuple(threading.Lock() for _ in range(64))
 
 
 def _jsonl_stat(handle: Any) -> tuple[int, int, int, int, int]:
-    stat = os.fstat(handle.fileno())
-    return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino,
-            getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000)))
+    return _fingerprint_of(os.fstat(handle.fileno()))
 
 
 def _jsonl_guards(handle: Any, offset: int, size: int) -> tuple[bytes, bytes]:

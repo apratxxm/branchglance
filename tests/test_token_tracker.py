@@ -3407,6 +3407,69 @@ def test_incremental_jsonl_checkpoint_append_matches_full_reduce_and_returns_cop
     assert appended == full == {"values": [1, 2, 3]}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path and handle stats disagree on st_ctime")
+def test_incremental_jsonl_checkpoint_survives_windows_path_and_handle_ctime_mismatch(tmp_path, monkeypatch):
+    # Python 3.12+ on Windows reports st_ctime as creation time for os.stat(path) but as the
+    # change time for os.fstat(handle); the creation stamp (st_birthtime_ns) agrees for both.
+    path = tmp_path / "ctime-mismatch.jsonl"
+    path.write_text('{"value":1}\n{"value":2}\n', encoding="utf-8")
+    real_fstat = os.fstat
+
+    class HandleStat:
+        def __init__(self, real):
+            self._real = real
+            self.st_ctime_ns = real.st_ctime_ns + 7_000_000
+            self.st_ctime = self.st_ctime_ns / 1e9
+            self.st_birthtime_ns = getattr(real, "st_birthtime_ns", real.st_ctime_ns)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def skewed_fstat(fd):
+        return HandleStat(real_fstat(fd))
+
+    reads = []
+
+    def reduce(state, item):
+        reads.append(item["value"])
+        state["values"].append(item["value"])
+
+    initial = {"values": []}
+    with monkeypatch.context() as patch:
+        patch.setattr(providers.os, "fstat", skewed_fstat)
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [1, 2]}
+        key = ("test-ctime", str(path.resolve(strict=False)))
+        assert key in providers._JSONL_CHECKPOINTS  # Not treated as a rewrite: a checkpoint was kept.
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"value":3}\n')
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [1, 2, 3]}
+        assert reads == [1, 2, 3]  # The append was read incrementally, not re-reduced from zero.
+
+        # A replacement file (new identity) is still a rewrite and drops the old checkpoint.
+        replacement = tmp_path / "ctime-mismatch.new"
+        replacement.write_text('{"value":9}\n', encoding="utf-8")
+        os.replace(replacement, path)
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [9]}
+        # Truncation to a shorter, different file is also a rewrite.
+        path.write_text('{"value":8}\n', encoding="utf-8")
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [8]}
+
+
+def test_stat_ctime_ns_prefers_creation_time_on_windows_only(monkeypatch):
+    class Stat:
+        st_ctime = 5.0
+        st_ctime_ns = 5_000_000_000
+        st_birthtime_ns = 1_000_000_000
+
+    with monkeypatch.context() as patch:
+        patch.setattr(providers.os, "name", "nt")
+        windows = providers._stat_ctime_ns(Stat())
+    with monkeypatch.context() as patch:
+        patch.setattr(providers.os, "name", "posix")
+        posix = providers._stat_ctime_ns(Stat())
+    assert (windows, posix) == (1_000_000_000, 5_000_000_000)
+
+
 def test_incremental_jsonl_eof_records_are_visible_without_double_count_and_malformed_tail_waits(tmp_path):
     path = tmp_path / "eof.jsonl"
     initial = {"values": []}
