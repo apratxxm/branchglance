@@ -45,7 +45,7 @@ class ProviderPolicy:
         if self.name in _CAPABILITIES and not self.capabilities <= _CAPABILITIES[self.name]:
             raise ProviderPolicyError(f"unsupported capability for provider: {self.name}")
         if self.send_origin not in {"provider_env", "legacy_global", "default", "provider_denied",
-                                    "legacy_veto", "collection_denied"}:
+                                    "legacy_veto", "collection_denied", "feature_file"}:
             raise ProviderPolicyError("unknown send origin")
 
     def allows(self, action: str) -> bool:
@@ -60,6 +60,7 @@ class ProviderPolicy:
         if action == "continue":
             return self.send and self.send_origin == "provider_env" and action in self.capabilities
         return (self.send and (self.send_origin == "provider_env"
+                               or self.name == "Claude" and self.send_origin == "feature_file"
                                or self.name == "Codex" and self.send_origin == "legacy_global")
                 and action in self.capabilities)
 
@@ -186,7 +187,7 @@ class PolicyMap(Mapping):
 def load_policies(environ: Mapping[str, str] | None = None, *,
                   policy_file: PolicyFile | None = None,
                   policy_file_status: str | None = None,
-                  warnings: tuple[str, ...] = ()) -> Mapping[str, ProviderPolicy]:
+                  warnings: tuple[str, ...] = (), claude_send_feature: bool = False) -> Mapping[str, ProviderPolicy]:
     """Parse strict environment flags (and an optional validated policy file) once.
 
     Precedence per flag: explicit provider env flag, then the legacy global env
@@ -249,6 +250,8 @@ def load_policies(environ: Mapping[str, str] | None = None, *,
             send_origin = "legacy_global"
         elif legacy_explicit and legacy is False:
             send, send_origin = False, "legacy_veto"
+        elif name == "Claude" and claude_send_feature and policy_file is not None and policy_file.claude_consent:
+            send, send_origin, file_used = True, "feature_file", True
         elif name == "Codex" and file_send is not None:
             file_used = True
             if file_send:
@@ -284,13 +287,14 @@ def load_policies(environ: Mapping[str, str] | None = None, *,
 
 def load_policies_resilient(environ: Mapping[str, str] | None = None, *,
                             policy_path: Path | str | None = None,
-                            claude_consent: bool = False) -> Mapping[str, ProviderPolicy]:
+                            claude_consent: bool = False, claude_send_feature: bool = False) -> Mapping[str, ProviderPolicy]:
     """Startup loader for the windowed app: never raises, reports problems via metadata."""
     file_result = read_policy_file(policy_path, claude_consent=claude_consent)
     warnings = (file_result.warning,) if file_result.warning else ()
     try:
         return load_policies(environ, policy_file=file_result.policy,
-                             policy_file_status=file_result.status, warnings=warnings)
+                             policy_file_status=file_result.status, warnings=warnings,
+                             claude_send_feature=claude_send_feature)
     except ProviderPolicyError as exc:
         # Conflicting or malformed environment flags: fail closed, visibly.
         locked = {name: ProviderPolicy(name, False, False, False, "default", _CAPABILITIES[name])
@@ -303,10 +307,13 @@ def load_policies_resilient(environ: Mapping[str, str] | None = None, *,
 
 
 def _startup_policies() -> Mapping[str, ProviderPolicy]:
-    from . import product
+    from . import product, features
     path = product.policy_file_path()
     consent = product.claude_consent_present() if path is not None else False
-    return load_policies_resilient(policy_path=path, claude_consent=consent)
+    send_feature = features.enabled("claude_send")
+    features.mark_send_start(send_feature)
+    return load_policies_resilient(policy_path=path, claude_consent=consent,
+                                   claude_send_feature=send_feature)
 
 
 class LazyPolicyMap(Mapping):

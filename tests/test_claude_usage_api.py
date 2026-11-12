@@ -14,7 +14,9 @@ def setup_api(tmp_path, monkeypatch):
     now = time.time()
     state = {"now": now, "identity": identity.Identity("account", "org", "generation", changed_at=now - 100)}
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("TOKEN_TRACKER_CLAUDE_LIVE_USAGE", "1")
     monkeypatch.setattr(identity, "current_identity", lambda: state["identity"])
+    monkeypatch.setattr(identity, "read_claude_code_usage", lambda *a, **k: {})
     monkeypatch.setattr(product, "state_root", lambda: tmp_path)
     monkeypatch.setattr(api, "policy_for", lambda name: type("Policy", (), {"allows": lambda self, action: True})())
     credentials = tmp_path / ".credentials.json"
@@ -43,12 +45,11 @@ def setup_api(tmp_path, monkeypatch):
 def test_success_into_all_consumers(setup_api, tmp_path, monkeypatch):
     state, cache, calls, _, _, _ = setup_api
     now = state["now"]
-    old = {"used_percentage": 43, "resets_at": now + 3600, "receivedAt": now - 80}
+    old = {"used_percentage": 43, "resets_at": now + 3600, "receivedAt": now - 181}
     monkeypatch.setattr(identity, "read_claude_code_usage", lambda *a, **k: {"five_hour": old, "seven_day": old})
     monkeypatch.setattr(sl, "read", lambda *a, **k: {})
     monkeypatch.setattr(providers.ClaudeDesktopProvider, "_usage", lambda self: ([], {}))
     monkeypatch.setattr(providers.ClaudeLimitsProvider, "_last_live", {})
-    monkeypatch.setattr(lr, "_claude_desktop_data", lambda **kwargs: (None, {"observedAt": None}))
     cache.poll()
     assert calls == ["/api/oauth/profile", "/api/oauth/usage"]
     result = providers.ClaudeLimitsProvider(str(tmp_path)).snapshot()
@@ -119,7 +120,7 @@ def test_unauthorized_usage_clears_previous_sample(setup_api):
     state, cache, _, _, _, _ = setup_api
     cache.poll()
     assert cache.read(state["identity"])
-    state["now"] += 40
+    state["now"] += 200
     cache.request = lambda path, token: (403, {}, None)
     cache.poll()
     assert cache.read(state["identity"]) == {}
@@ -262,3 +263,56 @@ def test_new_owner_reloads_cooldown_written_after_construction(setup_api):
     finally:
         second._owner_context.__exit__(None, None, None)
         cache.acquire()
+
+
+def test_live_usage_cache_first_and_interval(setup_api, monkeypatch):
+    state, refresher, calls, _, _, _ = setup_api
+    now = state["now"]
+    window = {"used_percentage": 10, "resets_at": now + 3600, "receivedAt": now - 10}
+    monkeypatch.setattr(identity, "read_claude_code_usage", lambda *a, **k: {"five_hour": window})
+    monkeypatch.setattr(api, "_credentials", lambda: pytest.fail("credentials read before cache skip"))
+    refresher.poll()
+    assert not calls and 165 <= refresher._next - now <= 195
+    next_poll = refresher._next
+    state["now"] += 1
+    refresher.poll()
+    assert refresher._next == next_poll
+
+
+@pytest.mark.parametrize("revoke_at", ["profile", "usage"])
+def test_revoked_request_does_not_send_next_or_publish(setup_api, monkeypatch, revoke_at):
+    state, refresher, calls, _, _, usage = setup_api
+    def request(path, token):
+        calls.append(path)
+        if path.endswith(revoke_at):
+            monkeypatch.setenv("TOKEN_TRACKER_CLAUDE_LIVE_USAGE", "0")
+        return (200, {}, usage if path.endswith("usage") else
+                {"account": {"uuid": "account"}, "organization": {"uuid": "org"}})
+    refresher.request = request
+    refresher.poll()
+    assert calls == (["/api/oauth/profile"] if revoke_at == "profile" else
+                     ["/api/oauth/profile", "/api/oauth/usage"])
+    assert refresher.read(state["identity"]) == {} and refresher._sample == {}
+
+
+def test_consumers_do_not_open_credentials_when_live_usage_off(setup_api, tmp_path, monkeypatch):
+    state, _, _, _, _, _ = setup_api
+    monkeypatch.setenv("TOKEN_TRACKER_CLAUDE_LIVE_USAGE", "0")
+    monkeypatch.setattr(api, "_credentials", lambda: pytest.fail("credentials read"))
+    monkeypatch.setattr(api, "_opener", lambda *a: pytest.fail("opener called"))
+    monkeypatch.setattr(sl, "read", lambda *a, **kw: {})
+    providers.ClaudeLimitsProvider(str(tmp_path)).snapshot()
+    lr.claude_limit_sample()
+    lr.LimitResetService(sources={}, senders={}, state_path=tmp_path / "s.json")._claude_account_sample("org", state["now"])
+
+
+def test_revocation_after_opener_creation_aborts_send(setup_api, monkeypatch):
+    class Opener:
+        def open(self, *args, **kwargs):
+            pytest.fail("request sent after revocation")
+    def opener(*args):
+        monkeypatch.setenv("TOKEN_TRACKER_CLAUDE_LIVE_USAGE", "0")
+        return Opener()
+    monkeypatch.setattr(api, "_opener", opener)
+    with pytest.raises(RuntimeError):
+        api._request("/api/oauth/usage", "test-token")

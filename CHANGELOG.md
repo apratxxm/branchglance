@@ -8,13 +8,17 @@ Planned as 0.2.0.
 
 ### Added
 
-- Live Claude usage. With Claude tracking on and Claude Code signed in, Branchglance reads the account's 5-hour and weekly usage from Anthropic about every 30 seconds, using Claude Code's existing sign-in. It never refreshes or stores the token, honours Anthropic's retry-after across restarts, and only trusts readings for the account that is currently signed in.
+- Live Claude usage. With Claude tracking and separately opted-in live usage enabled, Branchglance reads the account's 5-hour and weekly usage from Anthropic about every 180 seconds, using Claude Code's existing sign-in. It never refreshes or stores the token, honours Anthropic's retry-after across restarts, and only trusts readings for the account that is currently signed in.
 - Claude limits also refresh from the usage cache Claude Code keeps in its own config, so they stay current without Claude Desktop or the status line helper. Readings are used only when they match the signed-in account.
 - Banked Codex limit resets are shown beside the weekly bar; ones that expire while the widget is open are dropped.
 - Opt-in Claude greetings keep the 5-hour window rolling. Branchglance reads the limits Claude Code prints for each greeting.
 - Large trees page within the expanded window instead of overflowing, and a stopped chat stays visible for 15 minutes.
 
 ### Changed
+
+- Live Claude usage is now off by default for all installations, including existing ones; Settings enables it separately. Claude Desktop is no longer a limit source.
+- Settings controls By work, Claude greetings, and status-line connection; an existing status line is left untouched.
+- Removed routing alerts and their automatic widget expansion.
 
 - A Codex job nests under a Claude chat only when its parent is proven by a receipt or verified process lineage. Unverifiable candidates now stay unresolved instead of being guessed.
 - Subagent rows keep their parent's timing and workspace columns.

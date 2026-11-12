@@ -124,9 +124,9 @@ def test_claude_provider_filters_latest_org(tmp_path, monkeypatch):
     }), encoding="utf-8")
     provider = ClaudeDesktopProvider(str(tmp_path))
     snap = provider.snapshot()
-    assert snap["fiveHour"]["percent"] == 20
-    assert snap["weekly"]["percent"] == 30
-    assert snap["limitsUpdatedAt"].startswith("1970-01-01T00:00:02")
+    assert snap["fiveHour"]["percent"] is None
+    assert snap["weekly"]["percent"] is None
+    assert snap["limitsUpdatedAt"] is None
     assert snap["chats"][0]["title"] == "Real chat"
 
 
@@ -181,7 +181,7 @@ def test_usage_limits_preserve_zero_and_expose_absent_values_as_unknown(tmp_path
     (package / "plan-usage-history.json").write_text(json.dumps({"samples": [{"t": 1, "org": "o", "u": {"fh": 0}}]}), encoding="utf-8")
     provider = ClaudeDesktopProvider(str(tmp_path))
     snap = provider.snapshot()
-    assert snap["fiveHour"]["percent"] == 0
+    assert snap["fiveHour"]["percent"] is None
     assert snap["weekly"]["percent"] is None
 
     assert CodexProvider._telemetry_limit({"primary": {"usedPercent": 0}}, "primary")["percent"] == 0
@@ -354,8 +354,8 @@ def test_claude_reset_reads_recent_electron_local_storage(tmp_path):
     storage.mkdir(parents=True)
     future = int(providers.time.time()) + 7200
     (storage / "000123.ldb").write_bytes(f"noise resetsAt\x00:{future} trailing".encode())
-    provider = ClaudeDesktopProvider(str(tmp_path))
-    assert provider._reset_at() == future
+    provider = providers.ClaudeLimitsProvider(str(tmp_path))
+    assert provider.snapshot()["fiveHour"]["resetAt"] is None
 
 
 def test_codex_token_event_reads_only_telemetry(tmp_path):
@@ -1509,8 +1509,8 @@ def test_claude_limits_only_adds_quota_meters_without_chats_or_traffic(tmp_path,
     assert [p["name"] for p in snap["providers"]] == ["Codex", "Claude"]
     claude = snap["providers"][1]
     assert claude["limitsOnly"] is True and claude["chats"] == [] and claude["cache"] is None
-    assert claude["fiveHour"]["percent"] == 4 and claude["weekly"]["percent"] == 32
-    assert claude["limitsUpdatedAt"].startswith("1970-01-01T00:00:01")
+    assert claude["fiveHour"]["percent"] is None and claude["weekly"]["percent"] is None
+    assert claude["limitsUpdatedAt"] is None
     assert snap["hero"]["today"] == snap["hero"]["sevenDays"] == 123
     assert "Codex" in snap["hero"]["note"] and "Claude" not in snap["hero"]["note"]
     assert providers.trim_chats(snap)["providers"][1]["chatTotal"] == 0
@@ -1525,6 +1525,7 @@ def test_claude_limits_only_failure_leaves_codex_intact(tmp_path, monkeypatch):
         "TOKEN_TRACKER_CLAUDE_COLLECT": "true", "TOKEN_TRACKER_CLAUDE_SHOW": "true",
     }))
     monkeypatch.setattr(providers, "_LAST_GOOD", {})
+    monkeypatch.setattr(providers.ClaudeLimitsProvider, "snapshot", lambda self: (_ for _ in ()).throw(OSError("unavailable")))
     class Codex:
         def snapshot(self):
             return {"name": "Codex", "connected": True, "chats": [], "activity": []}

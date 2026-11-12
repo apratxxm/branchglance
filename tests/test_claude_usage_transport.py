@@ -24,6 +24,11 @@ REPO = Path(__file__).resolve().parents[1]
 HOST = "api.anthropic.com"
 TOKEN = "SENTINEL_TOKEN_abc"
 
+
+@pytest.fixture(autouse=True)
+def enable_transport_for_offline_tests(monkeypatch):
+    monkeypatch.setattr(api, "live_usage_allowed", lambda: True)
+
 _OPENSSL_CONFIG = """[req]
 distinguished_name = dn
 x509_extensions = v3_req

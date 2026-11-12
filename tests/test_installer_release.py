@@ -1567,6 +1567,18 @@ def test_uninstall_removes_owned_claude_hooks_and_consent_but_preserves_user_set
     assert paths.product_root.exists()
 
 
+def test_uninstall_disconnects_owned_statusline(tmp_path, monkeypatch):
+    from branchglance_installer.app import uninstall
+    from token_tracker import statusline_connect
+    _installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(settings.parent))
+    settings.write_text('{"model":"opus"}', encoding="utf-8")
+    statusline_connect.connect(root=paths.product_root, path=settings, command="test-wrapper")
+    result = uninstall(paths, native)
+    assert result["claudeIntegration"]["statusLine"]["changed"] is True
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"model": "opus"}
+
+
 def test_uninstall_malformed_claude_settings_are_untouched_and_reported(tmp_path, monkeypatch):
     from branchglance_installer.app import uninstall
     raw = b'{"hooks": [broken}'

@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .codex_client import CodexAppServer, CodexUnavailable
-from .claude_cache import reset_info, usage_info
 from .claude_statusline import merge_usage
 
 CLAUDE_DISPLAY_USAGE_AGE_SECONDS = 600  # matches the widget's quota freshness (app.js resetView)
@@ -2976,49 +2975,6 @@ class ClaudeDesktopProvider:
         )
         return own, latest
 
-    def _reset_at(self) -> int | None:
-        path = self.root / "claude_desktop_config.json"
-        candidates: list[int] = []
-        now = time.time()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-        for key, value in _walk(data):
-            if key == "resetsAt" and isinstance(value, (int, float)):
-                seconds = float(value) / 1000 if value > 10_000_000_000 else float(value)
-                if now - 300 <= seconds <= now + 5 * 3600 + 300:
-                    candidates.append(int(seconds))
-
-        # Claude Desktop's web layer persists the authoritative reset timestamp
-        # in Electron's LevelDB store rather than plan-usage-history.json. Read
-        # only recent, bounded local files and extract the timestamp without
-        # loading or exposing any account/session values around it.
-        storage = self.root / "Local Storage" / "leveldb"
-        try:
-            files = sorted(
-                (item for item in storage.iterdir() if item.suffix.lower() in {".ldb", ".log"}),
-                key=lambda item: item.stat().st_mtime,
-                reverse=True,
-            )[:12]
-        except OSError:
-            files = []
-        pattern = re.compile(rb"resetsAt[^0-9]{0,32}([0-9]{10,13})", re.IGNORECASE)
-        for item in files:
-            try:
-                with item.open("rb") as handle:
-                    size = handle.seek(0, 2)
-                    handle.seek(max(0, size - 2_000_000))
-                    payload = handle.read()
-            except OSError:
-                continue
-            for match in pattern.finditer(payload):
-                raw = int(match.group(1))
-                seconds = raw / 1000 if raw > 10_000_000_000 else raw
-                if now - 300 <= seconds <= now + 5 * 3600 + 300:
-                    candidates.append(int(seconds))
-        return min(candidates) if candidates else None
-
     @classmethod
     def _file_usage(cls, path: Path) -> list[dict[str, Any]]:
         try:
@@ -3234,25 +3190,15 @@ class ClaudeDesktopProvider:
             "output": int(totals["output_tokens"]),
             **_costs(totals, transcript["models"], CLAUDE_PRICING, claude=True),
         }
-        deadlines = merge_usage(usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS), org_id=samples[-1].get("org") if samples else None)
-        history_usage = usage
-        usage = {**usage, "fh": deadlines["fiveHourPercent"] if deadlines["fiveHourPercent"] is not None else (None if deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else usage.get("fh")), "sd": deadlines["weeklyPercent"] if deadlines["weeklyPercent"] is not None else (None if deadlines.get("_weeklySelected") or deadlines.get("lastKnownWeekly") else usage.get("sd"))}
-        merged_live = deadlines["fiveHourPercent"] is not None or deadlines["weeklyPercent"] is not None
-        history_live = any(_usage_percent(history_usage.get(short)) is not None and deadlines[field + "Percent"] is None
-                           and not deadlines.get("_" + field + "Selected") and not deadlines.get("lastKnown" + field[0].upper() + field[1:])
-                           for short, field in (("fh", "fiveHour"), ("sd", "weekly")))
-        merged_at = (datetime.fromtimestamp(deadlines["observedAt"], timezone.utc).isoformat()
-                     if merged_live and deadlines.get("observedAt") is not None else None)
-        history_at = _iso_from_ms(latest.get("t")) if history_live else None
-        limits_at = min(merged_at, history_at) if merged_at and history_at else (None if history_live and not history_at else merged_at or history_at)
-        reset_at = deadlines["fiveHour"] if deadlines["observedAt"] is not None or deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else self._reset_at()
-        weekly_reset = deadlines["weekly"]
+        limits_provider = ClaudeLimitsProvider()
+        limits_provider.root = self.root
+        limits = limits_provider.snapshot()
         return {
             "connected": True,
             "name": "Claude",
             "accent": "#e8813f",
-            "fiveHour": {"percent": _usage_percent(usage.get("fh")), "reset": _reset_label(reset_at, usage.get("fh")), "resetAt": reset_at, "lastKnownResetAt": deadlines.get("lastKnownFiveHour")},
-            "weekly": {"percent": _usage_percent(usage.get("sd")), "reset": _reset_label(weekly_reset, usage.get("sd")), "resetAt": weekly_reset, "lastKnownResetAt": deadlines.get("lastKnownWeekly")},
+            "fiveHour": limits["fiveHour"],
+            "weekly": limits["weekly"],
             "cache": cache,
             "chats": self._chats(transcript["sessions"]),
             "activity": [{"date": date, "value": value} for date, value in sorted(transcript["daily"].items())],
@@ -3264,13 +3210,15 @@ class ClaudeDesktopProvider:
             "trackingWindowDays": 31,
             "lifetimeTokens": int(totals["total_tokens"]),
             "lastSync": _iso_from_ms(latest.get("t")),
-            "limitsUpdatedAt": limits_at,
+            "limitsUpdatedAt": limits["limitsUpdatedAt"],
+            "identityGeneration": limits["identityGeneration"],
+            "identityVerified": limits["identityVerified"],
             "source": "Claude Desktop + Claude Code transcript telemetry",
         }
 
 
 class ClaudeLimitsProvider(ClaudeDesktopProvider):
-    """Claude's account quota meters alone, read from Claude Desktop's local files.
+    """Claude's account quota meters from Claude Code and opted-in live usage.
 
     No transcript scan: this stays cheap while Claude chats are not tracked.
     """
@@ -3362,51 +3310,27 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     def snapshot(self) -> dict[str, Any]:
         from . import claude_identity
         identity = claude_identity.current_identity()
-        try:
-            samples, latest = self._usage()
-            missing = None
-        except (OSError, ValueError, RuntimeError, AttributeError, TypeError, KeyError, IndexError) as exc:
-            # Without Desktop history, limits Claude Code printed for a greeting can still show.
-            samples, latest, missing = [], {}, exc
-        usage = latest.get("u")
-        if not isinstance(usage, dict):
-            usage = {}
-        # Claude Desktop refetches usage only every few minutes, so a 90-second window
-        # leaves the meters blank most of the time. Display accepts a response up to the
-        # widget's own 10-minute quota freshness; the greeter remains at 90 seconds.
-        info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
-        org = samples[-1].get("org") if samples else None
-        from . import claude_statusline, product
+        from . import claude_statusline, product, claude_usage_api
         epoch = identity.generation if identity else None
         cli = claude_statusline.read(product.state_root() / claude_statusline.CLI_FILENAME,
                                      max_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS,
                                      source="claude-cli", include_org=True)
         cli_verified = claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint"))
-        desktop_verified = claude_identity.desktop_matches(identity, org, info.get("observedAt"))
-        # Claude Code's own usage cache is bound to the account exactly, so it stands
-        # on its own; Desktop data from another org is still dropped below.
         code_usage = claude_identity.read_claude_code_usage(identity)
-        from . import claude_usage_api
         live_usage = claude_usage_api.read(identity)
-        verified = bool(identity and (code_usage or claude_usage_api.fresh(live_usage, CLAUDE_DISPLAY_USAGE_AGE_SECONDS) or ((not org or org == identity.org_id) and (cli_verified or desktop_verified))))
-        if verified and not desktop_verified:
-            usage = {}
-            info = usage_info(self.root, [], max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
-        # Unbound statusline samples may be displayed as historical, but cannot
-        # become current-account evidence merely by being read after a switch.
-        info = merge_usage(self._newest_live(info, watermarks=True, identity_generation=(epoch, org, verified)),
-                           paths=[] if verified else None, org_id=identity.org_id if identity else None,
+        verified = bool(identity and (code_usage or claude_usage_api.fresh(live_usage, CLAUDE_DISPLAY_USAGE_AGE_SECONDS) or cli_verified))
+        empty = {"fiveHour": None, "weekly": None, "fiveHourPercent": None,
+                 "weeklyPercent": None, "observedAt": None}
+        info = merge_usage(empty, paths=[] if verified else None,
+                           org_id=identity.org_id if identity else None,
                            identity_generation=epoch, identity_fingerprint=identity.fingerprint if identity else None,
                            extra_samples=[code_usage, live_usage])
         fresh_identity = claude_identity.current_identity()
         verified = bool(verified and fresh_identity and fresh_identity.generation == epoch)
-        if missing is not None and info.get("fiveHourPercent") is None and info.get("weeklyPercent") is None:
-            raise missing
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
-        five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else (None if info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else usage.get("fh"))
-        weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else (None if info.get("_weeklySelected") or info.get("lastKnownWeekly") else usage.get("sd"))
-        reset_at = info["fiveHour"] if info["observedAt"] is not None or info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else self._reset_at()
-        updated_at = datetime.fromtimestamp(info["observedAt"], timezone.utc).isoformat() if live else _iso_from_ms(latest.get("t"))
+        five, weekly = info["fiveHourPercent"], info["weeklyPercent"]
+        reset_at = info["fiveHour"]
+        updated_at = datetime.fromtimestamp(info["observedAt"], timezone.utc).isoformat() if live else None
         return {
             "connected": True,
             "name": "Claude",
@@ -3422,7 +3346,7 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
             "limitsUpdatedAt": updated_at,
             "identityGeneration": epoch if verified else None,
             "identityVerified": verified,
-            "source": "Claude Desktop local quota cache (limits only)",
+            "source": "Claude Code quota sources",
         }
 
 

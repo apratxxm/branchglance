@@ -16,11 +16,15 @@ import urllib.request
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
-from . import claude_identity, claude_statusline, product
+from . import claude_identity, claude_statusline, product, features
 from .provider_policy import policy_for
 
 _MAX_BODY = 1024 * 1024
 _REQUEST_DEADLINE = 10.0  # seconds for the whole request: DNS, connect, TLS, headers and body
+
+
+def live_usage_allowed():
+    return policy_for("Claude").allows("collect") and features.enabled("live_usage")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -36,6 +40,15 @@ def _opener(handler=None):
 
 
 def _credentials():
+    # Serialize admission with feature saves, so a completed disable cannot be
+    # followed by a credential open that was admitted under the old setting.
+    with features._lock:
+        if not live_usage_allowed():
+            return None
+        return _read_credentials()
+
+
+def _read_credentials():
     # Keychain access is deliberately deferred until a noninteractive read is verified.
     config = os.environ.get("CLAUDE_CONFIG_DIR")
     path = (Path(config).expanduser() if config else Path.home() / ".claude") / ".credentials.json"
@@ -138,6 +151,8 @@ def _bound_read(response, connections, remaining):
 
 def _request(path, token):
     """Return status, headers and bounded body; exceptions never escape with secrets."""
+    if not live_usage_allowed():
+        raise RuntimeError("Claude live usage disabled")
     request = urllib.request.Request("https://api.anthropic.com" + path, headers={
         "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
         "Content-Type": "application/json", "User-Agent": "Branchglance/" + product.VERSION,
@@ -161,6 +176,8 @@ def _request(path, token):
     timer.start()
     try:
         try:
+            if not live_usage_allowed():
+                raise RuntimeError("Claude live usage disabled")
             response = opener.open(request, timeout=_REQUEST_DEADLINE)
         except urllib.error.HTTPError as exc:
             response = exc
@@ -218,6 +235,7 @@ class ClaudeUsageRefresher:
         self._binding = None
         self._sample = {}
         self._failures = 0
+        self._revocation = 0
         self._next = 0.0
         self._retry_until = self._read_cooldown()
 
@@ -276,13 +294,15 @@ class ClaudeUsageRefresher:
         return fingerprint
 
     def read(self, identity):
+        if not live_usage_allowed():
+            return {}
         credentials = _credentials()
         with self._lock:
             fingerprint = self._observe(credentials)
             if (not fingerprint or not identity or not credentials or credentials[1] <= (self.clock() + 60) * 1000
                     or "user:profile" not in credentials[2] or self._rejected == fingerprint
                     or self._binding != (fingerprint, identity.generation)
-                    or not policy_for("Claude").allows("collect")):
+                    or not live_usage_allowed()):
                 self._sample = {}
                 return {}
             current = claude_identity.current_identity()
@@ -294,7 +314,7 @@ class ClaudeUsageRefresher:
             return {key: dict(value) for key, value in self._sample.items()}
 
     def poll(self):
-        if self._owner is None or not self._poll_lock.acquire(blocking=False):
+        if not live_usage_allowed() or self._owner is None or not self._poll_lock.acquire(blocking=False):
             return
         try:
             self._poll()
@@ -303,9 +323,24 @@ class ClaudeUsageRefresher:
 
     def _poll(self):
         now = self.clock()
-        if not policy_for("Claude").allows("collect"):
+        with self._lock:
+            revocation = self._revocation
+        if not live_usage_allowed():
             with self._lock:
                 self._sample, self._binding = {}, None
+            return
+        identity = claude_identity.current_identity()
+        if not identity:
+            with self._lock:
+                self._sample, self._binding = {}, None
+            return
+        code_usage = claude_identity.read_claude_code_usage(identity, now=now)
+        if fresh(code_usage, 180, now):
+            with self._lock:
+                if now >= max(self._next, self._retry_until):
+                    self._next = now + random.uniform(165, 195)
+            return
+        if not live_usage_allowed():
             return
         credentials = _credentials()
         with self._lock:
@@ -316,17 +351,16 @@ class ClaudeUsageRefresher:
                 return
             if now < max(self._next, self._retry_until):
                 return
-        identity = claude_identity.current_identity()
-        if not identity:
-            with self._lock:
-                self._sample, self._binding = {}, None
-            return
         started = self.clock()
         try:
             with self._lock:
                 bound = self._binding == (fingerprint, identity.generation)
             if not bound:
+                if not live_usage_allowed():
+                    return
                 status, headers, body = self.request("/api/oauth/profile", credentials[0])
+                if not live_usage_allowed() or revocation != self._revocation:
+                    return
                 if status != 200:
                     self._error(status, headers, fingerprint)
                     return
@@ -339,7 +373,7 @@ class ClaudeUsageRefresher:
                     self._error(0, {}, fingerprint)
                     return
                 latest = claude_identity.current_identity()
-                latest_credentials = _credentials()
+                latest_credentials = _credentials() if live_usage_allowed() else None
                 if (not latest or latest.generation != identity.generation or latest.changed_at > started
                         or not latest_credentials or _fingerprint(latest_credentials) != fingerprint
                         or latest_credentials[1] <= (self.clock() + 60) * 1000):
@@ -350,7 +384,11 @@ class ClaudeUsageRefresher:
                     self._binding, self._sample = (fingerprint, identity.generation), {}
                 if self._stop.is_set():
                     return
+            if not live_usage_allowed() or revocation != self._revocation:
+                return
             status, headers, body = self.request("/api/oauth/usage", credentials[0])
+            if not live_usage_allowed() or revocation != self._revocation:
+                return
             if status != 200:
                 self._error(status, headers, fingerprint)
                 return
@@ -362,18 +400,18 @@ class ClaudeUsageRefresher:
                 self._error(0, {}, fingerprint)
                 return
             latest = claude_identity.current_identity()
-            latest_credentials = _credentials()
+            latest_credentials = _credentials() if live_usage_allowed() else None
             with self._lock:
                 if (not latest or latest.generation != identity.generation or latest.changed_at > started
                         or not latest_credentials or _fingerprint(latest_credentials) != fingerprint
                         or latest_credentials[1] <= (received + 60) * 1000
-                        or not policy_for("Claude").allows("collect")):
+                        or not live_usage_allowed() or revocation != self._revocation):
                     self._binding, self._sample = None, {}
                     return
                 self._binding = (fingerprint, identity.generation)
                 self._sample = sample
                 self._failures = 0
-                self._next = received + random.uniform(25, 35)
+                self._next = received + random.uniform(165, 195)
         except Exception:
             self._error(0, {}, fingerprint)
 
@@ -391,6 +429,8 @@ class ClaudeUsageRefresher:
                     pass
 
     def start(self):
+        if not live_usage_allowed():
+            return
         if self._thread and self._thread.is_alive():
             return
         if not self.acquire():
@@ -408,6 +448,9 @@ class ClaudeUsageRefresher:
 
     def stop(self):
         self._stop.set()
+        with self._lock:
+            self._revocation += 1
+            self._binding, self._sample = None, {}
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=21)
         # Keep the OS lock until process exit; no second in-process server may poll.

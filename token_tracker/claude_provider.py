@@ -906,7 +906,7 @@ def live_row(row: dict[str, Any], indexed: dict[str, Any]) -> dict[str, Any]:
 
 
 class ClaudeCodeProvider:
-    """Full-snapshot provider for Claude: sessions from hooks, quota from Desktop caches."""
+    """Full-snapshot provider for Claude: sessions and account-bound quota."""
 
     def __init__(self, desktop_factory: Callable[[], Any] | None = None,
                  limits_factory: Callable[[], Any] | None = None) -> None:
@@ -943,5 +943,5 @@ class ClaudeCodeProvider:
             base.update(usage_aggregates())
         except Exception:
             pass  # aggregates are advisory; quota and sessions still render
-        base["source"] = "Claude Code hooks + transcripts; Claude Desktop quota cache"
+        base["source"] = "Claude Code hooks + transcripts and quota sources"
         return base

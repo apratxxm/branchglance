@@ -93,6 +93,7 @@ html.settings-embedded,body.settings-embedded{overflow:hidden;background:transpa
 html.settings-embedded,body.settings-embedded{--d-ink:#f3f4f6;--d-sub:#b7bcc8;--d-mute:#8d929c;--d-edge:#1d2130;--d-well:#080a10;--d-link:#9bb0ff;font-family:Inter,"Segoe UI Variable","Segoe UI",system-ui,sans-serif;}
 .settings-embedded button,.settings-embedded input{font-family:inherit;}
 .settings-embedded .claude-collection{display:none;}
+.settings-embedded #feature-settings{display:none;}
 .settings-embedded #permission:empty{display:none;}
 .settings-embedded .settings>footer{margin-top:6px;}
 .settings-embedded .mode small{color:var(--d-sub);}

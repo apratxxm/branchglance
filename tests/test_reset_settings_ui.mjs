@@ -7,6 +7,8 @@ const html=fs.readFileSync(new URL("../token_tracker/static/reset_actions.html",
 const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
 assert.match(html,/id="picker" hidden/);
 assert.match(html,/id="claude-collection"/);
+assert.match(html,/data-feature="live_usage"/);assert.match(html,/data-feature="ledger"/);assert.match(html,/data-feature="claude_send"/);
+assert.match(html,/undocumented endpoint could break or be disallowed/i);
 assert.match(html,/Enabling adds Branchglance hooks to Claude Code settings \(with a backup\) and reads Claude session activity locally\./);
 assert.match(html,/Open settings from the Branchglance widget to change this\./);
 assert.match(html,/one-shot action for the next genuine quota reset/i);
@@ -42,12 +44,28 @@ let policy={schemaVersion:1,generation:"codex-send-v1",providers:[
 let actionRecord={schemaVersion:2,mode:"greet",threadIds:[],armed:false,lastRun:null};
 let claudeStatus={ok:true,state:"off",reason:null,hooks:{state:"missing",installed:0},consent:false,grant:false,restartRequired:false};
 let failClaudeMutation=false,failClaudeStatus=false;
+const features={live_usage:{effective:false,env_locked:false,restart_pending:false},ledger:{effective:false,env_locked:true,restart_pending:false},claude_send:{effective:false,env_locked:false,restart_pending:true}};
+let statuslineConnected=false;
 const window={__RESET_ACTIONS_TEST__:true,close(){},location,history:{replaceState(_state,_title,url){historyUrls.push(url);location.hash="";}}};
 const context={document,window,AbortSignal:{timeout(){}},URLSearchParams,fetch:async(url,options={})=>{
   requests.push(url);
   requestMethods.push(options.method||"GET");
   requestHeaders.push(options.headers||{});
   if(url==="/api/provider-policy")return {ok:true,json:async()=>policy};
+  if(url==="/api/features"){
+    if(options.method==="POST"){
+      assert.equal(options.headers["X-Branchglance-Settings-Token"],settingsToken);
+      const {name,value}=JSON.parse(options.body);features[name].effective=value;
+    }
+    return {ok:true,json:async()=>({ok:true,...features})};
+  }
+  if(url==="/api/statusline"){
+    if(options.method==="POST"){
+      assert.equal(options.headers["X-Branchglance-Settings-Token"],settingsToken);
+      statuslineConnected=JSON.parse(options.body).action==="connect";
+    }
+    return {ok:true,json:async()=>({ok:true,connected:statuslineConnected})};
+  }
   if(url==="/api/claude-collection"){
     if(options.method==="POST"){
       assert.equal(options.headers["X-Branchglance-Settings-Token"],settingsToken);
@@ -74,6 +92,13 @@ const context={document,window,AbortSignal:{timeout(){}},URLSearchParams,fetch:a
 vm.createContext(context);vm.runInContext(source,context);
 await new Promise(resolve=>setTimeout(resolve,0));
 const T=context.window.__resetActionsTest;
+assert.equal(element('[data-feature="ledger"]').disabled,true);
+assert.match(element('[data-feature-status="ledger"]').textContent,/environment/);
+assert.match(element('[data-feature-status="claude_send"]').textContent,/restart/);
+await element('[data-feature="live_usage"]').onchange({target:{checked:true}});
+assert.equal(features.live_usage.effective,true);
+await element('#statusline-toggle').onclick();
+assert.equal(element('#statusline-toggle').textContent,'Disconnect Claude status line');
 assert.deepEqual(historyUrls,["/reset_actions.html"]);
 assert.equal(location.hash,"");
 assert.ok(requests.indexOf("/api/provider-policy")<requests.indexOf("/api/reset-action"),"policy is checked before action settings are fetched");

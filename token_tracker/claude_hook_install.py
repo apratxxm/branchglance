@@ -318,6 +318,28 @@ def _read(path: Path) -> tuple[bytes | None, dict[str, Any], bool]:
     return snapshot.raw, data, bom
 
 
+def preflight_statusline_connect(settings_path: str | os.PathLike[str] | None = None) -> None:
+    """Refuse chaining until Claude Code's shell invocation can be reproduced.
+
+    This preflight does not connect a status line or write any files. An absent
+    statusLine is safe to proceed with; callers must still perform their own
+    guarded, conflict-checked write.
+    """
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    path = (Path(settings_path) if settings_path is not None else
+            (Path(config).expanduser() if config else Path.home() / ".claude") / "settings.json")
+    try:
+        _, data, _ = _read_versioned(path)
+    except _ConcurrentSettingsEdit:
+        raise HookInstallError("settings.json changed while reading; connect refused") from None
+    if "statusLine" in data:
+        raise HookInstallError(
+            "Cannot safely chain the existing status line because Claude Code's shell "
+            "invocation could not be established. Keep the current status line and "
+            "configure the Branchglance helper manually instead."
+        )
+
+
 def _serialize(data: dict[str, Any], bom: bool, original: bytes | None = None) -> bytes:
     if original is None:
         indent, compact, newline, trailing_newline, ensure_ascii = 2, False, "\n", True, False

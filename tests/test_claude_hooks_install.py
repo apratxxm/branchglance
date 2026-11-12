@@ -17,6 +17,26 @@ REAL_FIND_GIT_BASH = installer.find_git_bash  # captured before the autouse stub
 USER_GROUP = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine", "timeout": 5}]}
 
 
+def test_statusline_preflight_refuses_existing_without_writing(tmp_path):
+    path = tmp_path / "settings.json"
+    original = b'{"statusLine":{"type":"command","command":"echo existing"}}\n'
+    path.write_bytes(original)
+    with pytest.raises(installer.HookInstallError, match="Cannot safely chain"):
+        installer.preflight_statusline_connect(path)
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_statusline_preflight_allows_absent_and_refuses_malformed(tmp_path):
+    path = tmp_path / "settings.json"
+    installer.preflight_statusline_connect(path)
+    assert not path.exists()
+    path.write_text("{invalid", encoding="utf-8")
+    with pytest.raises(installer.HookInstallError, match="parseable JSON"):
+        installer.preflight_statusline_connect(path)
+    assert path.read_text(encoding="utf-8") == "{invalid"
+
+
 def test_config_dir_precedence_and_default(monkeypatch, tmp_path):
     legacy = tmp_path / "legacy"
     configured = tmp_path / "configured"

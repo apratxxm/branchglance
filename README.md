@@ -30,7 +30,7 @@ Running several agent chats in parallel means constantly checking which one fini
 
 1. **One tree for both providers.** Every Codex and Claude Code chat with its subagents; Codex jobs started from a Claude chat nest under that chat. A status or parent link is shown only when there is evidence for it, otherwise it shows as unknown.
 2. **Needs-you queue.** Chats waiting for input are marked and counted. Click the count to jump to the next one.
-3. **Limits and routing.** 5-hour and weekly usage for Codex and Claude side by side, with reset countdowns and a heads-up when one provider runs low so you can send work to the other. **(0.2.0)** Claude usage can refresh about every 30 seconds from Anthropic using Claude Code's existing sign-in, with your consent (see [Privacy](#privacy)); banked Codex resets show beside the weekly bar.
+3. **Limits.** 5-hour and weekly usage for Codex and Claude side by side, with reset countdowns. Optional Claude live usage uses Claude Code's existing sign-in and refreshes about every 180 seconds (see [Privacy](#privacy)); banked Codex resets show beside the weekly bar.
 4. **Insights.** Tokens, estimated cost, model breakdown, plan multiples and limit peaks over 24 hours to all time. Unpriced models are listed, never guessed.
 5. **Reset actions (off by default).** A greeting that keeps Claude's 5-hour window rolling **(0.2.0)**, and a one-time `continue` queued for chats you pick.
 6. **Out of the way.** It collapses to a thin strip with a clock and limit bands; hover or press Ctrl+Shift+T for the tree.

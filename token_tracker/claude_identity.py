@@ -204,14 +204,6 @@ def matches_fingerprint(identity: Identity | None, fingerprint: object) -> bool:
                 and fingerprint == identity.fingerprint)
 
 
-def desktop_matches(identity: Identity | None, org_id: object, observed_at: object) -> bool:
-    # Desktop exposes org only: another user in that org on this machine can
-    # still produce this record; this limitation is explicitly accepted.
-    return bool(identity and org_id == identity.org_id and isinstance(org_id, str) and org_id
-                and type(observed_at) in (int, float) and math.isfinite(observed_at)
-                and observed_at >= identity.changed_at)
-
-
 def account_path() -> Path:
     config = os.environ.get("CLAUDE_CONFIG_DIR")
     return Path(config).expanduser() / ".claude.json" if config else Path.home() / ".claude.json"

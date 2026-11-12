@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from token_tracker.claude_identity import IdentityAuthority, account_path, read_passive_account, desktop_matches
+from token_tracker.claude_identity import IdentityAuthority, account_path, read_passive_account, read_claude_code_usage
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX FIFO regression")
@@ -144,13 +144,20 @@ def test_account_switch_restart_rejects_old_fingerprint(tmp_path):
     assert cli["identityFingerprint"] != second.fingerprint
 
 
-def test_desktop_observation_must_follow_account_change(tmp_path):
+def test_usage_observation_must_follow_account_change(tmp_path, monkeypatch):
+    from token_tracker import claude_statusline
     account = tmp_path / ".claude.json"
     account.write_text(json.dumps({"oauthAccount": {"accountUuid": "a", "organizationUuid": "org"}}))
     identity = IdentityAuthority(tmp_path / "identity.json", clock=lambda: 200).refresh_passive(account)
-    assert not desktop_matches(identity, "org", 199)
-    assert desktop_matches(identity, "org", 200)
-    assert not desktop_matches(identity, "other", 201)
+    monkeypatch.setattr(claude_statusline, "parse_live_usage", lambda *a, **k: {
+        "five_hour": {"crossCheckPassed": True, "used_percentage": 20, "resets_at": 1000}})
+    def cache(observed, org="org"):
+        account.write_text(json.dumps({"oauthAccount": {"accountUuid": "a", "organizationUuid": org},
+                                       "cachedUsageUtilization": {"accountUuid": "a", "fetchedAtMs": observed * 1000, "utilization": {}}}))
+        return read_claude_code_usage(identity, account, now=201)
+    assert not cache(199)
+    assert cache(200)["five_hour"]["used_percentage"] == 20
+    assert not cache(201, "other")
 
 
 def test_corrupt_huge_changed_at_is_replaced(tmp_path):

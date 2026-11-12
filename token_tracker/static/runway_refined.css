@@ -534,22 +534,6 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 /* Single quiet line when the visible provider(s) have no chats: centred in the tree area, no icon or button. */
 .chat-list .empty.tree-empty{display:flex;align-items:center;justify-content:center;min-height:160px;padding:0 var(--gutter);margin:0;font-size:13px;font-weight:400;color:#8d93a8;}
 
-/* Routing alert: lives in the toolbar band after the clock and replaces the icon row while active,
-   so it covers no chat row and nothing below it moves. A provider dot (or two) plus one line of text; no box. */
-.routing-alert{display:none;flex:1 1 auto;min-width:0;align-items:center;justify-content:flex-start;gap:8px;height:30px;padding:0 2px 0 4px;color:var(--ink);font:500 12px/1 var(--sans);}
-.routing-alert[hidden]{display:none!important;}
-.routing-alert:not([hidden]){display:flex;}
-.compact-toolbar.has-routing-alert>*:not(#toolbar-clock):not(#routing-alert):not(.window-controls){display:none!important;}
-.routing-alert-dots{display:flex;flex:none;align-items:center;gap:4px;}
-.routing-dot{width:6px;height:6px;border-radius:50%;}
-.routing-dot.codex{background:#6c72ff;box-shadow:0 0 6px #7040ffcc;}
-.routing-dot.claude{background:var(--claude-accent,#e8813f);box-shadow:0 0 6px #e8813fbb;}
-.routing-alert-text{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.routing-alert-dismiss{flex:none;display:inline-grid;place-items:center;width:20px;height:22px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--muted);cursor:pointer;}
-.routing-alert-dismiss:hover{color:var(--ink);background:#ffffff0b;}
-.routing-alert-dismiss:focus-visible{outline:2px solid var(--focus);outline-offset:1px;}
-.routing-alert-dismiss .ic{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.2;stroke-linecap:round;}
-
 /* ---- Quota bands: one grid for the 5-hour and weekly rows. Identical tracks, so bars, percentages and countdowns line up
    across both rows and with the 12px content edge. "resets in" is stated once, under the period label. ---- */
 body.runway-refined.runway-compact:not(.phone) .resets{position:relative;}

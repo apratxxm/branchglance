@@ -10,32 +10,23 @@ For hooks and transcripts, Branchglance finds Claude Code's config through `CLAU
 
 ## Claude live usage
 
-With Claude tracking on and Claude Code signed in, Branchglance reads Claude Code's OAuth token from `.credentials.json` in that config folder, in memory, and asks `api.anthropic.com` for your account's usage about every 30 seconds (the account profile is fetched when it first binds to an account, after a restart, and when the credentials or account change). It never refreshes, logs or stores the token; only a retry-after timestamp is saved. It does not use the macOS Keychain, so on macOS it works only when a credentials file exists; otherwise Claude limits come from the caches below.
+Live usage is off by default, including for existing installations. Enable it in Settings alongside Claude tracking, or use `TOKEN_TRACKER_CLAUDE_LIVE_USAGE=1`. An explicit environment value overrides the saved setting, including `0`. When enabled, Branchglance reads Claude Code's OAuth token from `.credentials.json` in memory and asks `api.anthropic.com` for usage about every 180 seconds, with 15 seconds of jitter. A Claude Code usage cache younger than 180 seconds skips the poll. The account profile is fetched when binding. Branchglance never refreshes, logs or stores the token; it persists only a retry-after timestamp. The endpoint is undocumented and could break or be disallowed; Anthropic's terms restrict third-party use of subscription sign-ins. See [Privacy](PRIVACY.md).
 
-Without it, Claude limits fall back to Claude Desktop's usage cache, the usage cache Claude Code keeps in `~/.claude.json`, and the status line helper. See [Privacy](PRIVACY.md).
+Claude limits also use the account-bound Claude Code cache and status-line or CLI samples. Claude Desktop is not a limit source.
 
 ## Claude status line helper
 
-Supplies Claude Code quota readings. Add this to Claude Code's `settings.json` on Windows. It replaces any existing status line command, and the helper prints no status line of its own, so keep your existing command if you need it:
-
-```json
-"statusLine": {
-  "type": "command",
-  "command": "\"$LOCALAPPDATA/Programs/Branchglance/Branchglance.exe\" --statusline"
-}
-```
-
-For macOS, use the command in the [macOS guide](../macos/README.md).
+Use **Connect Claude status line** in Settings to install the helper, and Disconnect to remove it. Connect refuses to replace an existing status line. To keep your own status line, configure your existing command manually to invoke the Branchglance helper as appropriate. Branchglance backs up existing settings and refuses observed concurrent edits; a write between its final comparison and replacement remains a possible race. Settings are resolved through `CLAUDE_CONFIG_DIR` or `~/.claude`.
 
 ## Usage ledger and By work
 
-Off by default. Set `TOKEN_TRACKER_LEDGER=1` in the widget's environment before starting it to save usage locally and enable the By work view. Delete a provider's saved history in the reset-action settings window.
+Off by default. Turn on By work in Settings to save usage locally. `TOKEN_TRACKER_LEDGER` overrides the saved setting; explicit `0` disables it. Delete a provider's saved history in the reset-action settings window.
 
 ## Reset actions and greetings
 
 Off by default. A greeting runs the provider's own CLI to send a short message after a verified reset. Greetings recur while enabled, and for Claude may send a first greeting to establish a window; this keeps the 5-hour window rolling. A `continue` for selected Codex chats is one-shot.
 
-- **Claude greeting** needs Claude tracking on, `TOKEN_TRACKER_CLAUDE_SEND=1`, an enabled greeting in reset settings, and a signed-in Claude Code CLI.
+- **Claude greeting** needs Claude tracking on, the Claude greetings setting (or `TOKEN_TRACKER_CLAUDE_SEND=1`), a restart after changing it, an enabled greeting in reset settings, and a signed-in Claude Code CLI.
 - **Codex greeting and `continue`** need `TOKEN_TRACKER_CODEX_SEND=1` and an enabled action in reset settings. On macOS the menu switch **Allow Codex Messages After Reset** does this.
 
 ## Provider policy flags

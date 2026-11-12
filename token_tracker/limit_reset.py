@@ -21,8 +21,7 @@ from collections.abc import Mapping
 
 from . import product
 from .codex_client import CodexAppServer, CodexNotStarted, CodexUnavailable, resolve_codex, run_contained_codex
-from .providers import ClaudeDesktopProvider, _usage_percent
-from .claude_cache import usage_info
+from .providers import _usage_percent
 from . import claude_statusline, claude_identity
 from .reset_actions import ResetActionDispatcher, default_action
 from .provider_policy import POLICIES, ProviderPolicy, ProviderPolicyError, policy_for
@@ -184,36 +183,19 @@ class LimitSample:
     identity_generation: str | None = None
 
 
-def _claude_desktop_data(now: float | None = None, max_usage_age: float | None = None, expected_org_id: str | None = None):
-    try:
-        provider = ClaudeDesktopProvider()
-        samples, _ = provider._usage()
-        org = samples[-1].get("org") if samples else None
-        if expected_org_id is not None and org != expected_org_id:
-            return org, {}
-        kwargs = {} if now is None else {"now": now, "max_usage_age": max_usage_age}
-        return org, usage_info(provider.root, samples, **kwargs)
-    except (OSError, ValueError, TypeError, AttributeError, RuntimeError, IndexError, KeyError):
-        return None, {"fiveHour": None, "weekly": None, "fiveHourPercent": None, "weeklyPercent": None, "observedAt": None}
-
-
 def claude_limit_sample() -> LimitSample:
     identity = claude_identity.current_identity()
-    org, desktop = _claude_desktop_data()
-    if identity and org is None:
-        org = identity.org_id
+    org = identity.org_id if identity else None
     cli = claude_statusline.read(product.state_root() / claude_statusline.CLI_FILENAME,
                                  source="claude-cli", include_org=True, max_age=90)
-    desktop_verified = claude_identity.desktop_matches(identity, org, desktop.get("observedAt"))
-    cli_verified = bool(identity and org == identity.org_id
-                        and claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint")))
+    cli_verified = bool(identity and claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint")))
     code_usage = claude_identity.read_claude_code_usage(identity)
     from . import claude_usage_api
     live_usage = claude_usage_api.read(identity)
-    generation = identity.generation if identity and (desktop_verified or cli_verified or code_usage or live_usage) else None
+    generation = identity.generation if identity and (cli_verified or code_usage or live_usage) else None
     empty = {"fiveHour": None, "weekly": None, "fiveHourPercent": None,
              "weeklyPercent": None, "observedAt": None}
-    usage = claude_statusline.merge_usage(desktop if desktop_verified else empty, paths=[], org_id=org, max_age=90,
+    usage = claude_statusline.merge_usage(empty, paths=[], org_id=org, max_age=90,
                                          identity_generation=generation,
                                          identity_fingerprint=identity.fingerprint if identity else None,
                                          extra_samples=[code_usage, live_usage])
@@ -1236,16 +1218,11 @@ class LimitResetService:
             self._sending.discard(name)
 
     def _claude_account_sample(self, org_id: str, now: float) -> LimitSample:
-        """Only account-bound CLI and matching Desktop data can drive sends."""
+        """Only account-bound Claude Code and live data can drive sends."""
         identity = claude_identity.current_identity()
         if not identity or identity.org_id != org_id:
             return LimitSample(None, None, now)
         generation = identity.generation
-        desktop_org, desktop = _claude_desktop_data(now=now, max_usage_age=604800, expected_org_id=org_id)
-        if desktop_org and desktop_org != org_id:
-            return LimitSample(None, None, now)
-        if not claude_identity.desktop_matches(identity, desktop_org, desktop.get("observedAt")):
-            desktop = {}
         cli = claude_statusline.read(self.state_path.parent / claude_statusline.CLI_FILENAME, now=now,
                                     source="claude-cli", include_org=True)
         if not claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint")):
@@ -1254,20 +1231,16 @@ class LimitResetService:
         code = claude_identity.read_claude_code_usage(identity, now=now)
         from . import claude_usage_api
         live = claude_usage_api.read(identity)
-        if not desktop and not cli and not code and not live:
+        if not cli and not code and not live:
             return LimitSample(None, None, now)
-        deadlines = [_epoch_seconds(desktop.get("fiveHour") or desktop.get("lastKnownFiveHour")) if _valid_quota_percent(desktop.get("fiveHourPercent")) is not None else None]
+        deadlines = []
         five = cli.get("five_hour") or {}
         deadlines.append(_epoch_seconds(five.get("resets_at")))
         deadlines.append(_epoch_seconds((code.get("five_hour") or {}).get("resets_at")))
         deadlines.append(_epoch_seconds((live.get("five_hour") or {}).get("resets_at")))
         valid = [x for x in deadlines if x is not None and math.isfinite(x)]
         weekly = None
-        desktop_weekly_reset = _epoch_seconds(desktop.get("weekly"))
-        desktop_weekly_percent = _valid_quota_percent(desktop.get("weeklyPercent"))
         best_weekly = None
-        if desktop_weekly_reset is not None and desktop_weekly_reset > now and desktop_weekly_percent is not None:
-            best_weekly = {"resets_at": desktop_weekly_reset, "used_percentage": desktop_weekly_percent, "receivedAt": desktop.get("observedAt") or now}
         cw = cli.get("seven_day") or {}
         if cw.get("resets_at", 0) > now:
             best_weekly = claude_statusline.choose(best_weekly, cw, now)
