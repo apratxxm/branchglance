@@ -12,7 +12,7 @@ Planned as 0.2.0.
 - Claude limits also refresh from the usage cache Claude Code keeps in its own config, so they stay current without Claude Desktop or the status line helper. Readings are used only when they match the signed-in account.
 - Banked Codex limit resets are shown beside the weekly bar; ones that expire while the widget is open are dropped.
 - Opt-in Claude greetings keep the 5-hour window rolling. Branchglance reads the limits Claude Code prints for each greeting.
-- Large trees page within the expanded window instead of overflowing, and a stopped chat stays visible for 15 minutes.
+- Large trees scroll within the expanded window, and a stopped chat stays visible for 15 minutes.
 
 ### Changed
 

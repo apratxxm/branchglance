@@ -228,7 +228,7 @@ window.addEventListener?.('resize',()=>{
 window.tokenTrackerOpenDashboard=tab=>openDashboard(tab);
 window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
-// The compact widget never grows past this height (CSS px); the agent tree pages only when its rows cannot fit at this size.
+// The compact widget never grows past this height (CSS px).
 const COMPACT_MAX_NOTCH_HEIGHT=420;
 // Height of everything around the tree list: the window is sized to this plus the list's content.
 function notchChromeHeight() {
@@ -257,9 +257,10 @@ function notchHeight() {
   const chrome=notchChromeHeight();
   // The list's own content height includes variable wrapped rows and the empty state,
   // while avoiding the flex-filled height of its parent layout.
-  const content=list.scrollHeight||[...list.querySelectorAll('.chat')].reduce((sum,row)=>sum+(row.offsetHeight||0),0)||[...list.children||[]].reduce((sum,node)=>sum+(node.offsetHeight||0),0);
+  const children=[...list.children||[]];
+  const content=(RUNWAY&&REFINED&&COMPACT&&children.length?children.reduce((sum,node)=>sum+(node.offsetHeight||0),0):0)||list.scrollHeight||[...list.querySelectorAll('.chat')].reduce((sum,row)=>sum+(row.offsetHeight||0),0)||children.reduce((sum,node)=>sum+(node.offsetHeight||0),0);
   const measured=Math.max(REFINED?148:96,Math.ceil(chrome+content));
-  return COMPACT?Math.min(COMPACT_MAX_NOTCH_HEIGHT,Math.max(114,measured)):measured;
+  return COMPACT?Math.min(runwayMaxNotchHeight(),Math.max(114,measured)):measured;
 }
 function scheduleNotchSize() {
   if(!RUNWAY||typeof requestAnimationFrame!=='function')return;
@@ -304,8 +305,9 @@ function syncRunwayRootStuck(){
 }
 function setupRunwayTreeScrollSync(){
   if(treeScrollListenerAttached||!RUNWAY||!COMPACT)return;
-  const layout=$('.layout');if(!layout?.addEventListener)return;
-  layout.addEventListener('scroll',scheduleRunwayTreeScrollSync,{passive:true});treeScrollListenerAttached=true;
+  const list=$('#chat-list');if(!list?.addEventListener)return;
+  list.addEventListener('scroll',scheduleRunwayTreeScrollSync,{passive:true});
+  $('.layout')?.addEventListener?.('scroll',scheduleRunwayTreeScrollSync,{passive:true});treeScrollListenerAttached=true;
 }
 function syncRunwayTreeConnectors({updateTallRoot=true}={}) {
   const list=$('#chat-list');if(!realDom(list)||typeof document.createElementNS!=='function')return;
@@ -2180,67 +2182,10 @@ function denseRowEntry(agent) {
     html:'<span class="ag-mark">'+markFor(agent)+'</span><span class="ag-name">'+esc(agentLabel(agent))+'</span>'+(stats.tokens==null&&!stats.tools?'<span class="s s-time">'+esc(modelLabel(agent))+'</span>':'<span class="s s-tok"><b>'+fmt(stats.tokens)+'</b> <i>tok</i></span>'+filesHTML(stats)+'<span class="s s-time">'+(stats.run==null?"—":"ran "+runSpan(stats.run))+'</span>')};
 }
 const runwayMorePage=new Map();
-let runwayGlobalPage=0,runwayGlobalPlan=null,runwayGlobalKeys=null;
-// Rows that fit when the widget is at its tallest; measured against max height, never the current window height,
-// because the window itself is sized to the rows (measuring it made the tree page and unpage on every resize).
-function runwayPagingBudget(rowHeight) {
-  return Math.max(1,Math.floor((runwayMaxNotchHeight()-notchChromeHeight())/Math.max(1,rowHeight||32)));
-}
-// Keep the page the user is looking at when the plan is recomputed: pick the page sharing most rows with it.
-function runwayStablePage(pages) {
-  const last=pages.length-1;let best=Math.min(runwayGlobalPage,last);
-  if(runwayGlobalKeys){
-    let bestScore=0;
-    pages.forEach((page,index)=>{let score=0;for(const key of page)if(runwayGlobalKeys.has(key))score++;
-      if(score>bestScore||(score===bestScore&&score>0&&Math.abs(index-runwayGlobalPage)<Math.abs(best-runwayGlobalPage))){bestScore=score;best=index;}});
-  }
-  return best;
-}
-function runwayBudgetPages(roots,budget){
-  const rows=[],parents=new Map();
-  function collect(row,parent=null){parents.set(row.key,parent);if(parent===null||isVisibleAgent(row))rows.push(row);for(const child of row.children||[])collect(child,row);}
-  roots.forEach(root=>collect(root));
-  const all=new Set();for(const row of rows){let node=row;while(node){all.add(node.key);node=parents.get(node.key);}}
-  if(all.size<=budget)return {pages:[all],overflow:false};
-  const pages=[],collapsed=new Map();let page=new Set(),overflow=false;
-  for(const row of rows){
-    const path=[];let node=row;while(node){path.unshift(node.key);node=parents.get(node.key);}
-    let visible=path;
-    if(path.length>budget-1&&path.length>3){
-      const middle=path.slice(1,-2),key='__ancestors:'+path[0]+':'+path[path.length-2];
-      collapsed.set(key,{keys:middle,root:path[0],parent:path[path.length-2]});
-      visible=[path[0],key,...path.slice(-2)];
-    }
-    if(visible.length>Math.max(0,budget-1)){overflow=true;visible=visible.slice(-Math.max(0,budget-1));}
-    const missing=visible.filter(key=>!page.has(key));
-    if(page.size&&page.size+missing.length>budget-1){pages.push(page);page=new Set();}
-    visible.forEach(key=>page.add(key));
-  }
-  if(page.size)pages.push(page);
-  return {pages,overflow,collapsed};
-}
-function runwayGlobalPagerHTML(){
-  if(!runwayGlobalPlan||runwayGlobalPlan.last<1)return '';
-  return '<div class="runway-more runway-global-pager"><button type="button" data-action="runway-global-prev" aria-label="Previous jobs" aria-disabled="'+(runwayGlobalPage===0)+'">←</button><button type="button" data-action="runway-global-next" aria-label="Next jobs">'+(runwayGlobalPage+1)+' / '+(runwayGlobalPlan.last+1)+' →</button></div>';
-}
 function trayEntries(chat, query) {
   const allDescendants=chat.descendants||[],needed=new Set(allDescendants.filter(isVisibleAgent).map(a=>a.key));
   if(RUNWAY){const byKey=new Map(allDescendants.map(a=>[a.key,a]));for(const key of [...needed]){let row=byKey.get(key),seen=new Set();while(row){const parent=treeParentKey(row);if(!parent||seen.has(parent)||!byKey.has(parent))break;seen.add(parent);needed.add(parent);row=byKey.get(parent);}}}
   const agents=RUNWAY?allDescendants.filter(a=>needed.has(a.key)):sortAgents(allDescendants.filter(isVisibleAgent));
-  if(RUNWAY&&runwayGlobalPlan){
-    const allowed=runwayGlobalPlan.keys;
-    const entries=[];
-    for(const a of agents.filter(a=>allowed.has(a.key))){
-      for(const [key,group] of runwayGlobalPlan.collapsed||[]){
-        if(allowed.has(key)&&group.root===chat.key&&group.parent===a.key){
-          const titles=group.keys.map(k=>allDescendants.find(item=>item.key===k)).filter(Boolean).map(item=>runwayTitle(item,true)).join(' → ');
-          entries.push({key,cls:'ag runway-agent runway-ancestor-summary',attrs:{title:titles,tabindex:'0','aria-label':titles},html:'<span>+'+group.keys.length+' ancestors</span>'});
-        }
-      }
-      entries.push(agentRowEntry(a,query,treeParentKey(a),a.depth));
-    }
-    return entries;
-  }
   agents.forEach(a=>{if(state.agentLive.get(a.key)!==agentStats(a).live)noteLiveness(a,agentStats(a).live);});
   if(RUNWAY&&REFINED&&COMPACT){
     // Reparent visible agents across inactive nodes without changing forest order.
@@ -2484,19 +2429,6 @@ function renderChats(providers) {
   scheduleNotchSize();
   const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
   let roots=visibleRoots(forest);const query=parseQuery(state.query);
-  runwayGlobalPlan=null;
-  if(RUNWAY&&REFINED&&COMPACT){
-    const list=$('#chat-list');
-    if(typeof list?.getBoundingClientRect==='function'){
-      const rowHeight=list.querySelector?.('.runway-refined-row')?.getBoundingClientRect?.().height||32;
-      const plan=runwayBudgetPages(roots,runwayPagingBudget(rowHeight));
-      if(plan.pages.length>1||plan.collapsed?.size){
-        runwayGlobalPage=runwayStablePage(plan.pages);runwayGlobalKeys=plan.pages[runwayGlobalPage];
-        runwayGlobalPlan={keys:runwayGlobalKeys,last:plan.pages.length-1,collapsed:plan.collapsed};
-        roots=roots.filter(root=>runwayGlobalPlan.keys.has(root.key));
-      }else{runwayGlobalPage=0;runwayGlobalKeys=null;}
-    }
-  }
   if(RUNWAY&&state.rosterQuery!==state.query){state.agentSearchClosed.clear();state.rosterQuery=state.query;}
   state.forest=forest;
   if(RUNWAY&&state.popover?.dataset?.action==='runway-question'&&!runwayCurrentEvidenceFresh())closePopover({restoreFocus:true});
@@ -2549,7 +2481,7 @@ function renderChats(providers) {
   // The compact tree always paints its empty state (the list is hidden by CSS while the widget is collapsed), never a blank panel.
   const searchCanShowEmpty=COMPACT;
   if(!realDom(list)) {
-    const html=(roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers))+runwayGlobalPagerHTML();
+    const html=(roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):RUNWAY&&!notch.active&&!searchCanShowEmpty?'':emptyHTML(forest,providers));
     if(list.innerHTML!==html)list.innerHTML=html;
     return;
   }
@@ -2570,7 +2502,7 @@ function renderChats(providers) {
   const focused=list.contains?.(document.activeElement),readingQuestion=Boolean(state.popover&&state.popover.dataset?.action==='runway-question');
   if((state.pointerInList||focused||readingQuestion)&&state.lastOrder){const kept=state.lastOrder.filter(k=>byKey.has(k));order=[...kept,...order.filter(k=>!kept.includes(k))];}
   const existing=new Map([...list.children].filter(el=>!el._leaving).map(el=>[el.dataset.key,el]));
-  const scroller=RUNWAY?list.closest?.('.layout'):list;
+  const scroller=RUNWAY&&!(REFINED&&COMPACT&&notch.mode==='inspect')?list.closest?.('.layout'):list;
   const scrollTopBefore=scroller?.scrollTop||0,scrollRect=scroller?.getBoundingClientRect?.();
   const anchor=[...existing].find(([key,el])=>byKey.has(key)&&(()=>{const rect=el.getBoundingClientRect?.();return rect&&(!scrollRect||rect.bottom>scrollRect.top);})())?.[1];
   const anchorTop=anchor?.getBoundingClientRect?.().top;
@@ -2588,7 +2520,6 @@ function renderChats(providers) {
     prev=el;
   }
   state.lastOrder=order;
-  if(runwayGlobalPlan)list.insertAdjacentHTML?.('beforeend',runwayGlobalPagerHTML());
   if(anchor&&anchor.isConnected&&Number.isFinite(anchorTop)&&scroller){const moved=anchor.getBoundingClientRect().top-anchorTop;if(Math.abs(moved)>1)scroller.scrollTop=scrollTopBefore+moved;}
 }
 
@@ -2732,7 +2663,7 @@ function openPopover(html, anchor) {
   const place=()=>{const r=anchor.getBoundingClientRect?.(),w=pop.offsetWidth||240,h=pop.offsetHeight||0;if(r){pop.style.left=Math.max(8,Math.min(window.innerWidth-w-8,r.left))+"px";pop.style.top=Math.max(8,Math.min(window.innerHeight-h-8,r.bottom+6))+"px";}};
   place();
   if(anchor?.dataset?.action==='runway-question'){
-    const scroller=anchor.closest?.('.layout')||$('.layout');
+    const scroller=REFINED&&COMPACT&&notch.mode==='inspect'?$('#chat-list'):(anchor.closest?.('.layout')||$('.layout'));
     pop.__questionResize=place;window.addEventListener?.('resize',place);scroller?.addEventListener?.('scroll',place,{passive:true});
     pop.__questionCleanup=()=>{window.removeEventListener?.('resize',place);scroller?.removeEventListener?.('scroll',place);};
     pop.querySelector?.('.runway-question-close')?.focus?.();
@@ -3320,7 +3251,6 @@ function handleClick(event) {
   else if(RUNWAY&&action==="close-popover"){closePopover({restoreFocus:true});return;}
   else if(action==="jump"){jumpTo(button.dataset.target,button.dataset.sub);return;}
   else if(action==="dismiss"){state.dismissed.add(button.dataset.dismiss);saveDismissed();const item=button.closest?.(".si");if(item)item._dismissed=true;renderStripNow();return;}
-  else if(RUNWAY&&(action==="runway-global-next"||action==="runway-global-prev")){const last=runwayGlobalPlan?.last||0;runwayGlobalPage=action==="runway-global-prev"?Math.max(0,runwayGlobalPage-1):runwayGlobalPage>=last?0:runwayGlobalPage+1;runwayGlobalKeys=null;if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(RUNWAY&&(action==="runway-more"||action==="runway-page-prev")){const page=runwayMorePage.get(key)||0,last=Number(button.dataset.last)||0;runwayMorePage.set(key,action==="runway-page-prev"?Math.max(0,page-1):(page>=last?0:page+1));if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
   else if(action==="strip-more"){state.stripOpen=!state.stripOpen;renderStripNow();return;}
   else if(action==="toggle-question"){const question=button.dataset.question,was=state.expandedQuestions.has(question);if(RUNWAY)closeRunwayDetails();if(!was)state.expandedQuestions.add(question);renderStripNow();if(RUNWAY&&state.snapshot)renderChats(providersFor(state.snapshot));return;}
@@ -3362,7 +3292,7 @@ window.tokenTrackerRefresh=refresh;
 window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:RUNWAY,compact:COMPACT,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
   renderLoading,
   buildForest,visibleRoots,nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
-  setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,runwayBudgetPages,runwayPagingBudget,
+  setupNotch,attentionItems,questionDismissToken,watcherTone,rollup,ownState,rowHTML,panelHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,providerActivity,fmt,money,safeNumber,agentLabel,modelLabel,runwayModelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayAgentsExpanded,runwayDetailHTML,runwayTelemetryHTML,runwayPatchContent,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.evaluateRoutingAlerts=evaluateRoutingAlerts;window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.routingStates=routingStates;window.__tokenTrackerTest.getRoutingAlert=()=>routingAlert;window.__tokenTrackerTest.getRoutingNotch=()=>notch;window.__tokenTrackerTest.dismissRoutingAlert=dismissRoutingAlert;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){

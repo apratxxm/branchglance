@@ -68,7 +68,7 @@ The tray icon menu has **Show / hide**, **Inspection shortcut** (Ctrl+Shift+T, C
 
 ## The chat tree
 
-Each root chat is a row, with its subagents nested beneath it, ordered by recent activity. Large trees page within the expanded window, and a stopped chat stays visible for 15 minutes. Rows share column tracks, so title, model, activity, workspace and elapsed time line up down the tree. In the expanded tree, long titles wrap; in tighter layouts they can be shortened.
+Each root chat is a row, with its subagents nested beneath it, ordered by recent activity. Large trees scroll within the expanded window, and a stopped chat stays visible for 15 minutes. Rows share column tracks, so title, model, activity, workspace and elapsed time line up down the tree. In the expanded tree, long titles wrap; in tighter layouts they can be shortened.
 
 **What a row shows**
 

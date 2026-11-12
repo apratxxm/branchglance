@@ -627,3 +627,6 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.ru
 /* Usage bars carry no provider names: the bar colour says Codex (purple) or Claude (orange). Names stay for screen readers. */
 body.runway-refined.runway-compact:not(.phone) .rr-provider{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;margin:0;}
 body.runway-refined.runway-compact:not(.phone) .rr-left::before{content:none;}
+
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chats{flex:1 1 auto;min-height:0;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat-list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;}
