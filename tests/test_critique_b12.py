@@ -132,6 +132,47 @@ def test_ledger_reenable_creates_new_worker(monkeypatch):
     assert ledger_service.current() is instances[-1] and instances[-1] is not old and instances[-1].started
 
 
+def test_disabled_save_off_then_enable_opens_writer(tmp_path, monkeypatch):
+    import threading
+    opened = threading.Event()
+    enabled = [False]
+    class Writer:
+        def __init__(self, *args, **kwargs): opened.set()
+        def ingest(self, *args, **kwargs): return {"pendingBytes": 0, "bytesRead": 0}
+        def pending_bytes(self, show): return 0
+        def close(self): pass
+    monkeypatch.setattr(ledger_service.features, "enabled", lambda *a, **k: enabled[0])
+    monkeypatch.setattr(ledger_service, "STARTUP_DELAY_SECONDS", 0)
+    monkeypatch.setattr(ledger_service, "_RESTART_PENDING", False)
+    service = ledger_service.LedgerService(data_dir=tmp_path / "ledger", ledger_factory=Writer)
+    monkeypatch.setattr(ledger_service, "_CURRENT", service)
+    service.start()
+    assert service._thread is None and not service._stop.is_set()
+    assert not ledger_service.apply_feature(False)
+    assert not service._stop.is_set()
+    enabled[0] = True
+    try:
+        assert not ledger_service.apply_feature(True)
+        assert opened.wait(3)
+        assert ledger_service.current()._thread.is_alive()
+    finally:
+        ledger_service.current().stop()
+
+
+def test_enable_replaces_stopped_never_started_service(monkeypatch):
+    import threading
+    class Service:
+        def __init__(self): self._thread = None; self._stop = threading.Event(); self.started = False
+        def start(self): self.started = True
+    old = Service()
+    old._stop.set()
+    monkeypatch.setattr(ledger_service, "_CURRENT", old)
+    monkeypatch.setattr(ledger_service, "_RESTART_PENDING", False)
+    monkeypatch.setattr(ledger_service, "LedgerService", Service)
+    assert not ledger_service.apply_feature(True)
+    assert ledger_service.current() is not old and ledger_service.current().started
+
+
 def test_observed_statusline_edit_refuses_without_retry(tmp_path, monkeypatch):
     root, path = tmp_path / "state", tmp_path / "settings.json"
     path.write_text('{"other":1}')

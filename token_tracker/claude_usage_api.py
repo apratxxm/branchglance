@@ -21,6 +21,33 @@ from .provider_policy import policy_for
 
 _MAX_BODY = 1024 * 1024
 _REQUEST_DEADLINE = 10.0  # seconds for the whole request: DNS, connect, TLS, headers and body
+_transport_lock = threading.RLock()
+_transport_generation = 0
+_active_connections = set()
+
+
+def _transport_admit():
+    with _transport_lock:
+        if not live_usage_allowed():
+            raise RuntimeError("Claude live usage disabled")
+        return _transport_generation
+
+
+def _transport_current(generation):
+    with _transport_lock:
+        return generation == _transport_generation and live_usage_allowed()
+
+
+def _revoke_transports():
+    global _transport_generation
+    with _transport_lock:
+        _transport_generation += 1
+        connections = tuple(_active_connections)
+    for connection in connections:
+        try:
+            connection.cancel()
+        except OSError:
+            pass
 
 
 def live_usage_allowed():
@@ -76,11 +103,21 @@ def _fingerprint(credentials):
 
 class _DeadlineConnection(http.client.HTTPSConnection):
     """Bound DNS, connection, TLS, headers and body by one deadline."""
-    def __init__(self, *args, deadline, **kwargs):
+    def __init__(self, *args, deadline, generation=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.deadline = deadline
         self.cancelled = threading.Event()
         self._active_socket = None
+        self.generation = _transport_admit() if generation is None else generation
+
+    def send(self, data):
+        # HTTPConnection.send ordinarily connects lazily, after the caller's
+        # admission check. Gate again after DNS/TLS, immediately before sendall.
+        if self.sock is None:
+            self.connect()
+        if self.cancelled.is_set() or not _transport_current(self.generation):
+            raise OSError("Claude usage request revoked")
+        return super().send(data)
 
     def cancel(self):
         self.cancelled.set()
@@ -151,8 +188,7 @@ def _bound_read(response, connections, remaining):
 
 def _request(path, token):
     """Return status, headers and bounded body; exceptions never escape with secrets."""
-    if not live_usage_allowed():
-        raise RuntimeError("Claude live usage disabled")
+    generation = _transport_admit()
     request = urllib.request.Request("https://api.anthropic.com" + path, headers={
         "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
         "Content-Type": "application/json", "User-Agent": "Branchglance/" + product.VERSION,
@@ -163,8 +199,12 @@ def _request(path, token):
     class Handler(urllib.request.HTTPSHandler):
         def https_open(self, req):
             def connection(host, **kwargs):
-                obj = _DeadlineConnection(host, deadline=deadline, **kwargs)
-                connections.append(obj)
+                obj = _DeadlineConnection(host, deadline=deadline, generation=generation, **kwargs)
+                with _transport_lock:
+                    connections.append(obj)
+                    _active_connections.add(obj)
+                    if generation != _transport_generation:
+                        obj.cancel()
                 return obj
             return self.do_open(connection, req, context=self._context)
     opener = _opener(Handler(context=ssl.create_default_context()))
@@ -176,14 +216,18 @@ def _request(path, token):
     timer.start()
     try:
         try:
-            if not live_usage_allowed():
+            if not _transport_current(generation):
                 raise RuntimeError("Claude live usage disabled")
             response = opener.open(request, timeout=_REQUEST_DEADLINE)
         except urllib.error.HTTPError as exc:
             response = exc
         with response:
+            if not _transport_current(generation):
+                raise RuntimeError("Claude usage request revoked")
             status, headers = response.status, response.headers
             if status != 200:
+                if not _transport_current(generation):
+                    raise RuntimeError("Claude usage request revoked")
                 return status, headers, None
             body = bytearray()
             while len(body) <= _MAX_BODY:
@@ -199,13 +243,15 @@ def _request(path, token):
             if len(body) > _MAX_BODY:
                 raise ValueError()
             result = json.loads(body) if body else None
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= deadline or not _transport_current(generation):
                 raise TimeoutError()
             return status, headers, result
     except Exception:
         raise RuntimeError("Claude usage request failed") from None
     finally:
         timer.cancel()
+        with _transport_lock:
+            _active_connections.difference_update(connections)
 
 
 def _retry_after(value, now):
@@ -448,6 +494,7 @@ class ClaudeUsageRefresher:
 
     def stop(self):
         self._stop.set()
+        _revoke_transports()
         with self._lock:
             self._revocation += 1
             self._binding, self._sample = None, {}

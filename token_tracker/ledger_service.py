@@ -69,13 +69,16 @@ def apply_feature(enabled: bool) -> bool:
         if service is None:
             return False  # standalone servers never own a writer
         if not enabled:
+            if service._thread is None:
+                return False  # already disabled; don't poison the unused instance
             service.stop()
             if service._thread is not None and service._thread.is_alive():
                 _RESTART_PENDING = True
             return _RESTART_PENDING
-        if service._thread is None:
+        stopped = getattr(service, "_stop", None)
+        if service._thread is None and (stopped is None or not stopped.is_set()):
             service.start()
-        elif not service._thread.is_alive():
+        elif service._thread is None or not service._thread.is_alive():
             service = LedgerService()
             _CURRENT = service
             service.start()
