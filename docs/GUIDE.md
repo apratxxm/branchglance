@@ -161,11 +161,7 @@ Claude collection is off until you turn it on in **Claude tracking**.
 
 ## Install, update and remove
 
-- **Install:** run `BranchglanceSetup.exe` from File Explorer or the Start menu, as your normal user (not as administrator). It installs to `%LOCALAPPDATA%\Programs\Branchglance` and adds Start menu and Desktop shortcuts. It can also start Branchglance at sign-in; that is off unless you choose it, and an upgrade keeps your earlier choice.
-- **Update:** run the newer Setup. It installs the new release next to the old one, self-tests it, and only then switches over.
-- **Rollback:** `BranchglanceSetup.exe --rollback` restores the previous verified release.
-- **Uninstall:** go to Settings → Apps → Installed apps → Branchglance. The uninstaller checks the install and its releases first and stops before changing anything if they don't verify. It then revokes Claude consent, backs up Claude settings, and removes only Branchglance's hooks, shortcuts and program files. Anything it can't safely remove is kept and reported. Your settings and history under `%LOCALAPPDATA%\Branchglance` are kept.
-- **Verify a download:** see [Verify the download](INSTALL.md#verify-the-download).
+Installing, updating, rolling back and uninstalling are covered in the [install guide](INSTALL.md). Setup installs per user, and the uninstaller removes only Branchglance's own hooks, shortcuts and program files, and keeps and reports anything it can't safely remove. Your settings and history stay unless you delete them.
 
 ## Power-user tips
 

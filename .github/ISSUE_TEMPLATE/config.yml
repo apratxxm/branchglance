@@ -3,6 +3,6 @@ contact_links:
   - name: Report a security problem privately
     url: https://github.com/apratxxm/branchglance/security/advisories/new
     about: Please don't open a public issue for security problems.
-  - name: Questions and ideas
+  - name: Questions and support
     url: https://github.com/apratxxm/branchglance/discussions
-    about: Ask a question or talk through an idea first.
+    about: Ask a question or talk through an idea first. See SUPPORT.md for more.

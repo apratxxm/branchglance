@@ -2,6 +2,9 @@ name: Feature request
 description: An idea that would make Branchglance more useful.
 labels: [enhancement]
 body:
+  - type: markdown
+    attributes:
+      value: To add support for another agent tool or harness, use the New provider form instead.
   - type: textarea
     id: problem
     attributes:

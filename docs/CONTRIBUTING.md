@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in Branchglance. Bug reports, fixes and focused features are all welcome. This guide covers setting up a development copy, running the tests, building the installer and opening a pull request.
+Thanks for your interest in Branchglance. Bug reports, fixes and focused features are all welcome. This guide covers setting up a development copy, running the tests, building the installer and opening a pull request. Everyone taking part is expected to follow the [Code of Conduct](../CODE_OF_CONDUCT.md).
 
 Windows is the primary platform; the macOS notch app builds from source (see [the macOS guide](../macos/README.md)). Keep platform-specific code behind a clear boundary, and read [the architecture](ARCHITECTURE.md) and [the macOS port inventory](MAC_PORT.md) before touching it.
 
@@ -22,7 +22,7 @@ Run the widget from source:
 
 A source checkout keeps its state in `%LOCALAPPDATA%\TokenTracker`, separate from an installed copy. To use a throwaway folder instead, set `BRANCHGLANCE_STATE_ROOT` before starting it. The installed widget and a source copy use the same local ports (8765 and 8766), so quit one before starting the other.
 
-## Tests
+## Checks
 
 Install the lint tool once (`python -m pip install ruff==0.14.4`), then run all checks from the repository root:
 
@@ -30,7 +30,9 @@ Install the lint tool once (`python -m pip install ruff==0.14.4`), then run all 
 python scripts/run_checks.py
 ```
 
-Node.js and npm are required; the lint step runs pinned ESLint via `npx`. Use `--only python`, `--only node`, or `--only lint` to run a subset. CI runs the full command on every push and pull request.
+The script runs the Python tests (pytest), every `tests/*.mjs` file under Node, Ruff and ESLint. Node.js and npm are required; the lint step runs pinned ESLint via `npx`. To run one part, use `--only python`, `--only node` or `--only lint`.
+
+CI runs this same command on Windows and macOS for every pull request and every push to `master`. CI also runs CodeQL (static security analysis) and pip-audit (known-vulnerable dependencies), and Dependabot opens weekly update pull requests.
 
 Rules for tests:
 
@@ -66,6 +68,34 @@ If you fork the project to ship your own build, change the product name and icon
 - Never touch files or settings Branchglance doesn't own. Installer and hook changes need failure-path tests with temporary folders or fakes.
 - Say in docs whether something is implemented or planned.
 
+## Adding a provider
+
+Branchglance builds one snapshot per refresh from a list of providers. Two exist today: Codex and Claude. This section describes the contract they follow, so a new agent tool can be added the same way. Read [the architecture](ARCHITECTURE.md) first.
+
+**What a provider returns.** A provider is a class with a `snapshot()` method that returns a dict. `build_snapshot()` in `token_tracker/providers.py` calls it, and `_provider_snapshot()` in the same file keeps the last good data (marked `stale`) when a build fails. The dict has:
+
+- `name` (the provider name, for example `"Claude"`), `connected` (bool) and `accent` (the colour used for its rows).
+- `chats`: a list of row dicts. Each row needs a string `id`. `build_snapshot()` sets `provider` on each row, and `_dedupe_provider_chats()` removes duplicate ids. Optional `parentId` and `parentProvider` fields feed the tree.
+- `fiveHour` and `weekly` limit objects, each with `percent`, `reset`, `resetAt` and `lastKnownResetAt`. The shape is visible in `ClaudeCodeProvider.snapshot()` in `token_tracker/claude_provider.py`.
+- Optional: `cache`, `activity` (a list of `{date, value}`), `limitsUpdatedAt` and `source` (a short text describing where the data comes from).
+
+Keep observations explicit: a status, timestamp or link should come from evidence, and show unknown when the evidence is missing.
+
+**Where it is registered.**
+
+1. `token_tracker/provider_policy.py`: add the name to `PROVIDERS`, its environment prefix to `_ENV_NAMES`, and any actions it supports to `_CAPABILITIES` (only `greet` and `continue` exist). The collect, show and send flags are derived from these names.
+2. `token_tracker/providers.py`: add the name to `ENABLED_PROVIDERS` for full collection (chats and limits), or to `LIMIT_ONLY_PROVIDERS` for limits only. Then add its class to the `factories` dict (or `limit_factories`) inside `build_snapshot()`, with its accent colour.
+3. Parent links: `snapshot_graph()` in `token_tracker/agent_links.py` links rows by `provider:id`. Cross-provider links are resolved only by `apply_exact_links()`, which `build_snapshot()` runs for Claude and Codex. Leave `parentId` empty unless the link is exact.
+4. Environment flags: the `TOKEN_TRACKER_<NAME>_COLLECT`, `_SHOW` and `_SEND` flags are part of the inventory in [Configuration](CONFIGURATION.md). `tests/test_config_docs.py` fails until the new flags are listed there between the environment inventory markers.
+
+**Tests to copy.** Use these as the starting point, and keep the suite isolated as described in the rules above:
+
+- `tests/test_provider_policy.py` for policy names, flags and capabilities.
+- `tests/test_claude_hooks_provider.py` for a provider fed by hook events, and `tests/test_claude_usage_api.py` if it reads limits from a remote API.
+- `tests/test_agent_links.py` if rows can be parents of Codex jobs.
+- `tests/test_config_docs.py` for the environment inventory.
+- `tests/conftest.py` already isolates `LOCALAPPDATA`, the state root and `CLAUDE_CONFIG_DIR` for every test. Use injected factories and fake data rather than real sessions.
+
 ## Commits
 
 Format: `Area: what changed`, written as a statement, no trailing period. Keep the first line under about 72 characters.
@@ -85,7 +115,7 @@ Installer: keep the newest bg-codex on rollback
 1. Branch from `master` with a short kebab-case name for the change: `insights-hover`, `bg-codex-path`.
 2. Keep the pull request to one topic. Its title follows the commit format.
 3. Fill in the template: what changes for the user, screenshots for anything visible, platform notes, changes to stored data or permissions, and the checks you ran.
-4. CI must pass. Run both test suites locally first.
+4. Run `python scripts/run_checks.py` locally first. CI (`.github/workflows/ci.yml`) runs the same command on Windows and macOS for every pull request. Pull requests into `master` must pass it before merging.
 5. Pull requests from contributors are squash-merged with a clean message. Branches from maintainers are merged with a merge commit, `Merge branch '<name>': <summary>`.
 
 Platform-specific work is merged after review by someone who can test on that platform.
@@ -111,4 +141,8 @@ Maintainers: the tag, build, sign and publish steps are in [RELEASING](release/R
 
 ## Reporting bugs
 
-Open an issue with your Windows or macOS version, the Branchglance version (shown under **Settings** in the widget) and steps to reproduce. Please don't paste chat transcripts or tokens; describe the behaviour instead.
+Open an issue with your Windows or macOS version, the Branchglance version (shown under **Settings** in the widget) and steps to reproduce. Please don't paste chat transcripts or tokens; describe the behaviour instead. Support and question routes are in [SUPPORT.md](../SUPPORT.md). Security problems go to [SECURITY.md](../SECURITY.md), not to a public issue.
+
+## Reporting a bug with a debug report
+
+<!-- debug-report: added with the feature -->
