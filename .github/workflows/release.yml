@@ -164,7 +164,7 @@ jobs:
           Copy-Item (Join-Path $output "releases") $unsigned -Recurse
 
       - name: Upload unsigned build output
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: branchglance-unsigned-build
           path: ${{ runner.temp }}/branchglance-unsigned-build/**
@@ -174,7 +174,7 @@ jobs:
 
       - name: Upload unsigned components
         id: upload-components
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: branchglance-unsigned-components
           path: ${{ runner.temp }}/branchglance-components/**
@@ -184,7 +184,7 @@ jobs:
 
       - name: Upload original signing inventory
         id: upload-inventory
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: branchglance-component-inventory
           path: ${{ runner.temp }}/branchglance-component-inventory/signpath-inventory.json
@@ -334,7 +334,7 @@ jobs:
       - name: Upload unsigned final setup
         id: upload-setup
         if: steps.token.outputs.enabled == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: branchglance-unsigned-setup
           path: ${{ runner.temp }}/branchglance-setup-to-sign/**
@@ -397,7 +397,7 @@ jobs:
       - name: Upload signed release assets
         id: upload-signed-assets
         if: steps.token.outputs.enabled == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: branchglance-signed-release-assets
           path: ${{ runner.temp }}/branchglance-release-assets/**
