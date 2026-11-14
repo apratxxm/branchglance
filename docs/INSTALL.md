@@ -32,9 +32,9 @@ Get-AuthenticodeSignature .\BranchglanceSetup.exe | Format-List Status, SignerCe
 
 ## macOS (from source)
 
-Requires macOS 14 or later, Python 3.10+ and the Xcode command line tools. Then:
+Requires macOS 14 or later, Python 3.12+ and the Xcode command line tools. Then:
 
-The build checks that the Python interpreter it will use is version 3.10 or newer.
+The build checks that the Python interpreter it will use is version 3.12 or newer.
 
 ```sh
 git clone https://github.com/apratxxm/branchglance.git

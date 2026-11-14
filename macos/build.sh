@@ -29,8 +29,8 @@ launch_app() {
 
 # Check the interpreter that will run the server before changing the installation.
 require_python() {
-    if ! "$1" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
-        echo "Error: $1 is missing, unusable, or older than Python 3.10; install Python 3.10 or newer and recreate the runtime virtual environment." >&2
+    if ! "$1" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then
+        echo "Error: $1 is missing, unusable, or older than Python 3.12; install Python 3.12 or newer and recreate the runtime virtual environment." >&2
         exit 1
     fi
 }

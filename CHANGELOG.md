@@ -49,6 +49,7 @@ Planned as 0.2.0.
 
 ### Security
 
+- Pillow 13.0.0 fixes the published Pillow 12.3.0 vulnerabilities that pip-audit reports. Pillow 13 needs Python 3.11 or newer, so source builds and contributors now need Python 3.12 or newer, and the Windows release is built on CPython 3.12.10 (previously 3.10.11).
 - The installer deletes files through verified handles, and recovery fails closed when a folder's identity can't be proven.
 - The launcher authenticates widget relaunch requests within one install, and release builds ship without the test report.
 - The local avatar and limit-reset endpoints check the request origin.

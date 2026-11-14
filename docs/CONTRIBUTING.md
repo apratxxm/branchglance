@@ -6,7 +6,7 @@ Windows is the primary platform; the macOS notch app builds from source (see [th
 
 ## Development setup
 
-You need Python 3.10 or newer and Node.js 18 or newer. From a fresh clone, in PowerShell:
+You need Python 3.12 or newer and Node.js 18 or newer. From a fresh clone, in PowerShell:
 
 ```powershell
 py -3 -m venv .venv
@@ -43,10 +43,10 @@ Rules for tests:
 
 ## Building the installer
 
-Release builds use a separate, pinned environment. Python 3.10 matches what CI uses:
+Release builds use a separate, pinned environment. Python 3.12 matches what CI uses:
 
 ```powershell
-py -3.10 -m venv .build-venv
+py -3.12 -m venv .build-venv
 .\.build-venv\Scripts\python.exe -m pip install -r packaging/requirements-release.txt
 .\.venv\Scripts\python.exe packaging/build.py --output build --python .build-venv\Scripts\python.exe
 ```

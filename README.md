@@ -11,7 +11,7 @@
   <a href="https://github.com/apratxxm/branchglance/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/apratxxm/branchglance?include_prereleases&label=release"></a>
   <a href="https://github.com/apratxxm/branchglance/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/apratxxm/branchglance/ci.yml?branch=master&label=CI"></a>
   <img alt="Platform: Windows and macOS" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey">
-  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776AB">
+  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776AB">
 </p>
 
 **Branchglance is a small always-on-top widget that shows what your Codex and Claude Code agents are doing: which are running, which are waiting on you, and how much of your usage limit is left.**
