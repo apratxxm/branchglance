@@ -1326,7 +1326,12 @@ function bankedResetView(banked) {
   const lines=items.map(item=>{const at=safeNumber(item?.expiresAt);return String(item?.title||"Limit reset")+(at?" · expires "+new Date(at*1000).toLocaleDateString([], {month:"short",day:"numeric"}):"");});
   return {text:"↻ "+count,tip:Math.round(count)+" banked reset"+(count===1?"":"s")+(lines.length?": "+lines.join("; "):"")};
 }
+// The widget's last provider list, read by the dashboard through tokenTrackerQuotaNow.
+let resetProviders=[];
+// Current 5-hour quota per provider from the same resetView the widget draws; usedPercent is null when the widget shows no measured or last-known value.
+window.tokenTrackerQuotaNow=()=>resetProviders.map(p=>{const view=resetView(p,"fiveHour");return {name:String(p.name||""),usedPercent:view.usedPercent,countdown:view.countdown,resetTarget:view.resetTarget};});
 function renderResets(providers) {
+  resetProviders=Array.isArray(providers)?providers:[];
   const node=$("#resets"),weeklyNode=$("#weekly-resets");if(!node)return;
   const shape=providers.map(p=>p.name).join("|");
   node.dataset.providerCount=String(providers.length);if(weeklyNode)weeklyNode.dataset.providerCount=String(providers.length);
@@ -1355,6 +1360,7 @@ function renderResets(providers) {
     else{const banked=$(id+"-banked"),view=bankedResetView(p.bankedResets);if(banked){if(banked.textContent!==view.text)banked.textContent=view.text;put(banked,"title",view.tip);attr(banked,"aria-label",view.tip);banked.hidden=!view.text;}}
   }));
   renderGreeterStatus(providers);
+  window.tokenTrackerDashboardSyncQuota?.();
 }
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;

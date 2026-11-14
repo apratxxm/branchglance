@@ -31,7 +31,7 @@ assert.match(insights,/API-equivalent cost/);
 assert.match(insights,/dash-hero-currency/);
 assert.match(insights,/estimated/);
 assert.match(insights,/Claude/);assert.match(insights,/Codex/);
-assert.match(insights,/<th scope="col">Model<\/th>/);assert.match(insights,/Highest usage/);
+assert.match(insights,/<th scope="col">Models<\/th>/);assert.match(insights,/Peak quota used/);
 assert.match(insights,/local time/);
 assert.match(insights,/<dt>Subagents<\/dt><dd>6<\/dd>/);
 assert.doesNotMatch(insights,/vs previous/,"no period delta at 30 days");
@@ -46,7 +46,7 @@ dashboard.state.range="30d";
 
 dashboard.state.metric="tokens";
 const tokens=dashboard.insightsHTML();
-assert.match(tokens,/M tokens/);
+assert.match(tokens,/<span class="dash-hero-mag">M<\/span><\/strong><span class="dash-hero-unit">tokens<\/span>/);
 assert.match(tokens,/Daily · tokens/);
 
 dashboard.state.insights={providers:[provider("Claude",{models:[{name:"claude-sonnet-5.5",tokens:800,apiEquivalentCost:2}]})]};
@@ -272,7 +272,7 @@ dashboard.state.insights={range:"7d",providers:[
 ]};
 dashboard.state.range="7d";dashboard.state.metric="cost";
 const scopedChart=dashboard.insightsHTML();
-assert.match(scopedChart,/Daily estimate excludes Codex/);
+assert.match(scopedChart,/estimated · excl\. Codex/);
 assert.match(scopedChart,/Claude: \$1\.00/);
 assert.match(scopedChart,/Recorded subtotal: \$1\.00/);
 assert.match(scopedChart,/Excludes Codex: no recorded price/);
@@ -347,8 +347,8 @@ dashboard.state.insights={range:"30d",providers:[
 const summary=dashboard.insightsHTML();
 assert.match(summary,/<table class="dash-peaks-table">/);
 assert.match(summary,/Highest recorded quota usage in this period, not current allowance/);
-assert.match(summary,/<th scope="row" class="codex-color">Codex<\/th><td><span aria-label="Not recorded">—<\/span><\/td><td>80%/);
-assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\/td><td><span aria-label="Not recorded">—/);
+assert.match(summary,/<th scope="row" class="codex-color">Codex<\/th><td><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded<\/span><\/td><td>80%/);
+assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\/td><td><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded/);
 
 // Insights refresh: an identical payload keeps the rendered panel; the status line is inserted or updated without a full render.
 {

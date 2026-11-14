@@ -58,7 +58,7 @@ responseQueue=[{ok:true,json:async()=>payload([codexUnpriced()])}];
 dashboard.state.metric="cost";dashboard.state.metricExplicit=false;
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"tokens","96% unpriced tokens default the toggle to Tokens");
-assert.match(dashboard.insightsHTML(),/dash-hero-unit">B tokens/);
+assert.match(dashboard.insightsHTML(),/<span class="dash-hero-mag">B<\/span><\/strong><span class="dash-hero-unit">tokens/);
 assert.doesNotMatch(dashboard.insightsHTML(),/dash-cost-note/);
 
 dashboard.setMetric("cost");
@@ -142,11 +142,16 @@ assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="true"/);as
 dashboard.setChartStyle("area");assert.equal(values.get("branchglanceChartStyle"),"lines","unknown styles are ignored");
 dashboard.setChartStyle("stacked");
 
-// (7) Review round: "30d / plan" header, square-root bars that follow the metric, provider chips, collapsed Highest usage.
+// (7) Review round: "30d / plan" header, bars that follow the metric, provider chips, collapsed Highest usage.
 styled=dashboard.insightsHTML();
-assert.match(styled,/<i class="dash-model-bar[^"]*" aria-hidden="true"><em class="[a-z]+" style="width:100\.0%"/,"the largest row fills its bar; others follow a square-root scale");
+assert.match(styled,/<i class="dash-model-bar[^"]*" aria-hidden="true"><em class="[a-z]+" style="width:100\.0%"/,"the largest row fills its bar; others follow a linear scale");
 for(const p of dashboard.state.insights.providers)p.limitPeaks={fiveHour:100,weekly:100};
 styled=dashboard.insightsHTML();
 assert.match(styled,/dash-limits is-collapsed/);assert.doesNotMatch(styled,/dash-peaks-table/,"everything at 100% collapses Highest usage to one line");
+
+// (8) Bars scale linearly: half the largest row's tokens draws half the width.
+dashboard.state.insights=payload([{name:"Claude",totals:{tokens:3e8,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(3e8),models:[{name:"claude-opus-5.5",tokens:2e8,apiEquivalentCost:null},{name:"claude-haiku-5.5",tokens:1e8,apiEquivalentCost:null}],limitPeaks:{fiveHour:null,weekly:null}}]);
+dashboard.state.metric="tokens";
+assert.match(dashboard.insightsHTML(),/<em class="claude" style="width:50\.0%"/,"bars are linear: half the largest row is half the width");
 
 console.log("Insights polish contracts passed");

@@ -17,6 +17,8 @@
   const money=value=>finite(value)==null?"":usd.format(value);
   const localDate=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
   const dayLabel=value=>{const text=String(value||""),stamp=text.includes("T"),date=new Date(stamp?text:`${text}T12:00:00`);return Number.isNaN(date.getTime())?text:new Intl.DateTimeFormat("en-US",stamp?{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}:{month:"short",day:"numeric"}).format(date);};
+  // Short daily label for up to eight days: "Sat 8".
+  const weekdayLabel=value=>{const date=new Date(`${String(value||"")}T12:00:00`);return Number.isNaN(date.getTime())?dayLabel(value):`${new Intl.DateTimeFormat("en-US",{weekday:"short"}).format(date)} ${date.getDate()}`;};
   const modelName=raw=>String(window.TokenTrackerFormatModel?.({model:raw})||raw||"");
   const providerKey=name=>/claude/i.test(String(name||""))?"claude":"codex";
   const modelKey=raw=>/^gpt-/i.test(String(raw||""))?"codex":"claude";
@@ -85,7 +87,7 @@
     return {fallback,range,hourly,providers,totals,previous,seriesByKey,series:seriesByKey[chartKey],chartKey,heroKey,costHero,costPartial,unpricedModels,mostlyUnpriced,models,peaks,dates};
   }
   const joinNames=names=>names.length<=2?names.join(" and "):`${names.slice(0,-1).join(", ")} and ${names.at(-1)}`;
-  const tokenHero=value=>{const [figure,unit]=value>=1e9?[(value/1e9).toFixed(2),"B tokens"]:value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
+  const tokenHero=value=>{const [figure,suffix]=value>=1e9?[(value/1e9).toFixed(2),"B"]:value>=1e6?[(value/1e6).toFixed(1),"M"]:value>=1e3?[(value/1e3).toFixed(1),"K"]:[String(Math.round(value)),""];return `<strong class="dash-hero-number">${esc(figure)}${suffix?`<span class="dash-hero-mag">${suffix}</span>`:""}</strong><span class="dash-hero-unit">tokens</span>`;};
   // Provider chips scope all Insights sections wherever provider identity is available.
   const hiddenProviders=new Set((()=>{try{const value=JSON.parse(localStorage.getItem("branchglanceHiddenProviders")||"[]");return Array.isArray(value)?value:[];}catch{return [];}})());
   // At least one provider stays on; the last one cannot be hidden.
@@ -94,10 +96,13 @@
     if(hiddenProviders.has(name))hiddenProviders.delete(name);
     else if(availableProviders().some(p=>p.name!==name&&!hiddenProviders.has(p.name)))hiddenProviders.add(name);
     else return;
-    writePref("branchglanceHiddenProviders",JSON.stringify([...hiddenProviders]));state.renderKey="";render();
+    writePref("branchglanceHiddenProviders",JSON.stringify([...hiddenProviders]));if(state.metric==="cost"&&state.insights&&!costAvailable())state.metric="tokens";syncSegments();state.renderKey="";render();
   }
   // Chart style: "stacked" (default) or "lines". Chosen with the small control in the chart header and remembered in localStorage.
   const chartStyle=()=>readPref("branchglanceChartStyle","stacked")==="lines"?"lines":"stacked";
+  // Clock format for chart labels: "24" gives 14:00, "12" gives 2 PM. Read live; the Insights key includes it, so a change re-labels the panel.
+  const clockPref=()=>readPref("branchglanceClockFormat","12")==="24"?"24":"12";
+  const clockLabel=hour=>clockPref()==="24"?`${String(hour).padStart(2,"0")}:00`:`${hour%12===0?12:hour%12} ${hour<12?"AM":"PM"}`;
   function setChartStyle(value){
     if(value!=="stacked"&&value!=="lines")return;
     if(value===chartStyle())return;
@@ -107,7 +112,7 @@
   // Explicit provider filter chips beside the chart heading: a dot, the name and a checked state.
   const chipsHTML=data=>{
     const providers=availableProviders();if(providers.length<2)return "";
-    return `<div class="dash-chips" role="group" aria-label="Providers included in all available Insights sections">${providers.map(p=>{const on=!hiddenProviders.has(p.name);return `<button type="button" class="dash-chip ${providerKey(p.name)}-color" data-dashboard-provider="${esc(p.name)}" aria-pressed="${on}" title="${on?"Hide":"Show"} ${esc(p.name)} across Insights"><i class="dash-dot ${providerKey(p.name)}" aria-hidden="true"></i>${esc(p.name)}<span class="dash-chip-check" aria-hidden="true">${on?"\u2713":""}</span></button>`;}).join("")}</div>`;
+    return `<div class="dash-chips" role="group" aria-label="Providers included in all available Insights sections">${providers.map(p=>{const on=!hiddenProviders.has(p.name),locked=on&&providers.filter(q=>!hiddenProviders.has(q.name)).length===1;return `<button type="button" class="dash-chip ${providerKey(p.name)}-color" data-dashboard-provider="${esc(p.name)}" aria-pressed="${on}"${locked?' aria-disabled="true"':""} title="${locked?"At least one provider stays shown":`${on?"Hide":"Show"} ${esc(p.name)} across Insights`}"><i class="dash-dot ${providerKey(p.name)}" aria-hidden="true"></i>${esc(p.name)}<span class="dash-chip-check" aria-hidden="true">${on?"\u2713":""}</span></button>`;}).join("")}</div>`;
   };
   function seriesChart(data){
     const key=data.chartKey,cost=key==="apiEquivalentCost",format=value=>cost?money(value):number(value);
@@ -119,7 +124,7 @@
     if(!rows.length||!candidates.length||!rows.some(row=>candidates.some(p=>finite(row[p.name])!=null)))return "";
     const providers=candidates.filter(p=>!hiddenProviders.has(p.name));
     const lines=chartStyle()==="lines";
-    if(!providers.length)return `<p class="dash-cost-note">Every provider is hidden. Click a provider in the split to show it.</p>`;
+    if(!providers.length)return `<p class="dash-chart-empty">Every provider is hidden. Click a provider in the split to show it.</p>`;
     const W=668,H=100,L=0,R=0,T=1,B=1,PW=W-L-R,PH=H-T-B,step=PW/Math.max(rows.length-1,1);
     const complete=row=>providers.every(p=>finite(row[p.name])!=null);
     const totals=rows.map(row=>complete(row)?providers.reduce((sum,p)=>sum+row[p.name],0):null);
@@ -154,13 +159,14 @@
     let tickLabels;
     if(data.hourly){
       const last=rows.length-1,marks=rows.map((row,i)=>i).filter(i=>i<last-2&&hourOf(rows[i].date)%6===0);
-      tickLabels=[...marks.map(i=>[i,hourOf(rows[i].date)+":00"]),[last,"now"]];
+      tickLabels=[...marks.map(i=>[i,clockLabel(hourOf(rows[i].date))]),[last,"now"]];
     }else{
-      const idx=rows.length>=8?[0,Math.round((rows.length-1)/3),Math.round((rows.length-1)*2/3),rows.length-1]:rows.length>1?[0,rows.length-1]:[0];
-      tickLabels=idx.map(i=>[i,dayLabel(rows[i].date)]);
+      // Up to eight days: every day is labelled. Longer ranges keep four evenly spaced ticks.
+      const every=rows.length<=8,idx=every?rows.map((_,i)=>i):[0,Math.round((rows.length-1)/3),Math.round((rows.length-1)*2/3),rows.length-1];
+      tickLabels=idx.map(i=>[i,every?weekdayLabel(rows[i].date):dayLabel(rows[i].date)]);
     }
     const dates=`<div class="dash-dates">${tickLabels.map(([i,label],n)=>`<span class="dash-date${n===0&&i===0?" is-first":i===rows.length-1&&n>0?" is-last":""}" style="left:${(rows.length>1?i/(rows.length-1)*100:0).toFixed(2)}%">${esc(label)}</span>`).join("")}</div>`;
-    const pointLabel=date=>data.hourly?new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(new Date(date)):dayLabel(date);
+    const pointLabel=date=>data.hourly?`${new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric"}).format(new Date(date))}, ${clockLabel(hourOf(date))}`:dayLabel(date);
     const hover=rows.map((row,index)=>{
       const x=xAt(index),total=totals[index],partial=cost&&(excluded.length>0||providers.some(p=>row[p.name+"__partial"])),unknown=total==null;
       const totalLabel=unknown?"Total unavailable":(partial?"Recorded subtotal: ":"Total: ")+format(total);
@@ -170,9 +176,9 @@
       const tip=`<span class="tip-date">${esc(pointLabel(row.date))}</span><b class="tip-total">${esc(unknown?"—":(partial?"Recorded subtotal · ":"")+format(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(finite(row[p.name])==null?"—":format(row[p.name])+(cost&&row[p.name+"__partial"]?" (partial)":""))}</strong></span>`).join("")}${unknown?'<span>Missing provider data</span>':""}${excludedLabel?`<span>${esc(excludedLabel)}</span>`:""}`;
       const left=index===0?L:(xAt(index-1)+x)/2,right=index===rows.length-1?W-R:(x+xAt(index+1))/2;
       const markers=lines?providers.map(p=>finite(row[p.name])==null?"":`<circle class="dash-provider-marker ${providerKey(p.name)}" cx="${x.toFixed(1)}" cy="${yAt(row[p.name]).toFixed(1)}" r="2.8"/>`).join(""):total==null?"":`<circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/>`;
-      return `<g class="dash-point" tabindex="0" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/>${markers}</g>`;
+      return `<g class="dash-point" tabindex="${index===rows.length-1?"0":"-1"}" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/>${markers}</g>`;
     }).join("");
-    return `${excluded.length?`<p class="dash-cost-note">Daily estimate excludes ${esc(joinNames(excluded.map(p=>p.name)))} (no recorded price)</p>`:""}<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg></div>${dates}`;
+    return `<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg></div>${dates}`;
   }
   // The split bar sits under the figure it divides; the legend is a four-column table (provider, value, share, plan multiple) so every column aligns.
   function splitParts(data){
@@ -206,6 +212,8 @@
   }
   // Failures and fallbacks are notices shown above the content; a plain freshness stamp sits at the end.
   const isNotice=()=>Boolean(state.loadError||state.insightsUnavailable||(state.insights&&insightsData(false).fallback));
+  // The header Refresh button is disabled and busy while Insights loads.
+  function syncRefresh(){const button=$("#dashboard-refresh");if(!button)return;const busy=state.loading===true;button.disabled=busy;button.setAttribute("aria-busy",String(busy));}
   function updateStatusLine(){
     const text=statusText(),panel=$("#dashboard-insights");
     if(!panel)return;
@@ -213,6 +221,31 @@
     if(!el){if(!text)return;panel.insertAdjacentHTML("beforeend",'<p class="dash-status-line" role="status"></p>');el=panel.querySelector(".dash-status-line");if(!el)return;}
     if(!text){el.remove();return;}
     el.textContent=text;el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());
+  }
+  // Quota: the widget's current 5-hour figure per provider (window.tokenTrackerQuotaNow). Recorded peaks stand in when it is unavailable.
+  const quotaRows=()=>{let rows=null;try{rows=window.tokenTrackerQuotaNow?.();}catch{rows=null;}if(!Array.isArray(rows))return null;const usable=rows.filter(row=>row&&typeof row.name==="string"&&finite(row.usedPercent)!=null);return usable.length?usable:null;};
+  const peakFor=(data,name)=>finite(data.peaks.find(p=>p.name===name)?.fiveHour);
+  const quotaSub=(row,peak)=>[row.countdown||"",peak!=null?`peak ${Math.round(peak)}%`:""].filter(Boolean).join(" · ");
+  function limitsHTML(data){
+    const rows=quotaRows();
+    if(rows)return `<div class="dash-limits dash-quota" data-quota-shape="${esc(rows.map(row=>row.name).join("|"))}"><div class="dash-section-label"><span>Quota</span><small>5-hour, now</small></div><table class="dash-peaks-table dash-quota-table"><caption class="sr-only">Current 5-hour quota used per provider</caption><tbody>${rows.map(row=>`<tr><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th><td><span class="dash-quota-main" data-quota-percent="${esc(row.name)}">${Math.round(row.usedPercent)}%</span><small class="dash-quota-sub" data-quota-sub="${esc(row.name)}">${esc(quotaSub(row,peakFor(data,row.name)))}</small></td></tr>`).join("")}</tbody></table></div>`;
+    const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
+    const peakCell=value=>value==null?'<span aria-hidden="true">—</span><span class="sr-only">Not recorded</span>':`${Math.round(value)}%`;
+    const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value!=null&&value>=99.5));
+    if(allMaxed)return `<div class="dash-limits is-collapsed"><div class="dash-section-label"><span>Peak quota used</span><small title="Highest recorded quota usage in this period, not current allowance">Every window reached 100%</small></div></div>`;
+    if(!peaks.length)return "";
+    return `<div class="dash-limits"><table class="dash-peaks-table"><caption>Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col" title="Recorded in this period, not the current allowance">Peak quota used</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(p=>`<tr><th scope="row" class="${providerKey(p.name)}-color">${esc(p.name)}</th><td>${peakCell(p.fiveHour)}</td><td>${peakCell(p.weekly)}</td></tr>`).join("")}</tbody></table><p class="dash-peaks-note">In selected range</p></div>`;
+  }
+  // Updates the Quota figures in place as the widget reading moves. Only a change in which providers have a live reading re-renders Insights.
+  function syncQuota(){
+    if(!state.open||state.tab!=="insights"||!state.insights)return;
+    const panel=$("#dashboard-insights");if(!panel)return;
+    const rows=quotaRows(),shown=panel.querySelector(".dash-quota");
+    if(!rows&&!shown)return;
+    if(!rows||!shown||shown.dataset.quotaShape!==rows.map(row=>row.name).join("|")){state.renderKey="";render();return;}
+    const data=insightsData(false);
+    shown.querySelectorAll("[data-quota-percent]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaPercent);if(!row)return;const text=`${Math.round(row.usedPercent)}%`;if(node.textContent!==text)node.textContent=text;});
+    shown.querySelectorAll("[data-quota-sub]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaSub);if(!row)return;const text=quotaSub(row,peakFor(data,row.name));if(node.textContent!==text)node.textContent=text;});
   }
   function insightsHTML(){
     if(!state.insights)return `<p class="dash-status-line${state.loadError?" error":""}" role="status">${state.loading?"Loading usage…":state.loadError?"Usage could not be loaded.":""}</p>`;
@@ -222,31 +255,30 @@
     const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}${state.loadError?" Use Refresh to retry.":""}</p>`:"";
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
-    const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">estimated</span>`:tokenHero(value);
+    // The unit line names any shown provider that has no published price, so the total is read as a partial figure.
+    const unpricedShown=data.providers.filter(p=>finite(p.scoped.apiEquivalentCost)==null).map(p=>p.name);
+    const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">${esc(unpricedShown.length?`estimated · excl. ${joinNames(unpricedShown)}`:"estimated")}</span>`:tokenHero(value);
     const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">${data.hourly?"Hourly":"Daily"} · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost estimate":"tokens"}</span>${chartStyleHTML()}</div>${chart}</section>`:"";
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
     const tokensPresent=finite(data.totals.tokens)>0;
     const missing=v=>finite(v)==null||(v===0&&tokensPresent);
-    const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hits"],[data.totals.activeHours,v=>`${number(v)}h`,"Active"]].filter(([v])=>!missing(v));
+    const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hit rate"],[data.totals.activeHours,v=>`${number(v)}h`,"Active hours"]].filter(([v])=>!missing(v));
     const statsHTML=stats.length?`<dl class="dash-summary">${stats.map(([v,format,label])=>`<div><dt>${label}</dt><dd>${esc(format(v))}</dd></div>`).join("")}</dl>`:"";
     const coverage=data.fallback?(data.range==="30d"||data.range==="all"?"31-day totals":data.dates.length?`Daily coverage: ${dayLabel(data.dates[0])}${data.dates.length>1?" - "+dayLabel(data.dates.at(-1)):""}${data.range==="24h"?" (latest recorded date)":" (recorded daily values)"}`: "31-day totals"):RANGE_NAME[data.range];
     const period=data.dates.length?`${dayLabel(data.dates[0])}${data.dates.length>1?` – ${dayLabel(data.dates.at(-1))}`:""}, local time`:coverage;
     const providerScope=chipsHTML(data);
-    const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div>${providerScope}<div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`${data.costPartial?"Priced usage subtotal":"API-equivalent cost estimate"} · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
+    const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div>${providerScope}<div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`API-equivalent cost · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
     const models=data.models;
     // One row per model (long-context variants are merged into it). Seven rows fit beside the chart; beyond that the top six show and the rest sum into one Other row.
     const modelRows=(()=>{if(models.length<=7)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,6).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(6);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other · ${rest.length} models`,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true}];})();
-    // Bars follow the active metric on a square-root scale relative to the largest row, so small models stay visible.
+    // Bars follow the active metric on a linear scale relative to the largest row; a visible row keeps a 2% minimum width.
     // In Cost view a model with no published price gets an empty bar, not a zero-length one that reads as "free".
     const barKey=data.heroKey==="apiEquivalentCost"?"apiEquivalentCost":"tokens";
     const barMax=Math.max(0,...modelRows.map(row=>finite(row[barKey])||0));
     const work=workData(),workView=work!=null&&modelsView()==="work";
     if(workView)return hero+`<section class="dash-lower is-single${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${chartHTML}</section>`+statusHTML;
-    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head">${work?breakdownToggle("models"):"<span>Models</span>"}</div><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">Model</th><th scope="col" aria-label="Relative usage">Usage</th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row" class="dash-model-name ${row.family}"><i></i>${esc(row.name)}${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td>${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':esc(money(row.apiEquivalentCost))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
-    const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
-    const peakCell=value=>value==null?'<span aria-label="Not recorded">—</span>':`${Math.round(value)}%`;
-    const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value!=null&&value>=99.5));
-    const limits=allMaxed?`<div class="dash-limits is-collapsed"><div class="dash-section-label"><span>Highest usage</span><small title="Highest recorded quota usage in this period, not current allowance">Every window reached 100%</small></div></div>`:peaks.length?`<div class="dash-limits"><table class="dash-peaks-table"><caption>Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col" title="Recorded in this period, not the current allowance">Highest usage</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(p=>`<tr><th scope="row" class="${providerKey(p.name)}-color">${esc(p.name)}</th><td>${peakCell(p.fiveHour)}</td><td>${peakCell(p.weekly)}</td></tr>`).join("")}</tbody></table></div>`:"";
+    const modelHTML=models.length?`<div class="dash-model-block">${work?`<div class="dash-section-label dash-model-head">${breakdownToggle("models")}</div>`:""}<table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">Models</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col"><span class="sr-only">Tokens</span></th><th scope="col"><span class="sr-only">Est. cost</span></th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.name)}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td>${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':esc(money(row.apiEquivalentCost))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
+    const limits=limitsHTML(data);
     const activity=statsHTML?`<div class="dash-activity"><div class="dash-section-label"><span>Activity</span></div>${statsHTML}</div>`:"";
     const side=limits||activity?`<div class="dash-side">${limits}${activity}</div>`:"";
     // Models and the side column share one row; the chart runs the full width under both. Without a chart (24h has no hourly series) the row stretches to the panel body.
@@ -459,6 +491,17 @@
       if(focused)requestAnimationFrame(()=>{if(generation===tooltipGeneration&&state.open&&document.activeElement===focused){const box=focused.getBoundingClientRect();show(focused,box.right,box.bottom,"focus");}});
     },true);
     document.addEventListener("keydown",event=>{if(event.key==="Escape")dismissTooltip();});
+    // Escape dismisses a visible tooltip and is consumed so the dashboard stays open. With no tooltip, Escape is left alone.
+    window.addEventListener("keydown",event=>{if(event.key!=="Escape"||!tip.classList?.contains?.("is-visible"))return;dismissTooltip();event.stopPropagation();event.preventDefault();},true);
+    // Roving focus: one point is in the tab order. Arrows move focus (and the tooltip with it); Home and End jump to the ends.
+    root.addEventListener("keydown",event=>{
+      const point=event.target?.closest?.(".dash-point");if(!point)return;
+      const points=[...(point.closest(".dash-chart")?.querySelectorAll(".dash-point")||[])],index=points.indexOf(point);if(index<0)return;
+      const last=points.length-1,next={ArrowLeft:index-1,ArrowRight:index+1,Home:0,End:last}[event.key];
+      if(next==null)return;
+      const target=points[Math.max(0,Math.min(last,next))];event.preventDefault();
+      points.forEach(p=>p.setAttribute("tabindex",p===target?"0":"-1"));target.focus();
+    });
   }
   function bindTooltipsOnce(){if(tooltipBound)return;tooltipBound=true;bindTooltips();}
   function cancelFade(){
@@ -490,7 +533,7 @@
   function syncSegments(){
     document.querySelectorAll("[data-dashboard-range]").forEach(button=>{const active=button.dataset.dashboardRange===state.range;button.classList.toggle("is-active",active);button.setAttribute("aria-pressed",String(active));});
     const unpriced=state.insights!=null&&!costAvailable();
-    document.querySelectorAll("[data-dashboard-metric]").forEach(button=>{const metric=button.dataset.dashboardMetric,active=metric===state.metric,blocked=metric==="cost"&&unpriced;button.classList.toggle("is-active",active);button.classList.toggle("is-unavailable",blocked);button.setAttribute("aria-pressed",String(active));button.setAttribute("aria-disabled",String(blocked));button.title=blocked?"No published pricing for these models":"";});
+    document.querySelectorAll("[data-dashboard-metric]").forEach(button=>{const metric=button.dataset.dashboardMetric,active=metric===state.metric,blocked=metric==="cost"&&unpriced;button.classList.toggle("is-active",active);button.classList.toggle("is-unavailable",blocked);button.setAttribute("aria-pressed",String(active));button.setAttribute("aria-disabled",String(blocked));button.title=blocked?"No priced usage for the shown providers":"";});
   }
   function selectTab(name){
     if(name!=="insights"&&name!=="settings")return;
@@ -533,7 +576,7 @@
   function render(){
     if(!state.open)return;
     const active=document.activeElement,focusData=active?.dataset||{};
-    const insightsKey=[state.version,state.source,state.range,state.metric,state.tab,chartStyle()].join("|");
+    const insightsKey=[state.version,state.source,state.range,state.metric,state.tab,chartStyle(),clockPref()].join("|");
     if(insightsKey!==state.renderKey){dismissTooltip();state.renderKey=insightsKey;const insights=$("#dashboard-insights");if(insights){insights.innerHTML=insightsHTML();let replacement=null;if(focusData.dashboardProvider!=null)replacement=[...insights.querySelectorAll("[data-dashboard-provider]")].find(node=>node.dataset.dashboardProvider===focusData.dashboardProvider);else if(focusData.dashboardRange)replacement=insights.querySelector(`[data-dashboard-range="${focusData.dashboardRange}"]`);else if(focusData.dashboardMetric)replacement=insights.querySelector(`[data-dashboard-metric="${focusData.dashboardMetric}"]`);else if(focusData.dashboardChartStyle)replacement=insights.querySelector(`[data-dashboard-chart-style="${focusData.dashboardChartStyle}"]`);else if(focusData.dashboardModels)replacement=insights.querySelector(`[data-dashboard-models="${focusData.dashboardModels}"]`);replacement?.focus?.();}}
     const settings=$("#dashboard-settings");
     if(settings&&state.tab==="settings"){
@@ -571,13 +614,13 @@
     return await loadInsightsOnce(token,requestRange);
   }
   async function loadInsightsOnce(token,requestRange){
-    state.loading=true;state.loadError=false;updateStatusLine();
+    state.loading=true;state.loadError=false;updateStatusLine();syncRefresh();
     const current=()=>token===state.loadToken;
     const accept=(value,failed=false,unavailable=false)=>{
       // Same range and same content (ignoring the per-response generatedAt stamp): keep the rendered panel and refresh only the status line.
       const content=v=>JSON.stringify({...v,generatedAt:undefined});
       const same=state.insights!=null&&state.resultRange===requestRange&&state.insights.fallback===value.fallback&&content(state.insights)===content(value);
-      state.loading=false;state.loadError=failed;state.insightsUnavailable=unavailable;
+      state.loading=false;state.loadError=failed;state.insightsUnavailable=unavailable;syncRefresh();
       if(same){state.insights.generatedAt=value.generatedAt;updateStatusLine();return value;}
       state.resultRange=requestRange;state.resultValue=value;setInsights(value);state.renderKey="";render();return value;
     };
@@ -602,7 +645,7 @@
       throw new Error("Insights unavailable");
     }catch{
       if(!current())return state.insights;
-      state.loading=false;state.loadError=true;updateStatusLine();return state.insights;
+      state.loading=false;state.loadError=true;updateStatusLine();syncRefresh();return state.insights;
     }
   }
   function setSnapshot(snapshot){
@@ -650,5 +693,6 @@
   window.addEventListener("focus",()=>{if(frameFocused){frameFocused=false;return;}if(state.open&&state.tab==="settings")void loadSettings();});
   async function loadPlacement(){const api=window.pywebview?.api;try{if(typeof api?.get_widget_lock==="function")state.lock=await api.get_widget_lock();if(typeof api?.get_monitors==="function")state.monitors=await api.get_monitors();state.settingsStatus="";state.settingsError=false;}catch{state.lock=null;state.settingsStatus="Widget placement status is unavailable.";state.settingsError=true;}state.settingsRenderKey="";render();}
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
+  window.tokenTrackerDashboardSyncQuota=syncQuota;
   if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,statusText,normalizeStats,emptyHTML,planCellsHTML,planMultiple,storedRange,toggleProvider,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,loadInsightsOnce,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};
 })();
