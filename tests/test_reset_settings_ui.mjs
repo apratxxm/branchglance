@@ -252,14 +252,20 @@ assert.equal(T.state.threads.length,0);
     return {ok:false,status:404,json:async()=>({})};
   }};
   vm.createContext(embeddedContext);vm.runInContext(source,embeddedContext);
-  assert.match(node("#embedded-policy-message").textContent,/Loading permission status/);
+  assert.equal(node("#embedded-policy-message").textContent,"Checking reset permissions…");
+  assert.equal(node("footer").hidden,true,"footer is hidden while permissions load");
+  assert.equal(node("#message").hidden,true,"loading copy is shown once");
+  assert.equal(node("#greet-help").textContent,"");
+  assert.equal(node("#continue-help").textContent,"");
   const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
   await settle();
-  assert.match(node("#embedded-policy-message").textContent,/Unavailable/);
+  assert.equal(node("#embedded-policy-message").textContent,"Couldn't load reset permissions.");
+  for(const selector of ["#modes","#oneshot-note","#message","footer"])assert.equal(node(selector).hidden,true,`${selector} hidden after policy failure`);
+  assert.equal(node("#greet-help").textContent,"");assert.equal(node("#continue-help").textContent,"");
   assert.equal(node("#embedded-policy-retry").hidden,false);
   assert.equal(actionReads,0,"unknown permission state never loads reset actions as Off");
   node("#embedded-policy-retry").onclick();await settle();
-  assert.match(node("#embedded-policy-message").textContent,/Off - Codex collection is off/);
+  assert.match(node("#embedded-policy-message").textContent,/Off: Codex collection is off/);
   assert.equal(node("#embedded-policy-retry").hidden,true);
   assert.equal(actionReads,0,"known Off prerequisite prevents action settings from loading");
   const beforeRefresh=embeddedRequests.length,policiesBefore=policyAttempts;
@@ -267,6 +273,30 @@ assert.equal(T.state.threads.length,0);
   assert.equal(policyAttempts,policiesBefore+1,"Refresh makes one permission request");
   assert.equal(embeddedRequests.slice(beforeRefresh).filter(url=>url==="/api/ledger/status").length,1,"Refresh makes one coordinated ledger request");
   assert.equal(embeddedRequests.slice(beforeRefresh).filter(url=>url==="/api/claude-collection").length,1,"Refresh makes one coordinated Claude status request");
+}
+
+
+// Embedded cancel restores the saved mode without closing the parent; standalone cancel still closes.
+{
+  const nodes=new Map(),node=selector=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  const radios=[{value:"greet",checked:true},{value:"continue",checked:false}];
+  const listeners={},posts=[];
+  const doc={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:node(selector),getElementById:id=>node(`#${id}`),querySelectorAll:()=>[],addEventListener:(type,fn)=>listeners[type]=fn,documentElement:{classList:{add(){}}},body:{classList:{add(){}},dataset:{}}};
+  const win={__RESET_ACTIONS_TEST__:true,location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage:message=>posts.push(message)},history:{replaceState(){}}};
+  const policy={schemaVersion:1,generation:"on",providers:[{name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}}]};
+  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:{mode:"greet",threadIds:[]},threads:[]}:{ok:true}})};
+  vm.createContext(ctx);vm.runInContext(source,ctx);
+  for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(node("footer").hidden,true,"saved mode hides footer");
+  assert.equal(node("#save").textContent,"Save");
+  assert.equal(node("#oneshot-note").textContent,"Runs once at the next quota reset. Saving doesn't send anything.");
+  radios[0].checked=false;radios[1].checked=true;
+  listeners.change({target:{matches:selector=>selector==='input[name="mode"]'}});
+  assert.equal(node("footer").hidden,false,"changed mode shows footer");
+  posts.length=0;node("#cancel").onclick();
+  assert.equal(radios[0].checked,true,"cancel restores saved radio");
+  assert.equal(node("footer").hidden,true);assert.equal(posts.length,0,"cancel sends no parent message");
+  let closed=false;plainWindow.close=()=>{closed=true;};element("#cancel").onclick();assert.equal(closed,true,"standalone cancel closes its window");
 }
 
 // Purge results are per provider and per ticket: Deleted needs an explicit matching done result. Polls are shortened here.
