@@ -1,6 +1,7 @@
 (() => {
   const $ = (s) => document.querySelector(s);
   const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
+  let policyFailed=false;
   if(embedded){document.querySelectorAll("#ledger-history .ledger-row").forEach(row=>row.remove());const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Manage this in the provider settings window.";const ledgerNote=document.getElementById("ledger-note");if(ledgerNote)ledgerNote.textContent="Delete saved usage history in the Manage providers, automation and history window.";const manage=document.getElementById("manage-settings");if(manage)manage.hidden=false;const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="One-shot for the next genuine quota reset. Saving only arms it; nothing is sent now.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
   let settingsToken="";
   try {
@@ -122,9 +123,9 @@
   }
   function updatePermissionCopy() {
     const greet=$("#greet-help"),continuation=$("#continue-help"),note=$("#permission");
-    if(greet)greet.textContent=!state.policyReady?"Checking permission status.":state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.";
-    if(continuation)continuation.textContent=!state.policyReady?"Checking permission status.":state.canContinue?"Queue the exact message “continue” for the next genuine reset.":"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.";
-    if(note)note.textContent=!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue&&!embedded?"Chat continuation requires explicit Codex send permission.":"";
+    if(greet)greet.textContent=!state.policyReady?(policyFailed?"Unavailable until permission status loads.":"Checking permission status."):state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.";
+    if(continuation)continuation.textContent=!state.policyReady?(policyFailed?"Unavailable until permission status loads.":"Checking permission status."):state.canContinue?"Queue the exact message “continue” for the next genuine reset.":"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.";
+    if(note)note.textContent=!state.policyReady?(embedded?"":"Permission status is unavailable. No action settings were loaded."):!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue&&!embedded?"Chat continuation requires explicit Codex send permission.":"";
   }
   function render() {
     const cont=mode()==="continue"; $("#picker").hidden=!cont;
@@ -156,7 +157,7 @@
   }
   function titleFor(id) { return state.threads.find(t=>t.id===id)?.title || id || "Unknown chat"; }
   async function load() {
-    state.busy=true;state.policyReady=false; render(); message("Loading settings…");if(embedded)setEmbeddedState("Loading permission status...");
+    state.busy=true;state.policyReady=false;policyFailed=false; render(); message("Loading settings…");if(embedded)setEmbeddedState("Loading permission status...");
     try {
       const policyResponse=await fetch("/api/provider-policy",{cache:"no-store",signal:AbortSignal.timeout(10000)});
       if(!policyResponse.ok)throw new Error("Permission status is unavailable.");
@@ -178,7 +179,7 @@
       renderEmbeddedPolicy();
       const staleSelection=action?.mode==="continue"&&!reusable;
       message(data.threadsAvailable===false?`${data.error||"Chat list unavailable."} Retry to refresh the list.`:staleSelection?"Saved chat selections were not restored. Re-select chats and save to arm a new one-shot action.":"");
-    } catch(e) { if(!state.policyReady){state.canGreet=false;state.canContinue=false;state.action=null;state.threads=[];state.selected.clear();if(embedded)setEmbeddedState("Unavailable - Permission status could not be loaded.",true);}else if(embedded)setEmbeddedState("Unavailable - Reset action settings could not be loaded.",true);message(e.message||"Could not load settings. Retry to try again.",true); }
+    } catch(e) { if(!state.policyReady){policyFailed=true;state.canGreet=false;state.canContinue=false;state.action=null;state.threads=[];state.selected.clear();if(embedded)setEmbeddedState("Unavailable - Permission status could not be loaded.",true);}else if(embedded)setEmbeddedState("Unavailable - Reset action settings could not be loaded.",true);message(e.message||"Could not load settings. Retry to try again.",true); }
     finally { state.busy=false; render(); }
   }
   async function save() {
@@ -275,6 +276,8 @@
   for(const name of ['live_usage','ledger','claude_send']) $(`[data-feature="${name}"]`)?.addEventListener('change',e=>changeFeature(name,e.target.checked));
   $('#statusline-toggle')?.addEventListener('click',toggleStatusline);
   if(embedded)setEmbeddedState("Loading permission status...");
+  // The parent sizes the frame to this height, so the embedded form never scrolls on its own.
+  if(embedded&&typeof ResizeObserver==="function"){const form=document.querySelector(".settings"),report=()=>window.parent.postMessage({type:"dashboard-reset-height",height:Math.ceil(form.getBoundingClientRect().height)},window.location.origin);new ResizeObserver(report).observe(form);report();}
   loadFeatures();
   load();loadClaude();loadLedger();loadClaudeGreeting();
   if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};

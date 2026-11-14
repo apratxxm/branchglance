@@ -333,7 +333,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-monitor-controls{display:flex;align-items:center;gap:8px;}
 .dashboard-controls #dashboard-refresh{height:26px;padding:0 8px;border:1px solid #636b7a;border-radius:7px;color:var(--d-sub);background:transparent;font:500 12px/1 var(--d-font);cursor:pointer;}
 .dashboard-controls #dashboard-refresh:hover{color:var(--d-ink);background:#ffffff0a;}
-.dash-settings-group .reset-embed{display:block;width:100%;height:250px;min-height:160px;max-height:380px;border:0;overflow:auto;}
+.dash-settings-group .reset-embed{display:block;width:100%;height:250px;min-height:0;max-height:none;border:0;overflow:hidden;}
 .dash-work-cell.is-zero{color:#b7bcc8;font-weight:400;}
 .dash-model-table{display:table;width:100%;border-collapse:collapse;}
 .dash-model-table caption{caption-side:top;text-align:left;}

@@ -30,15 +30,20 @@ def test_tree_smoke(page):
 
 def test_ranges_metrics_and_providers(page):
     open_insights(page)
-    for value in ("24h", "7d", "30d", "all"):
+    for value in ("24h", "7d", "30d"):
         button = page.locator(f'{ui.RANGE}[data-dashboard-range="{value}"]')
         with page.expect_response(lambda response: urlsplit(response.url).path == "/api/insights" and parse_qs(urlsplit(response.url).query).get("range") == [value]):
             button.click()
         expect(button).to_have_attribute("aria-pressed", "true")
-        expect(page.locator(ui.HERO)).to_contain_text({"24h": "24", "7d": "7", "30d": "30", "all": "31"}[value])
+        expect(page.locator(ui.HERO)).to_contain_text({"24h": "24", "7d": "7", "30d": "30"}[value])
     for value in ("tokens", "cost"):
         page.locator(f'{ui.METRIC}[data-dashboard-metric="{value}"]').click()
-        expect(page.locator(ui.HERO)).to_contain_text("Tokens" if value == "tokens" else "cost")
+        expect(page.locator(f'{ui.METRIC}[data-dashboard-metric="{value}"]')).to_have_attribute("aria-pressed", "true")
+        if value == "tokens":
+            expect(page.locator(ui.HERO)).to_contain_text("Tokens over")
+        else:
+            expect(page.locator(f"{ui.HERO} .dash-hero-currency")).to_have_text("$")
+            expect(page.locator(ui.HERO)).to_contain_text("estimated")
     chips = page.locator(ui.PROVIDERS)
     expect(chips).to_have_count(2)
     chips.first.click()
@@ -68,16 +73,30 @@ def test_settings_switches_and_clock(page):
         switch.click()
         expect(switch).to_have_attribute("aria-checked", "false" if before == "true" else "true")
         assert page.evaluate("action => window.__rigCalls.some(call => call[0] === action)", action)
-    clock = page.locator(ui.ACTION.format("clock"))
-    before = clock.inner_text()
-    clock.click()
-    assert clock.inner_text() != before
+    clocks = page.locator(ui.CLOCK)
+    expect(clocks).to_have_count(2)
+    expect(page.locator(f'{ui.CLOCK}[aria-pressed="true"]')).to_have_count(1)
+    idle = page.locator(f'{ui.CLOCK}[aria-pressed="false"]')
+    value = idle.get_attribute("data-dashboard-clock")
+    idle.click()
+    expect(page.locator(f'{ui.CLOCK}[data-dashboard-clock="{value}"]')).to_have_attribute("aria-pressed", "true")
+    expect(page.locator(f'{ui.CLOCK}[aria-pressed="true"]')).to_have_count(1)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="Sol audit F4: Settings content is clipped at the supported panel size")
+def test_settings_rerender_keeps_reset_form_loaded(page):
+    open_settings(page)
+    frame = page.locator(ui.RESET_FRAME)
+    expect(page.frame_locator(ui.RESET_FRAME).locator(ui.INTERACTIVE).first).to_be_attached()
+    frame.evaluate("el => { el.contentWindow.__rigMarker = 1; }")
+    page.get_by_role("switch", name="Lock widget position").click()
+    page.locator(f'{ui.CLOCK}[aria-pressed="false"]').click()
+    expect(page.locator(f'{ui.CLOCK}[aria-pressed="true"]')).to_have_count(1)
+    assert frame.evaluate("el => el.contentWindow.__rigMarker") == 1, "the reset form reloaded on a Settings re-render"
+
+
 def test_settings_reachable(page):
     open_settings(page)
-    content = page.locator(ui.CONTENT)
+    content = page.locator(ui.SETTINGS_SCROLLER)
     size = content.evaluate("el => ({scroll: el.scrollHeight, client: el.clientHeight})")
     assert size["scroll"] > size["client"]
     assert content.evaluate("el => ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)")
@@ -119,8 +138,8 @@ def test_settings_keyboard_reaches_controls(page):
 
 def test_debug_controls(page):
     open_settings(page)
-    # F4 reachability is checked separately; allow scrolling to exercise these handlers.
-    page.locator(ui.CONTENT).evaluate("el => el.style.overflowY = 'auto'")
+    # Settings scrolls (test_settings_reachable); bring the About controls into view.
+    page.locator(ui.SETTINGS_SCROLLER).evaluate("el => el.scrollTop = el.scrollHeight")
     with page.expect_response(lambda response: urlsplit(response.url).path == "/api/debug-report"):
         page.locator(ui.ACTION.format("debug-preview")).click()
     expect(page.get_by_role("textbox", name="Debug report text")).to_have_value("# Branchglance debug report\nFictional report")

@@ -121,3 +121,13 @@ html.settings-embedded::-webkit-scrollbar-thumb,body.settings-embedded::-webkit-
 .settings-embedded #manage-settings{display:inline-block;margin-top:4px;}
 .embedded-policy-state{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 8px;border:1px solid #30394a;border-radius:7px;color:#c0cada;font-size:12px;}
 .embedded-policy-state[hidden],.embedded-policy-state button[hidden]{display:none!important;}
+
+/* Final embedded layout: the parent sizes the frame to this content (dashboard-reset-height), so nothing scrolls inside it.
+   Saved history and Manage live in the parent's Providers group; the parent heading names the group, so the legend is for screen readers. */
+html.settings-embedded,body.settings-embedded{height:auto;min-height:0;overflow:hidden;}
+.settings-embedded .settings{height:auto;min-height:0;padding:0 0 2px;}
+.settings-embedded .ledger-history{display:none;}
+.settings-embedded #modes>legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+.settings-embedded .embedded-policy-state{padding:2px 0;border:0;border-radius:0;color:var(--d-sub);font-size:12px;}
+.settings-embedded .embedded-policy-state .quiet{padding:0 6px;height:24px;border:0;color:var(--d-link);background:transparent;}
+.settings-embedded .embedded-policy-state .quiet:hover{background:#9bb0ff14;}

@@ -402,7 +402,7 @@
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
     const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:state.settingsLoaded?'<p class="dash-setting-note">Version unavailable</p>':"";
     const debug=`<section class="dash-settings-group dash-debug-group" aria-label="About and bug report"><h2>About</h2>${version}<p class="dash-setting-note">Builds a text report with no chat text, file paths, account details or tokens. Review it before sharing.</p><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-preview">Preview</button></div><div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
-    return `<div class="dash-settings-columns">${widget}${providers}<section class="dash-settings-group"><h2>After a Codex quota reset</h2>${reset}</section>${plan}${status}${debug}</div>`;
+    return `<div class="dash-settings-columns">${widget}${providers}<section class="dash-settings-group dash-reset-group"><h2>After a Codex quota reset</h2>${reset}</section>${plan}${status}${debug}</div>`;
   }
   const DEBUG_ISSUE_URL="https://github.com/apratxxm/branchglance/issues/new?template=bug_report.yml";
   const DEBUG_TITLE="# Branchglance debug report";
@@ -538,7 +538,11 @@
     const settings=$("#dashboard-settings");
     if(settings&&state.tab==="settings"){
       const settingsKey=[state.source,JSON.stringify(state.policy),state.identity?.version,state.identity?.build,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.lock?.revision,state.keepOpen?.keepOpenRevision,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
-      if(settingsKey!==state.settingsRenderKey){const focus=document.activeElement,selector=focus?.dataset?.dashboardAction?`[data-dashboard-action="${focus.dataset.dashboardAction}"]`:focus?.dataset?.dashboardClock?`[data-dashboard-clock="${focus.dataset.dashboardClock}"]`:focus?.dataset?.dashboardPlan?`[data-dashboard-plan="${focus.dataset.dashboardPlan}"]`:null,oldFrame=settings.querySelector("iframe.reset-embed");state.settingsRenderKey=settingsKey;const template=document.createElement("template");template.innerHTML=settingsHTML();const newFrame=template.content.querySelector("iframe.reset-embed");if(oldFrame&&newFrame)newFrame.replaceWith(oldFrame);settings.replaceChildren(template.content);state.frame=settings.querySelector("iframe.reset-embed");if(selector)settings.querySelector(selector)?.focus();}
+      if(settingsKey!==state.settingsRenderKey){const focus=document.activeElement,selector=focus?.dataset?.dashboardAction?`[data-dashboard-action="${focus.dataset.dashboardAction}"]`:focus?.dataset?.dashboardClock?`[data-dashboard-clock="${focus.dataset.dashboardClock}"]`:focus?.dataset?.dashboardPlan?`[data-dashboard-plan="${focus.dataset.dashboardPlan}"]`:null,oldGroup=settings.querySelector(".dash-reset-group");state.settingsRenderKey=settingsKey;const template=document.createElement("template");template.innerHTML=settingsHTML();const newGroup=template.content.querySelector(".dash-reset-group"),src=group=>group?.querySelector("iframe.reset-embed")?.getAttribute("src");
+        // Moving an iframe in the DOM reloads it, so a mounted reset form stays where it is and only its siblings are replaced.
+        if(oldGroup&&newGroup&&src(oldGroup)&&src(oldGroup)===src(newGroup)){const keep=oldGroup.parentNode,nodes=[...newGroup.parentNode.childNodes],at=nodes.indexOf(newGroup);[...keep.childNodes].forEach(node=>{if(node!==oldGroup)node.remove();});oldGroup.before(...nodes.slice(0,at));oldGroup.after(...nodes.slice(at+1));}
+        else settings.replaceChildren(template.content);
+        state.frame=settings.querySelector("iframe.reset-embed");if(selector)settings.querySelector(selector)?.focus();}
     }
     bindTooltipsOnce();
     syncSize();
@@ -635,10 +639,15 @@
     if(event.data?.type==="dashboard-open-settings")void window.pywebview?.api?.open_reset_actions?.();
     // The frame reports the Claude Code status; it shows in the "Claude tracking" row, not inside the frame.
     if(event.data?.type==="dashboard-reset-state"){const frame=state.frame;const status=frame?.parentElement?.querySelector(".dash-reset-state");if(status)status.textContent=String(event.data.text||"");}
+    if(event.data?.type==="dashboard-reset-height"){const height=Math.round(Number(event.data.height));if(state.frame&&Number.isFinite(height)&&height>0)state.frame.style.height=`${Math.min(1200,Math.max(24,height))}px`;}
     if(event.data?.type==="dashboard-claude-status"){state.claudeStatus=String(event.data.text||"").slice(0,120);const node=$("#dash-claude-status");if(node)node.textContent=state.claudeStatus;}
   });
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
-  window.addEventListener("focus",()=>{if(state.open&&state.tab==="settings")void loadSettings();});
+  // Focus moving into the embedded reset form blurs this window. Coming back from it is not a return to the app,
+  // so Settings are not reloaded then: the reload would replace the control that keyboard focus is moving to.
+  let frameFocused=false;
+  window.addEventListener("blur",()=>{setTimeout(()=>{frameFocused=!!state.frame&&document.activeElement===state.frame;},0);});
+  window.addEventListener("focus",()=>{if(frameFocused){frameFocused=false;return;}if(state.open&&state.tab==="settings")void loadSettings();});
   async function loadPlacement(){const api=window.pywebview?.api;try{if(typeof api?.get_widget_lock==="function")state.lock=await api.get_widget_lock();if(typeof api?.get_monitors==="function")state.monitors=await api.get_monitors();state.settingsStatus="";state.settingsError=false;}catch{state.lock=null;state.settingsStatus="Widget placement status is unavailable.";state.settingsError=true;}state.settingsRenderKey="";render();}
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
   if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,statusText,normalizeStats,emptyHTML,planCellsHTML,planMultiple,storedRange,toggleProvider,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,loadInsightsOnce,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};

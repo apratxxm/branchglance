@@ -175,27 +175,42 @@ events.click({target:{closest:selector=>selector==="#dashboard-refresh"?{}:null}
 await new Promise(resolve=>globalThis.setTimeout(resolve,0));
 assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
 
-// A Settings preference update moves the same iframe node and restores focus to its initiating control.
+// A Settings preference update keeps the mounted reset iframe in place (moving it would reload it) and restores focus to its initiating control.
 {
-  const frame={contentWindow:{},replaceWith(node){this.replaced=node;}};
+  // A minimal DOM: nodes with ordered children, remove/before/after, and a move counter.
+  const mk=(name,extra={})=>({name,parentNode:null,childNodes:[],moves:0,...extra,
+    remove(){const p=this.parentNode;if(p){p.childNodes.splice(p.childNodes.indexOf(this),1);this.parentNode=null;}},
+    insert(at,nodes){for(const n of nodes){n.remove?.();n.parentNode=this.parentNode;n.moves++;this.parentNode.childNodes.splice(at++,0,n);}},
+    before(...nodes){this.insert(this.parentNode.childNodes.indexOf(this),nodes);},
+    after(...nodes){this.insert(this.parentNode.childNodes.indexOf(this)+1,nodes);}});
+  const frameNode=src=>({getAttribute:name=>name==="src"?src:null});
+  const columns=src=>{const cols=mk("cols"),control={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}};const nodes=[mk("widget",{control}),mk("group",{frame:frameNode(src),querySelector(sel){return sel==="iframe.reset-embed"?this.frame:null;}}),mk("about")];nodes.forEach(n=>{n.parentNode=cols;cols.childNodes.push(n);});return cols;};
+  const find=(cols,name)=>cols?.childNodes.find(n=>n.name===name)||null;
   const root={dataset:{},addEventListener(){}};
   const insightPanel={_html:"",control:null,set innerHTML(value){this._html=value;this.control={dataset:{dashboardProvider:"Codex"},focus(){this.focused=true;}};},querySelectorAll(selector){return selector==="[data-dashboard-provider]"?[this.control]:[];},querySelector(){return null;}};
-  let currentControl={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}};
-  let liveFrame=null;
-  const settings={querySelector(selector){if(selector==="iframe.reset-embed")return liveFrame;if(selector.includes("data-dashboard-action"))return currentControl;return null;},replaceChildren(fragment){liveFrame=fragment.frame;currentControl={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}};}};
+  let cols=null,replaced=0;
+  const settings={querySelector(selector){if(selector===".dash-reset-group")return find(cols,"group");if(selector==="iframe.reset-embed")return find(cols,"group")?.frame||null;if(selector.includes("data-dashboard-action"))return find(cols,"widget")?.control||null;return null;},replaceChildren(fragment){cols=fragment.cols;replaced++;}};
   const docs={activeElement:{dataset:{dashboardProvider:"Codex"}},querySelector(selector){return selector==="#dashboard-settings"?settings:selector==="#dashboard-insights"?insightPanel:selector==="#dashboard-view"?root:null;},querySelectorAll:()=>[],addEventListener(){}};
   const win={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){}};
   const ctx={window:win,document:docs,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://localhost"},fetch:async()=>({ok:false}),setInterval:()=>1,clearInterval(){},requestAnimationFrame:fn=>fn(),Event};
-  docs.createElement=tag=>{assert.equal(tag,"template");const content={frame:{...frame,replaceWith(node){content.frame=node;}},querySelector(selector){return selector==="iframe.reset-embed"?content.frame:null;}};return {content,set innerHTML(_value){}};};
+  docs.createElement=tag=>{assert.equal(tag,"template");const template={content:null,set innerHTML(value){const c=columns((value.match(/src="([^"]+)"/)||[])[1]);template.content={cols:c,querySelector:sel=>sel===".dash-reset-group"?find(c,"group"):sel==="iframe.reset-embed"?find(c,"group")?.frame||null:null};}};return template;};
   vm.createContext(ctx);vm.runInContext(source,ctx);
   const local=win.__tokenTrackerDashboardTest;local.state.open=true;local.state.tab="insights";local.state.range="7d";local.state.insights={range:"7d",providers:[provider("Claude"),provider("Codex")]};
   win.TokenTrackerDashboard.render();
   assert.equal(insightPanel.control.focused,true,"Insights rerender restores focus to the provider chip that triggered it");
   local.state.tab="settings";local.state.settingsLoaded=true;docs.activeElement={dataset:{dashboardAction:"lock"}};local.state.renderKey="";
-  win.TokenTrackerDashboard.render();const mounted=liveFrame;
+  win.TokenTrackerDashboard.render();
+  const mountedGroup=find(cols,"group"),mountedFrame=mountedGroup.frame;
+  assert.equal(replaced,1,"first Settings render mounts the whole panel");
   docs.activeElement={dataset:{dashboardAction:"lock"}};local.state.lock={locked:true};local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
-  assert.equal(liveFrame,mounted,"the reset form iframe remains the same mounted node");
-  assert.equal(currentControl.focused,true,"settings rerender returns focus to the control that triggered it");
+  assert.equal(replaced,1,"a preference update does not replace the panel around the reset form");
+  assert.equal(find(cols,"group"),mountedGroup,"the reset form group remains the same node");
+  assert.equal(mountedGroup.moves,0,"the reset form group is never moved, so its iframe does not reload");
+  assert.equal(settings.querySelector("iframe.reset-embed"),mountedFrame,"the reset form iframe remains the same mounted node");
+  assert.deepEqual(cols.childNodes.map(n=>n.name),["widget","group","about"],"siblings are replaced in their original order");
+  assert.equal(find(cols,"widget").control.focused,true,"settings rerender returns focus to the control that triggered it");
+  local.state.source="Claude";local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
+  assert.equal(replaced,2,"a different reset form source replaces the panel");
 }
 
 // Accepted data stays labeled with its captured range during a later request.
