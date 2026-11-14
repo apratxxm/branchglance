@@ -51,6 +51,45 @@ def request(port, method="GET", body=None, headers=None, origin=True, path="/api
     return response.status, result
 
 
+@pytest.mark.parametrize("path,body", [
+    ("/api/features", {"name": "ledger", "value": True}),
+    ("/api/statusline", {"action": "connect"}),
+])
+@pytest.mark.parametrize("case", ["missing-token", "wrong-origin", "wrong-host"])
+def test_new_mutations_reject_unauthorized_requests(api, path, body, case):
+    server.set_settings_token("test-settings-token")
+    headers = {"X-Branchglance-Settings-Token": "test-settings-token"}
+    if case == "missing-token":
+        headers.clear()
+    elif case == "wrong-origin":
+        headers["Origin"] = "http://foreign.invalid"
+    else:
+        headers["Host"] = "foreign.invalid"
+    status, _ = request(api, "POST", body, headers, path=path)
+    assert status == 403
+
+
+def test_new_mutations_apply_in_temporary_state(api, tmp_path, monkeypatch):
+    from token_tracker import product, statusline_connect, ledger_service
+    monkeypatch.setattr(product, "state_root", lambda: tmp_path / "state")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.delenv("TOKEN_TRACKER_LEDGER", raising=False)
+    monkeypatch.setattr(statusline_connect, "_default_command", lambda: "test-wrapper")
+    monkeypatch.setattr(ledger_service, "_CURRENT", None)
+    monkeypatch.setattr(ledger_service, "_RESTART_PENDING", False)
+    token = "test-settings-token"
+    server.set_settings_token(token)
+    headers = {"X-Branchglance-Settings-Token": token}
+    status, result = request(api, "POST", {"name": "ledger", "value": True}, headers, path="/api/features")
+    assert status == 200 and result["effective"] is True and result["persisted"] is True
+    status, result = request(api, "POST", {"action": "connect"}, headers, path="/api/statusline")
+    assert status == 200 and result["connected"] is True
+    settings = tmp_path / "claude" / "settings.json"
+    assert json.loads(settings.read_text())["statusLine"]["command"] == "test-wrapper"
+    status, result = request(api, "POST", {"action": "disconnect"}, headers, path="/api/statusline")
+    assert status == 200 and not result["connected"] and "statusLine" not in json.loads(settings.read_text())
+
+
 def test_status_get_and_scoped_mutation_token_flow(api, monkeypatch):
     monkeypatch.setattr(claude_collection, "status", lambda: {
         "state": "off", "reason": None, "hooks": {"state": "missing"},
@@ -237,3 +276,26 @@ def test_complete_small_body_denials_loopback_stress(api, monkeypatch, server_er
     assert counts == {"denied": 1000, "other": 0, "exception": 0}, first_exception
     assert server_errors == []
     assert calls == []
+
+
+@pytest.mark.parametrize("path", ["/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge",
+                                  "/api/quota", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"])
+def test_rejected_post_reads_its_small_body_before_replying(path):
+    # Unread request data at close makes the OS reset the connection (seen as
+    # WinError 10053 in the client), so a rejection must consume the body first.
+    import email.message
+    import io
+
+    body = b'{"action": "connect"}'
+    handler = server.Handler.__new__(server.Handler)
+    handler.headers = email.message.Message()
+    handler.headers["Content-Length"] = str(len(body))
+    handler.rfile = io.BufferedReader(io.BytesIO(body))
+    handler.wfile = io.BytesIO()
+    handler.connection = type("Conn", (), {"gettimeout": lambda self: None, "settimeout": lambda self, value: None})()
+    handler.request_version, handler.requestline, handler.command = "HTTP/1.1", "POST " + path, "POST"
+    handler.client_address, handler.path = ("127.0.0.1", 0), path
+    handler.log_message = lambda *args: None
+    handler._reject_post(path, {"ok": False}, 403)
+    assert handler.rfile.read() == b"", "body left unread"
+    assert handler.wfile.getvalue().split(b"\r\n", 1)[0].endswith(b" 403 Forbidden")

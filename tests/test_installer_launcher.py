@@ -29,12 +29,43 @@ HARNESS = r'''using System; using System.IO; using System.Linq; class Harness { 
         Console.Write(status + "|" + ms.ToString(System.Globalization.CultureInfo.InvariantCulture));
         return status == "redirected" ? 10 : status == "unknown" ? 11 : 0; }
     if (a[0] == "request-gate") {
-        Directory.CreateDirectory(a[1]); string id = Guid.NewGuid().ToString("N"); string file = Path.Combine(a[1], ".relaunch-" + id + ".json");
-        long expires = (long)(DateTime.UtcNow - new DateTime(1970,1,1)).TotalSeconds + 30;
-        File.WriteAllText(file, "{\"schemaVersion\":1,\"id\":\"" + id + "\",\"argv\":[\"--background\"],\"hops\":1,\"created\":" + DateTime.UtcNow.Ticks + ",\"expires\":" + expires + ",\"guard\":true}");
-        var request = BranchglanceLauncher.TryConsumeRelaunchRequest(a[1], a[2]);
+        Directory.CreateDirectory(a[1]);
+        string file = BranchglanceLauncher.WriteRelaunchRequest(a[1], new[] { "--background" }, a[3]);
+        var request = BranchglanceLauncher.TryConsumeRelaunchRequest(a[1], a[2], a[3]);
         Console.Write((request == null ? "preserve" : "consume") + "|" + File.Exists(file) + "|" + (request == null ? "no-appdata-ok" : "appdata-ok"));
         return 0; }
+    if (a[0] == "write") { Console.Write(BranchglanceLauncher.WriteRelaunchRequest(a[1], a.Skip(3).ToArray(), a[2])); return 0; }
+    if (a[0] == "consume") { var r = BranchglanceLauncher.TryConsumeRelaunchRequest(a[1], "not_redirected", a[2]);
+        Console.Write(r == null ? "null" : "ok|" + string.Join(",", r.Arguments)); return 0; }
+    if (a[0] == "replay") {
+        string path = BranchglanceLauncher.WriteRelaunchRequest(a[1], new[] { "--background" }, a[2]); byte[] bytes = File.ReadAllBytes(path);
+        var first = BranchglanceLauncher.TryConsumeRelaunchRequest(a[1], "not_redirected", a[2]);
+        using (var s = BranchglanceLauncher.CreateProtectedFile(path)) s.Write(bytes, 0, bytes.Length);
+        var second = BranchglanceLauncher.TryConsumeRelaunchRequest(a[1], "not_redirected", a[2]);
+        Console.Write((first != null) + "|" + (second == null) + "|" + File.Exists(path)); return 0; }
+    if (a[0] == "consume-many") {  // consume-many <state> <root>... : one line per root
+        foreach (var r in a.Skip(2)) { var q = BranchglanceLauncher.TryConsumeRelaunchRequest(r, "not_redirected", a[1]); Console.WriteLine(q == null ? "null" : string.Join(",", q.Arguments)); }
+        return 0; }
+    if (a[0] == "forge") {
+        // forge <signRoot> <state> <lifetimeSeconds> <good|bad> <extraField|-> <padding> <fileRoot> argv...
+        BranchglanceLauncher.WriteRelaunchRequest(a[1], new[] { "--background" }, a[2]);
+        string dir = Path.Combine(a[2], ".branchglance-relaunch");
+        foreach (var f in Directory.GetFiles(dir, ".relaunch-*.json")) File.Delete(f);
+        byte[] key = File.ReadAllBytes(Path.Combine(dir, "relaunch.key"));
+        string id = Guid.NewGuid().ToString("N"); long expires = (long)(DateTime.UtcNow - new DateTime(1970,1,1)).TotalSeconds + long.Parse(a[3]);
+        string[] argv = a.Skip(8).ToArray(); if (int.Parse(a[6]) > 0) argv = argv.Concat(new[] { new string('x', int.Parse(a[6])) }).ToArray();
+        var ms = new MemoryStream(); Action<string> put = v => { var d = System.Text.Encoding.UTF8.GetBytes(v); ms.Write(new[] { (byte)(d.Length >> 24), (byte)(d.Length >> 16), (byte)(d.Length >> 8), (byte)d.Length }, 0, 4); ms.Write(d, 0, d.Length); };
+        put("branchglance-relaunch-v1"); put(System.Security.Principal.WindowsIdentity.GetCurrent().User.Value);
+        put(Path.GetFullPath(a[1]).TrimEnd('\\').ToUpperInvariant()); put(id); put(expires.ToString()); put(argv.Length.ToString()); foreach (var x in argv) put(x);
+        var hmac = new System.Security.Cryptography.HMACSHA256(key); string mac = BitConverter.ToString(hmac.ComputeHash(ms.ToArray())).Replace("-", "").ToLowerInvariant();
+        if (a[4] == "bad") mac = new string(mac[0] == '0' ? '1' : '0', 1) + mac.Substring(1);
+        var record = new System.Collections.Generic.Dictionary<string, object> { { "schemaVersion", 2 }, { "id", id }, { "expires", expires }, { "argv", argv }, { "mac", mac } };
+        if (a[5] != "-") record[a[5]] = 1;
+        var json = System.Text.Encoding.UTF8.GetBytes(new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = 1 << 28 }.Serialize(record));
+        var shaNs = System.Security.Cryptography.SHA256.Create(); string ns = BitConverter.ToString(shaNs.ComputeHash(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(a[7]).TrimEnd('\\').ToUpperInvariant()))).Replace("-", "").ToLowerInvariant().Substring(0, 32);
+        string file = Path.Combine(dir, ".relaunch-" + ns + "-" + id + ".json");
+        using (var s = BranchglanceLauncher.CreateProtectedFile(file)) s.Write(json, 0, json.Length);
+        Console.Write(file); return 0; }
     if (a[0] == "mac") { Console.Write(BranchglanceLauncher.ControlMac(a[1], a[2], a.Skip(3).ToArray())); return 0; }
     if (a[0] == "ask") { Console.Write(BranchglanceLauncher.AskMaintenanceExit(a[1], int.Parse(a[2])) ? "true" : "false"); return 0; }
     if (a[0] == "statusline") { BranchglanceLauncher.HookDeadlineMs = int.Parse(a[1]);
@@ -73,6 +104,17 @@ BLOCKER = r'''using System.Threading; class Blocker { static void Main() { Threa
 
 def _csc(*args):
     subprocess.run([str(CSC), "/nologo", *args], check=True, capture_output=True)
+
+
+def test_release_launcher_omits_test_report(tmp_path):
+    if not CSC.is_file():
+        pytest.skip("in-box .NET Framework csc.exe is unavailable")
+    exe = tmp_path / "Branchglance.exe"
+    _csc("/target:winexe", "/out:" + str(exe), *REFERENCES, str(CS))
+    image = exe.read_bytes()
+    for marker in ("testReport", "TestReport", "--explorer-roundtrip-test"):
+        assert marker.encode("utf-16-le") not in image
+        assert marker.encode("ascii") not in image
 
 
 @pytest.fixture(scope="module")
@@ -165,15 +207,11 @@ def test_csharp_appdata_probe_detects_and_cleans_its_marker_through_junction(lau
 
 def test_redirected_bare_launcher_preserves_concurrent_relaunch_request(launcher, tmp_path):
     _folder, harness = launcher
-    redirected_root = tmp_path / "redirected"
-    result = _probe(harness, ["request-gate", str(redirected_root), "redirected"])
-    assert result.returncode == 0 and result.stdout == "preserve|True|no-appdata-ok"
-    unknown_root = tmp_path / "unknown"
-    unknown = _probe(harness, ["request-gate", str(unknown_root), "unknown"])
-    assert unknown.returncode == 0 and unknown.stdout == "preserve|True|no-appdata-ok"
-    clean_root = tmp_path / "clean"
-    clean = _probe(harness, ["request-gate", str(clean_root), "not_redirected"])
-    assert clean.returncode == 0 and clean.stdout == "consume|False|appdata-ok"
+    for name, state, expected in (("redirected", "redirected", "preserve|True|no-appdata-ok"),
+                                  ("unknown", "unknown", "preserve|True|no-appdata-ok"),
+                                  ("clean", "not_redirected", "consume|False|appdata-ok")):
+        result = _probe(harness, ["request-gate", str(tmp_path / name), state, str(tmp_path / (name + "-state"))])
+        assert result.returncode == 0 and result.stdout == expected, (name, result.stdout, result.stderr)
 
 
 def test_csharp_appdata_probe_detects_redirected_probe_in_plain_package(launcher, tmp_path):
@@ -527,3 +565,154 @@ def test_statusline_job_assignment_fallback_is_quiet(launcher, tmp_path, child_a
     result = subprocess.run([str(harness), 'statusline', '9000', str(tmp_path)], input=b'{}', capture_output=True, timeout=15)
     expected = b'' if child_assignment_fails else b'--statusline|{}'
     assert result.returncode == 0 and result.stdout == expected and result.stderr == b''
+
+
+# ---------------------------------------------------------------- P5: authenticated relaunch requests
+
+TOKEN = "a1b2c3d4e5f6a7b8"
+
+
+def _relaunch(launcher, tmp_path):
+    _folder, harness = launcher
+    return harness, tmp_path / "install", tmp_path / "state"
+
+
+def _consume(harness, root, state):
+    result = _probe(harness, ["consume", str(root), str(state)])
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def _forge(harness, root, state, lifetime="30", mac="good", field="-", padding="0", *argv, file_root=None):
+    result = _probe(harness, ["forge", str(root), str(state), lifetime, mac, field, padding, str(file_root or root), *argv])
+    assert result.returncode == 0, result.stderr
+    return Path(result.stdout)
+
+
+def test_authenticated_request_is_consumed_exactly_once(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    args = ["--install-handoff", TOKEN, "--background", "--recenter"]
+    path = Path(_probe(harness, ["write", str(root), str(state), *args]).stdout)
+    assert path.parent == state / ".branchglance-relaunch" and path.exists()
+    assert _consume(harness, root, state) == "ok|" + ",".join(args)
+    assert not path.exists()
+    assert _consume(harness, root, state) == "null"
+
+
+def test_independently_signed_request_is_accepted_control(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    _forge(harness, root, state, "30", "good", "-", "0", "--background")
+    assert _consume(harness, root, state) == "ok|--background"  # proves the forge helper itself is valid
+
+
+def test_replayed_request_is_rejected(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    result = _probe(harness, ["replay", str(root), str(state)])
+    assert result.returncode == 0 and result.stdout == "True|True|False", result.stderr
+
+
+@pytest.mark.parametrize("lifetime", ["-5", "3600"])
+def test_expired_or_overlong_request_is_rejected(launcher, tmp_path, lifetime):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    path = _forge(harness, root, state, lifetime, "good", "-", "0", "--background")
+    assert _consume(harness, root, state) == "null" and not path.exists()
+
+
+def test_forged_mac_is_rejected_and_discarded(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    path = _forge(harness, root, state, "30", "bad", "-", "0", "--background")
+    assert _consume(harness, root, state) == "null" and not path.exists()
+
+
+def test_request_signed_for_another_install_root_is_rejected(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    _forge(harness, tmp_path / "other-install", state, "30", "good", "-", "0", "--background", file_root=root)
+    assert _consume(harness, root, state) == "null"
+
+
+def test_unknown_field_is_rejected(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    _forge(harness, root, state, "30", "good", "hops", "0", "--background")
+    assert _consume(harness, root, state) == "null"
+
+
+def test_oversize_request_is_rejected_and_discarded(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    path = _forge(harness, root, state, "30", "good", "-", "70000", "--background")
+    assert path.stat().st_size > 64 * 1024
+    assert _consume(harness, root, state) == "null" and not path.exists()
+
+
+@pytest.mark.parametrize("argv", [
+    ["--background", "--evil"], ["--claude-hook"], ["--launcher-appdata-ok"], ["--install-handoff", "zz"],
+    ["--install-handoff"], ["--background", "--background"], ["--redirect-relaunch", "extra"],
+    ["--background"] * 9,
+])
+def test_signed_request_with_unsupported_arguments_is_rejected(launcher, tmp_path, argv):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    _forge(harness, root, state, "30", "good", "-", "0", *argv)
+    assert _consume(harness, root, state) == "null"
+
+
+def test_producer_refuses_unsupported_arguments(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    result = _probe(harness, ["write", str(root), str(state), "--background", "--evil"])
+    assert result.returncode == 1
+    folder = state / ".branchglance-relaunch"
+    assert not folder.exists() or not list(folder.glob(".relaunch-*"))
+
+
+def test_state_directory_key_and_request_grant_only_user_and_system(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    request = Path(_probe(harness, ["write", str(root), str(state), "--background"]).stdout)
+    folder = state / ".branchglance-relaunch"
+    me = subprocess.run(["whoami"], capture_output=True, text=True).stdout.strip().lower()
+    for target in (folder, folder / "relaunch.key", request):
+        out = subprocess.run(["icacls", str(target)], capture_output=True, text=True).stdout
+        entries = [line.lower().replace(str(target).lower(), "").split(":(")[0].strip()
+                   for line in out.splitlines() if ":(" in line]
+        assert entries and all(e in (me, "nt authority\\system") for e in entries), (target, out)
+        assert "(i)" not in out.lower()  # protected: nothing inherited
+
+
+def test_state_directory_with_inheriting_dacl_or_junction_is_refused(launcher, tmp_path):
+    harness, root, state = _relaunch(launcher, tmp_path)
+    (state / ".branchglance-relaunch").mkdir(parents=True)  # default DACL: inherited, not protected
+    assert _probe(harness, ["write", str(root), str(state), "--background"]).returncode == 1
+    shutil.rmtree(state)
+    state.mkdir()
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    link = subprocess.run(["cmd", "/c", "mklink", "/J", str(state / ".branchglance-relaunch"), str(target)], capture_output=True)
+    assert link.returncode == 0
+    assert _probe(harness, ["write", str(root), str(state), "--background"]).returncode == 1
+    assert not list(target.iterdir())
+
+
+def test_two_installs_under_one_state_base_never_consume_each_others_requests(launcher, tmp_path):
+    _folder, harness = launcher
+    state = tmp_path / "state"
+    roots = [tmp_path / "install-a", tmp_path / "install-b"]
+    for order in (roots, roots[::-1]):
+        for index, root in enumerate(roots):
+            assert _probe(harness, ["write", str(root), str(state), "--install-handoff", TOKEN + str(index), "--background"]).returncode == 0
+        for root in order:  # each root sees only its own request, in either consumption order
+            index = roots.index(root)
+            assert _consume(harness, root, state) == f"ok|--install-handoff,{TOKEN}{index},--background"
+            assert _consume(harness, root, state) == "null"
+    # A request for the other install is neither claimed nor deleted by this one.
+    other = Path(_probe(harness, ["write", str(roots[1]), str(state), "--background"]).stdout)
+    assert _consume(harness, roots[0], state) == "null" and other.exists()
+    assert _consume(harness, roots[1], state) == "ok|--background" and not other.exists()
+
+
+def test_two_installs_consuming_concurrently_keep_exact_arguments(launcher, tmp_path):
+    _folder, harness = launcher
+    state = tmp_path / "state"
+    roots = [tmp_path / f"install-{n}" for n in range(4)]
+    for index, root in enumerate(roots):
+        assert _probe(harness, ["write", str(root), str(state), "--install-handoff", TOKEN + str(index)]).returncode == 0
+    procs = [subprocess.Popen([str(harness), "consume", str(root), str(state)], stdout=subprocess.PIPE, text=True) for root in roots]
+    outputs = [p.communicate(timeout=30)[0] for p in procs]
+    assert outputs == [f"ok|--install-handoff,{TOKEN}{index}" for index in range(4)]
+    assert [_consume(harness, root, state) for root in roots] == ["null"] * 4

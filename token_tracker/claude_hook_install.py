@@ -18,6 +18,7 @@ Safety rules:
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -33,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import claude_hook
+from .product import claude_config_dir, claude_config_override
 
 MARKER = "--branchglance-hook"
 HOOK_TIMEOUT_SECONDS = 10  # Claude Code's own bound; the hook also self-exits sooner
@@ -65,12 +67,6 @@ class _SettingsSnapshot:
     def matches(self, other: "_SettingsSnapshot") -> bool:
         return (self.raw == other.raw and self.digest == other.digest and self.mtime_ns == other.mtime_ns
                 and self.device == other.device and self.inode == other.inode and self.size == other.size)
-
-
-def claude_config_dir(home: Path | None = None) -> Path:
-    """Resolve Claude's user configuration, retaining the legacy override priority."""
-    configured = os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(configured) if configured else (home or Path.home()) / ".claude"
 
 
 def default_settings_path() -> Path:
@@ -318,6 +314,26 @@ def _read(path: Path) -> tuple[bytes | None, dict[str, Any], bool]:
     return snapshot.raw, data, bom
 
 
+def preflight_statusline_connect(settings_path: str | os.PathLike[str] | None = None) -> None:
+    """Refuse chaining until Claude Code's shell invocation can be reproduced.
+
+    This preflight does not connect a status line or write any files. An absent
+    statusLine is safe to proceed with; callers must still perform their own
+    guarded, conflict-checked write.
+    """
+    path = Path(settings_path) if settings_path is not None else claude_config_dir() / "settings.json"
+    try:
+        _, data, _ = _read_versioned(path)
+    except _ConcurrentSettingsEdit:
+        raise HookInstallError("settings.json changed while reading; connect refused") from None
+    if "statusLine" in data:
+        raise HookInstallError(
+            "Cannot safely chain the existing status line because Claude Code's shell "
+            "invocation could not be established. Keep the current status line and "
+            "configure the Branchglance helper manually instead."
+        )
+
+
 def _serialize(data: dict[str, Any], bom: bool, original: bytes | None = None) -> bytes:
     if original is None:
         indent, compact, newline, trailing_newline, ensure_ascii = 2, False, "\n", True, False
@@ -420,6 +436,51 @@ def _replace_with_retry(temp: Path, path: Path, expected: _SettingsSnapshot) -> 
             time.sleep(0.025 * (retry + 1))
 
 
+def _json_equal(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(_json_equal(left[k], right[k]) for k in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(_json_equal(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def _verify_only_owned_changed(before: dict[str, Any], payload: bytes, known: frozenset[str]) -> None:
+    try:
+        after = json.loads(payload.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        raise HookInstallError("internal check failed: edited settings are not valid JSON; nothing was written") from None
+    if not isinstance(after, dict):
+        raise HookInstallError("internal check failed: edited settings are not an object; nothing was written")
+    hooks = after.get("hooks", {})
+    if (not isinstance(hooks, dict) or any(
+            not isinstance(groups, list) or any(
+                not isinstance(group, dict) or not isinstance(group.get("hooks"), list)
+                or any(not isinstance(hook, dict) for hook in group["hooks"])
+                for group in groups)
+            for groups in hooks.values())):
+        raise HookInstallError("internal check failed: edited hooks have an invalid shape; nothing was written")
+    if not _json_equal({k: v for k, v in before.items() if k != "hooks"},
+                       {k: v for k, v in after.items() if k != "hooks"}):
+        raise HookInstallError("internal check failed: a non-hook setting would change; nothing was written")
+    old_hooks = before.get("hooks") or {}
+    for event in old_hooks.keys() | hooks.keys():
+        old_groups = [group for group in old_hooks.get(event, []) if not is_ours(group, known)]
+        new_groups = [group for group in hooks.get(event, []) if not is_ours(group, known)]
+        if not _json_equal(old_groups, new_groups):
+            raise HookInstallError("internal check failed: a user-owned hook would change; nothing was written")
+
+
+def _guarded(transform, known: frozenset[str]):
+    def run(data, bom, original):
+        payload = transform(copy.deepcopy(data), bom, original)
+        if payload is not None:
+            _verify_only_owned_changed(data, payload, known)
+        return payload
+    return run
+
+
 def _write_transform_checked(path: Path, transform, now: float) -> str | None:
     """Apply a transform only to a stable, freshly rechecked snapshot."""
     saw_existing = False
@@ -489,6 +550,11 @@ def _write_consent(data_directory: str | os.PathLike[str] | None, now: float, co
     marker.write_text(json.dumps({"version": 1, "enabled": True, "createdAt": round(now, 3),
                                   "executable": _executable_of(command),
                                   "settingsPath": str(settings_path)}), encoding="utf-8")
+
+
+def _legacy_claude_home_set() -> bool:
+    """Legacy uninstall guard only: CLAUDE_HOME is not a config location and is never resolved."""
+    return bool(os.environ.get("CLAUDE_HOME"))
 
 
 def _recorded_settings_path(data_directory: str | os.PathLike[str] | None) -> tuple[str, Path | None]:
@@ -580,7 +646,7 @@ def install(settings_path: str | os.PathLike[str] | None = None, command: str | 
             changed = True
         return _serialize(data, bom, original) if changed else None
 
-    backup = _write_transform_checked(path, ensure_hooks, now)
+    backup = _write_transform_checked(path, _guarded(ensure_hooks, known), now)
     try:
         _write_consent(data_directory, now, command, canonical_path)
     except OSError as exc:
@@ -609,10 +675,11 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
     now = time.time() if now is None else now
     marker_present = _consent_file(data_directory).exists()
     provenance, path = _recorded_settings_path(data_directory) if marker_present else ("absent", None)
-    if provenance == "legacy" and not (os.environ.get("CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR")):
+    if provenance == "legacy" and claude_config_override() is None and not _legacy_claude_home_set():
         # Consent written before the target was recorded: those installs used
-        # ~/.claude unless CLAUDE_HOME was set, so with no override now that is
-        # the only file they can have edited.
+        # ~/.claude unless a config override was set, so with no override now
+        # that is the only file they can have edited. CLAUDE_HOME, which older
+        # releases honoured, may have pointed them elsewhere: refuse to guess.
         path = Path(settings_path) if settings_path is not None else default_settings_path()
     known = _known_executables(data_directory, command)  # read before the marker is removed
     consent_removed = _remove_consent(data_directory)
@@ -649,7 +716,7 @@ def uninstall(settings_path: str | os.PathLike[str] | None = None,
                 data.pop("hooks", None)
             return _serialize(data, bom, original) if changed else None
 
-        backup = _write_transform_checked(path, remove_owned, now)
+        backup = _write_transform_checked(path, _guarded(remove_owned, known), now)
     except HookInstallError as exc:
         left = _hooks_left(path, known)
         result.update(ok=False, error=str(exc), hooksLeft=left if left is not None else "unknown")

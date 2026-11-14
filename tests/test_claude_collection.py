@@ -323,3 +323,24 @@ def test_development_without_policy_file_is_unavailable(setup_paths, monkeypatch
     assert status["state"] == "unavailable"
     assert status["reason"] == "development build has no policy file"
     assert collection.enable()["ok"] is False
+
+
+@pytest.mark.parametrize("os_name", ["nt", "posix"])
+def test_same_file_uses_a_change_stamp_that_path_and_handle_stats_agree_on(monkeypatch, os_name):
+    # Python 3.12+ on Windows: a path stat and a handle stat of one unchanged file
+    # differ in st_ctime_ns but agree on st_birthtime_ns.
+    from types import SimpleNamespace
+    monkeypatch.setattr(collection, "os", SimpleNamespace(name=os_name))
+    base = dict(st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4)
+    path_stat = SimpleNamespace(**base, st_ctime_ns=10, st_birthtime_ns=7)
+    handle_stat = SimpleNamespace(**base, st_ctime_ns=11, st_birthtime_ns=7)
+    replaced = SimpleNamespace(**base, st_ctime_ns=10, st_birthtime_ns=8)
+    assert collection._same_file(path_stat, handle_stat) is (os_name == "nt")
+    assert collection._same_file(path_stat, replaced) is (os_name != "nt")
+    # Without a birth time (Windows before 3.12) the change time still decides.
+    old_path = SimpleNamespace(**base, st_ctime_ns=10)
+    assert collection._same_file(old_path, SimpleNamespace(**base, st_ctime_ns=10))
+    assert not collection._same_file(old_path, SimpleNamespace(**base, st_ctime_ns=11))
+    for field in base:
+        assert not collection._same_file(path_stat, SimpleNamespace(**{**base, field: 99}, st_ctime_ns=10,
+                                                                     st_birthtime_ns=7))

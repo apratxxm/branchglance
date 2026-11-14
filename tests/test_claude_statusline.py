@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from token_tracker import claude_statusline as statusline
 
@@ -10,6 +11,42 @@ def sample(used, reset=2000):
 def test_parser_rejects_invalid_values():
     for value in (None, True, "20", -1, 101, float("nan")):
         assert statusline.parse(sample(value), now=1000) == {}
+
+
+def test_live_usage_parser_preserves_nulls_and_rejects_conflicting_limits(tmp_path):
+    reset = "1970-01-01T00:33:20Z"
+    payload = {"five_hour": {"utilization": 20, "resets_at": reset},
+               "seven_day": {"utilization": None, "resets_at": reset},
+               "limits": [{"kind": "session", "percent": 80, "resets_at": reset},
+                          {"kind": "weekly_scoped", "percent": 100, "resets_at": reset}]}
+    fixture = tmp_path / "usage.json"
+    fixture.write_text(json.dumps(payload), encoding="utf-8")
+    parsed = statusline.parse_live_usage(json.loads(fixture.read_text(encoding="utf-8")), observed_at=1000)
+    assert parsed["five_hour"]["used_percentage"] == 20
+    assert parsed["five_hour"]["receivedAt"] == 1000
+    assert parsed["five_hour"]["actionUsable"] is False
+    assert parsed["five_hour"]["crossCheckPassed"] is False
+    assert parsed["seven_day"]["used_percentage"] is None
+    assert parsed["seven_day"]["actionUsable"] is False
+
+
+def test_live_usage_parser_rejects_invalid_values_and_naive_resets(tmp_path):
+    for value in (True, "20", -1, 101, float("nan"), float("inf")):
+        assert statusline.parse_live_usage({"five_hour": {"utilization": value,
+                                                         "resets_at": "1970-01-01T00:33:20Z"}}, observed_at=1000) == {}
+    assert statusline.parse_live_usage({"five_hour": {"utilization": 20,
+                                                     "resets_at": "1970-01-01T00:33:20"}}, observed_at=1000) == {}
+
+
+def test_live_usage_parser_keeps_fresh_partial_observation_separate(tmp_path):
+    payload = {"five_hour": {"utilization": 20, "resets_at": "1970-01-01T00:33:20Z"},
+               "seven_day": None,
+               "limits": [{"kind": "session", "percent": 20, "resets_at": "1970-01-01T00:33:20+00:00"}]}
+    parsed = statusline.parse_live_usage(payload, observed_at=1100)
+    assert set(parsed) == {"five_hour"}
+    assert parsed["five_hour"]["receivedAt"] == 1100
+    assert parsed["five_hour"]["crossCheckPassed"] is True
+    assert parsed["five_hour"]["actionUsable"] is False
 
 
 def test_unchanged_or_lower_usage_does_not_refresh(tmp_path):
@@ -31,6 +68,33 @@ def test_writer_projects_only_limits(tmp_path):
 def empty_desktop():
     return {"fiveHour": None, "weekly": None, "fiveHourPercent": None,
             "weeklyPercent": None, "observedAt": None}
+
+
+def test_choose_equal_usage_prefers_newer_observation_in_either_order():
+    old = {"used_percentage": 43, "resets_at": 2000, "receivedAt": 1000}
+    new = {"used_percentage": 43, "resets_at": 2060, "receivedAt": 1100}
+    assert statusline.choose(old, new, 1100) is new
+    assert statusline.choose(new, old, 1100) is new
+    higher = {"used_percentage": 44, "resets_at": 2000, "receivedAt": 900}
+    assert statusline.choose(higher, new, 1100) is higher
+    assert statusline.choose(new, higher, 1100) is higher
+    later_window = {"used_percentage": 1, "resets_at": 2061, "receivedAt": 900}
+    assert statusline.choose(old, later_window, 1100) is later_window
+    assert statusline.choose(later_window, old, 1100) is later_window
+
+
+def test_cli_store_is_bound_to_desktop_org(tmp_path):
+    windows = statusline.parse(sample(22), now=1000)
+    fingerprint = "a" * 64
+    statusline.write(windows, tmp_path, now=1000, filename=statusline.CLI_FILENAME,
+                     source="claude-cli", org_id="org-a", identity_generation="epoch-a", identity_fingerprint=fingerprint)
+    cli_path = tmp_path / statusline.CLI_FILENAME
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-a", cli_path=cli_path, identity_generation="epoch-a", identity_fingerprint=fingerprint)["fiveHourPercent"] == 22
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-b", cli_path=cli_path)["fiveHourPercent"] is None
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, cli_path=cli_path)["fiveHourPercent"] is None
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id=" ", cli_path=cli_path)["fiveHourPercent"] is None
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-a", cli_path=cli_path, identity_generation="epoch-b", identity_fingerprint=fingerprint)["fiveHourPercent"] == 22
+    assert statusline.merge_usage(empty_desktop(), [], now=1000, org_id="org-b", cli_path=cli_path, identity_generation="epoch-a", identity_fingerprint="b" * 64)["fiveHourPercent"] is None
 
 
 def test_parser_schema_and_reset_edges():
@@ -113,8 +177,8 @@ def test_expired_statusline_cannot_fall_back_to_history(tmp_path, monkeypatch):
     monkeypatch.setattr(statusline, 'sample_paths', lambda: [root / statusline.FILENAME])
     monkeypatch.setattr(statusline.time, 'time', lambda: 1100)
     monkeypatch.setattr(providers.ClaudeDesktopProvider, '_usage', lambda self: ([], {'u': {'fh': 80}}))
-    monkeypatch.setattr(providers.ClaudeDesktopProvider, '_reset_at', lambda self: 5000)
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **k: empty_desktop())
+    monkeypatch.setattr(providers.ClaudeDesktopProvider, '_reset_at', lambda self: pytest.fail('Desktop reset must not be read'), raising=False)
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **k: pytest.fail('Desktop limits must not be read'), raising=False)
     snapshot = providers.ClaudeLimitsProvider(str(tmp_path)).snapshot()
     assert snapshot['fiveHour']['percent'] is None
     assert snapshot['fiveHour']['resetAt'] is None
@@ -151,9 +215,9 @@ def test_snapshot_preserves_desktop_cache_anti_rollback(tmp_path, monkeypatch):
     monkeypatch.setattr(providers.time, 'time', lambda: 1100)
     items = iter([{**empty_desktop(), 'fiveHour': 2000, 'fiveHourPercent': 70, 'observedAt': 1050},
                   {**empty_desktop(), 'fiveHour': 2000, 'fiveHourPercent': 30, 'observedAt': 1000}])
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: next(items))
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: pytest.fail('Desktop limits must not be read'), raising=False)
     provider = providers.ClaudeLimitsProvider(str(tmp_path))
-    assert [provider.snapshot()['fiveHour']['percent'] for _ in range(2)] == [70, 70]
+    assert [provider.snapshot()['fiveHour']['percent'] for _ in range(2)] == [None, None]
 
 
 def test_blocked_stdin_exits_with_deadline(tmp_path):
@@ -314,13 +378,13 @@ def test_snapshot_keeps_later_unknown_window_through_rollback_guard(tmp_path, mo
     items = iter([{**empty_desktop(), 'fiveHour': 2000, 'fiveHourPercent': 70, 'observedAt': 1050},
                   {**empty_desktop(), 'fiveHour': 3000, 'fiveHourPercent': None, 'observedAt': 1060},
                   {**empty_desktop(), 'fiveHour': 2000, 'fiveHourPercent': 80, 'observedAt': 1090}])
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: next(items))
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: pytest.fail('Desktop limits must not be read'), raising=False)
     provider = providers.ClaudeLimitsProvider(str(tmp_path))
-    assert provider.snapshot()['fiveHour']['percent'] == 70
+    assert provider.snapshot()['fiveHour']['percent'] is None
     later = provider.snapshot()['fiveHour']
-    assert later['resetAt'] == 3000 and later['percent'] is None
+    assert later['resetAt'] is None and later['percent'] is None
     replay = provider.snapshot()['fiveHour']
-    assert replay['resetAt'] == 3000 and replay['percent'] is None
+    assert replay['resetAt'] is None and replay['percent'] is None
 
 
 def test_snapshot_never_lowers_same_window_on_newer_desktop_response(tmp_path, monkeypatch):
@@ -331,9 +395,9 @@ def test_snapshot_never_lowers_same_window_on_newer_desktop_response(tmp_path, m
     monkeypatch.setattr(providers.time, 'time', lambda: 1100)
     items = iter([{**empty_desktop(), 'fiveHour': 2000, 'fiveHourPercent': 70, 'observedAt': 1000},
                   {**empty_desktop(), 'fiveHour': 2000, 'fiveHourPercent': 30, 'observedAt': 1090}])
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: next(items))
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: pytest.fail('Desktop limits must not be read'), raising=False)
     provider = providers.ClaudeLimitsProvider(str(tmp_path))
-    assert [provider.snapshot()['fiveHour']['percent'] for _ in range(2)] == [70, 70]
+    assert [provider.snapshot()['fiveHour']['percent'] for _ in range(2)] == [None, None]
 
 
 def test_lock_substitution_after_path_check_is_not_followed(tmp_path, monkeypatch):
@@ -382,10 +446,10 @@ def test_initial_unknown_window_blocks_older_replay(tmp_path, monkeypatch):
     monkeypatch.setattr(providers.time, 'time', lambda: 1100)
     values = iter([{**empty_desktop(), 'fiveHour': 3000, 'fiveHourPercent': None, 'observedAt': 1000},
                    {**empty_desktop(), 'fiveHour': 2000, 'fiveHourPercent': 80, 'observedAt': 1090}])
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: next(values))
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: pytest.fail('Desktop limits must not be read'), raising=False)
     provider = providers.ClaudeLimitsProvider(str(tmp_path))
     first, second = [provider.snapshot()['fiveHour'] for _ in range(2)]
-    assert first['resetAt'] == second['resetAt'] == 3000
+    assert first['resetAt'] is second['resetAt'] is None
     assert first['percent'] is second['percent'] is None
 
 
@@ -401,13 +465,13 @@ def test_weekly_refresh_cannot_erase_stale_five_hour_watermark(tmp_path, monkeyp
         {**empty_desktop(), 'fiveHour': 5000, 'fiveHourPercent': None, 'weekly': 90000, 'weeklyPercent': 20, 'observedAt': 1601},
         {**empty_desktop(), 'fiveHour': 5000, 'fiveHourPercent': 30, 'weekly': 90000, 'weeklyPercent': 30, 'observedAt': 1602},
     ])
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: next(values))
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: pytest.fail('Desktop limits must not be read'), raising=False)
     provider = providers.ClaudeLimitsProvider(str(tmp_path))
     got = []
     for moment in (1000, 1601, 1602):
         now[0] = moment
         got.append(provider.snapshot()['fiveHour']['percent'])
-    assert got == [70, None, None]
+    assert got == [None, None, None]
 
 
 def test_full_provider_timestamps_merged_usage_not_history(tmp_path, monkeypatch):
@@ -417,7 +481,7 @@ def test_full_provider_timestamps_merged_usage_not_history(tmp_path, monkeypatch
     monkeypatch.setattr(statusline, 'sample_paths', lambda: [root / statusline.FILENAME])
     monkeypatch.setattr(providers.time, 'time', lambda: 1100)
     monkeypatch.setattr(providers.ClaudeDesktopProvider, '_usage', lambda self: ([], {}))
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: empty_desktop())
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: pytest.fail('Desktop limits must not be read'), raising=False)
     provider = providers.ClaudeDesktopProvider(str(tmp_path))
     monkeypatch.setattr(provider, '_transcript_usage', lambda: {'totals': dict.fromkeys(('input_tokens','cached_tokens','cache_5m_tokens','cache_1h_tokens','output_tokens','total_tokens'), 0), 'models': {}, 'daily': {}, 'sessions': []})
     monkeypatch.setattr(provider, '_chats', lambda sessions: [])
@@ -433,10 +497,10 @@ def test_full_provider_mixed_history_and_live_uses_older_actual_timestamp(tmp_pa
     monkeypatch.setattr(statusline, 'sample_paths', lambda: [root / statusline.FILENAME])
     monkeypatch.setattr(providers.time, 'time', lambda: 1100)
     monkeypatch.setattr(providers.ClaudeDesktopProvider, '_usage', lambda self: ([], {'u': {'sd': 20}, 't': 1000000}))
-    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: empty_desktop())
+    monkeypatch.setattr(providers, 'usage_info', lambda *a, **kw: pytest.fail('Desktop limits must not be read'), raising=False)
     provider = providers.ClaudeDesktopProvider(str(tmp_path))
     monkeypatch.setattr(provider, '_transcript_usage', lambda: {'totals': dict.fromkeys(('input_tokens','cached_tokens','cache_5m_tokens','cache_1h_tokens','output_tokens','total_tokens'), 0), 'models': {}, 'daily': {}, 'sessions': []})
     monkeypatch.setattr(provider, '_chats', lambda sessions: [])
     snap = provider.snapshot()
-    assert snap['fiveHour']['percent'] == 70 and snap['weekly']['percent'] == 20
-    assert snap['limitsUpdatedAt'] == '1970-01-01T00:16:40+00:00'
+    assert snap['fiveHour']['percent'] == 70 and snap['weekly']['percent'] is None
+    assert snap['limitsUpdatedAt'] == '1970-01-01T00:18:20+00:00'

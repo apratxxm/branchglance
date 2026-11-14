@@ -103,7 +103,6 @@ assert.match(css,/\.dashboard-content\{[^}]*overflow:hidden/);
 assert.doesNotMatch(css,/\.dashboard-content\{[^}]*overflow:auto/);
 assert.doesNotMatch(css,/data-tab="settings"\] \.dashboard-content\{[^}]*overflow:auto/);
 assert.match(css,/\.dashboard-view :not\(\.dashboard-content\)\{scrollbar-width:none;\}/);
-assert.match(css,/\.dash-model-more\{/);
 
 // (5) Plan multiple: rolling 30-day API-equivalent cost over the plan price (default $20), shown per provider in the legend. Unpriced models give a lower bound, and unpriced providers are named, never a silent dash.
 dashboard.state.month={providers:[

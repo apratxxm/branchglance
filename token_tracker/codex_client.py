@@ -62,7 +62,7 @@ def _package_manager(root: Path, lexical_root: Path) -> str:
     return "NPM"
 
 
-def resolve_codex() -> CodexExecutable | None:
+def resolve_codex(executable: str | None = None) -> CodexExecutable | None:
     """Resolve an absolute native Codex executable without searching cwd."""
     cwd = Path.cwd().resolve()
 
@@ -76,6 +76,27 @@ def resolve_codex() -> CodexExecutable | None:
             return resolved
         except (OSError, RuntimeError):
             return None
+
+    if executable is not None:
+        path = Path(executable)
+        # An override is a native executable, never a shell script or shim.
+        if path.suffix.lower() in {".cmd", ".bat", ".ps1"} or (os.name == "nt" and path.suffix.lower() != ".exe"):
+            return None
+        found = safe(path)
+        if found is None or found.suffix.lower() in {".cmd", ".bat", ".ps1"}:
+            return None
+        if os.name == "nt" and found.suffix.lower() != ".exe":
+            return None
+        for ancestor in found.parents:
+            root = (ancestor.parent / "codex" if ancestor.name.startswith("codex-win32-")
+                    else ancestor)
+            if safe(root / "bin" / "codex.js") is not None:
+                try:
+                    canonical_root = root.resolve(strict=True)
+                    return CodexExecutable(str(found), str(canonical_root), _package_manager(canonical_root, root))
+                except (OSError, RuntimeError):
+                    return None
+        return CodexExecutable(str(found))
 
     machine = platform.machine().lower()
     targets = {"arm64": ("arm64", "aarch64-pc-windows-msvc"), "aarch64": ("arm64", "aarch64-pc-windows-msvc"),
@@ -92,7 +113,7 @@ def resolve_codex() -> CodexExecutable | None:
         except (OSError, RuntimeError):
             continue
         found = safe(directory / "codex.exe")
-        if found:
+        if found and found.suffix.lower() == ".exe":
             return CodexExecutable(str(found))
         # Only recognize the npm package layout beside an npm shim; never run it.
         if not target:
@@ -126,7 +147,7 @@ def resolve_codex() -> CodexExecutable | None:
             vendor = canonical_root / "vendor"
         if vendor is not None:
             found = safe(vendor / triple / "bin" / "codex.exe")
-            if found:
+            if found and found.suffix.lower() == ".exe":
                 return CodexExecutable(str(found), str(canonical_root), _package_manager(canonical_root, root))
 
     local = os.environ.get("LOCALAPPDATA", "")
@@ -137,13 +158,228 @@ def resolve_codex() -> CodexExecutable | None:
     candidates.append(Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe")
     for candidate in candidates:
         found = safe(candidate)
-        if found:
+        if found and found.suffix.lower() == ".exe":
             return CodexExecutable(str(found))
     return None
 
 
 class CodexUnavailable(RuntimeError):
     pass
+
+
+class CodexNotStarted(OSError):
+    """The child did not execute and therefore could not deliver a message."""
+
+
+def run_contained_codex(resolved: CodexExecutable, args: list[str], *, timeout: float,
+                        cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """Run a short delivery inside a kill-on-close job before it can execute."""
+    command = [resolved.path, *args]
+    started = False
+
+    def mark_started() -> None:
+        nonlocal started
+        started = True
+
+    try:
+        return _run_contained_codex(resolved, args, timeout=timeout, cwd=cwd, env=env,
+                                    mark_started=mark_started)
+    except subprocess.TimeoutExpired as exc:
+        if not started:
+            raise CodexNotStarted(str(exc)) from exc
+        raise
+    except Exception as exc:
+        if started:
+            raise subprocess.TimeoutExpired(command, timeout) from exc
+        raise CodexNotStarted(str(exc)) from exc
+
+
+def _run_contained_codex(resolved: CodexExecutable, args: list[str], *, timeout: float,
+                         cwd: Path | None, env: dict[str, str] | None,
+                         mark_started: Any) -> subprocess.CompletedProcess:
+    command = [resolved.path, *args]
+    child_env = resolved.environment() or os.environ.copy()
+    if env:
+        child_env.update(env)
+    if os.name != "nt":
+        proc = subprocess.Popen(command, cwd=cwd, env=child_env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False)
+        mark_started()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+    import ctypes
+    from ctypes import wintypes as wt
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in
+                    ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                     "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class BASIC_LIMIT(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wt.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wt.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wt.DWORD), ("SchedulingClass", wt.DWORD)]
+
+    class EXTENDED_LIMIT(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BASIC_LIMIT), ("IoInfo", IO_COUNTERS),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wt.HANDLE
+    kernel.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    kernel.SetInformationJobObject.restype = wt.BOOL
+    kernel.CloseHandle.argtypes = [wt.HANDLE]
+    kernel.CloseHandle.restype = wt.BOOL
+    job = kernel.CreateJobObjectW(None, None)  # default security attributes: non-inheritable
+    if not job:
+        raise OSError(ctypes.get_last_error(), "could not create containment job")
+    try:
+        limits = EXTENDED_LIMIT()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise OSError(ctypes.get_last_error(), "could not configure containment job")
+        return _windows_process_in_job(kernel, job, command, cwd, child_env, timeout, mark_started)
+    finally:
+        kernel.CloseHandle(job)
+
+
+def _windows_process_in_job(kernel: Any, job: Any, command: list[str], cwd: Path | None,
+                            env: dict[str, str], timeout: float, mark_started: Any) -> subprocess.CompletedProcess:
+    """Create a process atomically assigned to the job using STARTUPINFOEX."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes as wt
+
+    class STARTUPINFO(ctypes.Structure):
+        _fields_ = [("cb", wt.DWORD), ("lpReserved", wt.LPWSTR), ("lpDesktop", wt.LPWSTR),
+                    ("lpTitle", wt.LPWSTR), ("dwX", wt.DWORD), ("dwY", wt.DWORD),
+                    ("dwXSize", wt.DWORD), ("dwYSize", wt.DWORD), ("dwXCountChars", wt.DWORD),
+                    ("dwYCountChars", wt.DWORD), ("dwFillAttribute", wt.DWORD), ("dwFlags", wt.DWORD),
+                    ("wShowWindow", wt.WORD), ("cbReserved2", wt.WORD),
+                    ("lpReserved2", ctypes.c_void_p), ("hStdInput", wt.HANDLE),
+                    ("hStdOutput", wt.HANDLE), ("hStdError", wt.HANDLE)]
+
+    class STARTUPINFOEX(ctypes.Structure):
+        _fields_ = [("StartupInfo", STARTUPINFO), ("lpAttributeList", ctypes.c_void_p)]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [("hProcess", wt.HANDLE), ("hThread", wt.HANDLE),
+                    ("dwProcessId", wt.DWORD), ("dwThreadId", wt.DWORD)]
+
+    kernel.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wt.DWORD, wt.DWORD, ctypes.POINTER(ctypes.c_size_t)]
+    kernel.InitializeProcThreadAttributeList.restype = wt.BOOL
+    kernel.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wt.DWORD, ctypes.c_size_t, ctypes.c_void_p,
+                                                 ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
+    kernel.UpdateProcThreadAttribute.restype = wt.BOOL
+    kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+    kernel.CreateProcessW.argtypes = [wt.LPCWSTR, wt.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wt.BOOL,
+                                      wt.DWORD, ctypes.c_void_p, wt.LPCWSTR,
+                                      ctypes.POINTER(STARTUPINFO), ctypes.POINTER(PROCESS_INFORMATION)]
+    kernel.CreateProcessW.restype = wt.BOOL
+    kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel.WaitForSingleObject.restype = wt.DWORD
+    kernel.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+    kernel.GetExitCodeProcess.restype = wt.BOOL
+    kernel.TerminateJobObject.argtypes = [wt.HANDLE, wt.UINT]
+    kernel.TerminateJobObject.restype = wt.BOOL
+    fds: set[int] = set()
+    info = PROCESS_INFORMATION()
+    attr_initialized = False
+    threads: list[threading.Thread] = []
+    outputs = ["", ""]
+    errors: list[Exception] = []
+    try:
+        out_read, out_write = os.pipe()
+        fds.update((out_read, out_write))
+        err_read, err_write = os.pipe()
+        fds.update((err_read, err_write))
+        devnull = os.open(os.devnull, os.O_RDONLY)
+        fds.add(devnull)
+        for fd in (out_write, err_write, devnull):
+            os.set_inheritable(fd, True)
+        handles = (wt.HANDLE * 3)(*(msvcrt.get_osfhandle(fd) for fd in (devnull, out_write, err_write)))
+        jobs = (wt.HANDLE * 1)(job)
+        size = ctypes.c_size_t()
+        kernel.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+        if not size.value:
+            raise OSError(ctypes.get_last_error(), "could not size process attributes")
+        storage = ctypes.create_string_buffer(size.value)
+        attributes = ctypes.cast(storage, ctypes.c_void_p)
+        if not kernel.InitializeProcThreadAttributeList(attributes, 2, 0, ctypes.byref(size)):
+            raise OSError(ctypes.get_last_error(), "could not initialize process attributes")
+        attr_initialized = True
+        for key, values in ((0x00020002, handles), (0x0002000D, jobs)):
+            if not kernel.UpdateProcThreadAttribute(attributes, 0, key, ctypes.byref(values), ctypes.sizeof(values), None, None):
+                raise OSError(ctypes.get_last_error(), "could not set process attributes")
+        startup = STARTUPINFOEX()
+        startup.StartupInfo.cb = ctypes.sizeof(startup)
+        startup.StartupInfo.dwFlags = 0x100  # STARTF_USESTDHANDLES
+        startup.StartupInfo.hStdInput, startup.StartupInfo.hStdOutput, startup.StartupInfo.hStdError = handles
+        startup.lpAttributeList = attributes
+        command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+        environment = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(env.items(), key=lambda item: item[0].upper())) + "\0\0")
+        if not kernel.CreateProcessW(command[0], command_line, None, None, True,
+                                     0x00080000 | 0x00000400 | subprocess.CREATE_NO_WINDOW,
+                                     environment, str(cwd) if cwd is not None else None,
+                                     ctypes.byref(startup.StartupInfo), ctypes.byref(info)):
+            raise OSError(ctypes.get_last_error(), "could not create contained process")
+        mark_started()  # Successful CreateProcess is the delivery boundary.
+        for fd in (out_write, err_write, devnull):
+            os.close(fd)
+            fds.remove(fd)
+        def drain(index: int, fd: int) -> None:
+            try:
+                with os.fdopen(fd, "r", errors="replace") as stream:
+                    outputs[index] = stream.read()
+            except Exception as exc:
+                errors.append(exc)
+        for index, fd in enumerate((out_read, err_read)):
+            thread = threading.Thread(target=drain, args=(index, fd), daemon=True)
+            thread.start()
+            fds.remove(fd)
+            threads.append(thread)
+        wait_ms = min(0xFFFFFFFE, max(0, int(timeout * 1000)))
+        wait_result = kernel.WaitForSingleObject(info.hProcess, wait_ms)
+        if wait_result != 0:
+            kernel.TerminateJobObject(job, 1)
+            for thread in threads:
+                thread.join(1)
+            raise subprocess.TimeoutExpired(command, timeout)
+        code = wt.DWORD()
+        if not kernel.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+            raise OSError(ctypes.get_last_error(), "could not read process exit status")
+        # A finished parent may leave descendants holding the pipes.
+        kernel.TerminateJobObject(job, 1)
+        for thread in threads:
+            thread.join(1)
+        if errors or any(thread.is_alive() for thread in threads):
+            raise subprocess.TimeoutExpired(command, timeout)
+        return subprocess.CompletedProcess(command, code.value, outputs[0], outputs[1])
+    finally:
+        if info.hThread:
+            kernel.CloseHandle(info.hThread)
+        if info.hProcess:
+            kernel.CloseHandle(info.hProcess)
+        if attr_initialized:
+            kernel.DeleteProcThreadAttributeList(attributes)
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
 
 
 # thread/list defaults to interactive sources only, which hides `codex exec`
@@ -164,7 +400,7 @@ class CodexAppServer:
     """Small JSON-RPC client for the signed-in local Codex app server."""
 
     def __init__(self, executable: str | None = None, timeout: int = 5) -> None:
-        resolved = CodexExecutable(executable) if executable else resolve_codex()
+        resolved = resolve_codex(executable)
         self.executable = resolved.path if resolved else None
         self._executable_env = resolved.environment() if resolved else None
         self.timeout = timeout
@@ -281,9 +517,15 @@ class CodexAppServer:
             raise CodexUnavailable(str(initialized["error"]))
         self._persistent_send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
 
-    def close(self) -> None:
-        with self._persistent_lock:
+    def close(self, timeout: float | None = None) -> None:
+        acquired = (self._persistent_lock.acquire() if timeout is None
+                    else self._persistent_lock.acquire(timeout=timeout))
+        if not acquired:
+            return
+        try:
             self._discard_persistent()
+        finally:
+            self._persistent_lock.release()
 
     def _ensure_persistent(self) -> None:
         if self._persistent_proc is not None and self._persistent_proc.poll() is None:

@@ -27,6 +27,14 @@ launch_app() {
     open "$APPS/Branchglance.app"
 }
 
+# Check the interpreter that will run the server before changing the installation.
+require_python() {
+    if ! "$1" -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then
+        echo "Error: $1 is missing, unusable, or older than Python 3.12; install Python 3.12 or newer and recreate the runtime virtual environment." >&2
+        exit 1
+    fi
+}
+
 if [ "$1" = "rollback" ]; then
     if [ ! -d "$PREVIOUS/Branchglance.app" ] || [ ! -d "$PREVIOUS/token_tracker" ]; then
         echo "No previous install to roll back to." >&2
@@ -64,6 +72,18 @@ fi
 
 if [ "$1" = "install" ]; then
     ROOT="$SUPPORT/runtime"
+    if [ -x "$ROOT/.venv/bin/python" ]; then
+        require_python "$ROOT/.venv/bin/python"
+    else
+        require_python python3
+    fi
+    if [ -n "$BRANCHGLANCE_ROOT" ] && [ "$BRANCHGLANCE_ROOT" != "$ROOT" ]; then
+        if [ -x "$BRANCHGLANCE_ROOT/.venv/bin/python" ]; then
+            require_python "$BRANCHGLANCE_ROOT/.venv/bin/python"
+        else
+            require_python /usr/bin/python3
+        fi
+    fi
     mkdir -p "$ROOT"
     # Keep what is installed now, for `rollback`.
     if [ -d "$ROOT/token_tracker" ] && [ -d "$APPS/Branchglance.app" ]; then
@@ -91,9 +111,20 @@ LAUNCHER
 PYTHONPATH="$ROOT" exec "$ROOT/.venv/bin/python" -c 'from token_tracker.claude_statusline import main; raise SystemExit(main())'
 LAUNCHER
     chmod 755 "$ROOT/bin/branchglance-statusline"
+else
+    HOST_ROOT="${BRANCHGLANCE_ROOT:-$REPO}"
+    if [ -x "$HOST_ROOT/.venv/bin/python" ]; then
+        require_python "$HOST_ROOT/.venv/bin/python"
+    else
+        require_python /usr/bin/python3
+    fi
 fi
 # Same version as the Windows release.
-VERSION="$(sed -n 's/^RELEASE_VERSION = "\(.*\)"/\1/p' ../packaging/build.py)"
+VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' ../token_tracker/_version.py)"
+if [ -z "$VERSION" ]; then
+    echo "Error: could not read __version__ from token_tracker/_version.py." >&2
+    exit 1
+fi
 if [ "$1" = "install" ]; then
     # Settings > Version reads this, as in the Windows release build.
     printf 'VERSION = %s\nBUILD_ID = %s\n' "'$VERSION'" "'$(git -C "$REPO" rev-parse --short HEAD)'" \
@@ -105,6 +136,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Branchglance.icns "$APP/Contents/Resources/"
 swiftc -O -o "$APP/Contents/MacOS/Branchglance" Sources/*.swift \
     -framework Cocoa -framework WebKit -framework SwiftUI -framework CoreAudio -framework AudioToolbox -framework IOKit -framework ServiceManagement -framework CoreMediaIO -framework Accelerate -framework Carbon
+# XML-escape the path so a checkout under a name with & or < still yields a valid plist.
+ROOT_XML="$(printf '%s' "$ROOT" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -120,7 +153,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSAudioCaptureUsageDescription</key><string>Branchglance reads the music player's audio levels to animate the notch visualizer. Nothing is recorded.</string>
   <key>NSAppleEventsUsageDescription</key><string>Branchglance shows and controls what Spotify or Music is playing.</string>
-  <key>BranchglanceRoot</key><string>$ROOT</string>
+  <key>BranchglanceRoot</key><string>$ROOT_XML</string>
 </dict></plist>
 PLIST
 IDENTITY="${BRANCHGLANCE_SIGN_IDENTITY:--}"

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import threading
 import time
+import sys
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ def test_cloned_source_with_conflicting_targets_stays_neutral():
     assert widget._display_kinds_by_device({"\\\\.\\DISPLAY1": {11, 10}}) == {}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: asserts ctypes sizes for the Win32 DisplayConfig ABI")
 def test_display_config_structures_match_win32_abi():
     assert widget.ctypes.sizeof(widget._DisplayConfigPathSourceInfo) == 20
     assert widget.ctypes.sizeof(widget._DisplayConfigPathTargetInfo) == 48
@@ -1407,8 +1409,9 @@ def test_snapshot_warmup_logs_failures_without_raising(monkeypatch, caplog):
 def test_live_endpoint_returns_bounded_failure_and_rate_limits_logs(monkeypatch, caplog):
     import logging
 
+    # A cold cache calls live_state with a time budget; accept it so the order of tests doesn't matter.
     monkeypatch.setattr(server, "live_state",
-                        lambda: (_ for _ in ()).throw(NameError("private transcript path")))
+                        lambda **_kwargs: (_ for _ in ()).throw(NameError("private transcript path")))
     server._LIVE_FAILURE_LOGGED_AT.clear()
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     worker = threading.Thread(target=httpd.serve_forever, daemon=True)

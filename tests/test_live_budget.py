@@ -6,9 +6,11 @@ import copy
 import json
 import os
 import sqlite3
+import threading
 import time
 import types
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -206,6 +208,37 @@ def test_live_cache_backs_off_when_a_round_makes_no_progress(monkeypatch):
         assert cache.condition.wait_for(lambda: not cache.building and len(fake.budgets) == 3, timeout=5)
 
 
+def test_live_cache_snapshot_shutdown_releases_refresh_and_preserves_value(monkeypatch):
+    previous = {"old": True}
+    cache = server.LiveCache()
+    cache.value = previous
+    cache.building = True
+    waiting = threading.Event()
+    awakened = threading.Event()
+
+    def wait_for_refresh():
+        with cache.condition:
+            waiting.set()
+            if cache.condition.wait_for(lambda: not cache.building, timeout=2):
+                awakened.set()
+
+    waiter = threading.Thread(target=wait_for_refresh)
+    waiter.start()
+    assert waiting.wait(timeout=1)
+
+    def cancel_live(**_kwargs):
+        raise providers.SnapshotShutdown("provider snapshots are shutting down")
+
+    monkeypatch.setattr(server, "live_state", cancel_live)
+    cache._refresh()
+
+    assert awakened.wait(timeout=0.5)
+    waiter.join(timeout=1)
+    assert not waiter.is_alive()
+    assert cache.building is False
+    assert cache.value is previous
+
+
 # ------------------------------------------------------------------ lineage parity (deferred vs detailed)
 
 LINEAGE_POLICIES = {
@@ -334,6 +367,64 @@ def test_deferred_and_detailed_lineage_agree_for_every_chat(lineage_roster):
         assert deferred[key] == detailed[key], key
 
 
+def test_live_index_preserves_process_provenance_and_replaces_it_with_native_lineage(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    monkeypatch.setattr(providers, "_LIVE_INDEX_POLICY_GENERATION", None)
+    path = tmp_path / "child.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    process_fields = {
+        "parentId": "parent", "parentProvider": "Claude", "parentLinkMethod": "process",
+        "linkSource": "process",
+        "parentIncarnation": {"provider": "Claude", "id": "parent", "pid": 10, "created": 100},
+        "childRunIdentity": {"provider": "Claude", "id": "child", "pid": 30, "created": 200},
+    }
+    providers._index_live_paths([{"name": "Claude", "chats": [
+        {"id": "child", "path": str(path), **process_fields},
+    ]}], "generation")
+    entry = providers._LIVE_INDEX["Claude:child"]
+    assert entry["linkSource"] == "process" and entry["parentIncarnation"]["pid"] == 10
+    deferred = providers._deferred_live_row("Claude:child", entry, path.stat().st_mtime)
+    assert deferred["linkSource"] == "process"
+    assert deferred["childRunIdentity"]["pid"] == 30
+
+    providers._index_live_paths([{"name": "Claude", "chats": [
+        {"id": "child", "path": str(path)},
+    ]}], "generation")
+    assert providers._LIVE_INDEX["Claude:child"]["linkSource"] == "process"
+    providers._sync_live_lineage_index([{"name": "Claude", "chats": [{"key": "Claude:child"}]}])
+    assert "parentId" not in providers._LIVE_INDEX["Claude:child"]
+    assert "linkSource" not in providers._LIVE_INDEX["Claude:child"]
+
+    providers._index_live_paths([{"name": "Claude", "chats": [
+        {"id": "child", "path": str(path), "parentId": "native-parent",
+         "parentProvider": "Claude", "linkSource": "native"},
+    ]}], "generation")
+    native = providers._LIVE_INDEX["Claude:child"]
+    assert (native["parentId"], native["parentProvider"], native["linkSource"]) == (
+        "native-parent", "Claude", "native")
+
+    codex_native = {**entry, "identityParentId": "native-root",
+                    "identityParentProvider": "Codex"}
+    deferred_native = providers._deferred_live_row("Codex:child", codex_native, path.stat().st_mtime)
+    assert (deferred_native["parentId"], deferred_native["parentProvider"],
+            deferred_native["linkSource"]) == ("native-root", "Codex", "native")
+    assert deferred_native.get("parentIncarnation") is None
+
+
+def test_missing_file_native_codex_parent_clears_old_process_provenance(lineage_roster):
+    key = "Codex:native-child"
+    indexed = lineage_roster.index[key]
+    indexed.update(linkSource="process", parentLinkMethod="process",
+                   parentIncarnation={"provider": "Claude", "id": "old", "pid": 10, "created": 100},
+                   childRunIdentity={"provider": "Codex", "id": "native-child", "pid": 30, "created": 200})
+    Path(indexed["path"]).unlink()
+    live = providers.live_state()
+    row = next(chat for chat in live["chats"] if chat["key"] == key)
+    assert (row.get("parentId"), row.get("parentProvider"), row.get("linkSource")) == (
+        "native-root", "Codex", "native")
+    assert row.get("parentIncarnation") is None and row.get("childRunIdentity") is None
+
+
 def test_hook_backed_claude_subagent_keeps_its_parent_when_deferred(lineage_roster):
     detailed_live = providers.live_state()
     detailed = next(chat for chat in detailed_live["chats"] if chat["key"] == "Claude:session:agent")
@@ -423,3 +514,14 @@ def test_live_discovery_refreshes_replaced_claude_path_and_parent(claude_live, m
     assert providers._LIVE_INDEX[key]["title"] == "latest title"
     assert providers._LIVE_INDEX[key]["agentName"] == "latest agent"
     assert providers._LIVE_INDEX[key]["parentId"] == "latest-session"
+
+
+def test_live_overlay_sends_explicit_nulls_for_cleared_execution_fields(lineage_roster):
+    # Absent means "no change" to the client; only an explicit null clears a stale value.
+    live = providers.live_state(budget_seconds=-1)
+    codex = [chat for chat in live["chats"] if chat["key"].startswith("Codex:")]
+    assert codex
+    for chat in codex:
+        for field in ("retainedRun", "stoppedAt", "runPid", "runBindingUnresolved", "parentId", "parentProvider"):
+            assert field in chat, (chat["key"], field)
+        assert chat["retainedRun"] is None and chat["stoppedAt"] is None

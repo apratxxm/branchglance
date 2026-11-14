@@ -8,6 +8,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -221,8 +222,9 @@ class LiveCache:
         try:
             value = live_state() if budget is None else live_state(budget_seconds=budget)
             plain = json.dumps(value).encode("utf-8")
-        except Exception as exc:
-            _log_live_failure(exc)
+        except (provider_module.SnapshotShutdown, Exception) as exc:
+            if isinstance(exc, Exception):
+                _log_live_failure(exc)
             with self.condition:
                 self.building = False
                 self.retry_after = time.monotonic() + LIVE_RETRY_COOLDOWN_SECONDS
@@ -321,6 +323,7 @@ def _live_encodings(header: str) -> tuple[bool, bool]:
 
 class SnapshotCache:
     RETRY_COOLDOWN_SECONDS = 5.0
+    REQUEST_TIMEOUT_SECONDS = 10.0
     PERSISTED_SCHEMA_VERSION = 1
     PERSISTED_MAX_BYTES = 32 * 1024 * 1024
     PERSISTED_KEY_NAME = "snapshot-cache.key"
@@ -337,6 +340,9 @@ class SnapshotCache:
         self._restore_pending = self.persist_path is not None
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
+        # Commit I/O never holds the request condition. Epoch changes share
+        # this lock with durable publication and peak recording.
+        self._publication_lock = threading.RLock()
         self._value = None
         # Only a snapshot built in this process may authorize chat actions.
         self._trusted_value = None
@@ -353,6 +359,8 @@ class SnapshotCache:
         self._last_build_error: Exception | None = None
         self._attempt = 0
         self._completed_attempt = 0
+        # Future identity changes must increment this before accepting samples.
+        self._publication_epoch = 0
 
     @property
     def compatibility(self) -> str | None:
@@ -385,10 +393,18 @@ class SnapshotCache:
 
     @value.setter
     def value(self, value) -> None:
-        with self.condition:
-            self._value = copy.deepcopy(value)
-            self._trusted_value = copy.deepcopy(value)
-            self._restored = False
+        display, trusted = copy.deepcopy(value), copy.deepcopy(value)
+        with self._publication_lock:
+            # Rotate the authentication key before changing the epoch. A crash
+            # then leaves any previous disk record unverifiable on restore.
+            if self.persist_path is not None and self.persist_path.exists():
+                self._ensure_persistence_key()
+                self._atomic_write(self._key_path, secrets.token_bytes(self.PERSISTED_KEY_BYTES))
+            with self.condition:
+                self._publication_epoch += 1
+                self._value = display
+                self._trusted_value = trusted
+                self._restored = False
 
     @property
     def at(self) -> float:
@@ -515,6 +531,10 @@ class SnapshotCache:
         )
 
     def _restore_persisted(self) -> None:
+        with self._publication_lock:
+            self._restore_persisted_guarded()
+
+    def _restore_persisted_guarded(self) -> None:
         path = self.persist_path
         if path is None:
             return
@@ -618,8 +638,10 @@ class SnapshotCache:
         except OSError as exc:
             logging.getLogger(__name__).warning("Snapshot cache persistence failed (%s)", type(exc).__name__)
 
-    def _record_failure_locked(self, exc: Exception, *, worker_start: bool = False) -> None:
-        self.building = False
+    def _record_failure_locked(self, exc: Exception, *, worker_start: bool = False,
+                               clear_owner: bool = True) -> None:
+        if clear_owner:
+            self.building = False
         self.retry_after = time.monotonic() + self.RETRY_COOLDOWN_SECONDS
         self.last_failure_at = self._utc_now()
         self.last_failure_category = self._failure_category(exc, worker_start=worker_start)
@@ -638,26 +660,60 @@ class SnapshotCache:
                       or self.last_failure_category is not None),
             "lastFailureAt": self.last_failure_at,
             "lastFailureCategory": self.last_failure_category,
+            "identityGeneration": None,
         }
+
+    @staticmethod
+    def _valid_last_known(quota, observed_at, now):
+        observed = SnapshotCache._parse_utc(observed_at)
+        if not isinstance(quota, dict) or observed is None or observed.timestamp() > now + 60:
+            return False
+        percent, reset = quota.get("percent"), quota.get("resetAt")
+        try:
+            return (type(percent) in (int, float) and math.isfinite(percent) and 0 <= percent <= 100
+                    and type(reset) in (int, float) and math.isfinite(reset) and reset > now)
+        except OverflowError:
+            return False
 
     @staticmethod
     def _egress(value, metadata: dict, *, restored: bool = False):
         if value is None:
             return None
         result = copy.deepcopy(value)
+        from . import claude_identity
+        _, identity = claude_identity.AUTHORITY.capture_nonblocking()
+        metadata = dict(metadata)
+        for provider in result.get("providers", []):
+            if isinstance(provider, dict):
+                if provider.get("name") == "Claude":
+                    verified = bool(identity and not restored and provider.get("identityVerified") is True
+                                    and provider.get("identityGeneration") == identity.generation)
+                    provider["identityVerified"] = verified
+                    provider["identityLabel"] = identity.label if verified else "Account unverified"
+                    if verified:
+                        metadata["identityGeneration"] = identity.generation
+                times = provider.get("_quotaWindowObservedAt")
+                times = times if isinstance(times, dict) else {}
+                for field in ("fiveHour", "weekly"):
+                    quota = provider.get(field)
+                    if restored or isinstance(quota, dict) and quota.get("lastKnown") is True:
+                        if not isinstance(quota, dict):
+                            quota = {}
+                            provider[field] = quota
+                        observed = times.get(field, provider.get("limitsUpdatedAt"))
+                        if SnapshotCache._valid_last_known(quota, observed, time.time()):
+                            quota["lastKnown"] = True
+                        else:
+                            quota["percent"] = None
+                            quota.pop("lastKnown", None)
         if restored:
             for provider in result.get("providers", []):
                 if not isinstance(provider, dict):
                     continue
                 provider["stale"] = True
-                for field in ("fiveHour", "weekly"):
-                    quota = provider.get(field)
-                    if not isinstance(quota, dict):
-                        quota = {}
-                        provider[field] = quota
-                    quota["percent"] = None
-                provider["limitsUpdatedAt"] = None
-                provider.pop("_quotaWindowObservedAt", None)
+                if not any((provider.get(field) or {}).get("lastKnown") for field in ("fiveHour", "weekly")):
+                    provider["limitsUpdatedAt"] = None
+                    provider.pop("_quotaWindowObservedAt", None)
                 for chat in provider.get("chats", []):
                     if not isinstance(chat, dict):
                         continue
@@ -681,45 +737,93 @@ class SnapshotCache:
         return self._value, self._metadata_locked(time.monotonic()), self._restored
 
     def _build(self, *, background: bool = False, attempt: int | None = None):
+        # A worker owns the build until it actually exits, even if every caller
+        # has timed out. Publication failures must release waiters as well.
         try:
-            value = copy.deepcopy(build_snapshot())
-            if not isinstance(value, dict):
-                raise TypeError("snapshot builder returned a non-object")
-        except Exception as exc:
             with self.condition:
-                if attempt is not None:
-                    self._attempt = max(self._attempt, attempt)
-                self._record_failure_locked(exc)
+                publication_epoch = self._publication_epoch
+            self._ensure_restored()
+            with self.condition:
                 self.condition.notify_all()
-            if background:
-                logging.getLogger(__name__).warning("Snapshot refresh failed (%s)", type(exc).__name__)
-                return None
-            raise
+            return self._build_inner(background=background, attempt=attempt, publication_epoch=publication_epoch)
+        except BaseException as exc:
+            with self.condition:
+                self._record_failure_locked(exc, clear_owner=False)
+            logging.getLogger(__name__).warning("Snapshot refresh failed (%s)", type(exc).__name__)
+        finally:
+            with self.condition:
+                self.building = False
+                self.condition.notify_all()
+
+    def _build_inner(self, *, background: bool = False, attempt: int | None = None,
+                     publication_epoch: int = 0):
+        from . import claude_identity
+        try:
+            identity = claude_identity.current_identity()
+        except Exception:
+            identity = None
+        identity_generation = identity.generation if identity else None
+        value = copy.deepcopy(build_snapshot())
+        if not isinstance(value, dict):
+            raise TypeError("snapshot builder returned a non-object")
+        trusted = copy.deepcopy(value)
         built_at = self._utc_now()
-        _record_insights_peaks(value)
         with self.condition:
             published_at = time.monotonic()
             generation = self.generation + 1
-        if self._persistable(value):
-            self._write_persisted(value, generation, built_at)
-        with self.condition:
-            self._value = value
-            self._trusted_value = copy.deepcopy(value)
-            self._at = published_at
-            self.generation = generation
-            self.built_at = built_at
-            self._restored = False
-            self._restored_age = 0.0
-            self._restored_at = 0.0
-            self.building = False
-            self.retry_after = 0.0
-            self.last_failure_at = None
-            self.last_failure_category = None
-            self._last_build_error = None
-            self._completed_attempt = attempt if attempt is not None else self._attempt
-            selected = self._selected_locked()
-            self.condition.notify_all()
-        return self._egress(selected[0], selected[1], restored=selected[2])
+            if publication_epoch != self._publication_epoch:
+                raise RuntimeError("snapshot publication superseded")
+            prior_value, prior_restored = self._value, self._restored
+        display = copy.deepcopy(value)
+        if prior_value is not None:
+            prior = self._egress(prior_value, {}, restored=prior_restored)
+            previous = {p.get("name"): p for p in prior.get("providers", []) if isinstance(p, dict)}
+            for provider in display.get("providers", []):
+                old = previous.get(provider.get("name"), {})
+                if provider.get("name") == "Claude" and (
+                        not provider.get("identityVerified") or not old.get("identityVerified")
+                        or provider.get("identityGeneration") != old.get("identityGeneration")):
+                    continue
+                for field in ("fiveHour", "weekly"):
+                    current, saved = provider.get(field), old.get(field)
+                    if (not isinstance(current, dict) or current.get("percent") is None) and isinstance(saved, dict) and saved.get("lastKnown"):
+                        provider[field] = copy.deepcopy(saved)
+                        times = provider.setdefault("_quotaWindowObservedAt", {})
+                        times[field] = (old.get("_quotaWindowObservedAt") or {}).get(field, old.get("limitsUpdatedAt"))
+        try:
+            latest_identity = claude_identity.current_identity()
+        except Exception:
+            latest_identity = None
+        identity_current = bool(identity_generation and latest_identity and latest_identity.generation == identity_generation)
+        with self._publication_lock, claude_identity.AUTHORITY.guard(identity_generation) as guarded_identity:
+            with self.condition:
+                if publication_epoch != self._publication_epoch:
+                    raise RuntimeError("snapshot publication superseded")
+            if not identity_current or guarded_identity is None:
+                for snapshot in (value, display, trusted):
+                    for provider in snapshot.get("providers", []):
+                        if isinstance(provider, dict) and provider.get("name") == "Claude":
+                            provider["identityVerified"] = False
+                            provider["identityLabel"] = "Account unverified"
+                            provider.pop("identityGeneration", None)
+            _record_insights_peaks(value)
+            if self._persistable(value):
+                self._write_persisted(display, generation, built_at)
+            with self.condition:
+                self._value = display
+                self._trusted_value = trusted
+                self._at = published_at
+                self.generation = generation
+                self.built_at = built_at
+                self._restored = False
+                self._restored_age = 0.0
+                self._restored_at = 0.0
+                self.retry_after = 0.0
+                self.last_failure_at = None
+                self.last_failure_category = None
+                self._last_build_error = None
+                self._completed_attempt = attempt if attempt is not None else self._attempt
+        return None
 
     def _start_background_locked(self) -> None:
         self._attempt += 1
@@ -733,7 +837,7 @@ class SnapshotCache:
             self.condition.notify_all()
 
     def get(self, force: bool = False, background: bool = False):
-        self._ensure_restored()
+        deadline = time.monotonic() + self.REQUEST_TIMEOUT_SECONDS
         with self.condition:
             while True:
                 now = time.monotonic()
@@ -762,8 +866,15 @@ class SnapshotCache:
                 if self.building:
                     request_generation = self.generation
                     request_attempt = self._attempt
-                    self.condition.wait()
-                    if self.generation != request_generation:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        selected = self._selected_locked()
+                        metadata = dict(selected[1], stale=True, staleReason="request_timeout",
+                                        identityGeneration=None)
+                        selected = (selected[0], metadata, True)
+                        break
+                    self.condition.wait(remaining)
+                    if self.generation != request_generation and (not force or not self.building):
                         selected = self._selected_locked()
                         break
                     if self._completed_attempt >= request_attempt and self._last_build_error is not None:
@@ -782,19 +893,17 @@ class SnapshotCache:
                         raise self._last_build_error
                     raise RuntimeError("snapshot temporarily unavailable")
 
-                self.building = True
-                self._attempt += 1
-                attempt = self._attempt
-                break
+                self._start_background_locked()
+                if not self.building and self._last_build_error is not None:
+                    raise self._last_build_error
+                continue
 
         if "selected" in locals():
             return self._egress(selected[0], selected[1], restored=selected[2])
-        # Never hold the cache lock while provider work performs disk or app IO.
-        return self._build(attempt=attempt)
+        return None
 
     def get_background(self, force: bool = False):
         """Return cached data immediately, or start a cold build and return no snapshot."""
-        self._ensure_restored()
         with self.condition:
             now = time.monotonic()
             if self._value is not None:
@@ -805,7 +914,11 @@ class SnapshotCache:
             else:
                 if not self.building and now >= self.retry_after:
                     self._start_background_locked()
-                return None
+                if self._restore_pending:
+                    self.condition.wait_for(lambda: not self._restore_pending, timeout=0.1)
+                if self._value is None:
+                    return None
+                selected = self._selected_locked()
         return self._egress(selected[0], selected[1], restored=selected[2])
 
 
@@ -819,7 +932,14 @@ def _record_insights_peaks(snapshot: dict) -> None:
     """Sample limit peaks on every snapshot refresh; the store itself is owner-gated."""
     try:
         from . import insights
-        insights.record_limit_peaks(snapshot, allowed_names=_insights_allowed_names())
+        from . import claude_identity
+        _, identity = claude_identity.AUTHORITY.capture()
+        safe = copy.deepcopy(snapshot)
+        safe["providers"] = [p for p in safe.get("providers", []) if isinstance(p, dict) and
+                             (p.get("name") != "Claude" or
+                             (identity and p.get("identityVerified") is True
+                              and p.get("identityGeneration") == identity.generation))]
+        insights.record_limit_peaks(safe, allowed_names=_insights_allowed_names())
     except Exception:
         return
 
@@ -850,61 +970,224 @@ def _snapshot_cache_compatibility() -> str:
 
 
 class FastClaudeLimits:
-    """Bound repeated reads of Claude's local Desktop quota cache."""
+    """Bound repeated reads of Claude's account-bound quota sources."""
 
     TTL_SECONDS = 2.0
-    MAX_USAGE_HISTORY_BYTES = 1024 * 1024
 
     def __init__(self) -> None:
         self.condition = threading.Condition()
         self.value = None
         self.at = 0.0
         self.loading = False
+        self.retained = {}
+        self.identity_generation = None
+
+    def _prune_retained_locked(self):
+        now = time.time()
+        for field, sample in list(self.retained.items()):
+            if not SnapshotCache._valid_last_known(sample["value"], sample["observed"], now):
+                del self.retained[field]
+
+    def _remember_locked(self, limits):
+        self._prune_retained_locked()
+        observed = limits.get("limitsUpdatedAt")
+        parsed = SnapshotCache._parse_utc(observed)
+        now = time.time()
+        if parsed is None or parsed.timestamp() > now + 60:
+            return
+        for field in ("fiveHour", "weekly"):
+            value = limits.get(field)
+            previous = self.retained.get(field)
+            if (SnapshotCache._valid_last_known(value, observed, now)
+                    and (previous is None or parsed.timestamp() >= previous["at"])):
+                self.retained[field] = {"value": copy.deepcopy(value), "observed": observed,
+                                        "at": parsed.timestamp()}
+
+    def _load(self):
+        try:
+            from .providers import ClaudeLimitsProvider
+            provider = ClaudeLimitsProvider()
+            limits = provider.snapshot()
+            if not isinstance(limits, dict):
+                return None
+            from . import claude_identity
+            identity = claude_identity.current_identity()
+            if not (identity and limits.get("identityVerified") is True
+                    and limits.get("identityGeneration") == identity.generation):
+                return None
+            with self.condition:
+                if self.identity_generation != identity.generation:
+                    return None
+                self.value = copy.deepcopy(limits)
+                self.at = time.monotonic()
+                self._remember_locked(limits)
+            return limits
+        except Exception:
+            return None
+        finally:
+            with self.condition:
+                self.loading = False
+                self.condition.notify_all()
 
     def overlay(self, snapshot: dict, *, owned: bool = False) -> dict:
         """Overlay quota data, copying unless the caller owns its snapshot."""
+        from . import claude_identity
+        _, identity = claude_identity.AUTHORITY.capture_nonblocking()
+        epoch = identity.generation if identity else None
+        with self.condition:
+            if self.identity_generation != epoch:
+                self.identity_generation = epoch
+                self.value = None
+                self.at = 0.0
+                self.retained.clear()
+        if identity is None:
+            return snapshot
+        restored = any(p.get("name") == "Claude" and p.get("stale") is True
+                       for p in snapshot.get("providers", []) if isinstance(p, dict))
         from .provider_policy import POLICIES, policy_for
         if not policy_for("Claude", POLICIES).allows("show"):
             return snapshot
+        if restored:
+            start = False
+            with self.condition:
+                now = time.monotonic()
+                self._prune_retained_locked()
+                if isinstance(self.value, dict):
+                    self._remember_locked(self.value)
+                retained = copy.deepcopy(self.retained)
+                if (self.value is None or now - self.at > self.TTL_SECONDS) and not self.loading:
+                    self.loading = True
+                    start = True
+            if start:
+                try:
+                    threading.Thread(target=self._load, name="fast-claude-limits", daemon=True).start()
+                except (RuntimeError, OSError):
+                    with self.condition:
+                        self.loading = False
+                        self.condition.notify_all()
+            if not retained:
+                return snapshot
+            result = snapshot if owned else copy.deepcopy(snapshot)
+            for provider in result.get("providers", []):
+                if isinstance(provider, dict) and provider.get("name") == "Claude":
+                    self._overlay_retained(provider, retained)
+                    break
+            return result
+        waiting = False
         with self.condition:
             now = time.monotonic()
             if self.value is not None and now - self.at <= self.TTL_SECONDS:
                 limits = copy.deepcopy(self.value)
+                self._remember_locked(limits)
             elif self.loading:
-                return snapshot
+                limits = None
+                waiting = True
             else:
                 self.loading = True
                 limits = None
         if limits is None:
+            if waiting:
+                return self._apply_retained(snapshot, owned=owned)
             try:
-                from .providers import ClaudeLimitsProvider
-                provider = ClaudeLimitsProvider()
-                history = provider.root / "plan-usage-history.json"
-                if history.stat().st_size > self.MAX_USAGE_HISTORY_BYTES:
-                    return snapshot
-                limits = provider.snapshot()
-                if not isinstance(limits, dict):
-                    return snapshot
-            except Exception:
-                return snapshot
-            finally:
+                threading.Thread(target=self._load, name="fast-claude-limits", daemon=True).start()
+            except (RuntimeError, OSError):
                 with self.condition:
                     self.loading = False
                     self.condition.notify_all()
-            with self.condition:
-                self.value = copy.deepcopy(limits)
-                self.at = time.monotonic()
+            return self._apply_retained(snapshot, owned=owned)
         result = snapshot if owned else copy.deepcopy(snapshot)
         for provider in result.get("providers", []):
             if isinstance(provider, dict) and provider.get("name") == "Claude":
+                if provider.get("identityGeneration") != epoch or provider.get("identityVerified") is not True:
+                    provider["fiveHour"] = copy.deepcopy(limits.get("fiveHour"))
+                    provider["weekly"] = copy.deepcopy(limits.get("weekly"))
+                    provider["limitsUpdatedAt"] = limits.get("limitsUpdatedAt")
+                    provider.pop("_quotaWindowObservedAt", None)
+                    provider["identityGeneration"] = epoch
+                    provider["identityVerified"] = True
+                    provider["identityLabel"] = identity.label
+                    break
+                previous_at = provider.get("limitsUpdatedAt")
+                with self.condition:
+                    self._prune_retained_locked()
+                    available = set(self.retained)
                 for field in ("fiveHour", "weekly", "limitsUpdatedAt"):
                     if field in limits:
+                        current = provider.get(field)
+                        times = provider.get("_quotaWindowObservedAt")
+                        observed = times.get(field, previous_at) if isinstance(times, dict) else previous_at
+                        known = (isinstance(current, dict) and current.get("lastKnown") is True
+                                 and SnapshotCache._valid_last_known(current, observed, time.time()))
+                        if field in ("fiveHour", "weekly") and (known or field in available) and (limits.get(field) or {}).get("percent") is None:
+                            provider.setdefault("_quotaWindowObservedAt", {}).setdefault(field, previous_at)
+                            continue
+                        if field in ("fiveHour", "weekly") and isinstance(provider.get("_quotaWindowObservedAt"), dict):
+                            provider["_quotaWindowObservedAt"].pop(field, None)
                         provider[field] = copy.deepcopy(limits[field])
+                        if field in ("fiveHour", "weekly") and isinstance(provider[field], dict):
+                            reset = provider[field].get("resetAt")
+                            if type(reset) in (int, float) and reset <= time.time():
+                                provider[field]["percent"] = None
+                break
+        return self._apply_retained(result, owned=True)
+
+    def _apply_retained(self, snapshot, *, owned):
+        with self.condition:
+            self._prune_retained_locked()
+            retained = copy.deepcopy(self.retained)
+        if not retained:
+            return snapshot
+        result = snapshot if owned else copy.deepcopy(snapshot)
+        for provider in result.get("providers", []):
+            if isinstance(provider, dict) and provider.get("name") == "Claude":
+                self._overlay_retained(provider, retained)
                 break
         return result
 
+    @staticmethod
+    def _overlay_retained(provider, retained):
+        previous_at = provider.get("limitsUpdatedAt")
+        times = provider.get("_quotaWindowObservedAt")
+        times = dict(times) if isinstance(times, dict) else {}
+        now = time.time()
+        replaced = False
+        for field in ("fiveHour", "weekly"):
+            current, sample = provider.get(field), retained.get(field)
+            times.setdefault(field, previous_at)
+            if not sample:
+                continue
+            observed = SnapshotCache._parse_utc(times[field])
+            if (not SnapshotCache._valid_last_known(sample["value"], sample["observed"], now)
+                    or isinstance(current, dict) and current.get("percent") is not None and observed is not None and (observed.timestamp() > sample["at"]
+                        or observed.timestamp() == sample["at"] and isinstance(current, dict)
+                        and current.get("percent") is not None and not current.get("lastKnown"))):
+                continue
+            provider[field] = copy.deepcopy(sample["value"])
+            if now - sample["at"] > 600:
+                provider[field]["lastKnown"] = True
+            else:
+                provider[field].pop("lastKnown", None)
+            times[field] = sample["observed"]
+            replaced = True
+        if replaced:
+            provider["_quotaWindowObservedAt"] = times
+            newest = max((SnapshotCache._parse_utc(t) for t in times.values() if SnapshotCache._parse_utc(t)), default=None)
+            if newest is not None:
+                provider["limitsUpdatedAt"] = newest.isoformat()
+
 
 CACHE = SnapshotCache(persist_path=product.state_root() / "stats-snapshot.json")
+
+
+def _insights_snapshot():
+    snapshot = CACHE.get()
+    if snapshot is not None:
+        for provider in snapshot.get("providers", []):
+            for field in ("fiveHour", "weekly"):
+                quota = provider.get(field)
+                if isinstance(quota, dict) and quota.get("lastKnown") is True:
+                    quota["percent"] = None
+    return snapshot
 FAST_CLAUDE_LIMITS = FastClaudeLimits()
 
 
@@ -919,32 +1202,129 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json({"ok": False, "error": "local Host required"}, 403)
             return
         parsed = urlparse(self.path)
+        if self._get_features_or_statusline(parsed):
+            return
+        if self._get_provider_state(parsed):
+            return
+        if self._get_usage(parsed):
+            return
+        if self._get_open(parsed):
+            return
+        if self._get_codex_state(parsed):
+            return
+        if self._get_reset_action(parsed):
+            return
+        if parsed.path == "/healthz":
+            payload = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if parsed.path == "/":
+            self.path = "/runway.html"
+        super().do_GET()
+
+    def _get_features_or_statusline(self, parsed):
+        if parsed.path not in {"/api/features", "/api/statusline", "/api/claude-collection"}:
+            return False
+        if parsed.path in {"/api/features", "/api/statusline"}:
+            if parsed.query or not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return True
+            try:
+                if parsed.path == "/api/features":
+                    from . import features, ledger_service
+                    from .provider_policy import policy_for
+                    policy_for("Claude")  # Resolve the startup send setting before reporting pending changes.
+                    data = {name: features.state(name) for name in features.ENV}
+                    data["ledger"]["restart_pending"] = ledger_service._RESTART_PENDING
+                else:
+                    from . import statusline_connect
+                    data = statusline_connect.status()
+                self._send_json({"ok": True, **data})
+            except Exception:
+                self._send_json({"ok": False, "error": "Settings status is unavailable."}, 503)
+            return True
         if parsed.path == "/api/claude-collection":
             if parsed.query or not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             try:
                 from .claude_collection import status as claude_collection_status
                 self._send_json({"ok": True, **claude_collection_status()})
             except Exception as exc:
                 logging.getLogger(__name__).error("Claude Code collection status failed (%s)", type(exc).__name__)
                 self._send_json({"ok": False, "error": "Claude Code collection status is unavailable."}, 503)
-            return
+            return True
+        return False
+
+    def _get_provider_state(self, parsed):
+        if parsed.path not in {
+            '/api/provider-policy', '/api/debug-report', '/api/debug-report.json', '/api/identity',
+        }:
+            return False
         if parsed.path == "/api/provider-policy":
             try:
                 from .provider_policy import public_policies
                 payload = public_policies()
             except Exception:
                 self._send_json({"ok": False, "error": "Provider policy is unavailable."}, 503)
-                return
+                return True
             self._send_json(payload)
-            return
+            return True
+        if parsed.path == "/api/debug-report":
+            # Same local-origin rules as the other /api reads; no CORS headers, never cached.
+            if parsed.query or not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return True
+            try:
+                from . import debug_report
+                text = debug_report.serialize(debug_report.build_report(CACHE.get(background=True)))
+            except Exception:
+                self._send_json({"ok": False, "error": "Debug report is unavailable."}, 503)
+                return True
+            payload = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return True
+        if parsed.path == "/api/debug-report.json":
+            # Structured form for the CLI. Same guards as the markdown route; no CORS, never cached.
+            if parsed.query or not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return True
+            try:
+                from . import debug_report
+                payload = json.dumps(debug_report.report_to_dict(debug_report.build_report(CACHE.get(background=True)))).encode("utf-8")
+            except Exception:
+                self._send_json({"ok": False, "error": "Debug report is unavailable."}, 503)
+                return True
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return True
         if parsed.path == "/api/identity":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             self._send_json(_identity_payload())
-            return
+            return True
+        return False
+
+    def _get_usage(self, parsed):
+        if parsed.path not in {
+            '/api/stats', '/api/insights', '/api/ledger/status', '/api/ledger',
+            '/api/ledger/export', '/api/live', '/api/today',
+        }:
+            return False
         if parsed.path == "/api/stats":
             query = parse_qs(parsed.query)
             force = query.get("refresh", [""])[0] == "1"
@@ -954,7 +1334,7 @@ class Handler(SimpleHTTPRequestHandler):
                 snapshot = CACHE.get(force=force)
             if snapshot is None:
                 self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
-                return
+                return True
             if query.get("background", [""])[0] == "1":
                 # CACHE.get returns a private egress copy for each caller.
                 snapshot = FAST_CLAUDE_LIMITS.overlay(snapshot, owned=True)
@@ -974,8 +1354,16 @@ class Handler(SimpleHTTPRequestHandler):
             snapshot = {**snapshot, "providers": [
                 {k: v for k, v in provider.items() if k != "_insightsData"} if isinstance(provider, dict) else provider
                 for provider in snapshot.get("providers") or []]}
+            from . import claude_identity
+            _, identity = claude_identity.AUTHORITY.capture_nonblocking()
+            for provider in snapshot["providers"]:
+                if isinstance(provider, dict) and provider.get("name") == "Claude":
+                    verified = bool(identity and provider.get("identityVerified") is True
+                                    and provider.get("identityGeneration") == identity.generation)
+                    provider["identityVerified"] = verified
+                    provider["identityLabel"] = identity.label if verified else "Account unverified"
             self._send_json(snapshot)
-            return
+            return True
         if parsed.path == "/api/insights":
             from . import insights
             from .provider_policy import POLICIES, public_policies
@@ -983,22 +1371,22 @@ class Handler(SimpleHTTPRequestHandler):
             range_name = query.get("range", ["30d"])[0]
             if range_name not in insights.RANGES:
                 self._send_json({"ok": False, "error": "Invalid insights range."}, 400)
-                return
+                return True
             allowed = _insights_allowed_names()
             generation = public_policies(POLICIES)["generation"]
             payload = insights.INSIGHTS_CACHE.get(
                 range_name, generation, allowed_names=allowed,
-                snapshot_loader=lambda: CACHE.get(),
+                snapshot_loader=_insights_snapshot,
                 peak_store=insights.LimitPeakStore())
             if payload is None:
                 self._send_json({"ok": False, "error": "Snapshot is building."}, 503)
             else:
                 self._send_json(payload)
-            return
+            return True
         if parsed.path == "/api/ledger/status":
             from . import ledger_service
             self._send_json(ledger_service.status_payload())
-            return
+            return True
         if parsed.path in {"/api/ledger", "/api/ledger/export"}:
             from . import ledger_service
             status, headers, body = ledger_service.http_response(parsed.path, parse_qs(parsed.query))
@@ -1008,33 +1396,38 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-            return
+            return True
         if parsed.path == "/api/live":
             selected = LIVE_CACHE.get(encoded=True)
             if selected is None:
                 self._send_json({"ok": False, "error": "Live telemetry unavailable"}, 503)
             else:
                 self._send_live_json(*selected)
-            return
+            return True
         if parsed.path == "/api/today":
             self._send_json(today_usage())
-            return
+            return True
+        return False
+
+    def _get_open(self, parsed):
+        if parsed.path not in {'/api/open'}:
+            return False
         if parsed.path == "/api/open":
             # Jump to one chat in the Codex app. Only a strict thread id is accepted, and only the
             # codex://threads/ deep link is ever opened.
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             thread = parse_qs(parsed.query).get("thread", [""])[0]
             if not THREAD_ID.fullmatch(thread):
                 self._send_json({"ok": False, "error": "invalid thread id"})
-                return
+                return True
             if not _codex_allows("show"):
                 self._send_json({"ok": False, "error": "Codex is not enabled."}, 403)
-                return
+                return True
             if not _is_collected_codex_thread(thread):
                 self._send_json({"ok": False, "error": "unknown Codex thread"}, 404)
-                return
+                return True
             try:
                 url = f"codex://threads/{thread}"
                 startfile = getattr(os, "startfile", None)
@@ -1047,17 +1440,19 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True})
             except (AttributeError, TypeError, OSError, subprocess.SubprocessError) as exc:
                 self._send_json({"ok": False, "error": str(exc)[:120]})
-            return
-        if parsed.path == "/api/avatars":
-            # Codex's own subagent avatars, read from the local app install (cached per version).
-            from .codex_avatars import codex_avatars
-            from .limit_reset import _runtime_dir
-            self._send_json({"avatars": codex_avatars(_runtime_dir())})
-            return
+            return True
+        return False
+
+    def _get_codex_state(self, parsed):
+        if parsed.path not in {'/api/limit-reset', '/api/quota'}:
+            return False
         if parsed.path == "/api/limit-reset":
+            if not self._open_request_allowed():
+                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
+                return True
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
-                return
+                return True
             status = self.reset_service.status() if self.reset_service else {"enabled": False, "events": []}
             if not _codex_allows("show") and isinstance(status, dict):
                 status = dict(status)
@@ -1072,14 +1467,14 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
-            return
+            return True
         if parsed.path == "/api/quota":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return
+                return True
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
-                return
+                return True
             from .limit_reset import codex_quota_http_view
             payload = codex_quota_http_view()
             if not _codex_allows("show") and isinstance(payload, dict):
@@ -1087,23 +1482,28 @@ class Handler(SimpleHTTPRequestHandler):
                 payload["providers"] = {}
                 payload.pop("events", None)
             self._send_json(payload)
-            return
+            return True
+        return False
+
+    def _get_reset_action(self, parsed):
+        if parsed.path not in {'/api/reset-action'}:
+            return False
         if parsed.path == "/api/reset-action":
             if not _codex_allows("collect"):
                 self._send_json({"ok": False, "error": "Codex collection is disabled or unavailable."}, 403)
-                return
+                return True
             if not _codex_allows("show"):
                 self._send_json({"ok": False, "error": "Codex display is disabled."}, 403)
-                return
+                return True
             service = self.reset_service
             if service is None:
                 self._send_json({"ok": False, "error": "Reset action service is unavailable."}, 503)
-                return
+                return True
             try:
                 action = service.get_reset_action()
             except Exception:
                 self._send_json({"ok": False, "error": "Reset action settings could not be read."}, 503)
-                return
+                return True
             try:
                 from .reset_delivery import list_candidates
                 threads = list_candidates()
@@ -1111,29 +1511,19 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception:
                 self._send_json({"ok": True, "action": action, "threads": [], "threadsAvailable": False,
                                  "error": "Chat list is unavailable. Retry to refresh it."})
-            return
-        if parsed.path == "/healthz":
-            payload = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-        if parsed.path == "/":
-            self.path = "/runway.html"
-        super().do_GET()
+            return True
+        return False
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge"}
+        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}
         if not self._valid_local_host():
             if settings_mutation:
                 self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
             self._reject_post(parsed.path, {"ok": False, "error": "local Host required"}, 403)
             return
-        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge"}:
+        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}:
             self._reject_post(parsed.path, {"ok": False, "error": "not found"}, 404)
             return
         if not self._same_origin_request():
@@ -1165,8 +1555,60 @@ class Handler(SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json({"ok": False, "error": "invalid JSON"}, 400)
             return
+        if parsed.path in {"/api/features", "/api/statusline"}:
+            with _SETTINGS_TOKEN_LOCK:
+                if not _settings_token_matches_locked(self.headers.get("X-Branchglance-Settings-Token")):
+                    self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                    return
+                try:
+                    if parsed.path == "/api/features":
+                        from . import features, ledger_service, claude_usage_api
+                        from .provider_policy import policy_for
+                        if (not isinstance(body, dict) or set(body) != {"name", "value"}
+                                or body["name"] not in features.ENV or type(body["value"]) is not bool):
+                            raise ValueError("Invalid feature setting.")
+                        policy_for("Claude")
+                        result = features.save(body["name"], body["value"])
+                        if body["name"] == "ledger":
+                            result["restart_pending"] = ledger_service.apply_feature(result["effective"])
+                        elif body["name"] == "live_usage":
+                            if result["effective"]:
+                                claude_usage_api.REFRESHER.start()
+                            else:
+                                claude_usage_api.REFRESHER.stop()
+                    else:
+                        from . import statusline_connect
+                        if not isinstance(body, dict) or set(body) != {"action"} or body["action"] not in {"connect", "disconnect"}:
+                            raise ValueError("Invalid status line action.")
+                        result = (statusline_connect.connect() if body["action"] == "connect"
+                                  else statusline_connect.disconnect())
+                except (ValueError, OSError) as exc:
+                    self._send_json({"ok": False, "error": str(exc) if isinstance(exc, ValueError) else "Settings could not be saved."}, 409)
+                    return
+                except Exception as exc:
+                    from .claude_hook_install import HookInstallError
+                    message = str(exc) if isinstance(exc, HookInstallError) else "Settings could not be changed."
+                    self._send_json({"ok": False, "error": message}, 409)
+                    return
+            self._send_json({"ok": True, **result})
+            return
         if parsed.path == "/api/ledger/purge":
             self._purge_ledger(body)
+            return
+        if parsed.path == "/api/claude-greeting-rearm":
+            if body != {} or self.reset_service is None:
+                self._send_json({"ok": False, "error": "Claude greeting is unavailable."}, 400)
+                return
+            with _SETTINGS_TOKEN_LOCK:
+                if not _settings_token_matches_locked(self.headers.get("X-Branchglance-Settings-Token")):
+                    self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                    return
+                try:
+                    self.reset_service.rearm_claude_greeting()
+                except Exception:
+                    self._send_json({"ok": False, "error": "Claude greeting could not be armed."}, 409)
+                    return
+            self._send_json({"ok": True})
             return
         if settings_mutation:
             action = body.get("action") if isinstance(body, dict) else None
@@ -1367,7 +1809,10 @@ class Handler(SimpleHTTPRequestHandler):
         lengths = self.headers.get_all("Content-Length", [])
         limit = QUEUE_MESSAGE_LIMIT + 512 if path == "/api/queue" else 4096
         digits = lengths[0].lstrip("0") or "0" if len(lengths) == 1 else ""
-        if (path in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/quota"}
+        # Drain a small body before replying: closing with unread request data
+        # makes the OS reset the connection, so the client may never see the status.
+        if (path in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/quota",
+                     "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}
                 and not self.headers.get_all("Transfer-Encoding", []) and len(lengths) == 1
                 and re.fullmatch(r"[0-9]+", lengths[0]) and len(digits) <= len(str(limit))
                 and int(digits) <= limit):
@@ -1422,15 +1867,12 @@ def queue_codex_message(thread: str, message: str) -> None:
     if not _codex_queue_allowed():
         from .provider_policy import ProviderPolicyError
         raise ProviderPolicyError("explicit Codex SEND consent is required to queue messages")
-    executable = shutil.which("codex")
+    from .codex_client import resolve_codex, run_contained_codex
+    executable = resolve_codex()
     if not executable:
         raise FileNotFoundError("codex")
-    result = subprocess.run(
-        [executable, "queue", "--thread", thread, "--message", message],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        timeout=QUEUE_TIMEOUT_SECONDS, check=False,
-        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
-    )
+    result = run_contained_codex(executable, ["queue", "--thread", thread, "--message", message],
+                                 timeout=QUEUE_TIMEOUT_SECONDS)
     if result.returncode:
         raise subprocess.CalledProcessError(result.returncode, result.args)
 
@@ -1440,7 +1882,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
+    from .claude_hook import start_event_retention
+    start_event_retention()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    from . import claude_usage_api
+    claude_usage_api.REFRESHER.start()
     url = f"http://{args.host}:{args.port}"
     print(f"Token Tracker running at {url}")
     if not args.no_open:
@@ -1450,6 +1896,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        claude_usage_api.REFRESHER.stop()
         server.server_close()
 
 

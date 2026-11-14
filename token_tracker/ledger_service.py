@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from . import product
+from . import product, features
 from .claude_hook_install import claude_config_dir
 from .ledger import Ledger, LedgerUnavailable, read_summary
 from .ledger_model import PROVIDERS
@@ -48,6 +48,8 @@ HOUR_SECONDS = 3600
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 _CURRENT: "LedgerService | None" = None
+_MANAGER_LOCK = threading.RLock()
+_RESTART_PENDING = False
 PURGE_WAIT_SECONDS = 10.0  # how long POST /api/ledger/purge waits for its ticket before answering 202
 PURGE_OUTCOMES = ("done", "failed", "cancelled")
 
@@ -55,6 +57,32 @@ PURGE_OUTCOMES = ("done", "failed", "cancelled")
 def current() -> "LedgerService | None":
     """The service the widget started, or None. The HTTP handler reads health and the data dir through it."""
     return _CURRENT
+
+
+def apply_feature(enabled: bool) -> bool:
+    """Apply a saved toggle; return whether an application restart is required."""
+    global _CURRENT, _RESTART_PENDING
+    with _MANAGER_LOCK:
+        service = _CURRENT
+        if _RESTART_PENDING:
+            return True
+        if service is None:
+            return False  # standalone servers never own a writer
+        if not enabled:
+            if service._thread is None:
+                return False  # already disabled; don't poison the unused instance
+            service.stop()
+            if service._thread is not None and service._thread.is_alive():
+                _RESTART_PENDING = True
+            return _RESTART_PENDING
+        stopped = getattr(service, "_stop", None)
+        if service._thread is None and (stopped is None or not stopped.is_set()):
+            service.start()
+        elif service._thread is None or not service._thread.is_alive():
+            service = LedgerService()
+            _CURRENT = service
+            service.start()
+        return False
 
 
 class PurgeTicket:
@@ -126,7 +154,7 @@ class LedgerService:
             _CURRENT = self
             if self._thread is not None:
                 return
-            if self.environ.get(ENV_FLAG) != "1":
+            if not features.enabled("ledger", environ=self.environ):
                 self._set_state("disabled")
                 return
             try:

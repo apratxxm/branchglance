@@ -100,6 +100,9 @@ def test_resolver_finds_npm_native_and_passes_npm_environment(tmp_path, monkeypa
     assert env["CODEX_MANAGED_PACKAGE_ROOT"] == str(package.resolve())
     assert env["CODEX_MANAGED_BY_NPM"] == "1"
     assert "CODEX_MANAGED_BY_BUN" not in env
+    override = codex_client.resolve_codex(str(native))
+    assert override is not None
+    assert override.environment()["CODEX_MANAGED_PACKAGE_ROOT"] == str(package.resolve())
 
 
 def test_resolver_does_not_run_unrecognized_shim(tmp_path, monkeypatch):

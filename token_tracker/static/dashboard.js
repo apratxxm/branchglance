@@ -388,7 +388,7 @@
     const providers=policies.length?`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers <span class="count">Policy controlled</span></h2>${policies.map(row=>rowHTML(esc(row.name),"",`<span class="dash-policy-flags">${["show","collect","send"].map(key=>`<span><small>${key}</small><b>${row[key]===true?"On":row[key]===false?"Off":"—"}</b></span>`).join("")}</span>`)).join("")}${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<p class="dash-setting-note">Show, collect and send flags are set in the policy file.${/[\\/]/.test(String(state.policy?.policyFile||""))?` <code>${esc(state.policy.policyFile)}</code>`:""}</p></section>`:"";
     // Reset actions stays isolated in its existing frame; the dashboard never receives a settings token.
     const reset=state.settingsLoaded?`<iframe class="reset-embed" title="Auto-greet, continue and Claude tracking settings" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status">${esc(state.settingsStatus||"Loading reset settings…")}</p>`;
-    const notifications=`<section class="dash-settings-group"><h2>Notifications</h2>${reset}${rowHTML("Claude tracking",`<span id="dash-claude-status">${esc(state.claudeStatus||"")}</span>`,`<button class="dash-action" data-dashboard-action="claude-settings">Change Claude tracking…</button>`)}</section>`;
+    const notifications=`<section class="dash-settings-group"><h2>Notifications</h2>${reset}${rowHTML("Claude tracking and features",`<span id="dash-claude-status">${esc(state.claudeStatus||"")}</span>`,`<button class="dash-action" data-dashboard-action="claude-settings">Change Claude tracking…</button>`)}</section>`;
     const general=`<section class="dash-settings-group"><h2>General</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","Use a 12 or 24-hour clock",`<button class="dash-picker" data-dashboard-action="clock">${clock}-hour <i class="chevron" aria-hidden="true"></i></button>`)}</section>`;
     const plan=`<section class="dash-settings-group"><h2>Plan</h2><div class="dash-plan-group"><span class="dash-setting-label">Monthly plan price</span><span class="dash-setting-description">Used for the 30-day multiple</span><div class="dash-plan-fields">${PLAN_PROVIDERS.map(name=>`<label class="dash-plan-field"><span class="dash-plan-field-name">${esc(name)}</span><span aria-hidden="true">$</span><input type="number" min="1" step="any" inputmode="decimal" value="${esc(planPrice(name))}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label>`).join("")}</div></div></section>`;
     const monitorOptions=state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("");
@@ -396,7 +396,45 @@
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
     const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:"";
     // Both columns fit the fixed panel body: the reset frame keeps the second column, the rest share the first.
-    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${plan}${providers}${display}</div><div class="dash-settings-column">${notifications}${status}${version}</div></div>`;
+    // The preview is text in a read-only box: the report is never parsed as HTML.
+    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="Report a bug"><h2>Report a bug</h2><p class="dash-setting-note">Builds a text report with no chat text, file paths, account details or tokens. Review it before sharing.</p><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-preview">Preview debug report</button></div><div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
+    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${plan}${providers}${display}</div><div class="dash-settings-column">${notifications}${status}${version}${debug}</div></div>`;
+  }
+  const DEBUG_ISSUE_URL="https://github.com/apratxxm/branchglance/issues/new?template=bug_report.yml";
+  const DEBUG_TITLE="# Branchglance debug report";
+  function setDebugStatus(text,error=false){state.debugStatus=String(text||"");state.debugError=!!error;const node=$("#dash-debug-status");if(node){node.textContent=state.debugStatus;node.classList.toggle("error",state.debugError);}}
+  function debugOS(){const platform=String(typeof navigator!=="undefined"?(navigator.userAgentData?.platform||navigator.platform||""):"");return /^win/i.test(platform)?"Windows":/^mac/i.test(platform)?"macOS":/linux/i.test(platform)?"Linux":"unknown";}
+  // Only a validated version and the OS enum are prefilled; the report itself is pasted by the user.
+  function debugIssueURL(){const version=state.identity?.version;const safeVersion=typeof version==="string"&&/^\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.]+)?$/.test(version)?version:null;return `${DEBUG_ISSUE_URL}${safeVersion?`&version=${encodeURIComponent(safeVersion)}`:""}&os=${debugOS()}`;}
+  async function previewDebugReport(){
+    setDebugStatus("Building report…");
+    try{
+      const response=await fetch("/api/debug-report",{cache:"no-store"});
+      const text=response.ok?await response.text():"";
+      if(!text.startsWith(DEBUG_TITLE))throw new Error("unavailable");
+      state.debugReport=text;
+      const box=$("#dash-debug-report"),panel=$(".dash-debug-panel");
+      if(box)box.value=text;
+      if(panel)panel.hidden=false;
+      setDebugStatus("Review the report before sharing.");
+    }catch{setDebugStatus("Debug report is unavailable.",true);}
+  }
+  async function copyDebugReport(){
+    const text=state.debugReport;
+    if(!text){setDebugStatus("Preview the report first.",true);return;}
+    try{
+      if(!navigator.clipboard?.writeText)throw new Error("no clipboard");
+      await navigator.clipboard.writeText(text);
+      setDebugStatus("Copied.");
+    }catch{
+      const box=$("#dash-debug-report");
+      if(box&&typeof document.execCommand==="function"){box.focus();box.select();if(document.execCommand("copy")){setDebugStatus("Copied.");return;}}
+      setDebugStatus("Copy failed. Select the text and copy it.",true);
+    }
+  }
+  function openDebugIssue(){
+    try{window.open(debugIssueURL(),"_blank","noopener,noreferrer");}
+    catch{setDebugStatus("Could not open the issue page.",true);}
   }
   let activePoint=null,activeMode=null,tooltipBound=false,tooltipGeneration=0;
   function dismissTooltip(){
@@ -578,6 +616,9 @@
     else if(name==="clock")toggleClock();
     else if(name==="recenter")void window.tokenTrackerRecenter?.();
     else if(name==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
+    else if(name==="debug-preview")void previewDebugReport();
+    else if(name==="debug-copy")void copyDebugReport();
+    else if(name==="debug-issue")openDebugIssue();
   });
   document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);if(target?.dataset?.dashboardPlan)setPlanPrice(target.dataset.dashboardPlan,target.value);});
   window.addEventListener("message",event=>{
@@ -588,5 +629,5 @@
   });
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,workData,workHTML,workNote,loadLedger,state};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};
 })();

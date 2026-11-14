@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from . import handles
+
 SCHEMA = 1
 # Dot-separated identifiers only: no empty segment, so ".." and path separators never match.
 VERSION_RE = re.compile(r"\A\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\+[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\Z")
@@ -109,7 +111,18 @@ def _walk_plain(root: Path):
 
 
 def remove_plain_tree(path: Path) -> None:
-    """Delete only ordinary descendants; a reparse point anywhere aborts deletion."""
+    """Delete only ordinary descendants; a reparse point anywhere aborts deletion.
+
+    On Windows the walk and every delete go through held handles (see handles.py), so a
+    directory swapped for a junction mid-walk cannot redirect a delete. Elsewhere the
+    by-name walk below is used (the installer itself is Windows-only).
+    """
+    if os.name == "nt":
+        try:
+            handles.remove_tree(str(path))
+        except handles.WalkError as exc:
+            raise SafetyError(str(exc)) from exc
+        return
     if not path.exists():
         return
     files = list(_walk_plain(path))
@@ -143,6 +156,12 @@ class _LockedWrapper:
         if handle == ctypes.c_void_p(-1).value:
             raise SafetyError(f"Cannot lock wrapper file: {path} (Windows {ctypes.get_last_error()})")
         try:
+            # Opened by full path: refuse if an ancestor link put the handle somewhere else.
+            handles.verify_anchor(handle, str(path))
+        except handles.WalkError as exc:
+            k.CloseHandle(handle)
+            raise SafetyError(str(exc)) from exc
+        try:
             fd = msvcrt.open_osfhandle(handle, os.O_RDWR if create else os.O_RDONLY)
             self.stream = os.fdopen(fd, "w+b" if create else "rb")
         except BaseException:
@@ -154,7 +173,12 @@ class _LockedWrapper:
     def __enter__(self): return self
     def __exit__(self, *_): self.stream.close()
 
-    def provenance(self) -> dict:
+    def identity(self) -> dict:
+        """{dev, ino} of the held object (no hashing)."""
+        dev, ino = self._info()
+        return {"dev": dev, "ino": ino}
+
+    def _info(self) -> tuple[int, int]:
         ctypes, w, k = self.ctypes, self.wintypes, self.kernel
         class Info(ctypes.Structure):
             _fields_ = [("attributes", w.DWORD), ("created", w.FILETIME), ("accessed", w.FILETIME),
@@ -167,12 +191,16 @@ class _LockedWrapper:
         index = (int(info.indexHigh) << 32) | int(info.indexLow)
         if not info.volume or not index:
             raise SafetyError(f"Wrapper handle identity unavailable: {self.path}")
+        return int(info.volume), index
+
+    def provenance(self) -> dict:
+        dev, index = self._info()
         self.stream.flush()
         self.stream.seek(0)
         digest = hashlib.sha256()
         for block in iter(lambda: self.stream.read(1024 * 1024), b""):
             digest.update(block)
-        return {"sha256": digest.hexdigest(), "dev": int(info.volume), "ino": index}
+        return {"sha256": digest.hexdigest(), "dev": dev, "ino": index}
 
     def verify(self, expected: Any) -> None:
         if not _valid_wrapper_provenance(expected) or self.provenance() != expected:
@@ -212,17 +240,45 @@ def _rename_wrapper(path: Path, target: Path, expected: Any) -> None:
         handle.rename(target)
 
 
+class RecoveryConflict(SafetyError):
+    """Recovery found something it does not own; everything is kept and the journal stays."""
+
+
+def _conditional_delete(path: Path, owned: Callable[[dict], bool], what: str) -> None:
+    """Delete only the object behind the held handle, and only if it is provably ours."""
+    with _LockedWrapper(path) as handle:
+        if not owned(handle.provenance()):
+            raise RecoveryConflict(f"{what} is not the object the installer recorded: {path.name}")
+        handle.delete()
+
+
+def _conditional_rename(source: Path, target: Path, owned: Callable[[dict], bool], what: str) -> None:
+    """Rename the held object into a destination that must be vacant (no replace-over-live)."""
+    with _LockedWrapper(source) as handle:
+        if not owned(handle.provenance()):
+            raise RecoveryConflict(f"{what} is not the object the installer recorded: {source.name}")
+        try:
+            handle.rename(target)
+        except SafetyError as exc:
+            raise RecoveryConflict(f"Restore destination is occupied or unavailable: {target.name}") from exc
+
+
+def _probe(path: Path) -> dict | None:
+    """Provenance of a file through a held handle, or None when it is absent."""
+    if not os.path.lexists(path):
+        return None
+    try:
+        return _wrapper_provenance(path)
+    except SafetyError as exc:
+        raise RecoveryConflict(f"Unexpected object kept in place: {path.name}") from exc
+
+
 def _wrapper_provenance(path: Path) -> dict:
-    if is_reparse(path) or not path.is_file():
+    """Hash and file identity read through one held handle (same source as the recorded values)."""
+    if is_reparse(path):
         raise SafetyError(f"Unsafe wrapper file: {path}")
-    before = path.stat()
-    if not before.st_dev or not before.st_ino:
-        raise SafetyError(f"Wrapper file identity unavailable: {path}")
-    digest = sha256_file(path)
-    after = path.stat()
-    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
-        raise SafetyError(f"Wrapper changed while verifying: {path}")
-    return {"sha256": digest, "dev": before.st_dev, "ino": before.st_ino}
+    with _LockedWrapper(path) as handle:
+        return handle.provenance()
 
 
 def _valid_wrapper_provenance(value: Any) -> bool:
@@ -249,6 +305,11 @@ def _check_wrapper_ledger(root: Path, ledger: dict) -> None:
 
 
 def _remove_known_file(path: Path) -> bool:
+    if os.name == "nt":
+        try:
+            return handles.remove_file(str(path))
+        except handles.WalkError as exc:
+            raise SafetyError(str(exc)) from exc
     if not os.path.lexists(path):
         return False
     if is_reparse(path) or not path.is_file():
@@ -779,6 +840,20 @@ class Journal:
             expected = {"backup": f"{name}.old-{value['id']}", "staged": f"{name}.new-{value['id']}"}
             if tool.get("backup") not in (None, expected["backup"]) or tool.get("staged") != expected["staged"] or type(tool.get("created")) is not bool:
                 raise SafetyError("Installer journal tool path is invalid")
+            if name != CODEX_WRAPPER:
+                if tool.get("old") is not None and not _valid_wrapper_provenance(tool["old"]):
+                    raise SafetyError("Installer journal tool provenance is invalid")
+                if "newSha256" in tool and not (isinstance(tool["newSha256"], str)
+                                                and re.fullmatch(r"[0-9a-f]{64}", tool["newSha256"])):
+                    raise SafetyError("Installer journal tool hash is invalid")
+                if tool.get("stagedProvenance") is not None and not _valid_wrapper_provenance(tool["stagedProvenance"]):
+                    raise SafetyError("Installer journal staged provenance is invalid")
+                staged_id = tool.get("stagedId")
+                if staged_id is not None and not (isinstance(staged_id, dict) and set(staged_id) == {"dev", "ino"}
+                                                  and all(type(v) is int and v > 0 for v in staged_id.values())):
+                    raise SafetyError("Installer journal staged identity is invalid")
+                if tool.get("phase", "intent") not in {"intent", "staged"}:
+                    raise SafetyError("Installer journal tool phase is invalid")
         trash_entries = value.get("trashEntries", [])
         if not isinstance(trash_entries, list):
             raise SafetyError("Installer journal trash list is invalid")
@@ -988,7 +1063,7 @@ class ReleaseOps:
         self.after_mutation("pointer-restored")
         self.integration_restore(before.get("integration", {}))
         self.after_mutation("integration-restored")
-        self._restore_tools(journal)
+        conflicts = self._restore_tools(journal)
         damaged = journal.get("damagedCurrent")
         quarantine_name = journal.get("quarantineName")
         if damaged and quarantine_name:
@@ -1036,6 +1111,10 @@ class ReleaseOps:
             if not final.exists() and journal["target"] in ledger["releases"]:
                 ledger["releases"].remove(journal["target"])
                 self._save_ledger(ledger)
+        if conflicts:
+            # Keep the user's live files, the backups and the journal; recovery is NOT complete.
+            raise RecoveryConflict("Recovery kept foreign or unverifiable files and its journal: "
+                                   + "; ".join(conflicts))
         journal["phase"] = "rolled-back"
         self.journal.save(journal)
         self.after_mutation("rollback-journaled")
@@ -1141,35 +1220,84 @@ class ReleaseOps:
         ledger.setdefault("wrapperFiles", {})[name] = entry["newProvenance"]
         self._save_ledger(ledger)
 
-    def _restore_tools(self, journal: dict) -> None:
+    def _restore_tools(self, journal: dict) -> list[str]:
+        """Conditionally undo tool replacement; returns conflict descriptions (nothing is forced)."""
         ledger = self._ledger()
+        conflicts: list[str] = []
         for name, entry in (journal.get("tools") or {}).items():
             if name not in TOOLS or not isinstance(entry, dict):
                 raise SafetyError("Installer journal tool record is invalid")
             if name == CODEX_WRAPPER:
                 self._restore_wrapper(entry, ledger)
                 continue
-            live = self.root / name
-            backup = entry.get("backup")
-            staged = entry.get("staged")
-            if backup:
-                backup_path = safe_child(self.root, backup)
-                if backup_path.exists():
-                    self.fs.replace(backup_path, live)  # the previous bytes win
-                    self.after_mutation("tool-restored")
-                if backup in ledger["tools"]:
-                    ledger["tools"].remove(backup)
-                    self._save_ledger(ledger)
-            elif entry.get("created") and live.exists():
-                _remove_known_file(live)
+            try:
+                self._restore_plain_tool(name, entry, ledger)
+            except RecoveryConflict as exc:
+                conflicts.append(f"{name}: {exc}")
+        return conflicts
+
+    def _restore_plain_tool(self, name: str, entry: dict, ledger: dict) -> None:
+        """Restore a verified backup into a verified-vacant destination; idempotent.
+
+        Ownership comes from the journal (old/new hashes and file IDs recorded before any
+        replacement) and is checked on held handles; mutation uses the same handle.
+        """
+        if "newSha256" not in entry or "old" not in entry:
+            raise RecoveryConflict("journal has no tool provenance (written by an older installer); "
+                                   "live, backup and staged files were kept")
+        live = self.root / name
+        old, staged_prov, staged_id = entry["old"], entry.get("stagedProvenance"), entry.get("stagedId")
+
+        def is_old(found: dict) -> bool:
+            return old is not None and found == old
+
+        def is_new(found: dict) -> bool:
+            return staged_prov is not None and found == staged_prov
+
+        live_found = _probe(live)
+        backup_name = entry.get("backup")
+        if backup_name:
+            backup = safe_child(self.root, backup_name)
+            backup_found = _probe(backup)
+            if backup_found is not None:
+                if not is_old(backup_found):
+                    raise RecoveryConflict("backup does not match the recorded original; kept")
+                if live_found is None:
+                    pass
+                elif is_new(live_found):
+                    _conditional_delete(live, is_new, "Installed new tool")
+                    self.after_mutation("tool-new-removed")
+                else:
+                    raise RecoveryConflict("live file is not the installer's; kept it and the backup")
+                _conditional_rename(backup, live, is_old, "Backup")
+                self.after_mutation("tool-restored")
+            elif live_found is None:
+                raise RecoveryConflict("neither the live file nor the backup exists")
+            elif not is_old(live_found):
+                raise RecoveryConflict("backup is missing and the live file is not the recorded original; kept")
+            # else: already restored (idempotent)
+            if backup_name in ledger["tools"]:
+                ledger["tools"].remove(backup_name)
+                self._save_ledger(ledger)
+        elif entry.get("created"):
+            if live_found is not None:
+                if not is_new(live_found):
+                    raise RecoveryConflict("live file is not the one the installer created; kept")
+                _conditional_delete(live, is_new, "Created tool")
                 self.after_mutation("tool-removed")
-                if name in ledger["tools"]:
-                    ledger["tools"].remove(name)
-                    self._save_ledger(ledger)
-            if staged:
-                staged_path = safe_child(self.root, staged)
-                if staged_path.exists():
-                    _remove_known_file(staged_path)
+            if name in ledger["tools"]:
+                ledger["tools"].remove(name)
+                self._save_ledger(ledger)
+        staged = entry.get("staged")
+        if staged:
+            staged_path = safe_child(self.root, staged)
+            if _probe(staged_path) is not None:
+                def staged_owned(found: dict) -> bool:
+                    if staged_prov is not None:
+                        return found == staged_prov
+                    return (staged_id is not None  # copy interrupted: only the recorded object ID is known
+                            and (found["dev"], found["ino"]) == (staged_id["dev"], staged_id["ino"]))
+                _conditional_delete(staged_path, staged_owned, "Staged tool")
 
     def _replace_tools(self, record: dict) -> None:
         """Write-new then rename: the live file is renamed aside (works while it runs)."""
@@ -1190,18 +1318,34 @@ class ReleaseOps:
                 self._save_ledger(ledger)
             if live.exists() and sha256_file(live) == sha256_file(source):
                 continue
+            old = _wrapper_provenance(live) if live.exists() else None
             entry = {"backup": f"{name}.old-{record['id']}" if live.exists() else None,
-                     "created": not live.exists(), "staged": f"{name}.new-{record['id']}"}
+                     "created": not live.exists(), "staged": f"{name}.new-{record['id']}",
+                     "old": old, "newSha256": sha256_file(source), "stagedId": None,
+                     "stagedProvenance": None, "phase": "intent"}
             record["tools"][name] = entry
-            self.journal.save(record)  # intent first
+            self.journal.save(record)  # intent first, with the expected new hash and the old identity
             if entry["backup"]:
                 ledger["tools"].append(entry["backup"])
                 self._save_ledger(ledger)
             staged = self.root / entry["staged"]
-            shutil.copyfile(source, staged)
+            with source.open("rb") as reader, _LockedWrapper(staged, create=True) as writer:
+                entry["stagedId"] = writer.identity()  # recorded before bytes land, so a partial copy is ownable
+                self.journal.save(record)
+                shutil.copyfileobj(reader, writer.stream)
+                writer.stream.flush()
+                entry["stagedProvenance"] = writer.provenance()
+                entry["phase"] = "staged"
+                self.journal.save(record)
             self.after_mutation("tool-staged")
             if entry["backup"]:
-                self._replace(live, self.root / entry["backup"], "tool-backed-up")
+                backup = self.root / entry["backup"]
+                if os.path.lexists(backup):
+                    raise SafetyError("Tool backup collision")
+                self._replace(live, backup, "tool-backed-up")
+                _check_wrapper(backup, old)  # the object moved aside is the one we recorded
+            if os.path.lexists(live):
+                raise SafetyError("Tool install destination collision")
             self._replace(staged, live, "tool-replaced")
 
     def _cleanup_tool_backups(self, record: dict) -> None:
@@ -1215,6 +1359,9 @@ class ReleaseOps:
                 if backup.startswith(CODEX_WRAPPER + ".old-"):
                     if os.path.lexists(path):
                         _delete_wrapper(path, ledger.get("wrapperFiles", {}).get(backup))
+                elif isinstance(entry.get("old"), dict):
+                    if os.path.lexists(path):
+                        _delete_wrapper(path, entry["old"])
                 else:
                     _remove_known_file(path)
             except (OSError, SafetyError):

@@ -1,4 +1,4 @@
-﻿import json
+import json
 
 from token_tracker import claude_provider, providers
 

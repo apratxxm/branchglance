@@ -31,6 +31,42 @@ const policy={schemaVersion:1,generation:"tree-fixture",providers:[
   {name:"Claude",collect:true,show:true,send:false,capabilities:{}}]};
 const quota={fiveHour:{percent:42,resetAt:fixedNow/1000+5400},weekly:{percent:31,resetAt:fixedNow/1000+190000},limitsUpdatedAt:ago(1)};
 const claudeParent={id:"op",key:"Claude:op",parentKey:null,title:"Branchglance lead",model:"claude-opus-5-5",status:"running",updatedAt:ago(0),workspace:"D:\\work\\sample-app",...quota};
+
+{
+  const {T}=boot();
+  const stopped={id:'old',key:'Codex:old',provider:'Codex',parentKey:'Claude:op',
+    retainedRun:true,runPid:42,runCreated:'133000000000000000',stoppedAt:ago(1),runStartedAt:ago(3),
+    status:'idle',stateDetail:'stopped',executionStatus:'idle',model:'gpt-6.1-sol',contextModel:'gpt-6.1-sol',
+    contextTokens:1000,contextWindow:2000,contextObservedAt:ago(2),updatedAt:ago(2)};
+  const forest=T.buildForest([{name:'Claude',chats:[claudeParent]},{name:'Codex',chats:[stopped]}]);
+  const child=forest.rows.find(row=>row.id==='old');
+  assert.equal(child.key,stopped.key);
+  assert.equal(T.runInfo(child).seconds,120);
+  const markup=T.runwayTelemetryHTML(child,true);
+  assert.match(markup,/Stopped/);
+  for(const slot of ['timing','path-column','tokens'])assert.ok(markup.includes('data-runway-slot="'+slot+'"'));
+}
+
+{
+  const {T}=boot();
+  const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[{name:'Codex',chats:[{id:'thread',status:'running'}]}]};
+  const old={id:'thread',key:'Codex:thread',provider:'Codex',retainedRun:true,runPid:42,runCreated:'123',runVerified:false,stoppedAt:ago(1),status:'idle'};
+  assert.equal(T.applyLive(snapshot,{generatedAt:ago(0),chats:[old],complete:true}).changed,true);
+  assert.equal(snapshot.providers[0].chats.length,1);
+  assert.ok(snapshot.providers[0].chats.some(row=>row.retainedRun&&row.stoppedAt===old.stoppedAt));
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'thread',key:'Codex:thread',provider:'Codex',status:'running',retainedRun:null,stoppedAt:null,resumeCount:2}],complete:true});
+  assert.equal(snapshot.providers[0].chats.length,1);
+  assert.equal(snapshot.providers[0].chats[0].retainedRun,null,'a new run clears retained state');
+  assert.equal(snapshot.providers[0].chats[0].resumeCount,2);
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'thread',key:'Codex:thread',provider:'Codex',status:'running'}],complete:true});
+  assert.equal(snapshot.providers[0].chats[0].resumeCount,undefined,'absent count clears an earlier badge');
+}
+{
+  const {T}=boot();
+  const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[{name:'Codex',chats:[{id:'thread',key:'Codex:thread',provider:'Codex',retainedRun:true,stoppedAt:ago(1),status:'idle'}]}]};
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[],complete:true});
+  assert.equal(snapshot.providers[0].chats.length,1,'a live poll that omits a retained thread does not remove the thread');
+}
 const codexLuna={id:"luna",key:"Codex:luna",parentKey:"Claude:op",title:"dashboard pass",agentName:"luna",model:"gpt-6-luna",status:"running",updatedAt:ago(1),workspace:"D:\\work\\sample-app",...quota};
 const codexSol={id:"sol",key:"Codex:sol",parentKey:"Codex:luna",title:"review pass",agentName:"sol",model:"gpt-6.1-sol",status:"running",updatedAt:ago(2),workspace:"D:\\work\\sample-app",...quota};
 const claudeHaiku={id:"haiku",key:"Claude:haiku",parentKey:"Claude:op",title:"test pass",agentName:"haiku",model:"claude-haiku-5-5",status:"running",updatedAt:ago(3),workspace:"D:\\work\\sample-app",...quota};
@@ -126,19 +162,9 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const extra=Array.from({length:7},(_,i)=>({...base,key:'Codex:extra'+i,id:'extra'+i,parentKey:root.key,treeParentKey:root.key,latest:100+i}));
   const entriesFor=descendants=>T.trayEntries({...root,descendants},{active:false});
   const keys=entries=>Array.from(entries.filter(e=>e.cls.includes('runway-agent')),e=>e.key);
-  const click=(action,key=root.key,last=2)=>{const snapshot=T.state.snapshot;T.state.snapshot=null;T.handleClick({target:{closest:()=>({dataset:{action,key,last:String(last)}})}});T.state.snapshot=snapshot;};
   let entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),extra.slice(0,3).map(e=>e.key),'forest sibling order is retained');
-  assert.match(entries.at(-1).html,/\+4 more/);
-  click('runway-more');entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),extra.slice(3,6).map(e=>e.key));
-  assert.match(entries.at(-1).html,/4\u20136 of 7/);
-  click('runway-more');entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),[extra[6].key]);
-  assert.match(entries.at(-1).html,/7 of 7/);
-  click('runway-page-prev');entries=entriesFor(extra);
-  assert.deepEqual(keys(entries),extra.slice(3,6).map(e=>e.key));
-  click('runway-page-prev');
+  assert.deepEqual(keys(entries),extra.map(e=>e.key),'all seven siblings render in forest order');
+  assert.ok(entries.every(e=>!e.cls.includes('runway-'+'more')&&!e.key.startsWith('__'+'more:')),'no pager entry is rendered');
   const waiting={...extra[5],status:'needs-input',executionStatus:'waiting',pendingQuestion:'Choose?',pendingQuestionAt:ago(0)};
   entries=entriesFor(extra.map(a=>a.key===waiting.key?waiting:a));
   assert.ok(keys(entries).includes(waiting.key),'waiting sibling past cap remains visible');
@@ -152,10 +178,10 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.ok(keys(entries).includes(extra[5].key)&&keys(entries).includes(waitingGrandchild.key),'actionable descendant preserves ancestor path');
   const idle={...extra[0],status:'idle',executionStatus:'idle'},grandchild={...extra[1],parentKey:idle.key,treeParentKey:idle.key};
   entries=entriesFor([idle,grandchild]);
-  assert.deepEqual(keys(entries),[grandchild.key],'visible grandchild survives an inactive intermediate');
+  assert.deepEqual(keys(entries),[idle.key,grandchild.key],'active grandchild keeps its inactive ancestor');
   T.state.pointerInList=true;
   entries=entriesFor(extra.map((a,i)=>({...a,latest:i===6?9999:a.latest})));
-  assert.deepEqual(keys(entries),extra.slice(0,3).map(e=>e.key),'polling activity cannot reorder siblings');
+  assert.deepEqual(keys(entries),extra.map(e=>e.key),'polling activity cannot reorder siblings');
 
   const inspect='body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) ';
   const rowRule=cssRule(inspect+'.runway-refined-row');
@@ -208,15 +234,15 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
     return new Element('button',attrs,[new TextNode(text)]);
   });
   doc.createElement=name=>name==='template'?{set innerHTML(value){this.content={childNodes:parse(value)};}}:new Element(name);
-  const initial='<button data-action="runway-page-prev" aria-disabled="true">\u2190</button><button data-action="runway-more" aria-expanded="false">+4 more</button>';
-  const updated='<button data-action="runway-page-prev" aria-disabled="false">\u2190</button><button data-action="runway-more" aria-expanded="true">4\u20136 of 7 \u2192</button>';
-  const wrapper=new Element('div',{},parse(initial));wrapper.dataset.key='__more:root';wrapper.className='runway-more';wrapper._html=initial;
-  const container=new Element('div',{},[wrapper]),button=wrapper.children[1];button.focus();
-  T.patchKeyed(container,[{key:'__more:root',cls:'runway-more',attrs:{},html:updated}]);
-  assert.equal(wrapper.children[1],button);
+  const initial='<button data-action="toggle-agent-details" aria-expanded="false">Open</button>';
+  const updated='<button data-action="toggle-agent-details" aria-expanded="true">Close</button>';
+  const wrapper=new Element('div',{},parse(initial));wrapper.dataset.key='agent:root';wrapper.className='runway-agent';wrapper._html=initial;
+  const container=new Element('div',{},[wrapper]),button=wrapper.children[0];button.focus();
+  T.patchKeyed(container,[{key:'agent:root',cls:'runway-agent',attrs:{},html:updated}]);
+  assert.equal(wrapper.children[0],button);
   assert.equal(doc.activeElement,button);
   assert.equal(button.getAttribute('aria-expanded'),'true');
-  assert.equal(button.firstChild.nodeValue,'4\u20136 of 7 \u2192');
+  assert.equal(button.firstChild.nodeValue,'Close');
 }
 
 // Mixed provider lineage uses canonical keys and the graph across provider boundaries.
@@ -326,6 +352,8 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(page,/id="brand-name">Branchglance/);
   const template=css.match(/\.runway-refined-row\{\s*grid-template-columns:([^;]+);/)?.[1];
   assert.ok(template,"the inspect row declares shared tracks");
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-title\{grid-column:1 \/ 3/,'child titles stay in the shared title column');
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-timing\{grid-column:4/,'child timing stays in the shared timing column');
   const minimums=[120,46,82,70,80,78],gap=8,padLeft=30,centers=[];let x=padLeft;
   for(const width of minimums){centers.push(x+width/2);x+=width+gap;}
   assert.equal(centers.length,6);
@@ -345,11 +373,53 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(css,/\.chat\[data-provider="Claude"\]>\.row::after\{background:radial-gradient\(ellipse at 48% 110%,color-mix\(in srgb,var\(--claude-accent\) 22%/,"Claude parents keep a warm, edgeless identifier glow");
   assert.match(css,/\.runway-refined-row::after\{[^}]*border-radius:0;[^}]*radial-gradient\([^}]*transparent 100%/,"hover highlight is an edgeless glow");
   assert.doesNotMatch(css,/linear-gradient\(to bottom,var\(--tree-(?:claude|codex)-surface\)/,"cross-provider seams have no row-edge feather bands");
-  const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard"},true);
-  const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna · dashboard review dashboard updates and coordination"},true);
+  const shortTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna Â· dashboard"},true);
+  const longTitle=T.runwayTelemetryHTML({...codexLuna,title:"Luna Â· dashboard review dashboard updates and coordination"},true);
   assert.equal((shortTitle.match(/class="runway-refined-row"/g)||[]).length,(longTitle.match(/class="runway-refined-row"/g)||[]).length,"title length does not add rows or change the fixed row tracks");
   assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center;\s*width:100%;min-width:0;min-height:50px/);
   assert.match(css,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
 }
 
 console.log("unified agent tree contract checks passed");
+
+// Tree rendering is independent of the current window height and scrolls at the cap.
+{
+  const {T,node,context}=boot();
+  const list=node('#chat-list');list.getBoundingClientRect=()=>({top:120,height:0,width:400});
+  const lead=i=>({id:'lead'+i,key:'Claude:lead'+i,parentKey:null,title:'Lead '+i,model:'claude-opus-5-5',status:'running',updatedAt:ago(i),...quota});
+  const sub=(i,j)=>({id:'sub'+i+j,key:'Claude:sub'+i+j,parentKey:'Claude:lead'+i,title:'Worker '+i+j,model:'claude-haiku-5-5',status:'running',updatedAt:ago(i),...quota});
+  const check=chats=>{
+    const providers=[{name:'Claude',connected:true,chats,...quota}];
+    T.state.snapshot={generatedAt:ago(0),providerPolicies:policy,providers,graph:{revision:1,edges:Object.fromEntries(chats.map(chat=>[chat.key,chat.parentKey]))}};
+    const seen=new Set();
+    for(const height of [420,180,300,150,260,420,200]){
+      context.window.innerHeight=height;T.renderChats(providers);
+      assert.doesNotMatch(list.innerHTML,/runway-global|\d+ \/ \d+ ?/);
+      seen.add(list.innerHTML);
+    }
+    assert.equal(seen.size,1,'tree markup stays stable across window heights');
+  };
+  const chats=[];for(let i=0;i<4;i++)chats.push(lead(i),sub(i,0),sub(i,1));
+  check(chats);for(const chat of chats)assert.ok(list.innerHTML.includes(chat.key),chat.key+' renders');
+  const many=Array.from({length:20},(_,i)=>lead(i));check(many);
+  for(const chat of many)assert.ok(list.innerHTML.includes(chat.key),chat.key+' renders');
+  assert.match(cssRule('body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat-list'),/overflow-y:auto/);
+}
+
+// Agent-tree display regressions: elapsed, workspace, and stopped children.
+{
+  const {T}=boot();
+  const active={id:'active',key:'Claude:active',title:'Active',status:'running',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),runStartedAt:ago(2)};
+  assert.equal(T.runwayStateElapsed(active),'2:00');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2:00');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+3000).toISOString()}),'0:00');
+  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1:00');
+  // The thread's creation time is not a run start: a resumed run without a run start shows a dash.
+  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,createdAt:ago(600)}),'—');
+  const row=workspace=>T.runwayTelemetryHTML({...active,workspace},false);
+  assert.match(row('C:\\Users\\a\\.t3\\scratch\\session'),/>scratch<\/span>/);
+  assert.match(row('C:\\work\\proj'),/>C: proj<\/span>/);
+  assert.match(T.runwayTelemetryHTML({...active,workspace:'C:\\Users\\a\\.t3\\scratch\\checkout',workspaceKind:'project'},false),/>C: checkout<\/span>/);
+  assert.match(row('/Users/a/proj'),/>proj<\/span>/);
+  assert.doesNotMatch(row('/Users/a/proj'),/>\/U proj/);
+}

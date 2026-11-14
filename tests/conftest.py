@@ -9,9 +9,19 @@ from token_tracker import claude_provider, product
 
 @pytest.fixture(autouse=True)
 def _isolated_product_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
     monkeypatch.setenv(product.STATE_ROOT_ENV, str(tmp_path / "product-state"))
     monkeypatch.delenv(product.POLICY_FILE_ENV, raising=False)
+    # Claude Code's config holds the selected account and its usage cache; never read the real one.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     monkeypatch.setattr(product, "legacy_webview_path", lambda environ=None: tmp_path / "no-legacy-webview")
+    yield
+    from token_tracker import providers
+    providers._snapshot_shutdown = False
+    import sys
+    widget = sys.modules.get("token_tracker.widget")
+    if widget is not None:
+        widget._cancel_shutdown_trace()
 
 
 @pytest.fixture

@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .codex_client import CodexAppServer, CodexUnavailable
-from .claude_cache import reset_info, usage_info
 from .claude_statusline import merge_usage
 
 CLAUDE_DISPLAY_USAGE_AGE_SECONDS = 600  # matches the widget's quota freshness (app.js resetView)
@@ -34,6 +33,28 @@ ENABLED_PROVIDERS = (
     "Claude",
 )
 LIMIT_ONLY_PROVIDERS = ("Claude",)
+
+_snapshot_executor_lock = threading.Lock()
+_snapshot_executors: set[ThreadPoolExecutor] = set()
+_snapshot_shutdown = False
+
+
+class SnapshotShutdown(BaseException):
+    """Internal signal that a provider snapshot should stop during shutdown."""
+
+
+def _raise_if_snapshot_shutdown() -> None:
+    if _snapshot_shutdown:
+        raise SnapshotShutdown("provider snapshots are shutting down")
+
+
+def stop_snapshot_workers() -> None:
+    """Reject new snapshot work, cancel queued jobs, and stop full-file readers at the next line; other running work finishes."""
+    global _snapshot_shutdown
+    with _snapshot_executor_lock:
+        _snapshot_shutdown = True
+        for pool in _snapshot_executors:
+            pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _iso_from_ms(value: int | float | None) -> str | None:
@@ -234,6 +255,26 @@ def _usage_percent(value: Any) -> int | None:
         return max(0, min(100, int(value)))
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _banked_resets(result: Any, now: float | None = None) -> dict[str, Any] | None:
+    """Unused limit resets the provider granted, or None when it reports none."""
+    block = result.get("rateLimitResetCredits") if isinstance(result, dict) else None
+    if not isinstance(block, dict) or not isinstance(block.get("credits"), list):
+        return None
+    now = time.time() if now is None else now
+    items = []
+    for credit in block["credits"]:
+        if not isinstance(credit, dict) or credit.get("status") != "available":
+            continue
+        expires = credit.get("expiresAt")
+        expires = expires if type(expires) in (int, float) else None
+        if expires is not None and expires <= now:
+            continue
+        title = " ".join(str(credit.get("title") or "Limit reset").split())[:60]
+        items.append({"title": title, "expiresAt": expires})
+    items.sort(key=lambda item: item["expiresAt"] if item["expiresAt"] is not None else float("inf"))
+    return {"available": len(items), "items": items[:5]}
 
 
 def _walk(value: Any) -> Iterable[tuple[str, Any]]:
@@ -447,9 +488,24 @@ def _in_build_scope(function: Any) -> Any:
     return wrapper
 
 
+def _stat_ctime_ns(stat: os.stat_result) -> int:
+    """File creation/change stamp that agrees between ``os.stat`` and ``os.fstat``.
+
+    Python 3.12+ on Windows reports a different ``st_ctime`` for a path stat (file
+    creation time) and a handle stat (last change time), so comparing the two made
+    every incremental read look like a rewrite. ``st_birthtime_ns`` (creation time)
+    is identical for both there; earlier Windows versions and other platforms keep
+    using ``st_ctime_ns``, which already agrees between the two calls.
+    """
+    if os.name == "nt":
+        birth = getattr(stat, "st_birthtime_ns", None)
+        if birth is not None:
+            return birth
+    return getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000))
+
+
 def _fingerprint_of(stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino,
-            getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000)))
+    return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino, _stat_ctime_ns(stat))
 
 
 def _stat_fresh(path: Path) -> os.stat_result:
@@ -527,9 +583,7 @@ _JSONL_PATH_LOCKS = tuple(threading.Lock() for _ in range(64))
 
 
 def _jsonl_stat(handle: Any) -> tuple[int, int, int, int, int]:
-    stat = os.fstat(handle.fileno())
-    return (stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino,
-            getattr(stat, "st_ctime_ns", int(stat.st_ctime * 1_000_000_000)))
+    return _fingerprint_of(os.fstat(handle.fileno()))
 
 
 def _jsonl_guards(handle: Any, offset: int, size: int) -> tuple[bytes, bytes]:
@@ -687,6 +741,7 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
         committed_offset = start_offset
         valid_unterminated_record = False
         while True:
+            _raise_if_snapshot_shutdown()
             line = handle.readline()
             if not line:
                 break
@@ -2928,8 +2983,8 @@ class ClaudeDesktopProvider:
     def _usage(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         path = self.root / "plan-usage-history.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        samples = data.get("samples") or []
-        if not samples:
+        samples = data.get("samples") if isinstance(data, dict) else None
+        if not isinstance(samples, list) or not samples or any(not isinstance(sample, dict) for sample in samples):
             raise RuntimeError("Claude usage history is empty")
         latest_org = samples[-1].get("org")
         own = [sample for sample in samples if sample.get("org") == latest_org]
@@ -2942,49 +2997,6 @@ class ClaudeDesktopProvider:
             own[-1],
         )
         return own, latest
-
-    def _reset_at(self) -> int | None:
-        path = self.root / "claude_desktop_config.json"
-        candidates: list[int] = []
-        now = time.time()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = {}
-        for key, value in _walk(data):
-            if key == "resetsAt" and isinstance(value, (int, float)):
-                seconds = float(value) / 1000 if value > 10_000_000_000 else float(value)
-                if now - 300 <= seconds <= now + 5 * 3600 + 300:
-                    candidates.append(int(seconds))
-
-        # Claude Desktop's web layer persists the authoritative reset timestamp
-        # in Electron's LevelDB store rather than plan-usage-history.json. Read
-        # only recent, bounded local files and extract the timestamp without
-        # loading or exposing any account/session values around it.
-        storage = self.root / "Local Storage" / "leveldb"
-        try:
-            files = sorted(
-                (item for item in storage.iterdir() if item.suffix.lower() in {".ldb", ".log"}),
-                key=lambda item: item.stat().st_mtime,
-                reverse=True,
-            )[:12]
-        except OSError:
-            files = []
-        pattern = re.compile(rb"resetsAt[^0-9]{0,32}([0-9]{10,13})", re.IGNORECASE)
-        for item in files:
-            try:
-                with item.open("rb") as handle:
-                    size = handle.seek(0, 2)
-                    handle.seek(max(0, size - 2_000_000))
-                    payload = handle.read()
-            except OSError:
-                continue
-            for match in pattern.finditer(payload):
-                raw = int(match.group(1))
-                seconds = raw / 1000 if raw > 10_000_000_000 else raw
-                if now - 300 <= seconds <= now + 5 * 3600 + 300:
-                    candidates.append(int(seconds))
-        return min(candidates) if candidates else None
 
     @classmethod
     def _file_usage(cls, path: Path) -> list[dict[str, Any]]:
@@ -3201,25 +3213,15 @@ class ClaudeDesktopProvider:
             "output": int(totals["output_tokens"]),
             **_costs(totals, transcript["models"], CLAUDE_PRICING, claude=True),
         }
-        deadlines = merge_usage(usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS))
-        history_usage = usage
-        usage = {**usage, "fh": deadlines["fiveHourPercent"] if deadlines["fiveHourPercent"] is not None else (None if deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else usage.get("fh")), "sd": deadlines["weeklyPercent"] if deadlines["weeklyPercent"] is not None else (None if deadlines.get("_weeklySelected") or deadlines.get("lastKnownWeekly") else usage.get("sd"))}
-        merged_live = deadlines["fiveHourPercent"] is not None or deadlines["weeklyPercent"] is not None
-        history_live = any(_usage_percent(history_usage.get(short)) is not None and deadlines[field + "Percent"] is None
-                           and not deadlines.get("_" + field + "Selected") and not deadlines.get("lastKnown" + field[0].upper() + field[1:])
-                           for short, field in (("fh", "fiveHour"), ("sd", "weekly")))
-        merged_at = (datetime.fromtimestamp(deadlines["observedAt"], timezone.utc).isoformat()
-                     if merged_live and deadlines.get("observedAt") is not None else None)
-        history_at = _iso_from_ms(latest.get("t")) if history_live else None
-        limits_at = min(merged_at, history_at) if merged_at and history_at else (None if history_live and not history_at else merged_at or history_at)
-        reset_at = deadlines["fiveHour"] if deadlines["observedAt"] is not None or deadlines.get("_fiveHourSelected") or deadlines.get("lastKnownFiveHour") else self._reset_at()
-        weekly_reset = deadlines["weekly"]
+        limits_provider = ClaudeLimitsProvider()
+        limits_provider.root = self.root
+        limits = limits_provider.snapshot()
         return {
             "connected": True,
             "name": "Claude",
             "accent": "#e8813f",
-            "fiveHour": {"percent": _usage_percent(usage.get("fh")), "reset": _reset_label(reset_at, usage.get("fh")), "resetAt": reset_at, "lastKnownResetAt": deadlines.get("lastKnownFiveHour")},
-            "weekly": {"percent": _usage_percent(usage.get("sd")), "reset": _reset_label(weekly_reset, usage.get("sd")), "resetAt": weekly_reset, "lastKnownResetAt": deadlines.get("lastKnownWeekly")},
+            "fiveHour": limits["fiveHour"],
+            "weekly": limits["weekly"],
             "cache": cache,
             "chats": self._chats(transcript["sessions"]),
             "activity": [{"date": date, "value": value} for date, value in sorted(transcript["daily"].items())],
@@ -3231,13 +3233,15 @@ class ClaudeDesktopProvider:
             "trackingWindowDays": 31,
             "lifetimeTokens": int(totals["total_tokens"]),
             "lastSync": _iso_from_ms(latest.get("t")),
-            "limitsUpdatedAt": limits_at,
+            "limitsUpdatedAt": limits["limitsUpdatedAt"],
+            "identityGeneration": limits["identityGeneration"],
+            "identityVerified": limits["identityVerified"],
             "source": "Claude Desktop + Claude Code transcript telemetry",
         }
 
 
 class ClaudeLimitsProvider(ClaudeDesktopProvider):
-    """Claude's account quota meters alone, read from Claude Desktop's local files.
+    """Claude's account quota meters from Claude Code and opted-in live usage.
 
     No transcript scan: this stays cheap while Claude chats are not tracked.
     """
@@ -3246,12 +3250,40 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
     # usage response and find only an older one. Never step back to it.
     _last_live: dict[str, dict[str, Any]] = {}
     _last_live_lock = threading.Lock()
+    _auth_cache: tuple[float, str | None] | None = None
+    _auth_cache_lock = threading.Lock()
+
+    def __init__(self, local_app_data: str | None = None, *, auth_status=None, monotonic=None) -> None:
+        super().__init__(local_app_data)
+        self._auth_status = auth_status
+        self._auth_clock = monotonic or time.monotonic
+
+    def _current_cli_org(self, cwd: Path) -> str | None:
+        with ClaudeLimitsProvider._auth_cache_lock:
+            now = self._auth_clock()
+            cached = ClaudeLimitsProvider._auth_cache
+            if cached is not None and 0 <= now - cached[0] < 300:
+                return cached[1]
+            try:
+                if self._auth_status is None:
+                    # Local import avoids the providers / limit_reset import cycle.
+                    from .limit_reset import _claude_auth_status
+                    auth = _claude_auth_status(cwd)
+                else:
+                    auth = self._auth_status(cwd)
+                org = auth.get("orgId") if isinstance(auth, dict) and auth.get("ok") is True else None
+                if not isinstance(org, str) or not org.strip():
+                    org = None
+            except Exception:
+                org = None
+            ClaudeLimitsProvider._auth_cache = (self._auth_clock(), org)
+            return org
 
     def _newest_live(self, info: dict[str, Any], now: float | None = None,
-                     *, watermarks: bool = False) -> dict[str, Any]:
+                     *, watermarks: bool = False, identity_generation: object = None) -> dict[str, Any]:
         """Retain each window's identity, high-water usage and its observation time."""
         now = time.time() if now is None else now
-        key = str(self.root)
+        key = (str(self.root), identity_generation)
         result = dict(info)
         fresh_times = []
         with self._last_live_lock:
@@ -3299,18 +3331,29 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
 
     @_in_build_scope
     def snapshot(self) -> dict[str, Any]:
-        samples, latest = self._usage()
-        usage = latest.get("u") or {}
-        # Claude Desktop refetches usage only every few minutes, so a 90-second window
-        # leaves the meters blank most of the time. Display accepts a response up to the
-        # widget's own 10-minute quota freshness; the greeter remains at 90 seconds.
-        info = usage_info(self.root, samples, max_usage_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS)
-        info = merge_usage(self._newest_live(info, watermarks=True))
+        from . import claude_identity
+        identity = claude_identity.current_identity()
+        from . import claude_statusline, product, claude_usage_api
+        epoch = identity.generation if identity else None
+        cli = claude_statusline.read(product.state_root() / claude_statusline.CLI_FILENAME,
+                                     max_age=CLAUDE_DISPLAY_USAGE_AGE_SECONDS,
+                                     source="claude-cli", include_org=True)
+        cli_verified = claude_identity.matches_fingerprint(identity, cli.get("identityFingerprint"))
+        code_usage = claude_identity.read_claude_code_usage(identity)
+        live_usage = claude_usage_api.read(identity)
+        verified = bool(identity and (code_usage or claude_usage_api.fresh(live_usage, CLAUDE_DISPLAY_USAGE_AGE_SECONDS) or cli_verified))
+        empty = {"fiveHour": None, "weekly": None, "fiveHourPercent": None,
+                 "weeklyPercent": None, "observedAt": None}
+        info = merge_usage(empty, paths=[] if verified else None,
+                           org_id=identity.org_id if identity else None,
+                           identity_generation=epoch, identity_fingerprint=identity.fingerprint if identity else None,
+                           extra_samples=[code_usage, live_usage])
+        fresh_identity = claude_identity.current_identity()
+        verified = bool(verified and fresh_identity and fresh_identity.generation == epoch)
         live = info["fiveHourPercent"] is not None or info["weeklyPercent"] is not None
-        five = info["fiveHourPercent"] if info["fiveHourPercent"] is not None else (None if info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else usage.get("fh"))
-        weekly = info["weeklyPercent"] if info["weeklyPercent"] is not None else (None if info.get("_weeklySelected") or info.get("lastKnownWeekly") else usage.get("sd"))
-        reset_at = info["fiveHour"] if info["observedAt"] is not None or info.get("_fiveHourSelected") or info.get("lastKnownFiveHour") else self._reset_at()
-        updated_at = datetime.fromtimestamp(info["observedAt"], timezone.utc).isoformat() if live else _iso_from_ms(latest.get("t"))
+        five, weekly = info["fiveHourPercent"], info["weeklyPercent"]
+        reset_at = info["fiveHour"]
+        updated_at = datetime.fromtimestamp(info["observedAt"], timezone.utc).isoformat() if live else None
         return {
             "connected": True,
             "name": "Claude",
@@ -3324,7 +3367,9 @@ class ClaudeLimitsProvider(ClaudeDesktopProvider):
             "chats": [],
             "activity": [],
             "limitsUpdatedAt": updated_at,
-            "source": "Claude Desktop local quota cache (limits only)",
+            "identityGeneration": epoch if verified else None,
+            "identityVerified": verified,
+            "source": "Claude Code quota sources",
         }
 
 
@@ -3514,6 +3559,7 @@ class CodexProvider:
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as handle:
                     for line in handle:
+                        _raise_if_snapshot_shutdown()
                         try:
                             item = json.loads(line)
                         except json.JSONDecodeError:
@@ -3621,6 +3667,65 @@ class CodexProvider:
                 pending.extend(value)
         return total
 
+    @staticmethod
+    def _codex_thread_status(
+        recorded: dict[str, Any],
+        *,
+        app_needs_input: bool,
+        app_fresh: bool,
+        app_active: bool,
+        app_failed: bool,
+        app_idle: bool,
+        terminal_newer_than_app: bool,
+        completed_agent: bool,
+        agent_restarted: bool,
+        transcript_after_app: bool,
+        transcript_fresh: bool,
+    ) -> tuple[str, str]:
+        # The persisted request is the authoritative signal for an unanswered question.
+        # App-server snapshots can still say "active" while an async request is waiting,
+        # or lag behind the transcript and say idle.
+        if recorded["status"] == "needs input":
+            status = "needs input"
+            status_source = "transcript"
+        elif terminal_newer_than_app and recorded["status"] in {"idle", "failed"}:
+            status = recorded["status"]
+            status_source = "transcript"
+        elif app_needs_input and app_fresh:
+            status = "needs input"
+            status_source = "app"
+        elif (recorded["status"] == "compacting" and
+              ((app_fresh and app_active) or transcript_after_app or (not app_fresh and transcript_fresh))):
+            status = "compacting"
+            status_source = "transcript"
+        elif completed_agent and not agent_restarted and app_fresh and app_active:
+            # Fetch time proves the roster was refreshed, not that a child
+            # whose transcript completed has started another run.
+            status = recorded["status"]
+            status_source = "transcript"
+        elif app_fresh and app_active:
+            status = "running"
+            status_source = "app"
+        elif app_fresh and app_failed:
+            status = "failed"
+            status_source = "app"
+        elif app_fresh and app_idle and transcript_fresh and recorded["status"] in {"running", "compacting"}:
+            status = recorded["status"]
+            status_source = "transcript"
+        elif app_fresh and app_idle:
+            status = "idle"
+            status_source = "app"
+        elif recorded["status"] in {"idle", "failed"} and not recorded.get("telemetryUnavailable"):
+            status = recorded["status"]
+            status_source = "transcript"
+        elif (transcript_fresh and recorded["status"] != "unknown") or recorded["status"] == "needs input":
+            status = recorded["status"]
+            status_source = "transcript"
+        else:
+            status = "unavailable"
+            status_source = "unavailable"
+        return status, status_source
+
     @classmethod
     def _thread(cls, row: dict[str, Any]) -> dict[str, Any]:
         insights = _session_insights(row.get("path"))
@@ -3687,48 +3792,12 @@ class CodexProvider:
         app_active = status_type in {"running", "active"}
         app_failed = "failed" in status_raw or "error" in status_raw
         app_idle = status_type in {"idle", "completed", "inactive"}
-        # The persisted request is the authoritative signal for an unanswered
-        # question. App-server snapshots can still say "active" while an
-        # async request is waiting, or lag behind the transcript and say idle.
-        if recorded["status"] == "needs input":
-            status = "needs input"
-            status_source = "transcript"
-        elif terminal_newer_than_app and recorded["status"] in {"idle", "failed"}:
-            status = recorded["status"]
-            status_source = "transcript"
-        elif app_needs_input and app_fresh:
-            status = "needs input"
-            status_source = "app"
-        elif (recorded["status"] == "compacting" and
-              ((app_fresh and app_active) or transcript_after_app or (not app_fresh and transcript_fresh))):
-            status = "compacting"
-            status_source = "transcript"
-        elif completed_agent and not agent_restarted and app_fresh and app_active:
-            # Fetch time proves the roster was refreshed, not that a child
-            # whose transcript completed has started another run.
-            status = recorded["status"]
-            status_source = "transcript"
-        elif app_fresh and app_active:
-            status = "running"
-            status_source = "app"
-        elif app_fresh and app_failed:
-            status = "failed"
-            status_source = "app"
-        elif app_fresh and app_idle and transcript_fresh and recorded["status"] in {"running", "compacting"}:
-            status = recorded["status"]
-            status_source = "transcript"
-        elif app_fresh and app_idle:
-            status = "idle"
-            status_source = "app"
-        elif recorded["status"] in {"idle", "failed"} and not recorded.get("telemetryUnavailable"):
-            status = recorded["status"]
-            status_source = "transcript"
-        elif (transcript_fresh and recorded["status"] != "unknown") or recorded["status"] == "needs input":
-            status = recorded["status"]
-            status_source = "transcript"
-        else:
-            status = "unavailable"
-            status_source = "unavailable"
+        status, status_source = cls._codex_thread_status(
+            recorded, app_needs_input=app_needs_input, app_fresh=app_fresh, app_active=app_active,
+            app_failed=app_failed, app_idle=app_idle, terminal_newer_than_app=terminal_newer_than_app,
+            completed_agent=completed_agent, agent_restarted=agent_restarted,
+            transcript_after_app=transcript_after_app, transcript_fresh=transcript_fresh,
+        )
         agent_path = insights.get("agentPath") or row.get("agentPath") or row.get("agent_path")
         named = (_codex_exec_title(row.get("path")) if (insights.get("source") or row.get("source")) == "exec" else None) or row.get("name") or row.get("title") or row.get("displayName") or insights.get("title") or agent_path or insights.get("agentName")
         title = named or row.get("preview") or "Untitled task"
@@ -3847,7 +3916,6 @@ class CodexProvider:
             "lastRequest": {"input": last_usage.get("input_tokens") if context_valid else None,
                             "cached": last_usage.get("cached_input_tokens") if context_valid else None,
                             "output": last_usage.get("output_tokens") if context_valid else None},
-            "statusSource": status_source,
             "contextSource": "Last recorded request; not a live token count",
             "tokenScope": "Session cumulative usage",
             "dailyTokens": cls._thread_daily(row.get("path")),
@@ -3904,6 +3972,7 @@ class CodexProvider:
             with path.open("r", encoding="utf-8", errors="ignore") as handle:
                 count = 0
                 for line in handle:
+                    _raise_if_snapshot_shutdown()
                     if "turn_context" not in line:
                         continue
                     try:
@@ -4493,6 +4562,7 @@ class CodexProvider:
                 "reset": _reset_label((rate.get("secondary") or {}).get("resetsAt")),
                 "resetAt": (rate.get("secondary") or {}).get("resetsAt"),
             }
+            banked = _banked_resets(snap.rate_limits)
             limits_updated_at = datetime.now(timezone.utc).isoformat()
             source = "Codex app server + local session telemetry"
         except CodexUnavailable:
@@ -4502,6 +4572,7 @@ class CodexProvider:
             chats = self._local_threads(session_paths=session_paths)
             five_hour = self._telemetry_limit(local.get("rate"), "primary")
             weekly = self._telemetry_limit(local.get("rate"), "secondary")
+            banked = None
             limits_updated_at = local.get("rateUpdatedAt")
             source = "Codex local session telemetry"
         try:
@@ -4551,6 +4622,7 @@ class CodexProvider:
             "accent": "#4a95e0",
             "fiveHour": five_hour,
             "weekly": weekly,
+            "bankedResets": banked,
             "cache": cache,
             "modelUsage": [
                 {"model": model, **usage}
@@ -4667,6 +4739,11 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
         provider_stale = bool(provider.get("stale"))
         seen_keys = set()
         for chat in provider.get("chats") or []:
+            if chat.get("retainedRun") is True:
+                # A retained run is already frozen; never index its rollout as
+                # the current execution for this canonical thread ID.
+                chat.pop("path", None)
+                continue
             identity = chat.get("id")
             valid_identity = ((isinstance(identity, str) and bool(identity.strip()))
                               or type(identity) is int)
@@ -4690,11 +4767,19 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                     "latestMessageSourceId", "latestMessageTargetId", "contextTokens", "contextWindow",
                     "contextPercent", "contextObservedAt", "contextModel", "contextDelta",
                     "contextDeltaObservedAt", "modelChangeAt", "lastRequest", "model", "updatedAt",
-                    "title", "parentId", "parentProvider", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
+                    "title", "parentId", "parentProvider", "parentLinkMethod", "linkSource",
+                    "parentIncarnation", "childRunIdentity", "agentName", "agentRole", "source", "previousStatus", "lastValidAt",
                     "activity", "activityUnavailable", "executionStatus", "executionSource",
                     "executionObservedAt", "executionSince", "executionCompactionStartedAt",
                     "executionTerminalAt", "executionActivity",
                 )}
+                if chat.get("parentId") and chat.get("linkSource") != "process":
+                    entry["linkSource"] = "native"
+                elif prior.get("linkSource") == "process":
+                    for field in ("parentId", "parentProvider", "parentLinkMethod", "linkSource",
+                                  "parentIncarnation", "childRunIdentity"):
+                        if entry.get(field) is None and prior.get(field) is not None:
+                            entry[field] = prior[field]
                 if entry.get("appStatus") is None and chat.get("statusSource") == "app":
                     entry["appStatus"] = chat.get("status")
                 # Carry metadata only when the current transcript is unavailable
@@ -4706,6 +4791,9 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
                                      "executionCompactionStartedAt", "executionTerminalAt", "executionActivity"}:
                             continue
                         if field in {"parentId", "parentProvider"}:
+                            continue
+                        if (field in {"parentLinkMethod", "linkSource", "parentIncarnation", "childRunIdentity"}
+                                and prior.get("linkSource") != "process"):
                             continue
                         current = entry.get(field)
                         empty_request = field == "lastRequest" and isinstance(current, dict) and not any(
@@ -4827,6 +4915,27 @@ def _index_live_paths(providers_list: list[dict[str, Any]], policy_generation: s
         _LIVE_INDEX_POLICY_GENERATION = policy_generation
 
 
+def _sync_live_lineage_index(providers_list: list[dict[str, Any]]) -> None:
+    """Persist verified lineage provenance and remove revoked process edges from the live index."""
+    fields = ("parentId", "parentProvider", "parentLinkMethod", "linkSource",
+              "parentIncarnation", "childRunIdentity")
+    with _LIVE_LOCK:
+        for provider in providers_list:
+            for row in provider.get("chats") or []:
+                indexed = _LIVE_INDEX.get(str(row.get("key") or ""))
+                if indexed is None:
+                    continue
+                if row.get("linkSource") in {"process", "native"}:
+                    for field in fields:
+                        if row.get(field) is None:
+                            indexed.pop(field, None)
+                        else:
+                            indexed[field] = row[field]
+                elif indexed.get("linkSource") == "process":
+                    for field in fields:
+                        indexed.pop(field, None)
+
+
 def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> dict[str, Any]:
     """Cheap row for a chat whose transcript detail the live budget deferred.
 
@@ -4841,6 +4950,8 @@ def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> di
         parent_id, parent_provider = _codex_parent_pair(None, indexed)
     else:
         parent_id, parent_provider = indexed.get("parentId"), indexed.get("parentProvider")
+    native_codex_parent = provider == "Codex" and bool(indexed.get("identityParentId"))
+    lineage_source = "native" if native_codex_parent else indexed.get("linkSource")
     title = (_tidy_codex_title(indexed.get("identityTitle") or indexed.get("title") or "", indexed.get("model"))
              if provider == "Codex" else indexed.get("title")) or None
     return {
@@ -4859,6 +4970,10 @@ def _deferred_live_row(key: str, indexed: dict[str, Any], modified: float) -> di
         "runStartedAt": indexed.get("identityRunStartedAt"),
         "activeRunStartedAt": indexed.get("identityActiveRunStartedAt"),
         "parentId": parent_id, "parentProvider": parent_provider,
+        "parentLinkMethod": None if native_codex_parent else indexed.get("parentLinkMethod"),
+        "linkSource": lineage_source,
+        "parentIncarnation": None if native_codex_parent else indexed.get("parentIncarnation"),
+        "childRunIdentity": None if native_codex_parent else indexed.get("childRunIdentity"),
         "title": title,
         "workspace": indexed.get("identityWorkspace") or indexed.get("workspace"),
         "source": indexed.get("identitySource") or indexed.get("source"),
@@ -4990,6 +5105,10 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
                 if indexed.get("identityParentId"):
                     retained["parentId"] = indexed["identityParentId"]
                     retained["parentProvider"] = indexed.get("identityParentProvider") or "Codex"
+                    retained["linkSource"] = "native"
+                    retained.pop("parentLinkMethod", None)
+                    retained.pop("parentIncarnation", None)
+                    retained.pop("childRunIdentity", None)
                 if indexed.get("identityTitle"):
                     retained["title"] = indexed["identityTitle"]
                 if indexed.get("identityWorkspace"):
@@ -5110,6 +5229,10 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
             # above (which infers running from trailing records) is discarded.
             row = _claude_live_row(row, indexed)
             row.update(parentId=indexed.get("parentId"), parentProvider=indexed.get("parentProvider"))
+            if indexed.get("linkSource"):
+                for field in ("parentLinkMethod", "linkSource", "parentIncarnation", "childRunIdentity"):
+                    if indexed.get(field) is not None:
+                        row[field] = indexed[field]
         elif provider != "Codex":
             for field in ("statusSource", "statusObservedAt", "telemetryUnavailable", "metricsUnavailable", "stateSince", "compactionStartedAt", "activity", "activityUnavailable",
                           "executionStatus", "executionSource", "executionObservedAt", "executionSince",
@@ -5132,6 +5255,12 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
                 "workspace": insights.get("workspace") or indexed.get("workspace") or indexed.get("identityWorkspace"),
                 "source": insights.get("source") or indexed.get("source") or indexed.get("identitySource"),
             })
+            if insights.get("parentId") or indexed.get("identityParentId"):
+                row["linkSource"] = "native"
+            elif indexed.get("linkSource"):
+                for field in ("parentLinkMethod", "linkSource", "parentIncarnation", "childRunIdentity"):
+                    if indexed.get(field) is not None:
+                        row[field] = indexed[field]
             # Context telemetry uses a bounded tail read; cumulative token
             # aggregation remains in the slower full provider snapshot.
             event = CodexProvider._last_token_event(path_value) or {}
@@ -5232,14 +5361,28 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
             grouped = [{"name": name, "chats": [chat for chat in chats
                                                  if str(chat.get("key") or "").startswith(name + ":")]}
                        for name in ("Claude", "Codex")]
+            original_order = {str(row.get("key")): index for index, row in enumerate(chats)}
             apply_exact_links(grouped)
-            linked = {str(row.get("key")): (row.get("parentId"), row.get("parentProvider"))
-                      for provider in grouped for row in provider["chats"]}
-            for chat in chats:
-                if chat.get("key") in linked:
-                    chat["parentId"], parent_provider = linked[chat["key"]]
-                    if parent_provider:
-                        chat["parentProvider"] = parent_provider
+            _sync_live_lineage_index(grouped)
+            linked = [row for row in chats if not str(row.get("key") or "").startswith(("Claude:", "Codex:"))]
+            for provider in grouped:
+                for row in provider["chats"]:
+                    if not isinstance(row.get("id"), str) or not row["id"]:
+                        linked.append(row)
+                        continue
+                    row["provider"] = provider["name"]
+                    row["key"] = f"{provider['name']}:{row['id']}"
+                    # The thread key survives execution changes, so clear stale
+                    # execution and lineage fields in the live overlay.
+                    for field in ("retainedRun", "stoppedAt",
+                                  "runPid", "runCreated", "runVerified", "runBindingUnresolved",
+                                  "parentId", "parentProvider", "parentLinkMethod", "linkSource",
+                                  "parentIncarnation", "childRunIdentity"):
+                        row.setdefault(field, None)
+                    linked.append(row)
+            # A collapsed thread keeps its thread key's position, whichever execution was selected.
+            linked.sort(key=lambda row: original_order.get(str(row.get("key")), len(original_order)))
+            chats = linked
         except Exception:
             pass
     for chat in chats:
@@ -5353,7 +5496,9 @@ def _dedupe_provider_chats(provider: dict[str, Any]) -> None:
     for chat in chats:
         identity = chat.get("id") if isinstance(chat, dict) else None
         if ((isinstance(identity, str) and bool(identity.strip())) or type(identity) is int):
-            key = (provider.get("name"), str(identity))
+            key = (provider.get("name"), str(identity),
+                   chat.get("runPid") if chat.get("retainedRun") else None,
+                   chat.get("runCreated") if chat.get("retainedRun") else None)
             if key in seen:
                 continue
             seen.add(key)
@@ -5432,10 +5577,19 @@ def build_snapshot() -> dict[str, Any]:
     factories = {"Claude": (_claude_code_provider, "#e8813f"), "Codex": (CodexProvider, "#4a95e0")}
     limit_factories = {"Claude": (ClaudeLimitsProvider, "#e8813f")}
     jobs = [(name, *factories[name]) for name in full_collect] + [(name, *limit_factories[name]) for name in limit_only]
-    with ThreadPoolExecutor(max_workers=max(1, len(jobs)), thread_name_prefix="token-provider") as pool:
+    with _snapshot_executor_lock:
+        if _snapshot_shutdown:
+            raise RuntimeError("provider snapshots are shutting down")
+        pool = ThreadPoolExecutor(max_workers=max(1, len(jobs)), thread_name_prefix="token-provider")
+        _snapshot_executors.add(pool)
+    try:
         futures = [pool.submit(_provider_snapshot, factory, name, accent, policy_payload["generation"])
                    for name, factory, accent in jobs]
         all_providers = [future.result() for future in futures]
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        with _snapshot_executor_lock:
+            _snapshot_executors.discard(pool)
     active_providers = all_providers[:len(full_collect)]
     visible_active = [provider for provider in active_providers
                       if policy_for(provider.get("name"), policies).allows("show")]

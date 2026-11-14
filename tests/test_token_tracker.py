@@ -23,7 +23,7 @@ from token_tracker.provider_policy import load_policies
 def isolated_agent_homes(tmp_path_factory, monkeypatch):
     """Provider tests must never read the real Claude or Codex transcripts on this machine."""
     homes = tmp_path_factory.mktemp("agent-homes")
-    monkeypatch.setenv("CLAUDE_HOME", str(homes / "claude"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(homes / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(homes / "codex"))
     monkeypatch.setattr(widget, "_warm_snapshot", lambda: None)  # no real snapshot builds from widget tests
     monkeypatch.setattr(widget.agent_links, "initialize_receipt_inbox", lambda: True)
@@ -31,6 +31,7 @@ def isolated_agent_homes(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(widget, "_monitor_work_areas", lambda physical=False: [(0, 0, 2560, 1392)])
     monkeypatch.setattr(widget, "_system_scale", lambda: 1.0)
     monkeypatch.setattr(providers, "_LIVE_INDEX", {})
+    monkeypatch.setattr(providers, "_LAST_GOOD", {})
     monkeypatch.setattr(providers, "ENABLED_PROVIDERS", ("Codex",))
     monkeypatch.setattr(providers, "LIMIT_ONLY_PROVIDERS", ("Claude",))
     monkeypatch.setattr(providers, "POLICIES", load_policies({
@@ -124,9 +125,9 @@ def test_claude_provider_filters_latest_org(tmp_path, monkeypatch):
     }), encoding="utf-8")
     provider = ClaudeDesktopProvider(str(tmp_path))
     snap = provider.snapshot()
-    assert snap["fiveHour"]["percent"] == 20
-    assert snap["weekly"]["percent"] == 30
-    assert snap["limitsUpdatedAt"].startswith("1970-01-01T00:00:02")
+    assert snap["fiveHour"]["percent"] is None
+    assert snap["weekly"]["percent"] is None
+    assert snap["limitsUpdatedAt"] is None
     assert snap["chats"][0]["title"] == "Real chat"
 
 
@@ -172,7 +173,7 @@ def test_claude_limits_stay_fresh_when_a_newer_response_repeats_the_same_usage(t
     assert provider._newest_live(repeat, now=later)["fiveHourPercent"] == 70
     # A replayed older response with the same value doesn't refresh the age.
     provider._newest_live(first, now=later + 1)
-    assert provider._last_live[str(provider.root)]["fiveHour"]["receivedAt"] == later
+    assert provider._last_live[(str(provider.root), None)]["fiveHour"]["receivedAt"] == later
 
 
 def test_usage_limits_preserve_zero_and_expose_absent_values_as_unknown(tmp_path):
@@ -181,7 +182,7 @@ def test_usage_limits_preserve_zero_and_expose_absent_values_as_unknown(tmp_path
     (package / "plan-usage-history.json").write_text(json.dumps({"samples": [{"t": 1, "org": "o", "u": {"fh": 0}}]}), encoding="utf-8")
     provider = ClaudeDesktopProvider(str(tmp_path))
     snap = provider.snapshot()
-    assert snap["fiveHour"]["percent"] == 0
+    assert snap["fiveHour"]["percent"] is None
     assert snap["weekly"]["percent"] is None
 
     assert CodexProvider._telemetry_limit({"primary": {"usedPercent": 0}}, "primary")["percent"] == 0
@@ -354,8 +355,8 @@ def test_claude_reset_reads_recent_electron_local_storage(tmp_path):
     storage.mkdir(parents=True)
     future = int(providers.time.time()) + 7200
     (storage / "000123.ldb").write_bytes(f"noise resetsAt\x00:{future} trailing".encode())
-    provider = ClaudeDesktopProvider(str(tmp_path))
-    assert provider._reset_at() == future
+    provider = providers.ClaudeLimitsProvider(str(tmp_path))
+    assert provider.snapshot()["fiveHour"]["resetAt"] is None
 
 
 def test_codex_token_event_reads_only_telemetry(tmp_path):
@@ -975,7 +976,7 @@ def test_http_health_stats_and_force_refresh(monkeypatch):
         assert first["generatedAt"] == "now"
         metadata = first["snapshotCache"]
         assert set(metadata) == {"generation", "builtAt", "ageSeconds", "building", "stale",
-                                 "lastFailureAt", "lastFailureCategory"}
+                                 "lastFailureAt", "lastFailureCategory", "identityGeneration"}
         assert metadata["generation"] == 1 and metadata["building"] is False and metadata["stale"] is False
         assert metadata["builtAt"] and metadata["ageSeconds"] >= 0
         assert metadata["lastFailureAt"] is None and metadata["lastFailureCategory"] is None
@@ -1491,7 +1492,7 @@ def test_claude_limits_only_adds_quota_meters_without_chats_or_traffic(tmp_path,
     transcript = tmp_path / "projects" / "project"; transcript.mkdir(parents=True)
     event = {"timestamp": "2026-09-03T10:00:00Z", "message": {"id": "m", "model": "claude-sonnet-5", "usage": {"input_tokens": 100, "output_tokens": 20}}}
     (transcript / "cli.jsonl").write_text(json.dumps(event), encoding="utf-8")
-    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     monkeypatch.setattr(providers, "ENABLED_PROVIDERS", ("Codex",))
     monkeypatch.setattr(providers, "LIMIT_ONLY_PROVIDERS", ("Claude",))
@@ -1509,8 +1510,8 @@ def test_claude_limits_only_adds_quota_meters_without_chats_or_traffic(tmp_path,
     assert [p["name"] for p in snap["providers"]] == ["Codex", "Claude"]
     claude = snap["providers"][1]
     assert claude["limitsOnly"] is True and claude["chats"] == [] and claude["cache"] is None
-    assert claude["fiveHour"]["percent"] == 4 and claude["weekly"]["percent"] == 32
-    assert claude["limitsUpdatedAt"].startswith("1970-01-01T00:00:01")
+    assert claude["fiveHour"]["percent"] is None and claude["weekly"]["percent"] is None
+    assert claude["limitsUpdatedAt"] is None
     assert snap["hero"]["today"] == snap["hero"]["sevenDays"] == 123
     assert "Codex" in snap["hero"]["note"] and "Claude" not in snap["hero"]["note"]
     assert providers.trim_chats(snap)["providers"][1]["chatTotal"] == 0
@@ -1525,6 +1526,7 @@ def test_claude_limits_only_failure_leaves_codex_intact(tmp_path, monkeypatch):
         "TOKEN_TRACKER_CLAUDE_COLLECT": "true", "TOKEN_TRACKER_CLAUDE_SHOW": "true",
     }))
     monkeypatch.setattr(providers, "_LAST_GOOD", {})
+    monkeypatch.setattr(providers.ClaudeLimitsProvider, "snapshot", lambda self: (_ for _ in ()).throw(OSError("unavailable")))
     class Codex:
         def snapshot(self):
             return {"name": "Codex", "connected": True, "chats": [], "activity": []}
@@ -2050,6 +2052,65 @@ def test_widget_http_server_port_is_exclusive():
                 ThreadingHTTPServer((widget.HTTP_HOST, port), server.Handler).server_close()
     finally:
         first.server_close()
+
+
+def test_widget_service_stops_run_side_by_side_under_one_budget():
+    started, finished = [], []
+    # All three must be inside their stop at the same moment for the barrier to open;
+    # run one after another, the first would time out waiting for the others.
+    together = threading.Barrier(3)
+
+    def meet(name):
+        def step():
+            started.append(name)
+            together.wait(timeout=10)
+            finished.append(name)
+        return step
+
+    def failing():
+        started.append("failing")
+        raise RuntimeError("boom")
+
+    widget._stop_services_together([meet("a"), failing, meet("b"), meet("c")], budget=30.0)
+    assert sorted(started) == ["a", "b", "c", "failing"] and sorted(finished) == ["a", "b", "c"]
+
+    # A service that outlives the budget is abandoned; the others still finish.
+    release = threading.Event()
+    begin = time.monotonic()
+    widget._stop_services_together([release.wait, lambda: finished.append("fast")], budget=0.5)
+    elapsed = time.monotonic() - begin
+    release.set()
+    assert 0.4 < elapsed < 10 and "fast" in finished
+
+
+def test_widget_service_stops_survive_a_thread_that_cannot_start(monkeypatch):
+    release = threading.Event()
+    ran = []
+
+    def blocking():
+        ran.append("blocking")
+        release.wait(30)
+
+    class NoThread:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(widget.threading, "Thread", NoThread)
+    begin = time.monotonic()
+    try:
+        widget._stop_services_together([blocking, blocking], budget=1.0)  # returns instead of blocking
+    finally:
+        release.set()
+    assert time.monotonic() - begin < 10 and ran == []  # skipped, never run in place
+
+    # A start() failure after construction is handled the same way.
+    class NoStart(threading.Thread):
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(widget.threading, "Thread", NoStart)
+    widget._stop_services_together([blocking], budget=1.0)
+    assert ran == []
 
 
 def test_widget_quit_tears_everything_down_even_if_a_step_fails(monkeypatch):
@@ -2674,7 +2735,7 @@ def test_tracker_update_keeps_original_source_time_across_later_run_commentary(t
 def test_structure_stamp_changes_when_a_session_file_is_created(tmp_path, monkeypatch):
     claude_home = tmp_path / "claude"; (claude_home / "projects" / "p").mkdir(parents=True)
     codex_home = tmp_path / "codex"; (codex_home / "sessions" / "2026" / "09" / "13").mkdir(parents=True)
-    monkeypatch.setenv("CLAUDE_HOME", str(claude_home)); monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home)); monkeypatch.setenv("CODEX_HOME", str(codex_home))
     before = providers._structure_stamp()
     import os as _os, time as _time
     target = codex_home / "sessions" / "2026" / "09" / "13"
@@ -2691,7 +2752,7 @@ def test_structure_stamp_changes_when_an_agent_is_added_to_existing_subagents_fo
     subagents.mkdir(parents=True)
     (subagents / "existing.jsonl").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     before = providers._structure_stamp()
     (subagents / "new-agent.jsonl").write_text("{}\n", encoding="utf-8")
     import os as _os, time as _time
@@ -3229,6 +3290,7 @@ class _FakeAppServer:
 def test_codex_thread_list_requests_exec_sources_and_falls_back(monkeypatch, reject):
     from token_tracker import codex_client
     fake = _FakeAppServer(reject_source_kinds=reject)
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: fake)
     snap = codex_client.CodexAppServer(executable="codex").snapshot()
     assert "exec" in fake.thread_params[0]["sourceKinds"] and "vscode" in fake.thread_params[0]["sourceKinds"]
@@ -3242,6 +3304,7 @@ def test_codex_thread_list_requests_exec_sources_and_falls_back(monkeypatch, rej
 def test_codex_persistent_rate_limit_reader_reuses_initialized_process(monkeypatch):
     from token_tracker import codex_client
     fake = _FakeAppServer()
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     launches = []
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: launches.append(args) or fake)
     client = codex_client.CodexAppServer(executable="codex")
@@ -3258,6 +3321,7 @@ def test_codex_persistent_rate_limit_reader_reuses_initialized_process(monkeypat
 def test_codex_initialize_uses_product_identity(monkeypatch, persistent):
     from token_tracker import codex_client, product
     fake = _FakeAppServer()
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda _=None: codex_client.CodexExecutable("codex"))
     monkeypatch.setattr(codex_client.subprocess, "Popen", lambda *args, **kwargs: fake)
     monkeypatch.setattr(product, "VERSION", "1.0.0-test")
     client = codex_client.CodexAppServer(executable="codex")
@@ -3402,6 +3466,69 @@ def test_incremental_jsonl_checkpoint_append_matches_full_reduce_and_returns_cop
     for line in path.read_text(encoding="utf-8").splitlines():
         reduce(full, json.loads(line))
     assert appended == full == {"values": [1, 2, 3]}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path and handle stats disagree on st_ctime")
+def test_incremental_jsonl_checkpoint_survives_windows_path_and_handle_ctime_mismatch(tmp_path, monkeypatch):
+    # Python 3.12+ on Windows reports st_ctime as creation time for os.stat(path) but as the
+    # change time for os.fstat(handle); the creation stamp (st_birthtime_ns) agrees for both.
+    path = tmp_path / "ctime-mismatch.jsonl"
+    path.write_text('{"value":1}\n{"value":2}\n', encoding="utf-8")
+    real_fstat = os.fstat
+
+    class HandleStat:
+        def __init__(self, real):
+            self._real = real
+            self.st_ctime_ns = real.st_ctime_ns + 7_000_000
+            self.st_ctime = self.st_ctime_ns / 1e9
+            self.st_birthtime_ns = getattr(real, "st_birthtime_ns", real.st_ctime_ns)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def skewed_fstat(fd):
+        return HandleStat(real_fstat(fd))
+
+    reads = []
+
+    def reduce(state, item):
+        reads.append(item["value"])
+        state["values"].append(item["value"])
+
+    initial = {"values": []}
+    with monkeypatch.context() as patch:
+        patch.setattr(providers.os, "fstat", skewed_fstat)
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [1, 2]}
+        key = ("test-ctime", str(path.resolve(strict=False)))
+        assert key in providers._JSONL_CHECKPOINTS  # Not treated as a rewrite: a checkpoint was kept.
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"value":3}\n')
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [1, 2, 3]}
+        assert reads == [1, 2, 3]  # The append was read incrementally, not re-reduced from zero.
+
+        # A replacement file (new identity) is still a rewrite and drops the old checkpoint.
+        replacement = tmp_path / "ctime-mismatch.new"
+        replacement.write_text('{"value":90}\n', encoding="utf-8")
+        os.replace(replacement, path)
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [90]}
+        # Truncation to a shorter (12 < 13 bytes), different file is also a rewrite.
+        path.write_text('{"value":8}\n', encoding="utf-8")
+        assert providers._incremental_jsonl_reduce("test-ctime", path, initial, reduce) == {"values": [8]}
+
+
+def test_stat_ctime_ns_prefers_creation_time_on_windows_only(monkeypatch):
+    class Stat:
+        st_ctime = 5.0
+        st_ctime_ns = 5_000_000_000
+        st_birthtime_ns = 1_000_000_000
+
+    with monkeypatch.context() as patch:
+        patch.setattr(providers.os, "name", "nt")
+        windows = providers._stat_ctime_ns(Stat())
+    with monkeypatch.context() as patch:
+        patch.setattr(providers.os, "name", "posix")
+        posix = providers._stat_ctime_ns(Stat())
+    assert (windows, posix) == (1_000_000_000, 5_000_000_000)
 
 
 def test_incremental_jsonl_eof_records_are_visible_without_double_count_and_malformed_tail_waits(tmp_path):
@@ -5193,18 +5320,19 @@ def test_question_option_queue_is_same_origin_validated_and_labeled_queued(monke
 
 
 def test_queue_codex_message_uses_noninteractive_bounded_cli(monkeypatch):
+    from token_tracker import codex_client
     calls = []
     policies = dict(provider_policy.POLICIES)
     policies["Codex"] = replace(policies["Codex"], send=True, send_origin="provider_env")
     monkeypatch.setattr(provider_policy, "POLICIES", MappingProxyType(policies))
-    monkeypatch.setattr(server.shutil, "which", lambda command: r"C:\\Codex\\codex.exe")
-    monkeypatch.setattr(server.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)) or type("Result", (), {"returncode": 0})())
+    monkeypatch.setattr(codex_client, "resolve_codex", lambda: codex_client.CodexExecutable(r"C:\\Codex\\codex.exe"))
+    monkeypatch.setattr(codex_client, "run_contained_codex", lambda *args, **kwargs: calls.append((args, kwargs)) or type("Result", (), {"returncode": 0})())
     thread = "01a0cad8-0000-7000-8000-000000000001"
     server.queue_codex_message(thread, "hello")
     args, kwargs = calls[0]
-    assert args[0] == [r"C:\\Codex\\codex.exe", "queue", "--thread", thread, "--message", "hello"]
+    assert args[0].path == r"C:\\Codex\\codex.exe"
+    assert args[1] == ["queue", "--thread", thread, "--message", "hello"]
     assert kwargs["timeout"] == server.QUEUE_TIMEOUT_SECONDS
-    assert kwargs["stdin"] is server.subprocess.DEVNULL
 
 
 def test_open_endpoint_accepts_only_thread_ids():
@@ -5514,3 +5642,44 @@ def test_thread_keeps_cached_parent_provider_and_tags_native_parents(monkeypatch
     assert (native["parentId"], native["parentProvider"]) == ("codex-parent", "Codex")
     root = CodexProvider._thread({"id": "root", "status": "inactive"})
     assert root["parentId"] is None and root["parentProvider"] is None
+
+
+def test_claude_limits_come_from_claude_code_cache_without_desktop(tmp_path, monkeypatch):
+    # Users without Claude Desktop (or running Claude Code through the Agent SDK)
+    # get live meters from the usage cache Claude Code keeps in its config.
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    from token_tracker import claude_identity
+    from token_tracker.providers import ClaudeLimitsProvider
+    monkeypatch.setattr(ClaudeLimitsProvider, "_last_live", {})
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    now = _time.time()
+    iso = lambda seconds: _dt.fromtimestamp(seconds, _tz.utc).isoformat()
+    config = config_dir / ".claude.json"
+    def write(account):
+        config.write_text(json.dumps({
+            "oauthAccount": {"accountUuid": account, "organizationUuid": "org-a"},
+            "cachedUsageUtilization": {"fetchedAtMs": (now - 60) * 1000, "accountUuid": "acct-a", "utilization": {
+                "five_hour": {"utilization": 30, "resets_at": iso(now + 3600)},
+                "seven_day": {"utilization": 45, "resets_at": iso(now + 86400)}}},
+        }), encoding="utf-8")
+    write("acct-a")
+    # The account was selected before Claude Code's last usage fetch.
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json", clock=lambda: now - 120)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(config))
+    provider = ClaudeLimitsProvider(str(tmp_path / "no-desktop"))
+    snapshot = provider.snapshot()
+    assert snapshot["fiveHour"]["percent"] == 30 and snapshot["weekly"]["percent"] == 45
+    assert snapshot["identityVerified"] is True
+    assert snapshot["identityGeneration"] == authority.capture()[0]
+    # Another account selected: the cache for acct-a must not be shown as current.
+    write("acct-b")
+    monkeypatch.setattr(ClaudeLimitsProvider, "_last_live", {})
+    switched = ClaudeLimitsProvider(str(tmp_path / "no-desktop"))
+    try:
+        result = switched.snapshot()
+    except Exception:
+        result = None
+    assert result is None or (result["identityVerified"] is False and result["fiveHour"]["percent"] is None)

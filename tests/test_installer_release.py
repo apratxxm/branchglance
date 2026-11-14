@@ -161,6 +161,7 @@ def test_setup_same_version_identical_release_is_noop_before_stopping_running_ap
     assert not any(event[0] == "maintenance-exit" for event in events)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_successful_setup_notifies_shell_once_for_exe_and_only_owned_shortcuts(tmp_path, monkeypatch):
     from branchglance_installer import app as app_module
     from branchglance_installer.app import Paths, install
@@ -198,6 +199,7 @@ def test_successful_setup_notifies_shell_once_for_exe_and_only_owned_shortcuts(t
     assert calls[0][1] == (paths.start_menu / "Branchglance.lnk", paths.startup / "Branchglance.lnk")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_icon_refresh_exception_is_logged_and_does_not_fail_setup(tmp_path, monkeypatch, caplog):
     from branchglance_installer import app as app_module
     from branchglance_installer.app import Paths, install
@@ -214,6 +216,7 @@ def test_icon_refresh_exception_is_logged_and_does_not_fail_setup(tmp_path, monk
     assert "icon refresh failed" in caplog.text
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: shell32 SHChangeNotify via ctypes.WinDLL")
 def test_shell_icon_refresh_uses_assoc_changed_and_path_update_notifications(tmp_path, monkeypatch):
     from branchglance_installer import app as app_module
     calls = []
@@ -309,6 +312,7 @@ def test_setup_staged_selftest_failure_refuses_before_stopping_running_app(tmp_p
     assert not any(event[0] in {"maintenance-exit", "popen", "mutation"} for event in events)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_two_setups_serialize_failure_restore_then_upgrade_the_restored_instance(tmp_path):
     from branchglance_installer.app import Paths, install
     root = _root(tmp_path)
@@ -331,6 +335,7 @@ def test_two_setups_serialize_failure_restore_then_upgrade_the_restored_instance
     assert not (root / ".cutover-handoff.json").exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_delayed_restore_child_is_terminated_before_waiting_setup_updates_pointer(tmp_path, monkeypatch):
     import threading
     import time
@@ -412,6 +417,7 @@ def test_delayed_restore_child_is_terminated_before_waiting_setup_updates_pointe
     assert native.fake_alive[0] is False  # delayed rc.7 never resumes against the new pointer
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_expired_restore_marker_from_crash_is_recovered_before_later_upgrade(tmp_path, monkeypatch):
     import json
     from branchglance_installer import app as app_module
@@ -496,7 +502,7 @@ def test_quiet_setup_passes_one_deadline_to_install(tmp_path, monkeypatch):
     monkeypatch.setattr(app.time, "monotonic", lambda: 10.0)
     assert app.main(["--quiet", "--with-startup", "--payload", str(payload)],
                     paths=paths, native=object()) == 0
-    assert observed["deadline"] == 40.0
+    assert observed["deadline"] == 10.0 + app.QUIET_SETUP_BUDGET
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job object integration check")
@@ -536,10 +542,15 @@ def _process_alive(pid: int) -> bool:
         kernel.CloseHandle(handle)
 
 
-@pytest.mark.parametrize("running,interrupt,should_relaunch", [(True, None, True),
-                                                                (True, "release-promoted", True),
-                                                                (True, "tool-backed-up", True),
-                                                                (False, None, False)])
+@pytest.mark.parametrize("running,interrupt,should_relaunch", [
+    pytest.param(True, None, True, marks=pytest.mark.skipif(
+        os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")),
+    (True, "release-promoted", True),
+    pytest.param(True, "tool-backed-up", True, marks=pytest.mark.skipif(
+        os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")),
+    pytest.param(False, None, False, marks=pytest.mark.skipif(
+        os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")),
+])
 def test_setup_relaunches_only_previously_running_app_after_success_or_failure(
         tmp_path, running, interrupt, should_relaunch):
     from branchglance_installer.app import Paths, install
@@ -590,6 +601,7 @@ def test_setup_does_not_relaunch_until_old_instance_exit_is_confirmed(tmp_path):
     assert not any(event[0] == "mutation" for event in events)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_slow_old_instance_exits_in_bounded_window_then_installs_before_relaunch(tmp_path):
     from branchglance_installer.app import Paths, install
     root = _root(tmp_path)
@@ -656,6 +668,160 @@ def test_restart_rejects_matching_public_identity_without_authenticated_health(t
     assert events[1][1]["stdout"] is subprocess.DEVNULL and events[1][1]["stderr"] is subprocess.DEVNULL
     assert not (root / ".cutover-handoff.json").exists()
     assert ("tree-terminated",) in events and ("job-released",) in events
+
+
+def _slow_instance_exit_harness(monkeypatch, exit_after):
+    """A running old app that releases its instance `exit_after` seconds after maintenance-exit."""
+    from branchglance_installer.lifecycle import INSTANCE_MUTEX
+    clock = [0.0]
+    monkeypatch.setattr("branchglance_installer.lifecycle.time.monotonic", lambda: clock[0])
+    sent = []
+
+    class Mutex:
+        def acquire(self, name, timeout):
+            if name == INSTANCE_MUTEX and sent and clock[0] < sent[0] + exit_after:
+                clock[0] += timeout  # the app still owns Instance for the whole wait
+                raise SafetyError("simulated Instance still held")
+            return name, "acquired"
+        def release(self, _handle): pass
+
+    class Control:
+        def identity(self): return {"pid": 1}
+        def maintenance_exit(self, timeout):
+            sent.append(clock[0])
+            return True
+
+    class Processes:
+        def wait_for_instance_exit(self, timeout):
+            remaining = sent[0] + exit_after - clock[0]
+            if remaining <= timeout:
+                clock[0] += max(0.0, remaining)
+                return True
+            clock[0] += timeout
+            return False
+    return clock, Mutex(), Control(), Processes()
+
+
+def test_quiet_setup_waits_out_an_old_build_that_takes_42_seconds_to_exit(monkeypatch):
+    from branchglance_installer import app
+    clock, mutex, control, processes = _slow_instance_exit_harness(monkeypatch, exit_after=42.0)
+    lifecycle = Lifecycle(mutex, control, processes, lambda: None, deadline=app.QUIET_SETUP_BUDGET,
+                          timeout=app.QUIET_SHUTDOWN_WAIT, late_exit_timeout=app.QUIET_LATE_EXIT_WAIT)
+    with lifecycle:
+        assert lifecycle.shutdown_confirmed  # Instance ownership proves the old app is gone
+    assert 42.0 <= clock[0] < app.QUIET_SETUP_BUDGET
+    # The unsized defaults would have refused at 30 s, which is what the quiet path used to do.
+    clock, mutex, control, processes = _slow_instance_exit_harness(monkeypatch, exit_after=42.0)
+    with pytest.raises(SafetyError, match="still running|did not release"):
+        with Lifecycle(mutex, control, processes, lambda: None, deadline=app.QUIET_SETUP_BUDGET):
+            pytest.fail("the default 20 s wait must not have confirmed the exit")
+
+
+def test_quiet_setup_stops_closed_when_the_old_app_never_exits(monkeypatch):
+    from branchglance_installer import app
+    clock, mutex, control, processes = _slow_instance_exit_harness(monkeypatch, exit_after=10 ** 6)
+    lifecycle = Lifecycle(mutex, control, processes, lambda: None, deadline=app.QUIET_SETUP_BUDGET,
+                          timeout=app.QUIET_SHUTDOWN_WAIT, late_exit_timeout=app.QUIET_LATE_EXIT_WAIT)
+    with pytest.raises(SafetyError):
+        with lifecycle:
+            pytest.fail("a still-running app must never be treated as stopped")
+    assert not lifecycle.shutdown_confirmed
+    assert clock[0] <= app.QUIET_SETUP_BUDGET
+
+
+def test_install_sizes_lifecycle_waits_only_for_a_quiet_deadline(tmp_path, monkeypatch):
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths, install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"old launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    payload = _setup_payload(tmp_path, version="1.0.1", build_id="b", body="new")
+    seen = []
+
+    class Recorder:
+        def __init__(self, *args, **kwargs):
+            seen.append(kwargs)
+            raise SafetyError("recorded")
+
+    monkeypatch.setattr(app, "Lifecycle", Recorder)
+    for deadline in (time.monotonic() + app.QUIET_SETUP_BUDGET, None):
+        native = _fake_installer_native(paths, running=False, events=[])
+        with pytest.raises(SafetyError, match="recorded"):
+            install(paths, payload, native, startup=False, deadline=deadline)
+    assert seen[0]["timeout"] == app.QUIET_SHUTDOWN_WAIT and seen[0]["late_exit_timeout"] == app.QUIET_LATE_EXIT_WAIT
+    assert "timeout" not in seen[1] and "late_exit_timeout" not in seen[1]
+
+
+def test_restore_keeps_its_own_health_window_when_earlier_phases_used_the_quiet_budget(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths, _restart_after_install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    clock = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(app.time, "sleep", lambda delta: clock.__setitem__(0, clock[0] + delta))
+    healthy_at = 100.0 + 7.0  # slower than the old leftover (deadline - 5) allowed
+    public = {"product": "Branchglance", "pid": 404, "build": "a", "stateRoot": str(paths.product_root / "state")}
+    class Control:
+        def health(self): return public if clock[0] >= healthy_at else None
+    class RestoreChild:
+        pid = 505
+        def terminate_tree(self, _timeout):
+            events.append(("tree-terminated",))
+            return True
+        def release_job(self): events.append(("job-released",))
+    native = SimpleNamespace(control=Control(), popen=lambda *a, **k: RestoreChild())
+    class SpentLifecycle:
+        install_handle = 1
+        instance_handle = 2
+        deadline = 100.0 + 1.0  # earlier phases left one second of the quiet budget
+        def release_instance(self): pass
+    lifecycle = SpentLifecycle()
+    _restart_after_install(paths, native, lifecycle)
+    assert events == [("job-released",)]
+    assert lifecycle.deadline >= 100.0 + app.RESTORE_HEALTH_WINDOW + app.RESTORE_TERMINATION_RESERVE
+
+
+def test_restore_that_never_becomes_healthy_is_still_terminated_after_a_spent_budget(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from branchglance_installer import app
+    from branchglance_installer.app import Paths, _restart_after_install
+    root = _root(tmp_path)
+    ReleaseOps(root).install(_release(tmp_path, "initial", "old", "1.0.0", "a"), "1.0.0", "a")
+    (root / "Branchglance.exe").write_bytes(b"launcher")
+    paths = Paths(root, tmp_path / "Menu", tmp_path / "Startup", tmp_path / "Local" / "Branchglance",
+                  tmp_path / "Temp")
+    events = []
+    clock = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(app.time, "sleep", lambda delta: clock.__setitem__(0, clock[0] + delta))
+    class Control:
+        def health(self): return None
+    class RestoreChild:
+        pid = 505
+        def terminate_tree(self, timeout):
+            events.append(("tree-terminated", timeout))
+            return True
+        def release_job(self): events.append(("job-released",))
+    native = SimpleNamespace(control=Control(), popen=lambda *a, **k: RestoreChild())
+    class SpentLifecycle:
+        install_handle = 1
+        instance_handle = 2
+        deadline = 100.0 + 1.0
+        def release_instance(self): pass
+    lifecycle = SpentLifecycle()
+    with pytest.raises(SafetyError, match="authenticated health"):
+        _restart_after_install(paths, native, lifecycle)
+    assert clock[0] - 100.0 >= app.RESTORE_HEALTH_WINDOW  # waited the whole window before giving up
+    assert events[0][0] == "tree-terminated" and events[0][1] > 4.0  # and kept the termination reserve
+    assert lifecycle.restore_child_terminated is True
 
 
 def test_setup_refuses_redirected_appdata_before_creating_product_folders(monkeypatch, tmp_path):
@@ -931,6 +1097,7 @@ def test_preflight_host_matrix_and_staged_self_test(tmp_path):
     assert calls[0][1]["timeout"] == 30
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: host detection reads winreg/windll on win32 only")
 def test_current_host_maps_registry_hive_labels_to_winreg_constants(monkeypatch):
     import ctypes
     import platform
@@ -1003,7 +1170,6 @@ def test_app_main_resumes_markerless_uninstall_journal(tmp_path, monkeypatch):
     from branchglance_installer import app
     from branchglance_installer.app import Native, Paths, Ui
     from branchglance_installer.core import JOURNAL
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     root = tmp_path / "Programs" / "Branchglance"
     root.mkdir(parents=True)
     record = {"schemaVersion": 1, "id": "b" * 32, "operation": "uninstall", "target": "uninstall",
@@ -1378,7 +1544,6 @@ def test_missing_owner_marker_is_reported_as_ownership(tmp_path):
 def _claude_uninstall_fixture(tmp_path, monkeypatch, settings_bytes=None):
     from token_tracker import claude_hook_install
     from branchglance_installer.app import Paths
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setattr(claude_hook_install, "find_git_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     root = _root(tmp_path)
     home = tmp_path / "Home"
@@ -1411,6 +1576,25 @@ def test_uninstall_removes_owned_claude_hooks_and_consent_but_preserves_user_set
     assert json.loads(settings.read_text(encoding="utf-8")) == original
     assert not (paths.product_root / "claude-consent.json").exists()
     assert paths.product_root.exists()
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_uninstall_disconnects_owned_statusline(tmp_path, monkeypatch, foreign):
+    from branchglance_installer.app import uninstall
+    from token_tracker import statusline_connect
+    _installer, paths, native, settings = _claude_uninstall_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(settings.parent))
+    settings.write_text('{"model":"opus"}', encoding="utf-8")
+    statusline_connect.connect(root=paths.product_root / "state", path=settings, command="test-wrapper")
+    if foreign:
+        settings.write_text('{"model":"opus","statusLine":{"type":"command","command":"foreign"}}', encoding="utf-8")
+    result = uninstall(paths, native)
+    assert result["claudeIntegration"]["statusLine"]["changed"] is (not foreign)
+    expected = {"model": "opus"}
+    if foreign:
+        expected["statusLine"] = {"type": "command", "command": "foreign"}
+    assert json.loads(settings.read_text(encoding="utf-8")) == expected
+    assert not (paths.product_root / "state" / "statusline-chain.json").exists()
 
 
 def test_uninstall_malformed_claude_settings_are_untouched_and_reported(tmp_path, monkeypatch):
@@ -1694,6 +1878,7 @@ def test_resumed_trash_intent_refuses_before_external_changes(tmp_path, monkeypa
     assert native.integration_adapter.registry == before_registry
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_owned_install_upgrade_and_uninstall(tmp_path):
     from branchglance_installer.core import read_owned_ledger
     root = _root(tmp_path)
@@ -1725,6 +1910,7 @@ def test_bg_codex_foreign_collision_is_not_adopted_or_deleted(tmp_path):
     assert foreign.read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_failed_upgrade_restores_old_owned_tool(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1741,6 +1927,7 @@ def test_bg_codex_failed_upgrade_restores_old_owned_tool(tmp_path):
     assert (root / "bg-codex.exe").read_bytes() == b"first wrapper"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_replacement_is_refused_before_uninstall_integration(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1757,6 +1944,7 @@ def test_bg_codex_replacement_is_refused_before_uninstall_integration(tmp_path):
 
 
 @pytest.mark.parametrize("point,changed", [("tool-staged", "staged"), ("tool-backed-up", "backup"), ("tool-replaced", "live")])
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_tampering_refuses_recovery_before_integration(tmp_path, point, changed):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1794,6 +1982,7 @@ def test_bg_codex_missing_provenance_refuses_uninstall(tmp_path):
     assert wrapper.read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_unrecorded_stage_is_retained_before_recovery(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1817,6 +2006,7 @@ def test_bg_codex_unrecorded_stage_is_retained_before_recovery(tmp_path):
     assert staged.read_bytes() == b"source"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_same_bytes_foreign_replacement_refuses_upgrade(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1832,6 +2022,7 @@ def test_bg_codex_same_bytes_foreign_replacement_refuses_upgrade(tmp_path):
     assert wrapper.read_bytes() == b"owned"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_destination_race_is_not_overwritten(tmp_path, monkeypatch):
     from branchglance_installer import core
     root = _root(tmp_path)
@@ -1848,6 +2039,7 @@ def test_bg_codex_destination_race_is_not_overwritten(tmp_path, monkeypatch):
     assert (root / "bg-codex.exe").read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_source_swap_before_handle_open_is_not_deleted(tmp_path, monkeypatch):
     from branchglance_installer import core
     root = _root(tmp_path)
@@ -1865,6 +2057,7 @@ def test_bg_codex_source_swap_before_handle_open_is_not_deleted(tmp_path, monkey
     assert (root / "bg-codex.exe").read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_crash_after_new_removed_can_restore_old(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1884,6 +2077,7 @@ def test_bg_codex_crash_after_new_removed_can_restore_old(tmp_path):
     assert (root / "bg-codex.exe").read_bytes() == b"old"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: _LockedWrapper uses CreateFileW and file handles")
 def test_bg_codex_locked_handle_denies_write_and_rename(tmp_path):
     from branchglance_installer.core import _LockedWrapper
     target = tmp_path / "target"
@@ -1898,6 +2092,7 @@ def test_bg_codex_locked_handle_denies_write_and_rename(tmp_path):
     assert target.read_bytes() == b"original"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_restore_destination_race_keeps_foreign_and_backup(tmp_path, monkeypatch):
     from branchglance_installer import core
     root = _root(tmp_path)

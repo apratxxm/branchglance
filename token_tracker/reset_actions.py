@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import copy
 import math
+import threading
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from .codex_client import CodexNotStarted
 from .provider_policy import POLICIES, ProviderPolicy, ProviderPolicyError, policy_for
+from .providers import SnapshotShutdown
 
 
 MAX_TARGETS = 20
@@ -15,6 +18,8 @@ MAX_CYCLES = 64
 MAX_LEDGER_TARGETS = 128
 INSPECTION_MAX_AGE_SECONDS = 5
 ACTION_SCHEMA_VERSION = 2
+MAX_NOT_STARTED_ATTEMPTS = 3
+NOT_STARTED_RETRY_SECONDS = 900
 
 
 def default_action() -> dict[str, Any]:
@@ -65,6 +70,7 @@ class ResetActionDispatcher:
         clock: Callable[[], float],
         save: Callable[[], bool],
         action_state: Callable[[], dict[str, Any]],
+        lock: threading.RLock | None = None,
         policies: Mapping[str, ProviderPolicy] | None = None,
     ) -> None:
         self.list_candidates = list_candidates
@@ -73,6 +79,7 @@ class ResetActionDispatcher:
         self.clock = clock
         self.save = save
         self.action_state = action_state
+        self.lock = lock or threading.RLock()
         self.policies = POLICIES if policies is None else policies
         for provider_name in ("Codex", "Claude"):
             policy_for(provider_name, self.policies)
@@ -112,7 +119,33 @@ class ResetActionDispatcher:
 
     def configure(
         self, mode: str, thread_ids: Iterable[str], *, baseline: dict[str, Any] | None = None,
+        validated_ids: list[str] | None = None,
     ) -> dict[str, Any]:
+        ids = self.validate_configuration(mode, thread_ids) if validated_ids is None else validated_ids
+        with self.lock:
+            state = self.action_state()
+            previous = copy.deepcopy(state)
+            state.clear()
+            state.update({
+                "schemaVersion": ACTION_SCHEMA_VERSION,
+                "mode": mode,
+                "threadIds": ids if mode == "continue" else [],
+                "armed": mode == "continue",
+                "oneShot": True,
+                "lastRun": previous.get("lastRun"),
+                "ledger": previous.get("ledger", {"cycles": []}),
+                "armGeneration": str(uuid.uuid4()),
+            })
+            if mode == "continue":
+                state.update({key: copy.deepcopy(value) for key, value in (baseline or {}).items()
+                              if key in {"armedAt", "previousSample", "frozenDeadline", "sawBlocked", "cycleId"}})
+            if not self.save():
+                state.clear()
+                state.update(previous)
+                raise RuntimeError("could not durably save reset action configuration")
+            return self.public_state(state)
+
+    def validate_configuration(self, mode: str, thread_ids: Iterable[str]) -> list[str]:
         if mode not in {"greet", "continue"}:
             raise ValueError("mode must be 'greet' or 'continue'")
         if mode == "continue":
@@ -125,10 +158,10 @@ class ResetActionDispatcher:
                 raise ValueError("continue mode requires at least one selected chat")
             if self.list_candidates is None:
                 raise RuntimeError("Codex chat discovery is unavailable")
+            with self.lock:
+                selected_ids = frozenset(self.action_state().get("threadIds") or [])
             try:
                 candidates = self.list_candidates(limit=100)
-            except TypeError:
-                candidates = self.list_candidates(100)
             except Exception as exc:
                 raise RuntimeError("could not verify selected Codex chats") from exc
             by_id = {
@@ -137,28 +170,17 @@ class ResetActionDispatcher:
             }
             for thread_id in ids:
                 row = by_id.get(thread_id)
+                if row is None and thread_id in selected_ids:
+                    try:
+                        info = self.inspect_target(thread_id) if self.inspect_target else None
+                    except Exception as exc:
+                        raise RuntimeError("could not verify selected Codex chats") from exc
+                    if isinstance(info, dict) and info.get("exists") is True and info.get("archived") is False:
+                        continue
                 if row is None or row.get("archived") is True or row.get("status") == "archived":
                     raise ValueError(f"selected Codex chat does not exist or is archived: {thread_id}")
 
-        state = self.action_state()
-        previous = copy.deepcopy(state)
-        state.clear()
-        state.update({
-            "schemaVersion": ACTION_SCHEMA_VERSION,
-            "mode": mode,
-            "threadIds": ids if mode == "continue" else [],
-            "armed": mode == "continue",
-            "oneShot": True,
-            "lastRun": previous.get("lastRun"),
-            "ledger": previous.get("ledger", {"cycles": []}),
-        })
-        if mode == "continue":
-            state.update(copy.deepcopy(baseline or {}))
-        if not self.save():
-            state.clear()
-            state.update(previous)
-            raise RuntimeError("could not durably save reset action configuration")
-        return self.public_state(state)
+        return ids
 
     @staticmethod
     def public_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -183,58 +205,113 @@ class ResetActionDispatcher:
 
     def dispatch(self, cycle_id: str) -> dict[str, Any] | None:
         policy_for("Codex", self.policies).require("continue")
-        state = self.action_state()
-        if state.get("mode") != "continue" or not state.get("armed"):
-            return None
-        targets = list(state.get("threadIds") or [])
-        ledger = self._ledger(state)
-        cycles = ledger["cycles"]
-        cycle = next((row for row in cycles if row.get("cycleId") == cycle_id), None)
-        if cycle is None:
-            cycle = {"cycleId": cycle_id, "targets": []}
-            cycles.append(cycle)
-        entries = cycle["targets"]
-        by_id = {row.get("threadId"): row for row in entries if isinstance(row, dict)}
-        results: list[dict[str, Any]] = []
-        for thread_id in targets:
-            old = by_id.get(thread_id)
-            if old is not None:
-                status = old.get("status", "unknown")
-                if status == "claimed":
-                    status = "unknown"
-                results.append({"threadId": thread_id, "status": status, "reason": old.get("reason")})
-                continue
-            if len(entries) >= MAX_LEDGER_TARGETS:
-                results.append({"threadId": thread_id, "status": "skipped", "reason": "cycle target ledger is full"})
-                continue
-            entry = {"threadId": thread_id, "status": "claimed", "reason": None}
-            entries.append(entry)
-            # Retain at most 64 cycles and 128 target claims in the durable ledger.
-            ledger["cycles"] = cycles[-MAX_CYCLES:]
+        with self.lock:
+            state = self.action_state()
+            if state.get("mode") != "continue" or not state.get("armed"):
+                return None
+            if state.get("retryPending") and self.clock() < float(state.get("retryAfter") or 0):
+                return None
+            previous = copy.deepcopy(state)
+            generation = state.get("armGeneration") or str(uuid.uuid4())
+            state["armGeneration"] = generation
+            targets = tuple(state.get("threadIds") or [])
+            ledger = self._ledger(state)
+            cycles = ledger["cycles"]
+            cycle = next((row for row in cycles if row.get("cycleId") == cycle_id), None)
+            if cycle is None:
+                cycle = {"cycleId": cycle_id, "targets": []}
+                cycles.append(cycle)
+                ledger["cycles"] = cycles[-MAX_CYCLES:]
+            entries = cycle.setdefault("targets", [])
+            by_id = {row.get("threadId"): row for row in entries if isinstance(row, dict)}
+            deliver = []
+            for target in targets:
+                entry = by_id.get(target)
+                if entry is not None and entry.get("status") == "claimed":
+                    entry.update(status="unknown", reason="delivery interrupted")
+                if entry is None:
+                    if len(entries) >= MAX_LEDGER_TARGETS:
+                        continue
+                    entry = {"threadId": target, "armGeneration": generation, "attempts": 0}
+                    entries.append(entry)
+                    by_id[target] = entry
+                elif not (entry.get("status") == "not_started" and entry.get("armGeneration") == generation
+                          and int(entry.get("attempts") or 0) < MAX_NOT_STARTED_ATTEMPTS):
+                    continue
+                entry.update(status="unknown", reason="delivery interrupted", attempts=int(entry.get("attempts") or 0) + 1)
+                deliver.append(target)
+            state["armed"] = False
+            state.pop("retryPending", None)
+            state["finalizePending"] = {"armGeneration": generation, "cycleId": cycle_id,
+                                        "targets": list(targets)}
+            state["lastRun"] = {"cycleId": cycle_id, "at": self.clock(),
+                                "targets": [copy.deepcopy(by_id[target]) if target in by_id else
+                                            {"threadId": target, "status": "skipped", "reason": "cycle target ledger is full"}
+                                            for target in targets]}
             if not self.save():
-                entries.remove(entry)
-                results.append({"threadId": thread_id, "status": "skipped", "reason": "could not persist queue claim"})
-                continue
-
-            status, reason = self._queue_one(thread_id)
-            entry.update({"status": status, "reason": reason})
-            if not self.save():
-                # The durable claim remains terminal even if the result update
-                # fails; recovery treats a persisted claimed entry as unknown.
-                status, reason = "unknown", "queue result could not be persisted"
-            results.append({"threadId": thread_id, "status": status, "reason": reason})
-
-        run = {"cycleId": cycle_id, "at": self.clock(), "targets": results}
-        state["lastRun"] = run
-        state.update({"mode": "continue", "armed": False, "oneShot": True})
-        self.save()
-        return copy.deepcopy(run)
+                state.clear()
+                state.update(previous)
+                return {"cycleId": cycle_id, "at": self.clock(), "targets": [
+                    {"threadId": target, "status": "skipped", "reason": "could not persist queue claim"}
+                    for target in targets]}
+        if deliver:
+            for thread_id in deliver:
+                with self.lock:
+                    if self.action_state().get("armGeneration") != generation:
+                        break
+                status, reason = self._queue_one(thread_id)
+                with self.lock:
+                    current = self.action_state()
+                    current_cycle = next((row for row in self._ledger(current)["cycles"]
+                                          if row.get("cycleId") == cycle_id), None)
+                    if current_cycle is None:
+                        break
+                    entry = next((row for row in current_cycle["targets"] if row.get("threadId") == thread_id), None)
+                    if entry is None or entry.get("armGeneration") != generation:
+                        break
+                    previous_result = copy.deepcopy(current)
+                    entry.update(status=status, reason=reason)
+                    if current.get("armGeneration") == generation:
+                        selected = {row.get("threadId"): row for row in current_cycle["targets"]}
+                        current["lastRun"]["targets"] = [copy.deepcopy(selected[target]) if target in selected else
+                                                         {"threadId": target, "status": "skipped", "reason": "cycle target ledger is full"}
+                                                         for target in targets]
+                        retryable = any(row.get("threadId") in targets and row.get("armGeneration") == generation
+                                        and row.get("status") == "not_started"
+                                        and int(row.get("attempts") or 0) < MAX_NOT_STARTED_ATTEMPTS
+                                        for row in current_cycle["targets"])
+                        current["armed"] = retryable
+                        current["finalizePending"]["retryable"] = retryable
+                        if retryable:
+                            current["retryPending"] = True
+                            current["retryAfter"] = self.clock() + NOT_STARTED_RETRY_SECONDS
+                        else:
+                            current.pop("retryPending", None)
+                    if not self.save():
+                        current.clear()
+                        current.update(previous_result)
+                        break
+        with self.lock:
+            current = self.action_state()
+            current_cycle = next((row for row in self._ledger(current)["cycles"] if row.get("cycleId") == cycle_id), cycle)
+            selected = {row.get("threadId"): row for row in current_cycle.get("targets", [])}
+            run = {"cycleId": cycle_id, "armGeneration": generation, "at": self.clock(),
+                   "targets": [copy.deepcopy(selected[target]) if target in selected else
+                               {"threadId": target, "status": "skipped", "reason": "cycle target ledger is full"}
+                               for target in targets]}
+            if current.get("armGeneration") == generation:
+                current["lastRun"] = copy.deepcopy(run)
+                current.pop("finalizePending", None)
+                self.save()
+            return run
 
     def _queue_one(self, thread_id: str) -> tuple[str, str | None]:
         if self.inspect_target is None or self.queue_continue is None:
             return "skipped", "Codex chat continuation is unavailable"
         try:
             info = self.inspect_target(thread_id)
+        except SnapshotShutdown:
+            return "skipped", "chat inspection cancelled during shutdown"
         except Exception:
             return "skipped", "chat inspection failed"
         if not isinstance(info, dict) or info.get("exists") is not True:
@@ -259,9 +336,12 @@ class ResetActionDispatcher:
             return "skipped", "chat is active or not verified idle"
         try:
             policy_for("Codex", self.policies).require("continue")
-            result = self.queue_continue(thread_id)
         except ProviderPolicyError:
             return "skipped", "Codex continuation is not permitted"
+        try:
+            result = self.queue_continue(thread_id)
+        except CodexNotStarted:
+            return "not_started", "queue did not start"
         except Exception:
             return "unknown", "queue result is unknown"
         if not isinstance(result, dict):
@@ -269,6 +349,8 @@ class ResetActionDispatcher:
         status = result.get("status")
         if status == "queued":
             return "queued", None
+        if status == "not_started":
+            return "not_started", "queue did not start"
         if status == "rejected":
             return "rejected", "queue rejected the continuation"
         return "unknown", "queue result is unknown"

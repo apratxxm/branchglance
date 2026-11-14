@@ -19,6 +19,9 @@ import re
 import sys
 import threading
 import time
+import stat
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 CONSENT_NAME = "claude-consent.json"
@@ -183,12 +186,44 @@ def nearest_claude_ancestor(table: dict[int, tuple[int, str]], start: int, limit
     return None
 
 
+def nearest_agent_ancestor(table: dict[int, tuple[int, str]], start: int,
+                           argv_reader=None, limit: int = 16) -> tuple[int, str] | None:
+    """Return the nearest positively identified agent; unknown node hosts stop the walk."""
+    if __package__:
+        from .agent_links import classify_agent_process, _command_argv
+    else:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from token_tracker.agent_links import classify_agent_process, _command_argv
+    argv_reader = argv_reader or _command_argv
+    pid, seen = start, set()
+    for _ in range(limit):
+        if pid in seen or pid not in table:
+            return None
+        seen.add(pid)
+        parent, name = table[pid]
+        try:
+            argv = argv_reader(pid) if name.casefold().endswith(("node", "node.exe", "bun", "bun.exe")) else None
+        except Exception:
+            argv = None
+        kind = classify_agent_process(name, argv)
+        if kind == "unknown":
+            return None
+        if kind in {"claude", "codex"}:
+            return pid, kind
+        pid = parent
+    return None
+
+
 def _claude_process() -> tuple[int, int] | tuple[None, None]:
     if os.name != "nt" and sys.platform != "darwin":
         return None, None
     try:
-        pid = nearest_claude_ancestor(_process_table(), os.getpid())
-        if pid is None:
+        found = nearest_agent_ancestor(_process_table(), os.getpid())
+        if found is None or found[1] != "claude":
+            return None, None
+        pid = found[0]
+        inherited_pid = os.environ.get("CLAUDE_PID")
+        if inherited_pid is not None and (not inherited_pid.isdigit() or int(inherited_pid) != pid):
             return None, None
         created = process_created(pid)
         return (pid, created) if created is not None else (None, None)
@@ -262,6 +297,14 @@ def build_record(payload: Any, now: float, claude_pid: int | None = None,
     if claude_pid and claude_created:
         record["claude_pid"] = int(claude_pid)
         record["claude_pid_created"] = int(claude_created)
+    # These are captured at hook time. The launcher wrapper similarly freezes
+    # the values before spawning Codex so child-side overwrites cannot rewrite
+    # the launch provenance.
+    for source, target in (("CLAUDE_CODE_SESSION_ID", "launcher_claude_session_id"),
+                           ("CODEX_THREAD_ID", "launcher_codex_thread_id")):
+        value = os.environ.get(source)
+        if isinstance(value, str) and _UUID.fullmatch(value):
+            record[target] = value.lower()
     if record.get("tool_name") == "ask":
         record["ask"] = True
     return record
@@ -271,6 +314,161 @@ def build_record(payload: Any, now: float, claude_pid: int | None = None,
 
 def _day_name(now: float) -> str:
     return time.strftime("%Y%m%d", time.localtime(now)) + ".jsonl"
+
+
+_RETENTION_NAME = re.compile(r"[0-9]{8}\.jsonl\Z", re.ASCII)
+_retention_start_lock = threading.Lock()
+_retention_started = False
+
+
+def _retention_candidate(name: str, today: date) -> bool:
+    if not _RETENTION_NAME.fullmatch(name):
+        return False
+    try:
+        day = datetime.strptime(name[:8], "%Y%m%d").date()
+    except ValueError:
+        return False
+    return day < today - timedelta(days=7) and day < today - timedelta(days=1)
+
+
+def _retention_windows(directory: str, today: date) -> None:
+    """Delete through directory-relative handles, without following reparse points."""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    class UNICODE_STRING(ctypes.Structure):
+        _fields_ = [("Length", wt.USHORT), ("MaximumLength", wt.USHORT), ("Buffer", wt.LPWSTR)]
+    class OBJECT_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Length", wt.ULONG), ("RootDirectory", wt.HANDLE),
+                    ("ObjectName", ctypes.POINTER(UNICODE_STRING)), ("Attributes", wt.ULONG),
+                    ("SecurityDescriptor", ctypes.c_void_p), ("SecurityQualityOfService", ctypes.c_void_p)]
+    class IO_STATUS_BLOCK(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+    class ATTR_TAG(ctypes.Structure):
+        _fields_ = [("attributes", wt.DWORD), ("tag", wt.DWORD)]
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
+    kernel.CreateFileW.restype = wt.HANDLE
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
+    kernel.CreateMutexW.restype = wt.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+    kernel.WaitForSingleObject.restype = wt.DWORD
+    kernel.ReleaseMutex.argtypes = [wt.HANDLE]
+    kernel.CloseHandle.argtypes = [wt.HANDLE]
+    kernel.GetFileInformationByHandleEx.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    kernel.GetFileInformationByHandleEx.restype = wt.BOOL
+    kernel.SetFileInformationByHandle.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    kernel.SetFileInformationByHandle.restype = wt.BOOL
+    kernel.GetFileType.argtypes = [wt.HANDLE]
+    kernel.GetFileType.restype = wt.DWORD
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtCreateFile.argtypes = [ctypes.POINTER(wt.HANDLE), wt.ULONG, ctypes.POINTER(OBJECT_ATTRIBUTES),
+                                  ctypes.POINTER(IO_STATUS_BLOCK), ctypes.c_void_p, wt.ULONG, wt.ULONG,
+                                  wt.ULONG, wt.ULONG, ctypes.c_void_p, wt.ULONG]
+    ntdll.NtCreateFile.restype = ctypes.c_long
+    mutex = kernel.CreateMutexW(None, False, "Local\\BranchglanceClaudeEventRetention")
+    if not mutex:
+        return
+    acquired = kernel.WaitForSingleObject(mutex, 0) in (0, 0x80)
+    root = None
+    ancestors = []
+    try:
+        if not acquired:
+            return
+        path = Path(os.path.abspath(directory))
+        # Hold every ancestor without delete sharing to prevent a path swap
+        # while opening the next component, and reject all reparse points.
+        for component in reversed((path, *path.parents)):
+            access = 0x80 | (0x1 if component == path else 0)
+            handle = kernel.CreateFileW(str(component), access, 0x1 | 0x2, None, 3,
+                                        0x02000000 | 0x00200000, None)
+            if not handle or handle == wt.HANDLE(-1).value:
+                return
+            ancestors.append(handle)
+            info = ATTR_TAG()
+            if (not kernel.GetFileInformationByHandleEx(handle, 9, ctypes.byref(info), ctypes.sizeof(info))
+                    or info.attributes & 0x400 or not info.attributes & 0x10):
+                return
+        root = ancestors[-1]
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            return
+        for name in names:
+            if not _retention_candidate(name, today):
+                continue
+            buf = ctypes.create_unicode_buffer(name)
+            string = UNICODE_STRING(len(name) * 2, (len(name) + 1) * 2, ctypes.cast(buf, wt.LPWSTR))
+            attrs = OBJECT_ATTRIBUTES(ctypes.sizeof(OBJECT_ATTRIBUTES), root, ctypes.pointer(string), 0x40, None, None)
+            io = IO_STATUS_BLOCK()
+            child = wt.HANDLE()
+            status = ntdll.NtCreateFile(ctypes.byref(child), 0x10000 | 0x80 | 0x100000,
+                                        ctypes.byref(attrs), ctypes.byref(io), None, 0, 7, 1,
+                                        0x00200000 | 0x40 | 0x20, None, 0)
+            if status < 0:
+                continue
+            try:
+                info = ATTR_TAG()
+                if (kernel.GetFileType(child) == 1
+                        and kernel.GetFileInformationByHandleEx(child, 9, ctypes.byref(info), ctypes.sizeof(info))
+                        and not info.attributes & (0x400 | 0x10)):
+                    delete = ctypes.c_ubyte(1)
+                    kernel.SetFileInformationByHandle(child, 4, ctypes.byref(delete), ctypes.sizeof(delete))
+            finally:
+                kernel.CloseHandle(child)
+    finally:
+        for handle in reversed(ancestors):
+            kernel.CloseHandle(handle)
+        if acquired:
+            kernel.ReleaseMutex(mutex)
+        kernel.CloseHandle(mutex)
+
+
+def prune_event_logs(directory: str | None = None, *, today: date | None = None) -> None:
+    directory = directory or events_dir()
+    today = today or date.today()
+    try:
+        if os.name == "nt":
+            _retention_windows(directory, today)
+            return
+        import fcntl
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+            return
+        parts = Path(os.path.abspath(directory)).parts
+        handles = []
+        try:
+            fd = os.open(parts[0], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            handles.append(fd)
+            for component in parts[1:]:
+                fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                handles.append(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for name in os.listdir(fd):
+                if not _retention_candidate(name, today):
+                    continue
+                try:
+                    if stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                        os.unlink(name, dir_fd=fd)
+                except OSError:
+                    continue
+        finally:
+            for handle in reversed(handles):
+                os.close(handle)
+    except OSError:
+        return
+
+
+def start_event_retention() -> None:
+    global _retention_started
+    with _retention_start_lock:
+        if _retention_started:
+            return
+        _retention_started = True
+    def maintain() -> None:
+        while True:
+            prune_event_logs()
+            time.sleep(86400)
+    threading.Thread(target=maintain, name="claude-event-retention", daemon=True).start()
 
 
 def _append_windows(path: str, line: bytes, cap: int) -> str:

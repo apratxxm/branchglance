@@ -103,8 +103,8 @@ def process_uid(pid: int) -> int | None:
         return None
 
 
-def command_line(pid: int) -> str | None:
-    """The argv joined with spaces (Windows-style quoting not applied), from KERN_PROCARGS2."""
+def command_line_argv(pid: int) -> list[str] | None:
+    """Return the structured argv from KERN_PROCARGS2 without joining tokens."""
     if not isinstance(pid, int) or pid <= 0:
         return None
     try:
@@ -127,6 +127,14 @@ def command_line(pid: int) -> str | None:
             return None
         rest = rest[exe_end:].lstrip(b"\0")
         args = rest.split(b"\0")[:argc]
-        return " ".join(arg.decode("utf-8", "replace") for arg in args)
+        if len(args) != argc:
+            return None
+        return [arg.decode("utf-8", "replace") for arg in args]
     except Exception:
         return None
+
+
+def command_line(pid: int) -> str | None:
+    """The argv joined with spaces (Windows-style quoting not applied), from KERN_PROCARGS2."""
+    args = command_line_argv(pid)
+    return " ".join(args) if args is not None else None

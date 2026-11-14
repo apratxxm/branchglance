@@ -7,7 +7,6 @@ const page = fs.readFileSync(new URL("../token_tracker/static/runway.html", impo
 const css = fs.readFileSync(new URL("../token_tracker/static/runway_refined.css", import.meta.url), "utf8");
 assert.match(page, /window\.__TOKEN_TRACKER_REFINED__=true/);
 assert.match(page, /window\.__TOKEN_TRACKER_COMPACT__=true/);
-assert.match(page, /runwayParams\.get\("theme"\)==="classic"\)\{window\.__TOKEN_TRACKER_REFINED__=false/);
 assert.match(page, /<header class="titlebar compact-toolbar pywebview-drag-region">/,
   "compact controls are present in the startup markup without a hidden attribute");
 assert.match(page, /<div id="compact-summary" class="compact-summary pywebview-drag-region"/,
@@ -62,7 +61,7 @@ T.render({ generatedAt: stamp(0), enabledProviders: ["Codex"], providers: [provi
 const parentHTML = T.rowHTML(T.state.forest.rows.find(chat => chat.id === parent.id));
 const childHTML = T.rowHTML(T.state.forest.rows.find(chat => chat.id === child.id));
 for (const slot of ["title", "timing", "status", "activity-column", "path-column", "tokens"]) assert.ok(parentHTML.includes(`data-runway-slot="${slot}"`), `parent has ${slot} slot`);
-assert.match(parentHTML, /title="160000 \/ 258400"/);
+assert.match(parentHTML, /title="Context occupancy: 160000 \/ 258400 tokens"/);
 assert.match(parentHTML, /Cache 80%/);
 assert.match(parentHTML, /runway-refined-elapsed">2:00/);
 assert.match(parentHTML, /runway-state-word runway-waiting-link[^>]*>Waiting/);

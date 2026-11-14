@@ -400,6 +400,19 @@ def _clear_owned_restore_handoff(paths: Paths, token: str) -> None:
         ReleaseOps(paths.root).recover()
 
 
+# Quiet setup bounds stopping the old app, the staged self-test and the file swap.
+# An already-installed older build has been seen taking 42 s to release its
+# instance after maintenance-exit, so the quiet waits are sized from this budget
+# (Lifecycle still clamps every wait to what is left of it).
+QUIET_SETUP_BUDGET = 90.0
+QUIET_SHUTDOWN_WAIT = 60.0
+QUIET_LATE_EXIT_WAIT = 15.0
+# The relaunch is budgeted separately: authenticated-health wait, then the
+# reserve used to terminate and confirm the restored tree if health never comes.
+RESTORE_HEALTH_WINDOW = 9.0
+RESTORE_TERMINATION_RESERVE = 5.0
+
+
 def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -> None:
     launcher = paths.root / LAUNCHER
     handoff = paths.root / ".cutover-handoff.json"
@@ -429,9 +442,13 @@ def _restart_after_install(paths: Paths, native: Native, lifecycle: Lifecycle) -
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL)
         start = time.monotonic()
-        deadline = start + 9.0
+        deadline = start + RESTORE_HEALTH_WINDOW
         if lifecycle.deadline is not None:
-            deadline = min(deadline, lifecycle.deadline - 5.0)  # reserve time to terminate and confirm the tree
+            # Stopping the old app and installing may have used the whole quiet
+            # budget. The relaunch keeps its own full health window plus time to
+            # terminate and confirm the tree, so a slow exit cannot starve it.
+            lifecycle.deadline = max(lifecycle.deadline,
+                                     start + RESTORE_HEALTH_WINDOW + RESTORE_TERMINATION_RESERVE)
         identity = None
         while time.monotonic() < deadline:
             try:
@@ -519,7 +536,7 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
         _setup_preflight(paths, native, manifest, version_full, deadline, check_handoff=True)
         test_timeout = 30.0
         if deadline is not None:
-            test_timeout = deadline - time.monotonic() - 9.0  # reserve bounded restore health time
+            test_timeout = deadline - time.monotonic() - RESTORE_HEALTH_WINDOW  # keep the restore window
             if test_timeout <= 0:
                 raise SafetyError("Quiet setup deadline leaves no time for staged-release preflight")
             test_timeout = min(test_timeout, 15.0)
@@ -530,9 +547,12 @@ def install(paths: Paths, payload: Path, native: Native, *, startup: bool,
 
     failure = None
     try:
+        waits = {}
+        if deadline is not None:
+            waits = {"timeout": QUIET_SHUTDOWN_WAIT, "late_exit_timeout": QUIET_LATE_EXIT_WAIT}
         lifecycle = Lifecycle(native.mutex, native.control, native.processes, recover_abandoned,
                               before_stop=pre_stop,
-                              deadline=deadline)
+                              deadline=deadline, **waits)
         with lifecycle:
             try:
                 journal_record = Journal(paths.root).load() if paths.root.exists() else None
@@ -625,6 +645,12 @@ def uninstall(paths: Paths, native: Native) -> dict:
             claude_integration = {"ok": False, "changed": False, "backup": None,
                                   "consentRemoved": False, "hooksLeft": "unknown",
                                   "error": f"{type(exc).__name__}: {exc}"}
+        try:
+            from token_tracker import statusline_connect
+            # No explicit path: disconnect edits the file the status line was connected to, else the resolved default.
+            claude_integration["statusLine"] = statusline_connect.disconnect(root=paths.product_root / "state")
+        except Exception as exc:
+            claude_integration["statusLine"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         pointer = root / "current.json"
         version = "0.0.0+unknown"
         try:
@@ -702,7 +728,7 @@ def main(argv=None, *, role: str = "setup", paths: Paths | None = None, native: 
     paths = paths or Paths.for_user()
     native = native or Native.real(paths)
     executable = Path(executable or sys.executable)
-    wait_deadline = time.monotonic() + 30.0 if args.quiet else None
+    wait_deadline = time.monotonic() + QUIET_SETUP_BUDGET if args.quiet else None
     try:
         stranded_appdata = None
         if role == "setup" and not (args.uninstall or args.rollback or args.uninstall_worker):

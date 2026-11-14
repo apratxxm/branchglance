@@ -16,7 +16,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from . import product, server
+from . import debug_report, product, server
 
 SECRET_ENV = "BRANCHGLANCE_MACOS_HOST_SECRET"
 PROOF_PATH = "/api/macos-host-proof"
@@ -57,6 +57,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Branchglance server for the macOS notch host")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
+    debug_report.install_handler()
     if not os.environ.get(product.POLICY_FILE_ENV):
         os.environ[product.POLICY_FILE_ENV] = str(product.hook_data_root() / "policy.json")
     product.hook_data_root().mkdir(parents=True, exist_ok=True)
@@ -78,6 +79,8 @@ def main() -> None:
     from . import ledger_service
     ledger = ledger_service.LedgerService()
     ledger.start()
+    from . import claude_usage_api
+    claude_usage_api.REFRESHER.start()
     parent = os.getppid()
 
     def exit_with_parent() -> None:
@@ -93,6 +96,7 @@ def main() -> None:
         pass
     finally:
         ledger.stop()
+        claude_usage_api.REFRESHER.stop()
         httpd.server_close()
 
 

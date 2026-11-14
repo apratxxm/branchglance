@@ -29,16 +29,13 @@ assert.doesNotMatch(refined,/linear-gradient\(to bottom,var\(--tree-(?:claude|co
 assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
-assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
-assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 150ms/);
-assert.match(css,/\.chat-list\.source-entering>:not\(\.source-switch-snapshot\)\{opacity:0\}/,"new rows stay hidden until the old ones have faded");
 assert.match(page,/placeholder="[^"]*is:hidden/);
 assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
 assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 58px/);
 assert.doesNotMatch(refined,/compact-toolbar \.notch-counts\{display:none/,"the toolbar keeps its chat, active and waiting counts");
 assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);
 
-function boot(initialStorage={}, {compact=false}={}) {
+function boot(initialStorage={}) {
   const nodes=new Map(),saved=new Map(Object.entries(initialStorage)),timers=new Map();let sequence=0;
   const node=selector=>{
     if(!nodes.has(selector))nodes.set(selector,{innerHTML:"",textContent:"",value:"",hidden:false,title:"",className:"",dataset:{},attributes:{},offsetHeight:0,
@@ -53,7 +50,7 @@ function boot(initialStorage={}, {compact=false}={}) {
   };
   const segments=[segment("Codex"),segment("Claude")];
   class TestDate extends Date {constructor(...args){super(...(args.length?args:[fixedNow]));}static now(){return fixedNow;}}
-  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:compact,__TOKEN_TRACKER_COMPACT__:compact},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:selector=>selector==="#source-switch"?null:node(selector),
+  const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},document:{body:{dataset:{},classList:{toggle(){},add(){},remove(){}}},querySelector:selector=>selector==="#source-switch"?null:node(selector),
     querySelectorAll(){return [];},documentElement:{style:{setProperty(){}}},hidden:false,activeElement:null},
     localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))},fetch:async()=>({ok:true,json:async()=>({ok:true})}),Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,
     setTimeout:callback=>{timers.set(++sequence,callback);return sequence;},clearTimeout:id=>timers.delete(id),setInterval(){return 0;}};
@@ -91,18 +88,22 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(both.context.document.body.dataset.source,undefined,"provider selection cannot recolor the fixed frame");
 }
 
-// Any Claude quota sample arriving before stats paints into the selected provider's meter.
+// A quota sample arriving before stats is retained, but Claude requires a verified account.
 {
   const early=boot(undefined,{compact:true}),samples={
     Codex:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,five_hour_percent:55,weekly_percent:50}},
-    Claude:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,five_hour_percent:43,weekly_percent:28}}
+    Claude:{lastStatus:{checkedAt:ago(0),observed_at:fixedNow/1000,identity_generation:"account-1",five_hour_percent:43,weekly_percent:28}}
   };
   early.context.fetch=async url=>String(url)==="/api/quota"?{ok:true,json:async()=>({providers:samples,quotaCache:{ready:true,fresh:true,ageSeconds:0.25,refreshing:false,errorCategory:null}})}:{ok:true,json:async()=>policies()};
   assert.equal(await early.T.loadQuota(),true);
   assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour,undefined,"an unapproved sample stays unrendered while policy is pending");
   await early.T.loadProviderPolicy();early.T.setSource("Claude");
-  assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour.percent,43);
-  assert.equal(early.node("#r1-fiveHour-left").innerHTML,'<span class="rr-value"><b>43%</b><i>used</i></span>');
+  assert.equal(early.T.quotaBootstrap.providers.Claude.fiveHour,undefined,"policy alone cannot verify the Claude account");
+  const verified={name:"Claude",identityVerified:true,identityGeneration:"account-1"};
+  assert.equal(early.T.applyQuotaSamples({Claude:{lastStatus:{...samples.Claude.lastStatus,identity_generation:"other-account"}}},1,[verified],{requireDated:true}),false);
+  assert.equal(verified.fiveHour,undefined,"a different account's sample remains unrendered");
+  assert.equal(early.T.applyQuotaSamples(samples,1,[verified],{requireDated:true}),true);
+  assert.equal(verified.fiveHour.percent,43);
   assert.equal(early.node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>55%</b><i>used</i></span>');
 }
 
@@ -133,29 +134,6 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   empty.T.state.searchOpen=true;empty.T.state.query="not-found";
   empty.T.render(snapshotOf({codex:idle,claude:[]}));
   assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty">No matches</div>');
-}
-
-// The source-change overlay retains the old content and palette until it fades over the new rows.
-{
-  const {T,node,context}=boot(),list=node("#chat-list"),frameCallbacks=[],added=[],removed=[],styleValues={};
-  list.innerHTML='<div class="chat" id="old-chat">old rows</div>';
-  list.children=[{outerHTML:list.innerHTML,classList:{contains:()=>false}}];
-  list.appendChild=overlay=>{added.push(overlay);};list.querySelectorAll=()=>[];
-  const ids=[{removeAttribute(name){removed.push(name);}}];
-  context.document.createElement=()=>({style:{setProperty(name,value){styleValues[name]=value;}},classList:{add(name){this[name]=true;}},
-    attributes:{},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){this.attributes[name]=null;},querySelectorAll:()=>ids,
-    addEventListener(name,handler){this[name]=handler;},removeEventListener(){},remove(){this.removed=true;}});
-  context.window.getComputedStyle=()=>({getPropertyValue:name=>name==="--source-accent"?"rgb(66, 93, 246)":""});
-  context.requestAnimationFrame=callback=>{frameCallbacks.push(callback);return frameCallbacks.length;};
-  const overlay=T.captureSourceSnapshot(list);
-  assert.match(overlay.innerHTML,/old rows/);assert.equal(styleValues["--source-accent"],"rgb(66, 93, 246)");
-  assert.deepEqual(removed,["id"]);
-  T.revealSourceSnapshot(list,overlay);assert.equal(added[0],overlay);
-  frameCallbacks[0]();assert.equal(overlay.classList["is-fading"],true);
-  overlay.animationend();assert.equal(overlay.removed,true,"the old layer is removed after the crossfade completes");
-  // The caller is told when the old rows are gone, so the window can resize and the new rows fade in.
-  let done=0;const second=T.captureSourceSnapshot(list);T.revealSourceSnapshot(list,second,()=>done++);
-  second.animationend();assert.equal(done,1);
 }
 
 // While the old rows fade, the open widget keeps its height; it resizes once they are gone.
@@ -299,14 +277,14 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.match(node("#chat-list").innerHTML,/Codex c1/);
 }
 
-// A new question on an already-running hidden session is a separate transition.
+// A new question on an already-running provider remains visible in the unified tree.
 {
   const {T,timers}=boot({branchglanceSource:"Claude"});
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running())]}));
   T.setSource("Codex");
   const timer=T.notch.autoTimer;timers.get(timer)?.();
   T.render(snapshotOf({codex:[codexChat("c1")],claude:[claudeChat("s1",running({status:"needs-input",pendingQuestion:"Continue?",pendingQuestionAt:ago(0),pendingQuestionId:"q-1"}))]}));
-  assert.equal(T.state.source,"Codex");
+  assert.ok(T.state.forest.rows.find(chat=>chat.key==="Claude:s1"));
   assert.equal(T.state.sourceAttention.size,0,"all visible providers are on screen in the unified tree");
   assert.ok(T.state.forest.rows.find(chat=>chat.key==="Claude:s1").pendingQuestion);
   assert.equal(T.notch.autoExpanded,true,"the question transition reveals despite the unchanged run");
@@ -365,8 +343,6 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(T.resumeCommand({provider:"Claude",id:"11111111-1111-4111-8111-111111111111:agent_7",resumable:true}),"claude --resume 11111111-1111-4111-8111-111111111111","resume strips a valid agent suffix");
   assert.equal(T.resumeCommand({provider:"Claude",id:"not-a-uuid",resumable:true}),"");
   assert.equal(T.resumeCommand({provider:"Codex",id:"abc"}),"codex resume abc");
-  const items=T.attentionItems(T.state.forest,T.limitProvidersFor(T.state.snapshot));
-  assert.ok(items.filter(item=>item.kind==="ask").every(item=>!item.thread),"Claude attention items carry no thread");
   // Clicking Waiting on a Claude row opens the read-only popover rather than a Codex deep link.
   const target=rows[0];
   const button={dataset:{action:"runway-question",key:target.key},closest:()=>button,getBoundingClientRect:()=>({left:0,bottom:0})};

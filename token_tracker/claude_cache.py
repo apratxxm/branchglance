@@ -155,29 +155,13 @@ def _simple_records(cache: Path, key_pattern: re.Pattern[bytes], now: float) -> 
     return records
 
 
-def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = None,
-               max_usage_age: float = MAX_USAGE_AGE_SECONDS) -> dict[str, Any]:
-    """Return usage and deadlines only from a recent authenticated Desktop response.
-
-    ``plan-usage-history.json`` is a convenient historical cache but may stop
-    updating when Claude Desktop is closed. This reads the timestamped response
-    cache directly and leaves quota percentages unknown once it is stale.
-    """
-    result: dict[str, Any] = {
-        "fiveHour": None, "weekly": None, "observedAt": None,
-        "fiveHourPercent": None, "weeklyPercent": None,
-    }
-    now = time.time() if now is None else now
-    org = samples[-1].get("org") if samples else None
-    if not isinstance(org, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", org):
-        return result
-    cache = root / "Cache" / "Cache_Data"
+def _usage_cache_records(cache: Path, org: str, now: float) -> list[tuple[float, Any]]:
     endpoint = ("https://claude.ai/api/organizations/" + org + "/usage").encode()
     key_pattern = re.compile(rb"(?:[0-9/ ]{0,64})" + re.escape(endpoint) + rb"(?:\?[A-Za-z0-9_=&.%-]*)?")
     try:
         files = sorted(cache.glob("data_*"), key=lambda p: p.stat().st_mtime, reverse=True)[:16]
     except OSError:
-        return result
+        return []
     records = []
     budget = MAX_SCAN
     for path in files:
@@ -219,8 +203,14 @@ def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = No
             break
     if not records:
         records = _simple_records(cache, key_pattern, now)
+    return records
+
+
+def _usage_window_evidence(result: dict[str, Any], records: list[tuple[float, Any]],
+                           samples: list[dict[str, Any]], org: str, now: float,
+                           max_usage_age: float) -> None:
     if not records:
-        return result
+        return
     observed, value = max(records, key=lambda record: record[0])
     result["observedAt"] = observed
     for name, field, usage_key, duration in (("fiveHour", "five_hour", "fh", 18000),
@@ -284,6 +274,27 @@ def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = No
                 previous = used
         if not invalid:
             result[name] = reset
+
+
+def usage_info(root: Path, samples: list[dict[str, Any]], now: float | None = None,
+               max_usage_age: float = MAX_USAGE_AGE_SECONDS) -> dict[str, Any]:
+    """Return usage and deadlines only from a recent authenticated Desktop response.
+
+    ``plan-usage-history.json`` is a convenient historical cache but may stop
+    updating when Claude Desktop is closed. This reads the timestamped response
+    cache directly and leaves quota percentages unknown once it is stale.
+    """
+    result: dict[str, Any] = {
+        "fiveHour": None, "weekly": None, "observedAt": None,
+        "fiveHourPercent": None, "weeklyPercent": None,
+    }
+    now = time.time() if now is None else now
+    org = samples[-1].get("org") if samples else None
+    if not isinstance(org, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", org):
+        return result
+    cache = root / "Cache" / "Cache_Data"
+    records = _usage_cache_records(cache, org, now)
+    _usage_window_evidence(result, records, samples, org, now, max_usage_age)
     return result
 
 

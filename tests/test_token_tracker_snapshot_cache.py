@@ -23,6 +23,201 @@ def _wait_idle(cache: server.SnapshotCache) -> None:
         assert cache.condition.wait_for(lambda: not cache.building, timeout=2)
 
 
+def test_timed_out_requests_do_not_replace_blocked_builder(monkeypatch):
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def build():
+        calls.append(1)
+        started.set()
+        release.wait(2)
+        return {"providers": []}
+
+    monkeypatch.setattr(server, "build_snapshot", build)
+    try:
+        assert cache.get() is None
+        assert started.is_set()
+        assert cache.get() is None
+        assert calls == [1]
+        assert cache.building
+    finally:
+        release.set()
+        _wait_idle(cache)
+
+
+def test_publication_error_releases_waiters(monkeypatch):
+    cache = server.SnapshotCache()
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": []})
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: (_ for _ in ()).throw(ValueError("publication")))
+    with pytest.raises(ValueError, match="publication"):
+        cache.get()
+    assert not cache.building
+    assert cache.last_failure_category == "invalid_snapshot"
+
+
+def test_superseded_builder_cannot_replace_newer_snapshot(monkeypatch):
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    started, release = threading.Event(), threading.Event()
+    def build():
+        started.set()
+        release.wait(2)
+        return {"providers": [], "marker": "old"}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    assert cache.get() is None
+    assert started.is_set()
+    cache.value = {"providers": [], "marker": "new"}
+    release.set()
+    _wait_idle(cache)
+    assert cache.value["marker"] == "new"
+
+
+def test_superseded_build_never_records_peaks(monkeypatch):
+    cache = server.SnapshotCache()
+    started, release = threading.Event(), threading.Event()
+    peaks = []
+    def build():
+        started.set()
+        release.wait(2)
+        return {"providers": [], "marker": "old"}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: peaks.append(value["marker"]))
+    cache.get_background()
+    assert started.wait(1)
+    cache.value = {"providers": [], "marker": "new"}
+    release.set()
+    _wait_idle(cache)
+    assert peaks == []
+
+
+def test_epoch_change_waits_for_guarded_durable_commit(tmp_path, monkeypatch):
+    cache = server.SnapshotCache(persist_path=tmp_path / "snapshot.json", compatibility="test")
+    cache._restore_pending = False
+    original_key = cache._ensure_persistence_key()
+    entered, release, changed = threading.Event(), threading.Event(), threading.Event()
+    disk = cache.persist_path
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": [], "marker": "old"})
+    monkeypatch.setattr(server, "_record_insights_peaks", lambda value: None)
+    monkeypatch.setattr(cache, "_persistable", lambda value: True)
+    def write(_snapshot, _generation, _built_at):
+        entered.set()
+        assert release.wait(2)
+        disk.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(cache, "_write_persisted", write)
+    cache.get_background()
+    assert entered.wait(1)
+    def change():
+        cache.value = {"providers": [], "marker": "new"}
+        changed.set()
+    thread = threading.Thread(target=change)
+    thread.start()
+    try:
+        assert not changed.wait(.05)
+    finally:
+        release.set()
+    thread.join(2)
+    _wait_idle(cache)
+    assert changed.is_set() and cache.value["marker"] == "new"
+    assert disk.exists()
+    assert cache._read_persistence_key() != original_key
+
+
+def test_rotated_epoch_rejects_old_authenticated_snapshot_on_restart(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    stamp = datetime.now(timezone.utc).isoformat()
+    old = {"generatedAt": stamp, "enabledProviders": ["Codex"], "providers": [
+        {"name": "Codex", "connected": True, "chats": []}]}
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Codex"}))
+    cache._write_persisted(old, 1, stamp)
+    assert path.exists()
+    cache.value = {"providers": [], "marker": "new"}
+    assert path.exists(), "correctness cannot rely on deleting the old record"
+    restored = server.SnapshotCache(persist_path=path, compatibility="test")
+    restored._ensure_restored()
+    assert restored.value is None
+
+
+def test_restore_and_epoch_change_are_serialized(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    stamp = datetime.now(timezone.utc).isoformat()
+    old = {"generatedAt": stamp, "enabledProviders": ["Codex"], "providers": [
+        {"name": "Codex", "connected": True, "chats": []}]}
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Codex"}))
+    server.SnapshotCache(persist_path=path, compatibility="test")._write_persisted(old, 1, stamp)
+    cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    read_key = cache._read_persistence_key
+    entered, release, changed = threading.Event(), threading.Event(), threading.Event()
+
+    def paused_read():
+        entered.set()
+        assert release.wait(2)
+        return read_key()
+
+    monkeypatch.setattr(cache, "_read_persistence_key", paused_read)
+    restore = threading.Thread(target=cache._ensure_restored)
+    restore.start()
+    assert entered.wait(1)
+
+    def change():
+        cache.value = {"providers": [], "marker": "new"}
+        changed.set()
+
+    setter = threading.Thread(target=change)
+    setter.start()
+    try:
+        assert not changed.wait(.05)
+    finally:
+        release.set()
+        restore.join(2)
+        setter.join(2)
+    assert changed.is_set()
+    assert cache.value["marker"] == "new"
+
+
+def test_timeout_returns_stale_snapshot_and_disables_restored_actions(monkeypatch):
+    cache = server.SnapshotCache(ttl=0)
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    cache.value = {"providers": [{"name": "Codex", "chats": [{"id": "x", "status": "running"}]}]}
+    started, release = threading.Event(), threading.Event()
+    def build():
+        started.set()
+        release.wait(2)
+        return {"providers": []}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    try:
+        result = cache.get(force=True)
+        assert started.is_set()
+        assert result["snapshotCache"]["stale"] is True
+        assert result["snapshotCache"]["staleReason"] == "request_timeout"
+        assert result["snapshotCache"]["identityGeneration"] is None
+        assert result["providers"][0]["chats"][0]["status"] == "unknown"
+    finally:
+        release.set()
+        _wait_idle(cache)
+
+
+def test_blocked_publication_does_not_hold_request_lock(monkeypatch):
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = 0.05
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": []})
+    def block(_value):
+        started.set()
+        release.wait(2)
+    monkeypatch.setattr(server, "_record_insights_peaks", block)
+    try:
+        assert cache.get() is None
+        assert started.is_set()
+        assert cache.get() is None
+        assert cache.building
+    finally:
+        release.set()
+        _wait_idle(cache)
+
+
 def test_concurrent_forced_builds_publish_one_generation(monkeypatch):
     cache = server.SnapshotCache()
     started, release = threading.Event(), threading.Event()
@@ -46,7 +241,7 @@ def test_concurrent_forced_builds_publish_one_generation(monkeypatch):
         nonlocal waiting_count
         with waiting_lock:
             waiting_count += 1
-            if waiting_count == waiter_count:
+            if waiting_count == waiter_count + 1:
                 waiting.set()
         return original_wait(timeout)
 
@@ -107,6 +302,7 @@ def test_background_failure_keeps_last_good_generation_and_marks_stale(monkeypat
         "stale": True,
         "lastFailureAt": failed["snapshotCache"]["lastFailureAt"],
         "lastFailureCategory": "io_error",
+        "identityGeneration": None,
     }
     assert "private path" not in repr(failed)
     assert cache.generation == 1 and cache.at == 100.0
@@ -460,7 +656,11 @@ def test_unavailable_provider_does_not_replace_cached_snapshot(monkeypatch, tmp_
 
 
 def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
-    from token_tracker import provider_policy, providers
+    from token_tracker import provider_policy, providers, claude_identity
+
+    identity = claude_identity.Identity("account", "org", "epoch", "Account")
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: (identity.generation, identity))
 
     class EnabledClaude:
         def allows(self, action):
@@ -471,7 +671,8 @@ def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
 
     def limits_snapshot():
         calls.append(1)
-        return {"fiveHour": {"percent": 17}, "weekly": {"percent": 8},
+        return {"identityVerified": True, "identityGeneration": "epoch",
+                "fiveHour": {"percent": 17}, "weekly": {"percent": 8},
                 "limitsUpdatedAt": "observed", "chats": []}
 
     class FakeLimitsProvider:
@@ -488,6 +689,9 @@ def test_fast_claude_limits_overlay_only_quota_fields(monkeypatch, tmp_path):
     cache = server.FastClaudeLimits()
     snapshot = {"providers": [{"name": "Claude", "fiveHour": None, "weekly": None,
                                "limitsUpdatedAt": None, "chats": [{"id": "chat"}]}]}
+    cache.overlay(snapshot)
+    with cache.condition:
+        assert cache.condition.wait_for(lambda: not cache.loading, timeout=2)
     first = cache.overlay(snapshot)
     second = cache.overlay(snapshot)
     assert snapshot["providers"][0]["fiveHour"] is None
@@ -592,3 +796,70 @@ def test_lazy_restore_never_overwrites_a_fresh_build(monkeypatch, tmp_path):
     restore()
     assert cache.value is not None
     assert cache.value["providers"][0]["chats"][0]["status"] == "idle"
+
+
+def test_claude_snapshot_identity_must_match_at_egress(monkeypatch):
+    from token_tracker import claude_identity
+    from token_tracker.server import SnapshotCache
+    provider = {"name": "Claude", "identityVerified": True, "identityGeneration": "a",
+                "fiveHour": {"percent": 20}, "weekly": {"percent": 10}}
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: ("a", claude_identity.Identity("acct", "org", "a", "Account")))
+    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is True
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: ("b", claude_identity.Identity("acct2", "org", "b")))
+    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is False
+    monkeypatch.setattr(claude_identity.AUTHORITY, "capture_nonblocking", lambda: (None, None))
+    assert SnapshotCache._egress({"providers": [provider]}, {})["providers"][0]["identityVerified"] is False
+
+
+def test_codex_snapshot_publishes_when_claude_identity_unavailable(monkeypatch, tmp_path):
+    from token_tracker import claude_identity
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: None)
+    monkeypatch.setattr(server, "build_snapshot", lambda: {"providers": [{"name": "Codex", "fiveHour": {"percent": 42}, "chats": [{"id": "run"}]}]})
+    cache = server.SnapshotCache(persist_path=tmp_path / "snapshot.json")
+    result = cache.get()
+    assert result["providers"][0]["fiveHour"]["percent"] == 42
+    assert result["providers"][0]["chats"][0]["id"] == "run"
+
+
+def test_cached_egress_does_not_wait_for_identity_reader(monkeypatch):
+    from token_tracker import claude_identity
+    cache = server.SnapshotCache()
+    cache.REQUEST_TIMEOUT_SECONDS = .01
+    cache._value = {"providers": [{"name": "Codex", "chats": []}]}
+    cache._at = time.monotonic()
+    entered, release = threading.Event(), threading.Event()
+    def stalled():
+        entered.set()
+        release.wait(2)
+    monkeypatch.setattr(claude_identity, "current_identity", stalled)
+    thread = threading.Thread(target=claude_identity.current_identity, daemon=True)
+    thread.start()
+    try:
+        assert entered.wait(1)
+        start = time.monotonic()
+        assert cache.get()["providers"][0]["name"] == "Codex"
+        assert time.monotonic() - start < .1
+    finally:
+        release.set()
+        thread.join(1)
+
+
+def test_identity_switch_during_build_keeps_codex(monkeypatch, tmp_path):
+    from token_tracker import claude_identity
+    account = tmp_path / ".claude.json"
+    authority = claude_identity.IdentityAuthority(tmp_path / "identity.json")
+    def set_account(name):
+        account.write_text(json.dumps({"oauthAccount": {"accountUuid": name, "organizationUuid": "org"}}))
+    set_account("a")
+    first = authority.refresh_passive(account)
+    monkeypatch.setattr(claude_identity, "AUTHORITY", authority)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: authority.refresh_passive(account))
+    def build():
+        set_account("b")
+        return {"providers": [{"name": "Claude", "identityVerified": True, "identityGeneration": first.generation},
+                              {"name": "Codex", "fiveHour": {"percent": 35}, "chats": [{"id": "run"}]}]}
+    monkeypatch.setattr(server, "build_snapshot", build)
+    result = server.SnapshotCache().get()
+    assert result["providers"][0]["identityVerified"] is False
+    assert result["providers"][1]["fiveHour"]["percent"] == 35
+    assert result["providers"][1]["chats"][0]["id"] == "run"

@@ -6,6 +6,7 @@ ancestry and receipt rules can be tested without inspecting real processes.
 from __future__ import annotations
 
 import ctypes
+import copy
 from functools import wraps
 import json
 import logging
@@ -18,6 +19,7 @@ import tempfile
 import threading
 import time
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -39,11 +41,34 @@ _SCAN_LOCK = threading.Lock()
 _LAST_FULL_SCAN_AT = float("-inf")
 _UNLINKED_LOCK = threading.Lock()
 _UNLINKED_EXECUTIONS: dict[tuple[str, int, int], dict[str, Any]] = {}
+_RUN_ROWS: dict[tuple[str, int, int], dict[str, Any]] = {}
+_CLAUDE_PROCESS_LINKS: dict[str, dict[str, Any]] = {}
+_CLAUDE_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
+_RECEIPT_CONFLICTS: set[tuple[str, int, int]] = set()
+_CODEX_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
+_CODEX_PARENT_CONTRADICTIONS: set[tuple[str, int, int]] = set()
+# Last time each contradiction's identity was still tracked or offered, keyed by
+# (set label, identity); an identity untouched for RETENTION_SECONDS is forgotten.
+_CONTRADICTION_SEEN: dict[tuple[str, tuple[str, int, int]], float] = {}
+# Execution identities seen per thread in this app process, for the resume
+# badge. Never pruned by run retention; bounded by thread count.
+_OBSERVED_IDENTITIES: dict[str, set[tuple[int, int]]] = {}
+_OBSERVED_IDENTITY_LIMIT = 4096
+STOPPED_RETENTION_SECONDS = 15 * 60
 _LOG = logging.getLogger(__name__)
+
+# Codex launcher attribution remains disabled until a rig probe verifies that
+# root and native-descendant processes export their own thread ids.
+_CODEX_ENV_PER_THREAD_VERIFIED = False
 
 
 # The Codex executable is codex.exe on Windows and codex on macOS.
 CODEX_EXE_NAMES = frozenset({"codex.exe", "codex"})
+
+
+def _optional_thread_id(value: Any) -> str | None:
+    """Validate an optional provider thread UUID without coercing other values."""
+    return value if isinstance(value, str) and THREAD_ID.fullmatch(value) else None
 
 
 def _serialized_link_poll(function):
@@ -301,6 +326,84 @@ def _command_line(pid: int) -> str | None:
         return None
 
 
+def _command_argv(pid: int) -> list[str] | None:
+    """Read argv as tokens; never infer token boundaries from joined text."""
+    if sys.platform == "darwin":
+        from .macos_process import command_line_argv
+        return command_line_argv(pid)
+    if os.name != "nt":
+        return None
+    line = _command_line(pid)
+    if not line:
+        return None
+    try:
+        shell = ctypes.WinDLL("shell32", use_last_error=True)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        shell.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        shell.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        count = ctypes.c_int()
+        values = shell.CommandLineToArgvW(line, ctypes.byref(count))
+        if not values or count.value <= 0 or count.value > 32768:
+            return None
+        try:
+            return [values[index] for index in range(count.value)]
+        finally:
+            kernel.LocalFree(values)
+    except Exception:
+        return None
+
+
+def parse_exec_argv(argv: list[str] | tuple[str, ...] | None) -> tuple[str, str | None, tuple[str, ...]] | None:
+    """Parse Codex exec identity from a structured argv vector."""
+    if not isinstance(argv, (list, tuple)) or not argv or len(argv) > 32768:
+        return None
+    if any(not isinstance(arg, str) for arg in argv):
+        return None
+    args = list(argv)
+    base = args[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if base not in CODEX_EXE_NAMES and not base.startswith("codex"):
+        # Node-hosted @openai/codex commands carry the package entry in argv.
+        entry = next((index for index, arg in enumerate(args)
+                      if "@openai/codex" in arg.replace("\\", "/").casefold()), None)
+        if entry is None:
+            return None
+        args = args[entry + 1:]
+    else:
+        args = args[1:]
+    if not args or args[0].casefold() != "exec":
+        return None
+    if len(args) > 1 and args[1].casefold() == "resume":
+        if len(args) < 3:
+            return None
+        candidate = args[2].casefold()
+        return ("resume", candidate, (candidate,)) if THREAD_ID.fullmatch(candidate) else None
+    return ("exec", None, ())
+
+
+def classify_agent_process(name: str, argv: list[str] | tuple[str, ...] | None) -> str:
+    """Return claude, codex, other, or unknown for a process-table entry."""
+    if not isinstance(name, str):
+        return "unknown"
+    image = name.casefold()
+    if image in {"claude", "claude.exe"}:
+        return "claude"
+    if image in CODEX_EXE_NAMES:
+        return "codex"
+    if not image.endswith(("node", "node.exe", "bun", "bun.exe")):
+        return "other"
+    if argv is None:
+        return "unknown"
+    normalized = [item.replace("\\", "/").casefold() for item in argv if isinstance(item, str)]
+    if len(normalized) != len(argv):
+        return "unknown"
+    if any("@anthropic-ai/claude-code" in item or item.endswith("/claude") for item in normalized):
+        return "claude"
+    if any("@openai/codex" in item for item in normalized):
+        return "codex"
+    return "other"
+
+
 def parse_exec_resume_thread(command_line: str | None) -> str | None:
     """Extract the UUID directly following exec resume."""
     invocation = parse_exec_invocation(command_line)
@@ -336,7 +439,7 @@ def _filetime_epoch(created: int) -> float | None:
 
 
 def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], list[tuple[str, float, float]]]:
-    grouped: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
+    grouped: dict[tuple[int, int], list[tuple[str, float, float, bool]]] = {}
     for identity, entry in (claude_states or {}).items():
         if not isinstance(identity, tuple) or len(identity) != 2 or identity[1]:
             continue
@@ -351,48 +454,60 @@ def _association_map(claude_states: dict[str, Any]) -> dict[tuple[int, int], lis
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
             grouped.setdefault(key, []).append(
-                (str(association.get("sid") or identity[0]), first, last))
+                (str(association.get("sid") or identity[0]), first, last,
+                 association.get("ambiguous") is True))
     found: dict[tuple[int, int], list[tuple[str, float, float]]] = {}
     for identity, transitions in grouped.items():
-        ordered = sorted(transitions, key=lambda item: (item[1], item[0], item[2]))
+        ordered = sorted(transitions, key=lambda item: (item[1], item[0], item[2], item[3]))
         entries = []
-        for index, (sid, first, _observed_last) in enumerate(ordered):
+        for index, (sid, first, _observed_last, ambiguous) in enumerate(ordered):
             # A process identity remains associated with its latest session
-            # while alive; a later session on the same process closes the
-            # earlier interval at that new session's first hook event.
+            # while alive; any later transition, including an ambiguous one,
+            # closes the earlier interval at that transition's first event.
             next_first = next((entry[1] for entry in ordered[index + 1:]
                                if entry[1] > first), math.inf)
-            entries.append((sid, first, next_first if math.isfinite(next_first) else math.inf))
+            if not ambiguous:
+                entries.append((sid, first, next_first if math.isfinite(next_first) else math.inf))
         # Hooks can arrive out of order. When two sessions' observed ranges on
         # one process overlap, the owner after the overlap can't be proven:
         # make both candidates from that point on so selection fails closed.
-        for index, (sid, first, observed_last) in enumerate(ordered):
-            for other_sid, other_first, other_last in ordered[index + 1:]:
+        for index, (sid, first, observed_last, ambiguous) in enumerate(ordered):
+            if ambiguous:
+                continue
+            for other_sid, other_first, other_last, other_ambiguous in ordered[index + 1:]:
+                if other_ambiguous:
+                    continue
                 if other_sid != sid and first < other_last and other_first < observed_last:
                     start = max(first, other_first)
                     entries.append((sid, start, math.inf))
-                    entries.append((other_sid, start, math.inf))
+                    if not other_ambiguous:
+                        entries.append((other_sid, start, math.inf))
         found[identity] = entries
     return found
 
 
 def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
+                         table_reader: Callable[[], dict[int, tuple[int, str]]] | None = None,
+                         snapshot_time: int | None = None,
                          current_sid: bytes | None = None,
                          equal_sid: Callable[[bytes | None, bytes | None], bool] = _equal_sid,
                          process_sid: Callable[[int], bytes | None] = _process_sid,
                          created: Callable[[int], int | None] = _process_created,
                          command_line: Callable[[int], str | None] = _command_line,
+                         command_argv: Callable[[int], list[str] | None] | None = None,
                          watched_threads: set[str] | None = None,
                          claude_states: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Discover executions by same-user process ancestry; any uncertain edge drops the row."""
     try:
-        table = _process_table() if table is None else table
+        table = (table_reader or _process_table)() if table is None else table
+        snapshot_time = snapshot_time or int((time.time() + 11_644_473_600) * 10_000_000)
         current_sid = _current_user_sid() if current_sid is None else current_sid
     except Exception:
         return []
     if not current_sid:
         return []
     associations = _association_map(claude_states or {})
+    argv_reader = command_argv or _command_argv
     created_cache: dict[int, int | None] = {}
     sid_cache: dict[int, bytes | None] = {}
 
@@ -417,7 +532,14 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
             created_cache[child] = child_created
             if not equal_sid(owner(child), current_sid):
                 continue
-            invocation = parse_exec_invocation(command_line(child))
+            if command_argv is not None:
+                invocation = parse_exec_argv(command_argv(child))
+            elif command_line is _command_line:
+                invocation = parse_exec_argv(_command_argv(child))
+            else:
+                # Compatibility for older injected test probes. Runtime paths
+                # always use the structured argv reader above.
+                invocation = parse_exec_invocation(command_line(child))
             if invocation is None:
                 continue
             kind, resume_id, argv_thread_ids = invocation
@@ -445,12 +567,19 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
             visited.add(current)
             parent, name = table[current]
             current_created = identity(current)
-            if current_created is None:
+            if current_created is None or current_created >= snapshot_time or not equal_sid(owner(current), current_sid):
                 valid = False
                 break
             chain.append((current, current_created))
-            if current != child and name.casefold() in {"claude.exe", "claude"}:
-                claude_identity = (current, current_created)
+            kind = classify_agent_process(name, argv_reader(current) if
+                                          name.casefold().endswith(("node", "node.exe", "bun", "bun.exe")) else None)
+            if kind == "unknown":
+                valid = False
+                break
+            if current != child and kind in {"claude", "codex"}:
+                if kind == "claude":
+                    claude_identity = (current, current_created)
+                # Never skip past a nearer Codex launcher.
                 break
             if parent not in table:
                 valid = False
@@ -463,26 +592,354 @@ def scan_codex_processes(*, table: dict[int, tuple[int, str]] | None = None,
         session_ids: set[str] = set()
         if valid and claude_identity is not None:
             created_epoch = _filetime_epoch(child_created)
-            if created_epoch is not None:
+            launcher_index = next((index for index, (pid, _tick) in enumerate(chain)
+                                   if pid == claude_identity[0]), None)
+            launch_child_created = (chain[launcher_index - 1][1]
+                                    if launcher_index is not None and launcher_index > 0
+                                    else child_created)
+            direct_epoch = _filetime_epoch(launch_child_created)
+            if created_epoch is not None and direct_epoch is not None:
                 session_ids = {sid for sid, first, last in associations.get(claude_identity, ())
-                               if first <= created_epoch < last}
-        # Recheck the child across owner and command-line observations, then
-        # revalidate every ancestor identity immediately before publication.
+                               if first <= direct_epoch < last and first <= created_epoch < last}
+        # Incarnation binding: the whole observed chain must remain identical
+        # across two process snapshots and every creation tick must be stable.
         try:
+            snapshot2 = (table_reader() if table_reader is not None else table)
+            if any(pid not in snapshot2 or pid not in table or snapshot2[pid] != table[pid]
+                   for pid, _created_at in chain):
+                continue
             if identity(child) != child_created or created(child) != child_created:
                 continue
-            if any(created(pid) != created_at for pid, created_at in chain):
+            if any(created(pid) != created_at or created_at >= snapshot_time for pid, created_at in chain):
                 continue
         except Exception:
             continue
         linked = len(session_ids) == 1
         if not linked and thread_id not in watched:
             continue
+        launcher_index = next((index for index, (pid, _tick) in enumerate(chain)
+                               if claude_identity is not None and pid == claude_identity[0]), None)
+        direct_pid, direct_created = ((chain[launcher_index - 1][0], chain[launcher_index - 1][1])
+                                      if linked and launcher_index is not None and launcher_index > 0
+                                      else (child, child_created))
         output.append({"thread_id": thread_id, "codex_pid": child,
                        "codex_created": child_created,
+                       "claude_pid": claude_identity[0] if linked else None,
+                       "claude_created": claude_identity[1] if linked else None,
+                       "direct_child_pid": direct_pid if linked else None,
+                       "direct_child_created": direct_created if linked else None,
                        "claude_session_id": next(iter(session_ids)) if linked else None,
                        "method": "cmdline" if linked else "unlinked"})
     return output
+
+
+def scan_claude_process_links(*, claude_states: dict[str, Any],
+                              table: dict[int, tuple[int, str]],
+                              codex_threads: list[dict[str, Any]] | None = None,
+                              table_reader: Callable[[], dict[int, tuple[int, str]]] | None = None,
+                              snapshot_time: int | None = None,
+                              current_sid: bytes | None = None,
+                              equal_sid: Callable[[bytes | None, bytes | None], bool] = _equal_sid,
+                              process_sid: Callable[[int], bytes | None] = _process_sid,
+                              created: Callable[[int], int | None] = _process_created,
+                              command_argv: Callable[[int], list[str] | None] = _command_argv
+                              ) -> list[dict[str, Any]]:
+    """Find Claude child processes launched inside uniquely owned Claude intervals."""
+    if not claude_states or not table or not current_sid:
+        return []
+    snapshot_time = snapshot_time or int((time.time() + 11_644_473_600) * 10_000_000)
+    associations = _association_map(claude_states)
+    codex_threads = codex_threads or []
+    candidates: dict[tuple[int, int], dict[str, bool]] = {}
+    for key, state in claude_states.items():
+        if not isinstance(key, tuple) or len(key) != 2 or key[1] or not isinstance(state, dict):
+            continue
+        sid = str(key[0])
+        for item in state.get("pid_associations") or ():
+            try:
+                ident = (int(item["pid"]), int(item["created"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            by_session = candidates.setdefault(ident, {})
+            by_session[sid] = by_session.get(sid, False) or item.get("ambiguous") is True
+    output = []
+    for (child, child_created), child_associations in candidates.items():
+        if child not in table or created(child) != child_created:
+            continue
+        if child_created >= snapshot_time or not equal_sid(process_sid(child), current_sid):
+            continue
+        child_sid = _unique_child_hook_session(claude_states, (child, child_created))
+        if child_sid is None:
+            continue
+        child_state = claude_states.get((child_sid, ""), {})
+        launcher_signatures = set()
+        for capture in child_state.get("launcher_associations") or ():
+            try:
+                if (int(capture.get("pid", -1)), int(capture.get("created", -1))) == (child, child_created):
+                    launcher_signatures.add((capture.get("launcher_claude_session_id"),
+                                             capture.get("launcher_codex_thread_id")))
+            except (TypeError, ValueError):
+                continue
+        valid_codex_ids = {value for _claude, value in launcher_signatures if _optional_thread_id(value)}
+        valid_claude_ids = {value for value, _codex in launcher_signatures if _optional_thread_id(value)}
+        if len(valid_codex_ids) > 1 or len(valid_claude_ids) > 1:
+            continue
+        if (child_sid, child, child_created) in _CLAUDE_LINK_CONTRADICTIONS:
+            continue
+        child_kind = classify_agent_process(table[child][1], command_argv(child))
+        if child_kind != "claude":
+            continue
+        direct = table[child][0]
+        if direct not in table:
+            continue
+        direct_created = created(direct)
+        if direct_created is None or direct_created >= child_created:
+            continue
+        initial_ticks = {child: child_created, direct: direct_created}
+        current, seen, chain = direct, {child}, []
+        parent_identity = None
+        parent_kind = None
+        valid = True
+        for _ in range(32):
+            if current in seen or current not in table:
+                valid = False
+                break
+            seen.add(current)
+            parent, name = table[current]
+            tick = initial_ticks.get(current)
+            if tick is None:
+                tick = created(current)
+                initial_ticks[current] = tick
+            elif created(current) != tick:
+                valid = False
+                break
+            if tick is None or tick >= snapshot_time or not equal_sid(process_sid(current), current_sid):
+                valid = False
+                break
+            chain.append((current, (parent, name), tick))
+            argv = command_argv(current) if name.casefold().endswith(("node", "node.exe", "bun", "bun.exe")) else None
+            kind = classify_agent_process(name, argv)
+            if kind == "unknown":
+                valid = False
+                break
+            if kind in {"claude", "codex"}:
+                parent_identity = (current, tick)
+                parent_kind = kind
+                break
+            if parent not in table:
+                valid = False
+                break
+            parent_tick = initial_ticks.get(parent)
+            if parent_tick is None:
+                parent_tick = created(parent)
+                initial_ticks[parent] = parent_tick
+            if parent_tick is None or parent_tick >= tick:
+                valid = False
+                break
+            current = parent
+        if not valid or parent_identity is None:
+            continue
+        launcher_index = next((index for index, (pid, _edge, _tick) in enumerate(chain)
+                               if pid == parent_identity[0]), None)
+        launch_child_pid, d_created = ((chain[launcher_index - 1][0], chain[launcher_index - 1][2])
+                                       if launcher_index is not None and launcher_index > 0
+                                       else (child, child_created))
+        c_epoch = _filetime_epoch(child_created)
+        d_epoch = _filetime_epoch(d_created) if d_created is not None else None
+        if c_epoch is None or d_epoch is None:
+            continue
+        parent_session_id = None
+        parent_thread_id = None
+        launcher_codex_thread_id = None
+        if parent_kind == "claude":
+            owners = {sid for sid, first, last in associations.get(parent_identity, ())
+                      if first <= d_epoch < last and first <= c_epoch < last}
+            if len(owners) != 1:
+                continue
+            parent_session_id = next(iter(owners))
+        else:
+            # v5: no Codex launcher attribution path is reachable until the
+            # rig establishes per-thread environment semantics.
+            if not _CODEX_ENV_PER_THREAD_VERIFIED:
+                continue
+            child_state_ids = []
+            for state_key, state in claude_states.items():
+                if not isinstance(state_key, tuple) or len(state_key) != 2 or state_key[1] or not isinstance(state, dict):
+                    continue
+                if str(state_key[0]) != child_sid:
+                    continue
+                for capture in state.get("launcher_associations") or ():
+                    try:
+                        if (int(capture.get("pid", -1)), int(capture.get("created", -1))) == (child, child_created):
+                            child_state_ids.append(capture.get("launcher_codex_thread_id"))
+                    except (TypeError, ValueError):
+                        continue
+            launch_ids = {value for value in child_state_ids if _optional_thread_id(value)}
+            if len(launch_ids) != 1:
+                continue
+            codex_row_by_id = {str(row.get("id") or row.get("threadId")): row for row in codex_threads}
+            host_ids = {str(row.get("id") or row.get("threadId")) for row in codex_threads
+                        if int(row.get("runPid", -1) or -1) == parent_identity[0]
+                        and str(row.get("runCreated", "")) == str(parent_identity[1])}
+            argv = command_argv(parent_identity[0])
+            host_invocation = parse_exec_argv(argv)
+            if host_invocation and host_invocation[0] == "resume" and host_invocation[1]:
+                host_ids.add(host_invocation[1])
+            launch_id = next(iter(launch_ids))
+            if host_ids and launch_id not in host_ids:
+                continue
+            if not host_ids and launch_id not in codex_row_by_id:
+                continue
+            parent_thread_id = launch_id
+            launcher_codex_thread_id = launch_id
+            # The native-descendant gate is a refusal check only.
+            if not _codex_descendants_quiet(launch_id, codex_threads, d_epoch, c_epoch):
+                continue
+        table2 = table_reader() if table_reader is not None else table
+        if (table2.get(child) != table.get(child) or created(child) != child_created
+                or any(table2.get(pid) != edge or created(pid) != tick
+                       for pid, edge, tick in chain)):
+            continue
+        output.append({"child_session_id": child_sid,
+                       "child_pid": child, "child_created": child_created,
+                       "parent_session_id": parent_session_id,
+                       "parent_thread_id": parent_thread_id,
+                       "parent_provider": "Codex" if parent_kind == "codex" else "Claude",
+                       "launcher_codex_thread_id": launcher_codex_thread_id,
+                       "parent_pid": parent_identity[0],
+                       "parent_created": parent_identity[1],
+                       "direct_child_pid": launch_child_pid,
+                       "direct_child_created": d_created,
+                       "method": "process"})
+    return output
+
+
+def _unique_child_hook_session(claude_states: dict[str, Any], identity: tuple[int, int]) -> str | None:
+    """Resolve a child from exact PID/ticks even when its first hook follows birth."""
+    sessions: dict[str, bool] = {}
+    for key, state in (claude_states or {}).items():
+        if not isinstance(key, tuple) or len(key) != 2 or key[1] or not isinstance(state, dict):
+            continue
+        sid = str(key[0])
+        for item in state.get("pid_associations") or ():
+            try:
+                observed = (int(item["pid"]), int(item["created"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if observed == identity:
+                sessions[sid] = sessions.get(sid, False) or item.get("ambiguous") is True
+    if len(sessions) != 1 or any(sessions.values()):
+        return None
+    return next(iter(sessions))
+
+
+def _codex_descendants_quiet(thread_id: str, codex_threads: list[dict[str, Any]],
+                            direct_created: float, child_created: float) -> bool:
+    """Fail closed when a native descendant has open, unknown, or overlapping activity."""
+    rows = {str(row.get("id") or row.get("threadId")): row for row in codex_threads}
+    descendants, frontier = set(), {thread_id}
+    while frontier:
+        ancestor = frontier.pop()
+        for row in codex_threads:
+            row_id = str(row.get("id") or row.get("threadId") or "")
+            parent_id = str(row.get("parentId") or row.get("parentThreadId") or "")
+            if parent_id == ancestor and row_id and row_id not in descendants:
+                descendants.add(row_id)
+                frontier.add(row_id)
+    for descendant in descendants:
+        row = rows.get(descendant)
+        if row is None or row.get("rolloutReadable") is False or row.get("rolloutAvailable") is False:
+            return False
+        status = str(row.get("executionStatus") or row.get("status") or "").lower()
+        if status in {"unknown", "unavailable"} or status in _ACTIVE_STATES:
+            return False
+        start = _epoch(row.get("activityStartedAt") or row.get("runStartedAt"))
+        end = _epoch(row.get("activityEndedAt") or row.get("runEndedAt") or row.get("activityAt"))
+        if start is None or end is None or (start <= child_created + 2 and end >= direct_created - 2):
+            return False
+    return True
+
+
+def _codex_receipt_parent(receipt: dict[str, Any], *, table: dict[int, tuple[int, str]],
+                         table_reader: Callable[[], dict[int, tuple[int, str]]],
+                         current_sid: bytes | None,
+                         process_sid: Callable[[int], bytes | None],
+                         equal_sid: Callable[[bytes | None, bytes | None], bool],
+                         created: Callable[[int], int | None],
+                         command_argv: Callable[[int], list[str] | None],
+                         codex_threads: list[dict[str, Any]], snapshot_time: int
+                         ) -> dict[str, Any] | None:
+    """Resolve a receipt's Codex launcher only behind the v5 verified-env gate."""
+    if not _CODEX_ENV_PER_THREAD_VERIFIED:
+        return None
+    launcher = _optional_thread_id(receipt.get("launcher_codex_thread_id"))
+    try:
+        child, child_created = int(receipt["codex_pid"]), int(receipt["codex_created"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not launcher or child not in table or created(child) != child_created or child_created >= snapshot_time:
+        return None
+    current = table[child][0]
+    chain = []
+    seen = {child}
+    descendant_created = child_created
+    parent = None
+    for _ in range(32):
+        if current in seen or current not in table:
+            return None
+        seen.add(current)
+        ppid, name = table[current]
+        tick = created(current)
+        if (tick is None or tick >= snapshot_time or tick >= descendant_created
+                or not equal_sid(process_sid(current), current_sid)):
+            return None
+        chain.append((current, (ppid, name), tick))
+        argv = command_argv(current) if name.casefold().endswith(("node", "node.exe", "bun", "bun.exe")) else None
+        kind = classify_agent_process(name, argv)
+        if kind == "unknown":
+            return None
+        if kind in {"claude", "codex"}:
+            parent = (current, tick, kind)
+            break
+        if ppid not in table:
+            return None
+        descendant_created = tick
+        current = ppid
+    if parent is None or parent[2] != "codex":
+        return None
+    rows_by_id = {str(row.get("id") or row.get("threadId")): row for row in codex_threads}
+    host_ids = {str(row.get("id") or row.get("threadId")) for row in codex_threads
+                if int(row.get("runPid", -1) or -1) == parent[0]
+                and str(row.get("runCreated", "")) == str(parent[1])}
+    parsed = parse_exec_argv(command_argv(parent[0]))
+    if parsed and parsed[0] == "resume" and parsed[1]:
+        host_ids.add(parsed[1])
+    if host_ids and launcher not in host_ids:
+        return None
+    if not host_ids and launcher not in rows_by_id:
+        return None
+    launcher_index = next((index for index, entry in enumerate(chain)
+                           if entry[0] == parent[0]), None)
+    if launcher_index == 0:
+        direct, direct_created = child, child_created
+    elif launcher_index is not None:
+        direct, direct_created = chain[launcher_index - 1][0], chain[launcher_index - 1][2]
+    else:
+        return None
+    if direct_created is None:
+        return None
+    child_epoch, direct_epoch = _filetime_epoch(child_created), _filetime_epoch(direct_created)
+    if child_epoch is None or direct_epoch is None or not _codex_descendants_quiet(
+            launcher, codex_threads, direct_epoch, child_epoch):
+        return None
+    table2 = table_reader()
+    if (table2.get(child) != table.get(child)
+            or any(table2.get(pid) != edge or created(pid) != tick for pid, edge, tick in chain)
+            or created(child) != child_created):
+        return None
+    return {"parent_thread_id": launcher, "parent_pid": parent[0],
+            "parent_created": parent[1], "direct_child_pid": direct,
+            "direct_child_created": direct_created}
 
 
 def receipt_path(root: Path | None = None) -> Path:
@@ -654,7 +1111,8 @@ def validate_codex_pid(pid: int, thread_id: str, *,
                        process_sid: Callable[[int], bytes | None] = _process_sid,
                        equal_sid: Callable[[bytes | None, bytes | None], bool] = _equal_sid,
                        created: Callable[[int], int | None] = _process_created,
-                       command_line: Callable[[int], str | None] = _command_line) -> int | None:
+                       command_line: Callable[[int], str | None] = _command_line,
+                       command_argv: Callable[[int], list[str] | None] | None = None) -> int | None:
     """Validate same-user codex.exe identity around owner and argv reads."""
     try:
         table = table_reader()
@@ -664,7 +1122,9 @@ def validate_codex_pid(pid: int, thread_id: str, *,
         sid = current_sid()
         if before is None or not equal_sid(process_sid(pid), sid):
             return None
-        invocation = parse_exec_invocation(command_line(pid))
+        invocation = (parse_exec_argv(command_argv(pid)) if command_argv is not None
+                      else parse_exec_argv(_command_argv(pid)) if command_line is _command_line
+                      else parse_exec_invocation(command_line(pid)))
         if invocation is None:
             return None
         if invocation[0] == "resume" and invocation[1] != thread_id.lower():
@@ -679,21 +1139,99 @@ def validate_receipt_process(receipt: dict[str, Any], *, table: dict[int, tuple[
                              process_sid: Callable[[int], bytes | None] = _process_sid,
                              equal_sid: Callable[[bytes | None, bytes | None], bool] = _equal_sid,
                              created: Callable[[int], int | None] = _process_created,
-                             command_line: Callable[[int], str | None] = _command_line) -> bool:
+                             command_line: Callable[[int], str | None] = _command_line,
+                             command_argv: Callable[[int], list[str] | None] | None = None,
+                             claude_states: dict[str, Any] | None = None,
+                             table_reader: Callable[[], dict[int, tuple[int, str]]] | None = None,
+                             snapshot_time: int | None = None,
+                             proof_out: dict[str, Any] | None = None) -> bool:
     try:
         pid = int(receipt["codex_pid"])
         expected = int(receipt["codex_created"])
         thread = str(receipt["thread_id"]).lower()
+        launcher_claude = receipt.get("launcher_claude_session_id") or receipt.get("claude_session_id")
+        launcher_codex = receipt.get("launcher_codex_thread_id")
+        if launcher_claude is not None and _optional_thread_id(launcher_claude) != launcher_claude:
+            return False
+        if launcher_codex is not None and _optional_thread_id(launcher_codex) != launcher_codex:
+            return False
+        if (receipt.get("claude_session_id") and receipt.get("launcher_claude_session_id")
+                and receipt["claude_session_id"] != receipt["launcher_claude_session_id"]):
+            return False
         if table.get(pid, (None, ""))[1].casefold() not in CODEX_EXE_NAMES:
             return False
         if created(pid) != expected or not equal_sid(process_sid(pid), current_sid):
             return False
-        invocation = parse_exec_invocation(command_line(pid))
+        invocation = (parse_exec_argv(command_argv(pid)) if command_argv is not None
+                      else parse_exec_argv(_command_argv(pid)) if command_line is _command_line
+                      else parse_exec_invocation(command_line(pid)))
         if invocation is None:
             return False
         if invocation[0] == "resume" and invocation[1] != thread:
             return False
-        return created(pid) == expected
+        if created(pid) != expected:
+            return False
+        if claude_states is not None and launcher_claude:
+            current = table.get(pid, (0, ""))[0]
+            seen = {pid}
+            nearest = None
+            chain = []
+            snapshot_time = snapshot_time or int((time.time() + 11_644_473_600) * 10_000_000)
+            if expected >= snapshot_time:
+                return False
+            descendant_created = expected
+            while current in table and current not in seen:
+                seen.add(current)
+                parent, name = table[current]
+                tick = created(current)
+                if (tick is None or tick >= snapshot_time or tick >= descendant_created
+                        or not equal_sid(process_sid(current), current_sid)):
+                    return False
+                chain.append((current, tick, (parent, name)))
+                kind = classify_agent_process(name,
+                    (command_argv or _command_argv)(current)
+                    if name.casefold().endswith(("node", "node.exe", "bun", "bun.exe")) else None)
+                if kind == "unknown":
+                    return False
+                if kind in {"claude", "codex"}:
+                    nearest = (current, tick, kind)
+                    break
+                if parent not in table:
+                    break
+                descendant_created = tick
+                current = parent
+            if nearest is None or nearest[2] != "claude":
+                return False
+            table2 = table_reader() if table_reader is not None else table
+            if (table2.get(pid) != table.get(pid) or created(pid) != expected
+                    or any(table2.get(pid0) != edge or created(pid0) != tick
+                           for pid0, tick, edge in chain)):
+                return False
+            epoch = _filetime_epoch(expected)
+            associations = _association_map(claude_states).get((nearest[0], nearest[1]), ())
+            launcher_index = next((index for index, entry in enumerate(chain)
+                                   if entry[0] == nearest[0]), None)
+            launch_child_created = (expected if launcher_index == 0
+                                    else chain[launcher_index - 1][1]
+                                    if launcher_index is not None else None)
+            direct_epoch = (_filetime_epoch(launch_child_created)
+                            if launch_child_created is not None else None)
+            matches = {sid for sid, first, last in associations
+                       if epoch is not None and direct_epoch is not None
+                       and first <= direct_epoch < last and first <= epoch < last}
+            if matches != {launcher_claude}:
+                return False
+            if proof_out is not None:
+                if launcher_index == 0:
+                    direct_pid, direct_created = pid, expected
+                else:
+                    direct_pid, direct_created = chain[launcher_index - 1][0], chain[launcher_index - 1][1]
+                proof_out.update(parent_id=launcher_claude, parent_pid=nearest[0],
+                                 parent_created=nearest[1], direct_child_pid=direct_pid,
+                                 direct_child_created=direct_created, child_pid=pid,
+                                 child_created=expected)
+        # Codex launcher fields remain diagnostic only until the rig gate opens.
+        return True
     except Exception:
         return False
 
@@ -711,8 +1249,9 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
     except Exception:
         return False
     env = os.environ if environ is None else environ
-    sid = env.get("CLAUDE_CODE_SESSION_ID")
-    if not THREAD_ID.fullmatch(str(thread_id)) or not isinstance(sid, str) or not THREAD_ID.fullmatch(sid):
+    sid = _optional_thread_id(env.get("CLAUDE_CODE_SESSION_ID"))
+    codex_launcher = _optional_thread_id(env.get("CODEX_THREAD_ID"))
+    if not THREAD_ID.fullmatch(str(thread_id)):
         return False
     if not isinstance(codex_pid, int) or codex_pid <= 0:
         return False
@@ -740,8 +1279,14 @@ def write_receipt(thread_id: str, codex_pid: int, *, environ: dict[str, str] | N
         if not _plain_chain(path):
             return False
         record = {"thread_id": thread_id.lower(), "codex_pid": codex_pid,
-                  "codex_created": created_at, "claude_session_id": sid,
+                  "codex_created": created_at,
                   "recorded_at": time.time(), "method": "receipt"}
+        if sid:
+            # Preserve the original field for old readers and receipt recovery.
+            record["claude_session_id"] = sid
+            record["launcher_claude_session_id"] = sid
+        if codex_launcher:
+            record["launcher_codex_thread_id"] = codex_launcher
         encoded = (json.dumps(record, separators=(",", ":")) + "\n").encode("utf-8")
         fd = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
         try:
@@ -790,7 +1335,11 @@ def read_receipts(root: Path | None = None, *, policies: Any = None,
             except (ValueError, UnicodeDecodeError):
                 continue
             if (isinstance(item, dict) and THREAD_ID.fullmatch(str(item.get("thread_id") or ""))
-                    and THREAD_ID.fullmatch(str(item.get("claude_session_id") or ""))
+                    and _optional_thread_id(item.get("claude_session_id")) == item.get("claude_session_id")
+                    and _optional_thread_id(item.get("launcher_claude_session_id")) == item.get("launcher_claude_session_id")
+                    and _optional_thread_id(item.get("launcher_codex_thread_id")) == item.get("launcher_codex_thread_id")
+                    and not (item.get("claude_session_id") and item.get("launcher_claude_session_id")
+                             and item["claude_session_id"] != item["launcher_claude_session_id"])
                     and item.get("method") == "receipt"):
                 try:
                     if int(item["codex_pid"]) > 0 and int(item["codex_created"]) > 0 \
@@ -810,7 +1359,11 @@ def write_registry(runs: Iterable[dict[str, Any]], path: Path, *, now: float | N
     for run in runs:
         try:
             if (not THREAD_ID.fullmatch(str(run["thread_id"]))
-                    or not THREAD_ID.fullmatch(str(run["claude_session_id"]))
+                    or not _optional_thread_id(run.get("claude_session_id")) == run.get("claude_session_id")
+                    or not _optional_thread_id(run.get("launcher_claude_session_id")) == run.get("launcher_claude_session_id")
+                    or not _optional_thread_id(run.get("launcher_codex_thread_id")) == run.get("launcher_codex_thread_id")
+                    or (run.get("claude_session_id") and run.get("launcher_claude_session_id")
+                        and run["claude_session_id"] != run["launcher_claude_session_id"])
                     or int(run["codex_pid"]) <= 0 or int(run["codex_created"]) <= 0
                     or run.get("method") not in {"cmdline", "receipt"}):
                 continue
@@ -823,6 +1376,7 @@ def write_registry(runs: Iterable[dict[str, Any]], path: Path, *, now: float | N
                 continue
             clean.append({key: run[key] for key in (
                 "thread_id", "codex_pid", "codex_created", "claude_session_id",
+                "launcher_claude_session_id", "launcher_codex_thread_id",
                 "first_seen", "last_seen", "verified_at", "retired_at", "method") if key in run})
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
@@ -862,7 +1416,11 @@ def load_registry(path: Path, *, now: float | None = None) -> list[dict[str, Any
             # the on-disk file during load.
             try:
                 if (THREAD_ID.fullmatch(str(run["thread_id"]))
-                        and THREAD_ID.fullmatch(str(run["claude_session_id"]))
+                        and _optional_thread_id(run.get("claude_session_id")) == run.get("claude_session_id")
+                        and _optional_thread_id(run.get("launcher_claude_session_id")) == run.get("launcher_claude_session_id")
+                        and _optional_thread_id(run.get("launcher_codex_thread_id")) == run.get("launcher_codex_thread_id")
+                        and not (run.get("claude_session_id") and run.get("launcher_claude_session_id")
+                                 and run["claude_session_id"] != run["launcher_claude_session_id"])
                         and int(run["codex_pid"]) > 0 and int(run["codex_created"]) > 0
                         and run.get("method") in {"cmdline", "receipt"}):
                     first, last = float(run["first_seen"]), float(run["last_seen"])
@@ -881,6 +1439,22 @@ def load_registry(path: Path, *, now: float | None = None) -> list[dict[str, Any
         return []
 
 
+def _prune_contradictions(label: str, contradictions: set[tuple[str, int, int]],
+                          relevant: Callable[[tuple[str, int, int]], bool], now: float) -> None:
+    # A contradiction stays while its identity could still be published. A
+    # registry read failure looks like absence, so absence must outlast the
+    # registry's own retention before the revocation is dropped.
+    for key in list(contradictions):
+        seen_key = (label, key)
+        if relevant(key):
+            _CONTRADICTION_SEEN[seen_key] = now
+        elif now - _CONTRADICTION_SEEN.setdefault(seen_key, now) > RETENTION_SECONDS:
+            contradictions.discard(key)
+            del _CONTRADICTION_SEEN[seen_key]
+    for seen_key in [k for k in _CONTRADICTION_SEEN if k[0] == label and k[1] not in contradictions]:
+        del _CONTRADICTION_SEEN[seen_key]
+
+
 def _instance_mutex_held() -> bool:
     try:
         if sys.platform == "darwin":
@@ -890,6 +1464,137 @@ def _instance_mutex_held() -> bool:
         return getattr(widget, "_INSTANCE_HANDLE", None) is not None
     except Exception:
         return False
+
+
+def _run_identity(run: dict[str, Any]) -> tuple[int, int]:
+    return int(run["codex_pid"]), int(run["codex_created"])
+
+
+_RUN_FIELDS = ("runPid", "runCreated", "runVerified")
+_LINEAGE_FIELDS = ("parentId", "parentProvider", "parentLinkMethod", "linkSource",
+                   "parentIncarnation", "childRunIdentity")
+_STOP_FIELDS = ("retainedRun", "stoppedAt", "runEndedAt", "executionTerminalAt")
+_ACTIVE_STATES = frozenset({"running", "waiting", "active", "working", "thinking", "compacting",
+                            "needs input", "needs-input", "needs_input"})
+# A gap in telemetry is not evidence that the thread stopped.
+_UNSETTLED_STATES = frozenset({"unavailable", "unknown"})
+
+
+def _clear_process_lineage(row: dict[str, Any]) -> None:
+    if row.get("linkSource") != "process":
+        return
+    for field in _LINEAGE_FIELDS:
+        row.pop(field, None)
+
+
+def _epoch(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) / (1000 if value > 1e12 else 1)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() if value else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _row_outlives_stop(row: dict[str, Any], stopped: dict[str, Any]) -> bool:
+    """True when the current row is active, unsettled, or has activity newer
+    than the stopped execution: that execution then describes nothing current."""
+    states = {str(row.get(field) or "").lower() for field in ("status", "executionStatus")}
+    if states & (_ACTIVE_STATES | _UNSETTLED_STATES) or bool(row.get("pendingQuestion")):
+        return True
+    # previousStatus describes the state before a telemetry gap; a settled row may
+    # carry a leftover value, so it only counts while telemetry is unavailable.
+    if row.get("telemetryUnavailable") and str(row.get("previousStatus") or "").lower() in _ACTIVE_STATES:
+        return True
+    stopped_at = _epoch(stopped.get("stoppedAt"))
+    activity = [stamp for field in ("activityAt", "runStartedAt", "activeRunStartedAt")
+                if (stamp := _epoch(row.get(field))) is not None]
+    return stopped_at is not None and bool(activity) and max(activity) > stopped_at
+
+
+def _execution_order(row: dict[str, Any]) -> tuple[int, int, bool]:
+    identity = _row_identity(row)
+    return (identity[1], identity[0], bool(row.get("retainedRun"))) if identity else (-1, -1, False)
+
+
+def _row_identity(row: dict[str, Any]) -> tuple[int, int] | None:
+    try:
+        return int(row["runPid"]), int(row["runCreated"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _conflicting_receipt_identities(receipts: Iterable[dict[str, Any]]) -> set[tuple[str, int, int]]:
+    grouped: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            continue
+        try:
+            key = (str(receipt["thread_id"]).lower(), int(receipt["codex_pid"]),
+                   int(receipt["codex_created"]))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        grouped.setdefault(key, []).append(receipt)
+    conflicts = set()
+    for key, entries in grouped.items():
+        for index, left in enumerate(entries):
+            left_claude = left.get("launcher_claude_session_id") or left.get("claude_session_id")
+            left_codex = left.get("launcher_codex_thread_id")
+            for right in entries[index + 1:]:
+                right_claude = right.get("launcher_claude_session_id") or right.get("claude_session_id")
+                right_codex = right.get("launcher_codex_thread_id")
+                if ((left_claude and right_claude and left_claude != right_claude)
+                        or (left_codex and right_codex and left_codex != right_codex)):
+                    conflicts.add(key)
+    return conflicts
+
+
+def _codex_parent_proof(run: dict[str, Any]) -> dict[str, Any] | None:
+    if not run.get("claude_session_id"):
+        return None
+    try:
+        parent_pid = int(run["claude_pid"])
+        parent_created = int(run["claude_created"])
+        child_pid = int(run["codex_pid"])
+        child_created = int(run["codex_created"])
+        direct_pid = int(run["direct_child_pid"])
+        direct_created = int(run["direct_child_created"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return {"parent_id": str(run["claude_session_id"]), "parent_pid": parent_pid,
+            "parent_created": parent_created, "direct_child_pid": direct_pid,
+            "direct_child_created": direct_created, "child_pid": child_pid,
+            "child_created": child_created}
+
+
+def _codex_parent_proof_contradicted(proof: dict[str, Any],
+                                     claude_states: dict[str, Any] | None) -> bool:
+    """Check whether current hook evidence disproves a frozen Claude launcher edge."""
+    if not claude_states:
+        return False
+    try:
+        pid, created = int(proof["parent_pid"]), int(proof["parent_created"])
+        d_epoch = _filetime_epoch(int(proof["direct_child_created"]))
+        c_epoch = _filetime_epoch(int(proof["child_created"]))
+        parent_id = str(proof["parent_id"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return True
+    has_identity_evidence = False
+    for key, state in claude_states.items():
+        if not isinstance(key, tuple) or len(key) != 2 or key[1] or not isinstance(state, dict):
+            continue
+        for association in state.get("pid_associations") or ():
+            try:
+                if int(association.get("pid", -1)) == pid and int(association.get("created", -1)) == created:
+                    has_identity_evidence = True
+            except (TypeError, ValueError):
+                continue
+    if not has_identity_evidence:
+        return False
+    owners = {sid for sid, first, last in _association_map(claude_states).get((pid, created), ())
+              if d_epoch is not None and c_epoch is not None
+              and first <= d_epoch < last and first <= c_epoch < last}
+    return owners != {parent_id}
 
 
 @_serialized_link_poll
@@ -916,11 +1621,14 @@ def apply_exact_links(
     claude = next((item for item in providers if item.get("name") == "Claude"), None)
     codex = next((item for item in providers if item.get("name") == "Codex"), None)
     if not claude or not codex:
+        _RUN_ROWS.clear()
         return
     try:
         if not permission_check(policies):
+            _RUN_ROWS.clear()
             return
     except Exception:
+        _RUN_ROWS.clear()
         return
     now = time.time() if now is None else now
     registry_changed = False
@@ -943,19 +1651,40 @@ def apply_exact_links(
                 or (not row.get("parentProvider") and str(parent) in claude_ids
                     and str(parent) not in codex_ids))
 
+    # The v5 switch covers cached process proofs as well as fresh derivation.
+    for row in codex.get("chats") or []:
+        if (row.get("linkSource") == "process" and row.get("parentProvider") == "Codex"
+                and not _CODEX_ENV_PER_THREAD_VERIFIED):
+            _clear_process_lineage(row)
+    # Native/untagged Codex parents are never stripped or re-linked by this poll.
+    native_rows = {id(row) for row in codex.get("chats") or []
+                   if row.get("parentId") and not cross_provider_candidate(row)}
+    for row in codex.get("chats") or []:
+        if id(row) in native_rows:
+            row.setdefault("linkSource", "native")
+    for row in codex.get("chats") or []:
+        if row.get("runBindingUnresolved") and row.get("runBindingPreviousExecutionStatus"):
+            row["executionStatus"] = row.pop("runBindingPreviousExecutionStatus")
+            row.pop("runBindingUnresolved", None)
     live_rows = [row for row in codex.get("chats") or []
-                 if cross_provider_candidate(row)
-                 and row.get("source") == "exec"
+                 if row.get("source") == "exec"
                  and row.get("executionStatus") == "running"]
+    live_claude_rows = [row for row in claude.get("chats") or []
+                        if row.get("id") and str(row.get("status") or "").lower()
+                        in {"running", "working", "active", "thinking", "waiting", "needs input"}]
     global _LAST_FULL_SCAN_AT
     with _SCAN_LOCK:
         discovery_due = now - _LAST_FULL_SCAN_AT >= 10
-    need_full_scan = bool(live_rows) and discovery_due
+    need_full_scan = bool(live_rows or live_claude_rows) and discovery_due
     verified_by_thread: dict[str, list[dict[str, Any]]] = {}
     unresolved_by_thread: dict[str, list[dict[str, Any]]] = {}
+    verdicts: dict[tuple[str, int, int], bool | None] = {}
     watched_threads = {str(row.get("id") or "").lower() for row in live_rows
                        if row.get("id")}
     unlinked_live_threads: set[str] = set()
+    unknown_unlinked_threads: set[str] = set()
+    verified_unlinked: dict[str, list[dict[str, Any]]] = {}
+    unlinked_identities: dict[str, set[tuple[int, int]]] = {}
     with _UNLINKED_LOCK:
         remembered_unlinked = [
             (identity, dict(run)) for identity, run in _UNLINKED_EXECUTIONS.items()
@@ -967,6 +1696,11 @@ def apply_exact_links(
                 _UNLINKED_EXECUTIONS.pop(identity, None)
         else:
             unlinked_live_threads.add(identity[0])
+            unlinked_identities.setdefault(identity[0], set()).add((identity[1], identity[2]))
+            if verdict is True:
+                verified_unlinked.setdefault(identity[0], []).append(run)
+            else:
+                unknown_unlinked_threads.add(identity[0])
     for row in live_rows:
         thread = str(row.get("id") or "").lower()
         candidates = [run for run in runs if str(run.get("thread_id") or "").lower() == thread]
@@ -979,10 +1713,14 @@ def apply_exact_links(
                 verified_at = float(known.get("verified_at") or 0)
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
-            fresh = now - verified_at < 10
-            verdict = True if fresh else verify(pid, created_at)
+            if need_full_scan:
+                # A due full scan supersedes per-pid verification this poll.
+                continue
+            # A cached live result cannot establish liveness on the next poll.
+            verdict = verify(pid, created_at)
+            verdicts[(thread, pid, created_at)] = verdict
             if verdict is True:
-                if not fresh:
+                if now - verified_at >= 10:
                     known["verified_at"] = now
                     known["last_seen"] = now
                     registry_changed = True
@@ -997,10 +1735,16 @@ def apply_exact_links(
 
     discovered: list[dict[str, Any]] = []
     receipt_rows: list[dict[str, Any]] = []
+    codex_receipt_parents: dict[tuple[str, int, int], dict[str, Any]] = {}
+    codex_receipt_contradictions: set[tuple[str, int, int]] = set()
+    claude_links: list[dict[str, Any]] = []
+    conflicting_receipts: set[tuple[str, int, int]] = set()
     scan_table: dict[int, tuple[int, str]] = {}
+    scan_snapshot_time = None
     if need_full_scan:
         try:
             scan_table = process_table_reader()
+            scan_snapshot_time = int((time.time() + 11_644_473_600) * 10_000_000)
         except Exception:
             scan_table = {}
         if claude_states is None:
@@ -1013,25 +1757,216 @@ def apply_exact_links(
                 claude_states = {}
         try:
             discovered = scan(claude_states=claude_states, table=scan_table,
+                              table_reader=process_table_reader,
+                              snapshot_time=scan_snapshot_time,
                               watched_threads=watched_threads)
         except Exception:
             discovered = []
+        try:
+            claude_links = scan_claude_process_links(
+                claude_states=claude_states, table=scan_table,
+                codex_threads=codex.get("chats") or [],
+                table_reader=process_table_reader, snapshot_time=scan_snapshot_time,
+                current_sid=current_sid_reader(),
+                equal_sid=equal_sid, process_sid=process_sid,
+                created=process_created_reader)
+        except Exception:
+            claude_links = []
         with _SCAN_LOCK:
             _LAST_FULL_SCAN_AT = now
         if _instance_mutex_held():
             try:
                 current_sid = current_sid_reader()
-                receipt_rows = [item for item in receipts_reader(root)
-                                if validate_receipt_process(
-                                    item, table=scan_table, current_sid=current_sid,
-                                    process_sid=process_sid, equal_sid=equal_sid,
-                                    created=process_created_reader, command_line=command_line)]
+                raw_receipts = receipts_reader(root)
+                conflicting_receipts = _conflicting_receipt_identities(raw_receipts)
+                _RECEIPT_CONFLICTS.update(conflicting_receipts)
+                for item in raw_receipts:
+                    proof = {}
+                    if not validate_receipt_process(
+                            item, table=scan_table, current_sid=current_sid,
+                            process_sid=process_sid, equal_sid=equal_sid,
+                            created=process_created_reader, command_line=command_line,
+                            claude_states=claude_states,
+                            table_reader=process_table_reader,
+                            snapshot_time=scan_snapshot_time, proof_out=proof):
+                        continue
+                    if proof:
+                        item["_process_proof"] = proof
+                    receipt_rows.append(item)
+                for item in receipt_rows:
+                    if not _optional_thread_id(item.get("launcher_codex_thread_id")):
+                        continue
+                    key = (str(item["thread_id"]).lower(), int(item["codex_pid"]),
+                           int(item["codex_created"]))
+                    parent = _codex_receipt_parent(
+                        item, table=scan_table, table_reader=process_table_reader,
+                        current_sid=current_sid, process_sid=process_sid, equal_sid=equal_sid,
+                        created=process_created_reader, command_argv=_command_argv,
+                        codex_threads=codex.get("chats") or [],
+                        snapshot_time=scan_snapshot_time or 0)
+                    if parent is not None:
+                        codex_receipt_parents[key] = parent
+                    elif _CODEX_ENV_PER_THREAD_VERIFIED:
+                        codex_receipt_contradictions.add(key)
+                _CODEX_LINK_CONTRADICTIONS.update(codex_receipt_contradictions)
             except Exception:
                 receipt_rows = []
+
+    current_codex_proofs: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
+    for run in [*discovered, *receipt_rows]:
+        proof = run.get("_process_proof") or _codex_parent_proof(run)
+        if proof is None:
+            continue
+        try:
+            key = (str(run["thread_id"]).lower(), int(run["codex_pid"]), int(run["codex_created"]))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        current_codex_proofs.setdefault(key, []).append(proof)
+    for run_key, saved in list(_RUN_ROWS.items()):
+        proof = saved.get("processProof")
+        if not proof:
+            continue
+        candidates = current_codex_proofs.get(run_key, ())
+        contradictory_capture = any(
+            any(proof.get(field) != candidate.get(field) for field in (
+                "parent_id", "parent_pid", "parent_created", "direct_child_pid", "direct_child_created"))
+            for candidate in candidates)
+        if (run_key in _RECEIPT_CONFLICTS or contradictory_capture
+                or _codex_parent_proof_contradicted(proof, claude_states)):
+            _CODEX_PARENT_CONTRADICTIONS.add(run_key)
+            saved["parent"] = None
+            saved["parentProvider"] = None
+            saved["processProof"] = None
+            for field in _LINEAGE_FIELDS:
+                saved["row"].pop(field, None)
+
+    for item in claude_links:
+        item["last_seen"] = now
+        child_sid = str(item["child_session_id"])
+        identity = (child_sid, int(item["child_pid"]), int(item["child_created"]))
+        if identity in _CLAUDE_LINK_CONTRADICTIONS:
+            continue
+        prior_link = _CLAUDE_PROCESS_LINKS.get(child_sid)
+        if prior_link and (int(prior_link["child_pid"]), int(prior_link["child_created"])) == identity[1:]:
+            same_parent = (prior_link.get("parent_provider"), prior_link.get("parent_session_id"),
+                           prior_link.get("parent_thread_id")) == (
+                               item.get("parent_provider"), item.get("parent_session_id"),
+                               item.get("parent_thread_id"))
+            if not same_parent:
+                _CLAUDE_LINK_CONTRADICTIONS.add(identity)
+                _CLAUDE_PROCESS_LINKS.pop(child_sid, None)
+                continue
+            prior_link["last_seen"] = now
+            continue
+        if prior_link:
+            _CLAUDE_LINK_CONTRADICTIONS.add((child_sid, int(prior_link["child_pid"]),
+                                              int(prior_link["child_created"])))
+        _CLAUDE_PROCESS_LINKS[child_sid] = item
+    for key in conflicting_receipts | _conflicting_receipt_identities(receipt_rows):
+        _RECEIPT_CONFLICTS.add(key)
+        saved = _RUN_ROWS.get(key)
+        if saved:
+            saved["parent"] = None
+            saved["parentProvider"] = None
+            saved["processProof"] = None
+            for field in _LINEAGE_FIELDS:
+                    saved["row"].pop(field, None)
+    for key in codex_receipt_contradictions:
+        saved = _RUN_ROWS.get(key)
+        if saved:
+            saved["parent"] = None
+            saved["parentProvider"] = None
+            saved["processProof"] = None
+            for field in _LINEAGE_FIELDS:
+                saved["row"].pop(field, None)
+    current_claude = {str(row.get("id")): row for row in claude.get("chats") or [] if row.get("id")}
+    states_by_session = {str(key[0]): value for key, value in (claude_states or {}).items()
+                         if isinstance(key, tuple) and len(key) == 2 and not key[1]}
+    for child_sid, link in list(_CLAUDE_PROCESS_LINKS.items()):
+        row = current_claude.get(child_sid)
+        if row is None:
+            if now - float(link.get("last_seen") or now) >= RETENTION_SECONDS:
+                _CLAUDE_PROCESS_LINKS.pop(child_sid, None)
+            continue
+        link["last_seen"] = now
+        if (link.get("parent_provider") == "Codex" and not _CODEX_ENV_PER_THREAD_VERIFIED):
+            _clear_process_lineage(row)
+            continue
+        if row.get("parentId") and row.get("linkSource") != "process":
+            # Native lineage always wins and invalidates process provenance.
+            _CLAUDE_LINK_CONTRADICTIONS.add((child_sid, int(link["child_pid"]), int(link["child_created"])))
+            _CLAUDE_PROCESS_LINKS.pop(child_sid, None)
+            continue
+        child_state = states_by_session.get(child_sid)
+        if child_state:
+            identities = {(int(entry.get("pid", -1)), int(entry.get("created", -1)))
+                          for entry in child_state.get("pid_associations") or ()}
+            current_identity = None
+            try:
+                current_identity = (int(child_state["pid"]), int(child_state["pid_created"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+            if (current_identity is not None
+                    and current_identity != (int(link["child_pid"]), int(link["child_created"]))
+                    or current_identity is None and identities
+                    and (int(link["child_pid"]), int(link["child_created"])) not in identities):
+                _CLAUDE_LINK_CONTRADICTIONS.add((child_sid, int(link["child_pid"]), int(link["child_created"])))
+                _CLAUDE_PROCESS_LINKS.pop(child_sid, None)
+                _clear_process_lineage(row)
+                continue
+            captures = [capture for capture in child_state.get("launcher_associations") or ()
+                        if int(capture.get("pid", -1)) == int(link["child_pid"])
+                        and int(capture.get("created", -1)) == int(link["child_created"])]
+            codex_values = {capture.get("launcher_codex_thread_id") for capture in captures
+                            if _optional_thread_id(capture.get("launcher_codex_thread_id"))}
+            claude_values = {capture.get("launcher_claude_session_id") for capture in captures
+                             if _optional_thread_id(capture.get("launcher_claude_session_id"))}
+            expected_codex = link.get("launcher_codex_thread_id")
+            if (len(codex_values) > 1 or len(claude_values) > 1
+                    or (expected_codex and codex_values and codex_values != {expected_codex})):
+                _CLAUDE_LINK_CONTRADICTIONS.add((child_sid, int(link["child_pid"]), int(link["child_created"])))
+                _CLAUDE_PROCESS_LINKS.pop(child_sid, None)
+                _clear_process_lineage(row)
+                continue
+        parent_state = states_by_session.get(str(link.get("parent_session_id")))
+        if parent_state and link.get("parent_provider") == "Claude":
+            raw = parent_state.get("pid_associations") or ()
+            relevant = [entry for entry in raw
+                        if int(entry.get("pid", -1)) == int(link["parent_pid"])
+                        and int(entry.get("created", -1)) == int(link["parent_created"])]
+            if relevant:
+                parents = _association_map(states_by_session and claude_states or {}).get(
+                    (int(link["parent_pid"]), int(link["parent_created"])), ())
+                d_epoch = _filetime_epoch(int(link["direct_child_created"]))
+                c_epoch = _filetime_epoch(int(link["child_created"]))
+                matches = {sid for sid, first, last in parents
+                           if d_epoch is not None and c_epoch is not None
+                           and first <= d_epoch < last and first <= c_epoch < last}
+                if matches != {str(link["parent_session_id"])}:
+                    _CLAUDE_LINK_CONTRADICTIONS.add((child_sid, int(link["child_pid"]), int(link["child_created"])))
+                    _CLAUDE_PROCESS_LINKS.pop(child_sid, None)
+                    _clear_process_lineage(row)
+                    continue
+        row["parentId"] = str(link.get("parent_session_id") if link.get("parent_provider") == "Claude"
+                                else link.get("parent_thread_id"))
+        row["parentProvider"] = str(link.get("parent_provider") or "Claude")
+        row["parentLinkMethod"] = "process"
+        row["linkSource"] = "process"
+        row["parentIncarnation"] = {
+            "provider": row["parentProvider"], "id": row["parentId"],
+            "pid": int(link["parent_pid"]), "created": int(link["parent_created"]),
+        }
+        row["childRunIdentity"] = {
+            "provider": "Claude", "id": child_sid,
+            "pid": int(link["child_pid"]), "created": int(link["child_created"]),
+        }
+    for child_sid, row in current_claude.items():
+        if row.get("linkSource") == "process" and child_sid not in _CLAUDE_PROCESS_LINKS:
+            _clear_process_lineage(row)
     by_identity = {(str(run["thread_id"]).lower(), int(run["codex_pid"]),
-                    int(run["codex_created"]), str(run["claude_session_id"])): run
+                    int(run["codex_created"]), str(run.get("claude_session_id") or "")): run
                    for run in runs if all(key in run for key in (
-                       "thread_id", "codex_pid", "codex_created", "claude_session_id"))}
+                       "thread_id", "codex_pid", "codex_created"))}
     discovered_threads = {(str(run.get("thread_id") or "").lower(),
                            int(run.get("codex_pid", -1)), int(run.get("codex_created", -1)))
                           for run in discovered if run.get("claude_session_id")}
@@ -1045,6 +1980,7 @@ def apply_exact_links(
         with _UNLINKED_LOCK:
             _UNLINKED_EXECUTIONS[identity] = {**run, "verified_at": now}
         unlinked_live_threads.add(identity[0])
+        unlinked_identities.setdefault(identity[0], set()).add((identity[1], identity[2]))
     for run in discovered:
         if run.get("claude_session_id") is not None:
             try:
@@ -1066,14 +2002,12 @@ def apply_exact_links(
                 competing = receipt_processes.get((identity[1], identity[2]), set())
                 if identity not in discovered_threads and any(thread != identity[0] for thread in competing):
                     continue
-                if verify(identity[1], identity[2]) is not True:
-                    continue
                 with _UNLINKED_LOCK:
                     _UNLINKED_EXECUTIONS.pop(identity, None)
                     still_unlinked = any(key[0] == identity[0] for key in _UNLINKED_EXECUTIONS)
                 if not still_unlinked:
                     unlinked_live_threads.discard(identity[0])
-            sid = str(run["claude_session_id"])
+            sid = str(run.get("claude_session_id") or "")
             key = (str(run["thread_id"]).lower(), int(run["codex_pid"]),
                    int(run["codex_created"]), sid)
             observed = float(run.get("recorded_at", now)) if run.get("method") == "receipt" else now
@@ -1087,6 +2021,7 @@ def apply_exact_links(
                 verified_by_thread.setdefault(key[0], []).append(record)
             elif run.get("method") == "receipt":
                 record["verified_at"] = now
+                verdicts[(key[0], key[1], key[2])] = True
                 verified_by_thread.setdefault(key[0], []).append(record)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
@@ -1101,48 +2036,336 @@ def apply_exact_links(
             by_thread.setdefault(thread, []).append(run)
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
+    seen_live_runs: set[tuple[str, int, int]] = set()
     for row in codex.get("chats") or []:
         thread = str(row.get("id") or "").lower()
-        if not cross_provider_candidate(row):
-            continue
+        native_parent = not cross_provider_candidate(row)
         # Existing Claude links must be revalidated from the registry/discovery
         # before they are republished in this poll.
-        if row.get("parentId"):
+        if row.get("parentId") and not native_parent:
             row.pop("parentId", None)
             row.pop("parentProvider", None)
             row.pop("parentLinkMethod", None)
+        row["runVerified"] = None
         historical = by_thread.get(thread, [])
         if not historical:
             continue
         status = str(row.get("executionStatus") or row.get("status") or "").lower()
         if status == "running":
-            if thread in unlinked_live_threads or unresolved_by_thread.get(thread):
+            # Any live candidate that cannot be verified blocks binding, even when
+            # another candidate is a receipt.
+            if unresolved_by_thread.get(thread) or thread in unknown_unlinked_threads:
                 continue
             live_runs = verified_by_thread.get(thread, [])
-            live_sessions = {str(run.get("claude_session_id")) for run in live_runs}
-            if len(live_sessions) != 1:
-                continue
-            sid = next(iter(live_sessions))
-            selected = max((run for run in live_runs if str(run.get("claude_session_id")) == sid),
-                           key=lambda run: float(run.get("last_seen") or 0))
-            if sid in claude_ids:
-                row["parentId"], row["parentProvider"] = sid, "Claude"
+            row_identity = _row_identity(row)
+            receipt_runs = [run for run in live_runs if run.get("method") == "receipt"
+                            and (thread, int(run["codex_pid"]), int(run["codex_created"]))
+                            not in _RECEIPT_CONFLICTS]
+            exact_unlinked = unlinked_identities.get(thread, set())
+            if receipt_runs:
+                # A live unlinked execution blocks receipts unless the receipt is that exact process.
+                receipts = [run for run in receipt_runs
+                            if thread not in unlinked_live_threads or _run_identity(run) in exact_unlinked]
+                if row_identity is not None:
+                    receipts = [run for run in receipts if _run_identity(run) == row_identity]
+                if not receipts:
+                    continue
+                selected = max(receipts, key=lambda run: (int(run["codex_created"]), float(run.get("last_seen") or 0)))
+                identity = _run_identity(selected)
+                sid = str(selected.get("claude_session_id") or "")
+            else:
+                scanned = [run for run in discovered if str(run.get("thread_id") or "").lower() == thread]
+                candidates = scanned if scanned else [*live_runs, *verified_unlinked.get(thread, [])]
+                identities = {_run_identity(run) for run in candidates}
+                if len(identities) != 1:
+                    continue
+                selected = candidates[0]
+                identity = _run_identity(selected)
+                if row_identity is not None and identity != row_identity:
+                    continue
+                # Process scans establish liveness only, never lineage, unless the
+                # run is an exact cmdline ancestry match.
+                if selected.get("method") != "cmdline":
+                    try:
+                        started = datetime.fromisoformat(str(row.get("runStartedAt") or row.get("activeRunStartedAt")).replace("Z", "+00:00")).timestamp()
+                        created_epoch = _filetime_epoch(int(selected["codex_created"]))
+                        if created_epoch is None or created_epoch < started:
+                            continue
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        continue
+                # Exact cmdline lineage: one session for this identity or no parent.
+                sids = {str(run.get("claude_session_id") or "") for run in candidates
+                        if _run_identity(run) == identity}
+                sid = next(iter(sids)) if len(sids) == 1 else ""
+            run_key = (thread, *identity)
+            prior = _RUN_ROWS.get(run_key)
+            proof_candidates = current_codex_proofs.get(run_key, ())
+            proof_signatures = {
+                tuple(proof.get(field) for field in ("parent_id", "parent_pid", "parent_created",
+                                                       "direct_child_pid", "direct_child_created")): proof
+                for proof in proof_candidates
+            }
+            fresh_process_proof = next(iter(proof_signatures.values())) if len(proof_signatures) == 1 else None
+            if run_key in _RECEIPT_CONFLICTS or run_key in _CODEX_LINK_CONTRADICTIONS:
+                sid = ""
+                fresh_process_proof = None
+            elif run_key in _CODEX_PARENT_CONTRADICTIONS:
+                if fresh_process_proof is None:
+                    sid = ""
+                else:
+                    sid = str(fresh_process_proof["parent_id"])
+                    _CODEX_PARENT_CONTRADICTIONS.discard(run_key)
+            # Preserve a saved edge only while its proof has not been contradicted.
+            if (prior and prior.get("parent") is not None
+                    and run_key not in _RECEIPT_CONFLICTS
+                    and run_key not in _CODEX_LINK_CONTRADICTIONS
+                    and run_key not in _CODEX_PARENT_CONTRADICTIONS):
+                sid = prior["parent"]
+            prior_process_codex = bool(prior and prior.get("parentProvider") == "Codex"
+                                       and prior.get("row", {}).get("linkSource") == "process")
+            if prior and prior.get("parentProvider") == "Codex" and not (
+                    prior_process_codex and not _CODEX_ENV_PER_THREAD_VERIFIED):
+                row["parentId"], row["parentProvider"] = sid, "Codex"
+                native_parent = True
+            if native_parent or sid in claude_ids or not sid:
+                if not native_parent and sid:
+                    row["parentId"], row["parentProvider"] = sid, "Claude"
                 row["parentLinkMethod"] = selected.get("method")
+                if native_parent:
+                    row.setdefault("linkSource", "native")
+                elif sid:
+                    row["linkSource"] = "process"
+                    row["parentIncarnation"] = {
+                        "provider": "Claude", "id": sid,
+                        "pid": int(selected.get("claude_pid", -1) or -1),
+                        "created": int(selected.get("claude_created", -1) or -1),
+                    }
+                    row["childRunIdentity"] = {
+                        "provider": "Codex", "id": thread,
+                        "pid": int(identity[0]), "created": int(identity[1]),
+                    }
+                codex_parent = codex_receipt_parents.get(run_key)
+                if codex_parent and not native_parent and run_key not in _CODEX_LINK_CONTRADICTIONS:
+                    row.update(parentId=codex_parent["parent_thread_id"], parentProvider="Codex",
+                               parentLinkMethod="receipt", linkSource="process",
+                               parentIncarnation={"provider": "Codex", "id": codex_parent["parent_thread_id"],
+                                                  "pid": codex_parent["parent_pid"],
+                                                  "created": codex_parent["parent_created"]},
+                               childRunIdentity={"provider": "Codex", "id": thread,
+                                                 "pid": identity[0], "created": identity[1]})
+                row["runPid"], process_created = identity
+                row["runCreated"] = str(process_created)
+                row["runVerified"] = True
+                row.pop("runBindingUnresolved", None)
+                parent_row = next((item for item in claude.get("chats") or [] if str(item.get("id")) == sid), None)
+                process_proof = fresh_process_proof
+                if process_proof is None and prior and run_key not in _CODEX_PARENT_CONTRADICTIONS:
+                    process_proof = prior.get("processProof")
+                _RUN_ROWS[run_key] = {"row": copy.deepcopy(row), "parent": row.get("parentId"), "parentProvider": row.get("parentProvider"), "stoppedAt": None,
+                                      "parentRow": copy.deepcopy(parent_row), "processProof": process_proof}
+                seen_live_runs.add(run_key)
+                # Other live receipts are retained as separate rows, never merged into this one.
+                for older in receipt_runs:
+                    other_key = (thread, int(older["codex_pid"]), int(older["codex_created"]))
+                    if other_key == run_key or other_key in _RUN_ROWS:
+                        continue
+                    older_sid = str(older.get("claude_session_id") or "")
+                    old_row = copy.deepcopy(row)
+                    for field in ("tokens", "toolCalls", "filesEdited", "fileChanges", "contextTokens", "contextPercent", "contextWindow", "runStartedAt", "activeRunStartedAt"):
+                        old_row.pop(field, None)
+                    old_row.update(runPid=other_key[1], runCreated=str(other_key[2]), metricsUnavailable=True)
+                    if older_sid in claude_ids:
+                        old_row.update(parentId=older_sid, parentProvider="Claude", parentLinkMethod="receipt")
+                    else:
+                        old_row.pop("parentId", None)
+                        old_row.pop("parentProvider", None)
+                    old_parent = next((item for item in claude.get("chats") or [] if str(item.get("id")) == older_sid), None)
+                    _RUN_ROWS[other_key] = {"row": old_row, "parent": older_sid,
+                                            "parentRow": copy.deepcopy(old_parent), "stoppedAt": None,
+                                            "processProof": older.get("_process_proof") or _codex_parent_proof(older)}
+            else:
+                # The parent session is absent from the Claude list: keep this row's own
+                # status and bind only the run identity, never a parent.
+                row["runPid"], process_created = identity
+                row["runCreated"] = str(process_created)
+                row["runVerified"] = True
+                row.pop("runBindingUnresolved", None)
+                seen_live_runs.add(run_key)
             continue
-        selected = max(historical, key=lambda run: float(run.get("last_seen") or 0))
+        if row.get("runBindingUnresolved") or id(row) in native_rows:
+            continue
+        # A terminal thread row has no provable connection to a historical
+        # execution unless it carries some execution's process identity.
+        if _row_identity(row) is None:
+            continue
+        # Newest historical execution wins (latest codex_created, then last_seen).
+        selected = max(historical, key=lambda run: (int(run["codex_created"]), float(run.get("last_seen") or 0)))
+        selected_key = (thread, *_run_identity(selected))
+        if (selected_key in _CODEX_PARENT_CONTRADICTIONS or selected_key in _RECEIPT_CONFLICTS
+                or selected_key in _CODEX_LINK_CONTRADICTIONS):
+            # A contradicted association stays revoked for idle and stopped rows too.
+            continue
         sid = str(selected.get("claude_session_id") or "")
         if sid not in claude_ids:
             continue
         turn_start = row.get("runStartedAt") or row.get("activeRunStartedAt")
         try:
-            from datetime import datetime
             turn_epoch = datetime.fromisoformat(str(turn_start).replace("Z", "+00:00")).timestamp() if turn_start else None
         except (TypeError, ValueError, OverflowError, OSError):
             turn_epoch = None
-        if turn_epoch is not None and turn_epoch > float(selected["last_seen"]) or sid not in claude_ids:
+        if turn_epoch is not None and turn_epoch > float(selected["last_seen"]):
             continue
         if turn_epoch is None and row.get("detailPending"):
             # A deferred row has no transcript detail; without a run boundary it cannot prove an old association.
             continue
+        verdict = verify(*_run_identity(selected))
+        if verdict is None:
+            continue
         row["parentId"], row["parentProvider"] = sid, "Claude"
         row["parentLinkMethod"] = selected.get("method")
+        row["runVerified"] = verdict
+
+    for row in codex.get("chats") or []:
+        # Only a running row whose thread had link candidates and whose binding failed is unresolved.
+        thread = str(row.get("id") or "").lower()
+        if (row.get("source") == "exec" and row.get("runVerified") is None and by_thread.get(thread)
+                and str(row.get("executionStatus") or row.get("status") or "").lower() == "running"):
+            if id(row) not in native_rows:
+                row.pop("parentId", None)
+                row.pop("parentProvider", None)
+            row["previousStatus"] = row.get("status")
+            row["runBindingPreviousExecutionStatus"] = row.get("executionStatus")
+            row.update(status="unknown", statusSource="unavailable", executionStatus="unavailable",
+                       executionSource="unavailable", telemetryUnavailable=True, runBindingUnresolved=True)
+
+    # Retain only runs observed with an exact process identity.  An unknown
+    # verification is not evidence of death, and never freezes a current row.
+    retained = []
+    needed_ancestors = {str(row.get("parentId")) for row in codex.get("chats") or []
+                        if row.get("runVerified") is True and row.get("parentProvider") == "Codex" and row.get("parentId")}
+    while True:
+        more = {str(saved["row"].get("parentId")) for key, saved in _RUN_ROWS.items()
+                if key[0] in needed_ancestors and saved["row"].get("parentProvider") == "Codex"
+                and saved["row"].get("parentId")}
+        if more <= needed_ancestors:
+            break
+        needed_ancestors.update(more)
+    for identity, saved in list(_RUN_ROWS.items()):
+        if identity in seen_live_runs:
+            continue
+        stopped_at = saved.get("stoppedAt")
+        if stopped_at is None:
+            verdict = verdicts.get(identity)
+            if identity not in verdicts:
+                if any(str(run.get("thread_id", "")).lower() == identity[0] and run.get("codex_pid") == identity[1] and run.get("codex_created") == identity[2] and run.get("retired_at") for run in runs):
+                    verdict = False
+                elif need_full_scan:
+                    # The due scan supersedes per-pid verification; an unscanned identity stays unresolved.
+                    verdict = None
+                else:
+                    verdict = verify(identity[1], identity[2])
+            if verdict is None:
+                continue
+            if verdict is True:
+                row = copy.deepcopy(saved["row"])
+                row.update(retainedRun=True, runVerified=True)
+                retained.append(row)
+                continue
+            stopped_at = saved["stoppedAt"] = now
+        if now - stopped_at >= STOPPED_RETENTION_SECONDS and identity[0] not in needed_ancestors:
+            # The contradiction outlives the saved row; _prune_contradictions drops it
+            # once the registry has stopped offering the old association.
+            del _RUN_ROWS[identity]
+            continue
+        row = copy.deepcopy(saved["row"])
+        if saved["parent"] not in claude_ids and saved.get("parentRow"):
+            claude.setdefault("chats", []).append(copy.deepcopy(saved["parentRow"]))
+            claude_ids.add(saved["parent"])
+        stamp = datetime.fromtimestamp(stopped_at, timezone.utc).isoformat()
+        row.update(retainedRun=True, runVerified=False, stoppedAt=stamp, runEndedAt=stamp,
+                   executionStatus="idle", executionTerminalAt=stamp, stateSince=stamp)
+        if str(row.get("status") or "").lower() not in {"failed", "completed"}:
+            row.update(status="idle", stateDetail="stopped")
+        retained.append(row)
+    codex.setdefault("chats", []).extend(retained)
+    offered: set[tuple[str, int, int]] = set()
+    for thread, thread_runs in by_thread.items():
+        for run in thread_runs:
+            try:
+                offered.add((thread, *_run_identity(run)))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+    for label, contradictions in (("parent", _CODEX_PARENT_CONTRADICTIONS), ("receipt", _RECEIPT_CONFLICTS),
+                                  ("link", _CODEX_LINK_CONTRADICTIONS)):
+        _prune_contradictions(label, contradictions,
+                              lambda key: key in _RUN_ROWS or key in offered, now)
+    _prune_contradictions("claude", _CLAUDE_LINK_CONTRADICTIONS,
+                          lambda key: key[0] in claude_ids or key[0] in _CLAUDE_PROCESS_LINKS, now)
+    if not _CODEX_ENV_PER_THREAD_VERIFIED:
+        # Retained copies and per-thread collapse can reintroduce saved process
+        # edges after the incoming provider rows were gated above.
+        for row in codex.get("chats") or []:
+            if row.get("parentProvider") == "Codex" and row.get("linkSource") == "process":
+                _clear_process_lineage(row)
+    # One row per thread. The current provider row is the base: a retained copy
+    # is frozen at its last live poll and never replaces fresher data. Only
+    # execution and lineage fields come from the newest execution, an
+    # unresolved current row stays authoritative (an older run's parent cannot
+    # prove its lineage), and a stopped execution never overrides a current row
+    # that is active again under another (or no) execution.
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in codex["chats"]:
+        grouped.setdefault(str(row.get("id") or "").lower(), []).append(row)
+    collapsed = []
+    for thread, rows in grouped.items():
+        if not thread:
+            collapsed.extend(rows)
+            continue
+        executions = [row for row in rows if _row_identity(row) is not None]
+        newest = max(executions, key=_execution_order) if executions else None
+        current_rows = [row for row in rows if not row.get("retainedRun")]
+        if current_rows:
+            selected = max(current_rows, key=_execution_order)
+            stopped = bool(newest and newest.get("stoppedAt"))
+            if stopped and newest is not selected and _row_identity(selected) == _row_identity(newest):
+                # The current row still names the execution that was verified
+                # dead: its process claim is stale, so the frozen run stands.
+                selected = newest
+            elif (newest is not None and newest is not selected and not selected.get("runBindingUnresolved")
+                    and not (stopped and _row_outlives_stop(selected, newest))):
+                fields = _RUN_FIELDS if id(selected) in native_rows else _RUN_FIELDS + _LINEAGE_FIELDS
+                for field in fields:
+                    if field in newest:
+                        selected[field] = newest[field]
+                    else:
+                        selected.pop(field, None)
+                if stopped:
+                    for field in _STOP_FIELDS:
+                        if field in newest:
+                            selected[field] = newest[field]
+                    if str(selected.get("status") or "").lower() not in {"failed", "completed"}:
+                        selected.update(status="idle", stateDetail="stopped")
+        else:
+            selected = newest or rows[-1]
+        identities = {identity for row in rows if (identity := _row_identity(row)) is not None}
+        identities.update((pid, created) for (tid, pid, created) in _RUN_ROWS if tid == thread)
+        identities.update(_run_identity(run) for run in verified_by_thread.get(thread, []))
+        with _UNLINKED_LOCK:
+            identities.update((pid, created) for (tid, pid, created) in _UNLINKED_EXECUTIONS if tid == thread)
+        # Every execution observed in this app process counts, even after its
+        # retained copy expires; registry history from earlier sessions does not.
+        observed = _OBSERVED_IDENTITIES.pop(thread, set()) | identities
+        _OBSERVED_IDENTITIES[thread] = observed
+        while len(_OBSERVED_IDENTITIES) > _OBSERVED_IDENTITY_LIMIT:
+            _OBSERVED_IDENTITIES.pop(next(iter(_OBSERVED_IDENTITIES)))
+        selected.pop("resumeCount", None)
+        if len(observed) >= 2:
+            selected["resumeCount"] = len(observed)
+        selected.pop("firstSeenAt", None)
+        selected_identity = _row_identity(selected)
+        matches = [run for run in by_thread.get(thread, []) if _run_identity(run) == selected_identity]
+        if matches:
+            first_seen = min(float(run["first_seen"]) for run in matches)
+            selected["firstSeenAt"] = datetime.fromtimestamp(first_seen, timezone.utc).isoformat()
+        collapsed.append(selected)
+    codex["chats"] = collapsed

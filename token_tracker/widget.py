@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ctypes
 import argparse
+import atexit
+import faulthandler
 import json
 import logging
 import math
@@ -15,13 +17,30 @@ from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
 
+
+_shutdown_trace_file = None
+_shutdown_trace_lock = threading.Lock()
+
+
+def _cancel_shutdown_trace() -> None:
+    global _shutdown_trace_file
+    with _shutdown_trace_lock:
+        if _shutdown_trace_file is not None:
+            faulthandler.cancel_dump_traceback_later()
+            _shutdown_trace_file.close()
+            _shutdown_trace_file = None
+
+
+# Register before importing services so their atexit cleanup is traced too.
+atexit.register(_cancel_shutdown_trace)
+
 import pystray
 import webview
 from PIL import Image
 
 from .limit_reset import LimitResetService, _runtime_dir
 from .server import CACHE, Handler, ThreadingHTTPServer
-from . import agent_links, product, reset_delivery, server as server_module
+from . import agent_links, debug_report, product, reset_delivery, server as server_module
 from . import ledger_service
 
 
@@ -148,6 +167,59 @@ CONTROL_PORT = 8766
 BIND_RETRY_ATTEMPTS = 20
 BIND_RETRY_DELAY = 0.25
 CONTROL_LINE_LIMIT = 160
+
+# quit() stops three background services that each wait on their own worker. Run
+# side by side under one budget so a slow one cannot stack onto the others and push
+# shutdown past what an upgrade or a user will wait. The workers are daemons: one
+# still finishing when the budget ends cannot keep the process alive.
+SHUTDOWN_SERVICES_BUDGET = 6.0
+
+
+def _arm_shutdown_trace(root: Path | None = None, timeout: float = 10.0) -> None:
+    global _shutdown_trace_file
+    with _shutdown_trace_lock:
+        if _shutdown_trace_file is not None:
+            return
+        try:
+            path = (root if root is not None else _runtime_dir()) / "logs" / "shutdown-trace.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size >= 192 * 1024:
+                with path.open("wb"):
+                    pass
+            stream = path.open("ab")
+            try:
+                faulthandler.dump_traceback_later(timeout, repeat=False, file=stream, exit=False)
+            except Exception:
+                stream.close()
+                raise
+            _shutdown_trace_file = stream
+        except (OSError, RuntimeError, ValueError):
+            logging.getLogger(__name__).warning("Could not arm shutdown trace")
+
+
+def _stop_claude_usage_refresher() -> None:
+    from . import claude_usage_api
+    claude_usage_api.REFRESHER.stop()
+
+
+def _stop_services_together(steps, budget: float | None = None) -> None:
+    budget = SHUTDOWN_SERVICES_BUDGET if budget is None else budget
+    end = time.monotonic() + budget
+    threads = []
+    for step in steps:
+        def run(step=step) -> None:
+            with suppress(Exception):
+                step()
+        try:
+            thread = threading.Thread(target=run, name="shutdown-step", daemon=True)
+            thread.start()
+        except Exception:
+            continue  # never run a blocking stop inline: the rest of quit() must still happen
+        threads.append(thread)
+    for thread in threads:
+        thread.join(max(0.0, end - time.monotonic()))
+
+
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 PM_NOREMOVE = 0x0000
@@ -975,6 +1047,7 @@ class WidgetApp:
         if self._recenter_on_start:
             self._remember_notch_placement()
             self._persist_widget_lock()
+        # One widget-owned service is the sole state writer; Handler shares it.
         self.limit_reset = LimitResetService(
             list_candidates=reset_delivery.list_candidates,
             inspect_target=reset_delivery.inspect_target,
@@ -1578,6 +1651,10 @@ class WidgetApp:
                     time.sleep(BIND_RETRY_DELAY)
         if self.server is None:
             return False
+        from .claude_hook import start_event_retention
+        start_event_retention()
+        from . import claude_usage_api
+        claude_usage_api.REFRESHER.start()
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         # The first transcript scan is the slow cold path; build it before the page asks.
         threading.Thread(target=_warm_snapshot, name="token-snapshot-warmup", daemon=True).start()
@@ -2490,6 +2567,9 @@ class WidgetApp:
                     self._notch_thread.start()
 
     def quit(self, *_args) -> None:
+        _arm_shutdown_trace()
+        from .providers import stop_snapshot_workers
+        stop_snapshot_workers()
         self._shutdown_requested.set()
         # Wait out any in-progress startup step; once quitting is set under the
         # lock no further startup resource is acquired, so the cleanup below
@@ -2506,9 +2586,9 @@ class WidgetApp:
         # Each step is independent: one failure must not leave the process
         # alive with a destroyed tray or an undestroyed window.
         with suppress(Exception):
-            self.limit_reset.stop()
-        with suppress(Exception):
-            self.ledger.stop()
+            _stop_services_together([lambda: self.limit_reset.stop(), _stop_claude_usage_refresher,
+                                     lambda: self.ledger.stop(),
+                                     lambda: ledger_service.current().stop() if isinstance(self.ledger, ledger_service.LedgerService) and ledger_service.current() is not None and ledger_service.current() is not self.ledger else None])
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()
@@ -2738,16 +2818,36 @@ class WidgetApp:
         self.window.events.loaded += self._mark_window_loaded
 
 
+def _debug_report_target(path: str) -> Path:
+    """The installed launcher starts the app inside its release folder, where any extra file
+    makes the next launch reject the release, so relative paths go to Downloads instead."""
+    target = Path(path)
+    if not product.is_frozen() or target.is_absolute():
+        return target
+    # A drive- or root-relative path (C:report.md, or one starting with a backslash) is not absolute,
+    # but joining it would replace the Downloads prefix and land on the release drive, so drop its anchor.
+    if target.anchor:
+        target = target.relative_to(target.anchor)
+    downloads = Path.home() / "Downloads"
+    return (downloads if downloads.is_dir() else Path.home()) / target
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Run the Branchglance widget")
     parser.add_argument("--background", action="store_true", help="start hidden in the tray")
     parser.add_argument("--recenter", action="store_true",
                         help="recenter the widget once on startup")
+    parser.add_argument("--debug-report", nargs="?", const=debug_report.DEFAULT_OUTPUT, metavar="PATH",
+                        help="write a privacy-filtered debug report to PATH and exit")
     parser.add_argument("--install-handoff", help=argparse.SUPPRESS)
     parser.add_argument("--redirect-relaunch", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--launcher-appdata-ok", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--launcher-appdata-unknown", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.debug_report is not None:
+        # CLI only: no UI, no instance lock. Writes a file; the frozen app has no console to print to.
+        raise SystemExit(debug_report.write_cli(_debug_report_target(args.debug_report), port=HTTP_PORT))
+    debug_report.install_handler()
     # Wait for any setup transaction before taking the Instance lock or loading
     # provider policy. A timeout exits quietly so repeated Start-menu clicks do
     # not leave message-box processes behind.

@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,8 +113,10 @@ def test_claude_pid_associations_keep_all_time_scoped_process_identities():
                                          claude_pid_created=9000))
     root = state["keys"][(SID, "")]
     assert root["pid_associations"] == [
-        {"pid": 4242, "created": 777, "sid": SID, "first": 10, "last": 10},
-        {"pid": 5000, "created": 9000, "sid": SID, "first": 20, "last": 20},
+        {"pid": 4242, "created": 777, "sid": SID, "first": 10.0, "last": 10.0,
+         "observed_last": 10.0, "ambiguous": False},
+        {"pid": 5000, "created": 9000, "sid": SID, "first": 20.0, "last": 20.0,
+         "observed_last": 20.0, "ambiguous": False},
     ]
     associations = agent_links._association_map(state["keys"])
     assert associations[(4242, 777)] == [(SID, 10.0, float("inf"))]
@@ -175,8 +178,9 @@ def world(tmp_path, monkeypatch):
     projects.mkdir(parents=True)
     events = tmp_path / "events"
     events.mkdir()
-    monkeypatch.setenv("CLAUDE_HOME", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(claude_provider, "_t3_database", lambda: tmp_path / "t3.sqlite")
     claude_provider.reset_memo()
 
     class World:
@@ -643,6 +647,54 @@ def test_title_and_model_survive_the_transcript_rewrite_during_compaction(world)
     assert world.rows()[SID]["title"] == "Renamed"
 
 
+def test_parent_title_tracks_t3_rename_and_survives_missing_source(world):
+    database = world.tmp / "t3.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE projection_threads (thread_id TEXT, title TEXT, deleted_at TEXT, archived_at TEXT)")
+        db.execute("CREATE TABLE provider_session_runtime (thread_id TEXT, provider_name TEXT, resume_cursor_json TEXT)")
+        db.execute("INSERT INTO projection_threads VALUES (?, ?, NULL, NULL)", ("thread", "Original T3 title"))
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)",
+                   ("thread", "claudeAgent", json.dumps({"resume": SID})))
+    world.transcript(SID, [{"type": "ai-title", "aiTitle": "Original first prompt"},
+                           user(NOW - 100), assistant(NOW - 60, "m1")])
+    world.hooks([ev(NOW - 90, "UserPromptSubmit")])
+    assert world.rows()[SID]["title"] == "Original T3 title"
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE projection_threads SET title = ?", ("Renamed T3 title",))
+    assert world.rows()[SID]["title"] == "Renamed T3 title"
+    with sqlite3.connect(database) as db:
+        db.execute("DELETE FROM provider_session_runtime")
+    assert world.rows()[SID]["title"] == "Renamed T3 title"
+
+
+def test_t3_deep_invalid_cursor_is_skipped(world):
+    database = world.tmp / "t3.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE projection_threads (thread_id TEXT, title TEXT, deleted_at TEXT, archived_at TEXT)")
+        db.execute("CREATE TABLE provider_session_runtime (thread_id TEXT, provider_name TEXT, resume_cursor_json TEXT)")
+        db.execute("INSERT INTO projection_threads VALUES ('deep', 'ignored', NULL, NULL)")
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("deep", "claudeAgent", "[" * 1500 + "]" * 1500))
+    world.transcript(SID, [{"type": "ai-title", "aiTitle": "Transcript"}, user(NOW - 5)])
+    world.hooks([ev(NOW - 5, "UserPromptSubmit")])
+    assert world.rows()[SID]["title"] == "Transcript"
+
+
+def test_t3_ambiguous_binding_evicts_cached_title(world):
+    database = world.tmp / "t3.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE projection_threads (thread_id TEXT, title TEXT, deleted_at TEXT, archived_at TEXT)")
+        db.execute("CREATE TABLE provider_session_runtime (thread_id TEXT, provider_name TEXT, resume_cursor_json TEXT)")
+        db.execute("INSERT INTO projection_threads VALUES ('one', 'T3 title', NULL, NULL)")
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("one", "claudeAgent", json.dumps({"resume": SID})))
+    world.transcript(SID, [{"type": "ai-title", "aiTitle": "Transcript"}, user(NOW - 5)])
+    world.hooks([ev(NOW - 5, "UserPromptSubmit")])
+    assert world.rows()[SID]["title"] == "T3 title"
+    with sqlite3.connect(database) as db:
+        db.execute("INSERT INTO projection_threads VALUES ('two', 'Other', NULL, NULL)")
+        db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("two", "claudeAgent", json.dumps({"resume": SID})))
+    assert world.rows()[SID]["title"] == "Transcript"
+
+
 def test_question_survives_the_permission_events_claude_sends_after_it(world):
     """Claude sends AskUserQuestion, then PermissionRequest and a permission_prompt Notification for the same wait."""
     ask = {"type": "tool_use", "id": "toolu_q1", "name": "AskUserQuestion",
@@ -845,7 +897,7 @@ def test_out_of_order_hook_arrival_never_links_the_wrong_session(arrival):
         assert linked == [sids["a"]]
 
 
-def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, tmp_path):
+def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, tmp_path, request):
     """Reproduces the served case: the live Claude provider must emit insight data, and that
     data must survive snapshot persistence and restore so the Insights reader sees sessions,
     models, cost, cache and active hours."""
@@ -882,7 +934,13 @@ def test_claude_snapshot_insights_survive_build_and_restore(world, monkeypatch, 
     monkeypatch.setattr(server, "build_snapshot", lambda: copy.deepcopy(snapshot))
     path = tmp_path / "stats-snapshot.json"
     server.SnapshotCache(persist_path=path, compatibility="test")._build()
-    restored = server.SnapshotCache(persist_path=path, compatibility="test").get()
+    restored_cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    def finish_refresh():
+        # Finish before monkeypatch restores the process-wide provider functions.
+        with restored_cache.condition:
+            assert restored_cache.condition.wait_for(lambda: not restored_cache.building, timeout=10)
+    request.addfinalizer(finish_refresh)
+    restored = restored_cache.get()
     assert restored is not None and restored["snapshotCache"]["stale"] is True
 
     result = insights.build_insights(

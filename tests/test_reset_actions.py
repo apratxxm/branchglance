@@ -15,6 +15,7 @@ from token_tracker.reset_actions import ResetActionDispatcher, default_action
 T0 = 1_800_000_000.0
 ONE = "00000000-0000-4000-8000-000000000001"
 TWO = "00000000-0000-4000-8000-000000000002"
+THREE = "00000000-0000-4000-8000-000000000003"
 TEST_POLICIES = load_policies({
     "TOKEN_TRACKER_CODEX_COLLECT": "true",
     "TOKEN_TRACKER_CODEX_SHOW": "true",
@@ -24,8 +25,10 @@ TEST_POLICIES = load_policies({
 
 @pytest.fixture(autouse=True)
 def explicit_fake_provider_policy(monkeypatch):
+    from token_tracker import claude_identity
     monkeypatch.setattr(limit_reset, "POLICIES", TEST_POLICIES)
     monkeypatch.setattr(reset_actions, "POLICIES", TEST_POLICIES)
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: claude_identity.Identity("account", "org", "generation"))
 
 
 class Harness:
@@ -44,6 +47,7 @@ class Harness:
             list_candidates=lambda limit=100: [
                 {"id": ONE, "title": "one", "status": "idle"},
                 {"id": TWO, "title": "two", "status": "idle"},
+                {"id": THREE, "title": "three", "status": "idle"},
             ][:limit],
             inspect_target=lambda thread_id: self.inspection.get(thread_id, {
                 "exists": True, "archived": False, "running": False, "waiting": False,
@@ -63,6 +67,18 @@ class Harness:
     def queue(self, thread_id):
         self.queue_calls.append(thread_id)
         return self.queue_results.get(thread_id, {"status": "queued"})
+
+
+@pytest.mark.parametrize("current_generation", ["epoch-b", None, "epoch-a"])
+def test_codex_continuation_does_not_depend_on_claude_identity(current_generation, monkeypatch):
+    from token_tracker import claude_identity
+    h = Harness()
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: (
+        claude_identity.Identity("account", "org", current_generation) if current_generation else None))
+    h.dispatcher.configure("continue", [ONE], baseline={"identityGeneration": "epoch-a"})
+    run = h.dispatcher.dispatch("cycle")
+    assert run["targets"][0]["status"] == "queued"
+    assert h.queue_calls == [ONE]
 
 
 def test_greeting_default_and_getter_are_copy_isolated():
@@ -142,6 +158,134 @@ def test_failed_claim_persistence_prevents_external_queue():
     assert result["targets"][0]["status"] == "skipped"
     assert result["targets"][0]["reason"] == "could not persist queue claim"
     assert not h.queue_calls
+
+
+def test_crash_between_targets_preserves_consumed_batch_without_replay():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE, TWO])
+    def interrupted(thread_id):
+        h.queue_calls.append(thread_id)
+        if thread_id == TWO:
+            raise KeyboardInterrupt()
+        return {"status": "queued"}
+    h.dispatcher.queue_continue = interrupted
+    with pytest.raises(KeyboardInterrupt):
+        h.dispatcher.dispatch("codex:crash")
+    durable = copy.deepcopy(h.saved[-1])
+    assert durable["armed"] is False
+    assert durable["finalizePending"]["targets"] == [ONE, TWO]
+    assert durable["ledger"]["cycles"][-1]["targets"][1]["status"] == "unknown"
+    h.state.clear()
+    h.state.update(durable)
+    h.dispatcher = h.make_dispatcher()
+    assert h.dispatcher.dispatch("codex:crash") is None
+    assert h.queue_calls == [ONE, TWO]
+
+
+def test_final_save_failure_does_not_rearm_consumed_generation():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    durable = []
+    calls = [0]
+    def save():
+        calls[0] += 1
+        if calls[0] == 3:
+            return False
+        durable.append(copy.deepcopy(h.state))
+        return True
+    h.dispatcher.save = save
+    result = h.dispatcher.dispatch("codex:final-save")
+    assert result["targets"][0]["status"] == "queued"
+    assert durable[-1]["armed"] is False
+    h.state.clear()
+    h.state.update(durable[-1])
+    h.dispatcher = h.make_dispatcher()
+    assert h.dispatcher.dispatch("codex:final-save") is None
+    assert h.queue_calls == [ONE]
+
+
+@pytest.mark.parametrize("selection", [[TWO], [ONE, TWO]])
+@pytest.mark.parametrize("first_status", ["queued", "unknown"])
+def test_rearm_same_cycle_only_delivers_new_targets(selection, first_status):
+    h = Harness(queued={ONE: {"status": first_status}})
+    h.dispatcher.configure("continue", [ONE])
+    h.dispatcher.dispatch("same-cycle")
+    h.dispatcher.configure("continue", selection)
+    result = h.dispatcher.dispatch("same-cycle")
+    assert [item["threadId"] for item in result["targets"]] == selection
+    assert h.queue_calls == [ONE, TWO]
+    if ONE in selection:
+        assert result["targets"][0]["status"] == first_status
+
+
+def test_mixed_delivery_retries_only_proven_unstarted_target():
+    h = Harness(queued={ONE: {"status": "queued"}, TWO: {"status": "not_started"}, THREE: {"status": "unknown"}})
+    h.dispatcher.configure("continue", [ONE, TWO, THREE])
+    generation = h.state["armGeneration"]
+    first = h.dispatcher.dispatch("same-cycle")
+    assert [item["status"] for item in first["targets"]] == ["queued", "not_started", "unknown"]
+    assert h.state["armed"] is True and h.state["armGeneration"] == generation
+    assert h.dispatcher.dispatch("same-cycle") is None
+    h.now += reset_actions.NOT_STARTED_RETRY_SECONDS
+    h.queue_results[TWO] = {"status": "queued"}
+    second = h.dispatcher.dispatch("same-cycle")
+    assert [item["status"] for item in second["targets"]] == ["queued", "queued", "unknown"]
+    assert h.queue_calls == [ONE, TWO, THREE, TWO]
+    assert h.state["armed"] is False
+
+
+def test_not_started_retries_are_bounded():
+    h = Harness(queued={ONE: {"status": "not_started"}})
+    h.dispatcher.configure("continue", [ONE])
+    for attempt in range(reset_actions.MAX_NOT_STARTED_ATTEMPTS):
+        assert h.dispatcher.dispatch("same-cycle")["targets"][0]["status"] == "not_started"
+        assert h.state["armed"] is (attempt + 1 < reset_actions.MAX_NOT_STARTED_ATTEMPTS)
+        h.now += reset_actions.NOT_STARTED_RETRY_SECONDS
+    assert h.dispatcher.dispatch("same-cycle") is None
+    assert len(h.queue_calls) == reset_actions.MAX_NOT_STARTED_ATTEMPTS
+
+
+def test_failed_result_save_does_not_release_unpersisted_claim():
+    h = Harness(queued={ONE: {"status": "not_started"}, TWO: {"status": "not_started"}})
+    h.dispatcher.configure("continue", [ONE, TWO])
+    saves = []
+
+    def save():
+        saves.append(copy.deepcopy(h.state))
+        return len(saves) != 3
+
+    h.dispatcher.save = save
+    result = h.dispatcher.dispatch("same-cycle")
+    assert [row["status"] for row in result["targets"]] == ["not_started", "unknown"]
+    h.now += reset_actions.NOT_STARTED_RETRY_SECONDS
+    h.queue_results[ONE] = {"status": "queued"}
+    result = h.dispatcher.dispatch("same-cycle")
+    assert [row["status"] for row in result["targets"]] == ["queued", "unknown"]
+    assert h.queue_calls == [ONE, TWO, ONE]
+
+
+def test_typed_transport_prestart_exception_is_retryable():
+    from token_tracker.codex_client import CodexNotStarted
+
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    def fail_before_start(_thread_id):
+        raise CodexNotStarted("could not create process")
+    h.dispatcher.queue_continue = fail_before_start
+    assert h.dispatcher.dispatch("same-cycle")["targets"][0]["status"] == "not_started"
+    assert h.state["armed"] is True
+
+
+def test_result_commit_does_not_disarm_new_arm():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    def rearm(_thread_id):
+        h.dispatcher.configure("continue", [TWO])
+        return {"status": "queued"}
+    h.dispatcher.queue_continue = rearm
+    h.dispatcher.dispatch("codex:old")
+    assert h.state["armed"] is True
+    assert h.state["threadIds"] == [TWO]
 
 
 def trigger_service(tmp_path, now=T0):
@@ -343,6 +487,34 @@ def test_limit_service_persists_selection_and_respects_quota_gate(tmp_path):
     assert watcher.get_reset_action()["armed"] is False
 
 
+def test_service_retry_keeps_original_observation_cycle(tmp_path, monkeypatch):
+    from token_tracker import claude_identity
+    identity = claude_identity.Identity("account", "org", "generation")
+    monkeypatch.setattr(claude_identity, "current_identity", lambda: identity)
+    h = Harness()
+    calls = []
+    def queue(thread_id):
+        calls.append(thread_id)
+        return {"status": "not_started" if calls == [ONE, TWO] else "queued"}
+    watcher = LimitResetService(sources={}, senders={}, state_path=tmp_path / "state.json",
+                               log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True,
+                               clock=lambda: h.now, policies=TEST_POLICIES,
+                               list_candidates=h.dispatcher.list_candidates,
+                               inspect_target=h.dispatcher.inspect_target, queue_continue=queue)
+    watcher._provider_state("Codex")["lastStatus"] = {"five_hour_percent": 0, "weekly_percent": 100,
+        "observed_at": h.now, "reset_at": None}
+    watcher.configure_reset_action("continue", [ONE, TWO])
+    original_cycle = watcher._state["resetAction"]["cycleId"]
+    h.now += 1
+    watcher.check_provider("Codex", LimitSample(0, 20, h.now))
+    assert calls == [ONE, TWO]
+    assert watcher._state["resetAction"]["cycleId"] == original_cycle
+    h.now += 901
+    watcher.check_provider("Codex", LimitSample(50, 20, h.now, h.now + 500))
+    assert calls == [ONE, TWO, TWO]
+    assert watcher._state["resetAction"]["cycleId"] == original_cycle
+
+
 def test_legacy_armed_selection_migrates_unarmed_and_preserves_delivery_ledger():
     h = Harness()
     ledger = {"cycles": [{"cycleId": "codex:cycle-old", "targets": [
@@ -399,3 +571,29 @@ def test_withdrawn_continue_policy_disarms_but_keeps_selection():
     assert dispatcher.get()["armed"] is False
     assert state["ledger"] == {"cycles": [{"cycleId": "old"}]}
     assert queued == []
+
+
+def test_retained_selection_and_baseline_cannot_override_action():
+    h = Harness()
+    h.dispatcher.configure("continue", [ONE])
+    h.dispatcher.list_candidates = lambda *, limit: []
+    h.dispatcher.configure("continue", [ONE], baseline={"mode": "greet", "armed": False, "threadIds": [], "ledger": {}, "armedAt": 42})
+    assert h.state["mode"] == "continue" and h.state["armed"] and h.state["threadIds"] == [ONE]
+    assert h.state["armedAt"] == 42 and h.state["ledger"] == {"cycles": []}
+    with pytest.raises(ValueError):
+        h.dispatcher.configure("continue", [TWO])
+    h.inspection[ONE] = {"exists": False, "archived": False}
+    with pytest.raises(ValueError):
+        h.dispatcher.configure("continue", [ONE])
+
+
+def test_candidate_typeerror_is_not_retried():
+    h = Harness()
+    calls = []
+    def broken(*, limit):
+        calls.append(limit)
+        raise TypeError("internal error")
+    h.dispatcher.list_candidates = broken
+    with pytest.raises(RuntimeError):
+        h.dispatcher.configure("continue", [ONE])
+    assert calls == [100]

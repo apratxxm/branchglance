@@ -1,3 +1,13 @@
+# Normalize text files to LF in the index; checkouts follow platform autocrlf/eol.
+* text=auto
+# Binary assets: never normalize or diff as text.
+*.png binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.ai binary
+# Shell scripts must keep LF for macOS.
+*.sh text eol=lf
 # Keep the reproducible logo master stable across Windows and CI checkouts.
 assets/brand/*.svg text eol=lf
 assets/brand/*.py text eol=lf
@@ -5,3 +15,5 @@ assets/brand/*.js text eol=lf
 assets/brand/source/*.py text eol=lf
 # The native Photoshop export is a byte-preserved archival input.
 assets/brand/source/*.ai binary
+# Served copy of the brand tile; tests compare it byte-for-byte with the master.
+token_tracker/static/favicon.svg text eol=lf

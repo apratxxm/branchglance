@@ -17,15 +17,33 @@ REAL_FIND_GIT_BASH = installer.find_git_bash  # captured before the autouse stub
 USER_GROUP = {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine", "timeout": 5}]}
 
 
+def test_statusline_preflight_refuses_existing_without_writing(tmp_path):
+    path = tmp_path / "settings.json"
+    original = b'{"statusLine":{"type":"command","command":"echo existing"}}\n'
+    path.write_bytes(original)
+    with pytest.raises(installer.HookInstallError, match="Cannot safely chain"):
+        installer.preflight_statusline_connect(path)
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_statusline_preflight_allows_absent_and_refuses_malformed(tmp_path):
+    path = tmp_path / "settings.json"
+    installer.preflight_statusline_connect(path)
+    assert not path.exists()
+    path.write_text("{invalid", encoding="utf-8")
+    with pytest.raises(installer.HookInstallError, match="parseable JSON"):
+        installer.preflight_statusline_connect(path)
+    assert path.read_text(encoding="utf-8") == "{invalid"
+
+
 def test_config_dir_precedence_and_default(monkeypatch, tmp_path):
-    legacy = tmp_path / "legacy"
     configured = tmp_path / "configured"
-    monkeypatch.setenv("CLAUDE_HOME", str(legacy))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
-    assert installer.default_settings_path() == legacy / "settings.json"
-    monkeypatch.delenv("CLAUDE_HOME")
     assert installer.default_settings_path() == configured / "settings.json"
-    monkeypatch.setenv("CLAUDE_HOME", "")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    assert installer.claude_config_dir(tmp_path) == tmp_path / ".claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
     assert installer.claude_config_dir(tmp_path) == configured
     monkeypatch.delenv("CLAUDE_CONFIG_DIR")
     assert installer.claude_config_dir(tmp_path) == tmp_path / ".claude"
@@ -43,8 +61,9 @@ def load(path):
 
 
 # Executables the tests install with (G8: ownership requires a configured executable).
-TEST_EXES = frozenset({"c:/program files/branchglance/branchglance.exe", "c:/apps/branchglance/branchglance.exe",
-                       "c:/python 3/python.exe"})
+TEST_EXES = frozenset({"C:/Program Files/Branchglance/branchglance.exe", "c:/program files/branchglance/branchglance.exe",
+                       "C:/Apps/Branchglance/branchglance.exe", "c:/apps/branchglance/branchglance.exe",
+                       "C:/Python 3/python.exe", "c:/python 3/python.exe"})
 
 
 def ours(data, event):
@@ -75,13 +94,69 @@ def test_install_into_missing_file(env):
     assert len(data["hooks"]["Stop"]) == 1 and len(load(settings)["hooks"]["Stop"]) == 1
 
 
+@pytest.mark.parametrize("operation", ["install", "uninstall"])
+@pytest.mark.parametrize("mutation", ["unrelated", "boolean", "integer_float", "hooks_string", "hooks_list",
+                                      "group_missing_hooks", "drop", "reorder", "modify", "mixed_metadata"])
+def test_guard_refuses_unowned_transform_changes(env, monkeypatch, operation, mutation):
+    settings, data_dir = env
+    installer.install(settings, CMD, data_dir)
+    data = load(settings)
+    mixed = {"matcher": "mixed", "hooks": [{"type": "command", "command": CMD},
+                                            {"type": "command", "command": "echo user"}]}
+    data.update(model="original", enabled=True, count=1)
+    data["hooks"]["Stop"] += [USER_GROUP, {"hooks": [{"command": "echo second"}]}, mixed]
+    settings.write_text(json.dumps(data), encoding="utf-8")
+    original = settings.read_bytes()
+    before_files = set(settings.parent.iterdir())
+    serialize = installer._serialize
+
+    def corrupt(data, bom, raw):
+        output = json.loads(serialize(data, bom, raw).decode("utf-8-sig"))
+        groups = output["hooks"]["Stop"]
+        if mutation == "unrelated":
+            output["model"] = "changed"
+        elif mutation == "boolean":
+            output["enabled"] = 1
+        elif mutation == "integer_float":
+            output["count"] = 1.0
+        elif mutation == "hooks_string":
+            output["hooks"] = "broken"
+        elif mutation == "hooks_list":
+            output["hooks"] = []
+        elif mutation == "group_missing_hooks":
+            groups.append({"matcher": "broken"})
+        elif mutation == "drop":
+            groups.remove(USER_GROUP)
+        elif mutation == "reorder":
+            index = groups.index(USER_GROUP)
+            groups[index], groups[index + 1] = groups[index + 1], groups[index]
+        elif mutation == "modify":
+            groups[groups.index(USER_GROUP)]["matcher"] = "changed"
+        else:
+            groups[groups.index(mixed)]["matcher"] = "changed"
+        return json.dumps(output).encode("utf-8")
+
+    monkeypatch.setattr(installer, "_serialize", corrupt)
+    if operation == "install":
+        # Force a legitimate owned-group update so the transform serializes.
+        data["hooks"]["SessionStart"] = []
+        settings.write_text(json.dumps(data), encoding="utf-8")
+        original = settings.read_bytes()
+        with pytest.raises(installer.HookInstallError, match="internal check failed"):
+            installer.install(settings, CMD, data_dir)
+    else:
+        result = installer.uninstall(settings, data_dir, command=CMD)
+        assert not result["ok"] and "internal check failed" in result["error"]
+    assert settings.read_bytes() == original
+    assert set(settings.parent.iterdir()) == before_files
+
+
 def test_uninstall_uses_recorded_target_after_config_changes(tmp_path, monkeypatch):
     first = tmp_path / "first"
     second = tmp_path / "second"
     first.mkdir()
     second.mkdir()
     data_dir = tmp_path / "data"
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(first))
     installer.install(command=CMD, data_directory=data_dir)
     consent = load(data_dir / claude_hook.CONSENT_NAME)
@@ -98,7 +173,6 @@ def test_uninstall_uses_recorded_target_after_config_changes(tmp_path, monkeypat
 
 def test_uninstall_without_settings_provenance_retains_hooks(env, monkeypatch):
     settings, data_dir = env
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(settings.parent))
     installer.install(settings, CMD, data_dir)
     marker = data_dir / claude_hook.CONSENT_NAME
@@ -118,8 +192,8 @@ def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_pa
     settings = home / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     data_dir = tmp_path / "data"
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
     installer.install(settings, CMD, data_dir)
     marker = data_dir / claude_hook.CONSENT_NAME
@@ -131,6 +205,28 @@ def test_uninstall_without_provenance_and_no_override_uses_legacy_default(tmp_pa
     assert "hooks" not in load(settings)
 
 
+def test_legacy_uninstall_with_claude_home_set_refuses_to_guess(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
+    installer.install(settings, CMD, data_dir)
+    marker = data_dir / claude_hook.CONSENT_NAME
+    record = load(marker)
+    record.pop("settingsPath")
+    marker.write_text(json.dumps(record), encoding="utf-8")
+    before = settings.read_bytes()
+    result = installer.uninstall(None, data_dir)
+    # Consent goes first; the default file the old install may not have used is untouched.
+    assert not result["ok"] and result["consentRemoved"] and result["hooksLeft"] == "unknown"
+    assert "retained" in result["error"]
+    assert settings.read_bytes() == before
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize("record", ['{"version": 1, "enabled": tr', '["not", "a", "record"]',
                                     '{"executable": null}', '{"version": 1, "enabled": false, "executable": 17}',
                                     '{"version": 1, "enabled": true, "executable": ""}',
@@ -140,7 +236,6 @@ def test_uninstall_with_invalid_provenance_retains_hooks_even_without_overrides(
     settings = home / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     data_dir = tmp_path / "data"
-    monkeypatch.delenv("CLAUDE_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr(installer.Path, "home", classmethod(lambda cls: home))
     installer.install(settings, CMD, data_dir)

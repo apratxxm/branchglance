@@ -1,6 +1,6 @@
 # macOS port inventory
 
-This is an inventory and proposed migration plan, not a claim of macOS support. The current widget and packaging path are Windows-first. Shared Python reducers, API logic and vanilla JavaScript can remain common where their contracts are platform-neutral.
+**Historical inventory:** This is the original inventory and migration plan for the macOS port; its proposals are not current implementation status. The source-build path has not been natively verified. A notch app now builds from source (see the [macOS guide](../macos/README.md)); there is no macOS installer download yet, and the Windows widget and packaging path remain the primary platform. Shared Python reducers, API logic and vanilla JavaScript can remain common where their contracts are platform-neutral.
 
 ## Windows-specific surfaces and proposed seams
 
@@ -25,7 +25,7 @@ This is an inventory and proposed migration plan, not a claim of macOS support. 
 
 ## Storage and provider paths
 
-The cross-platform data code still contains Windows-specific default paths. `token_tracker/product.py:212-214`, `token_tracker/product.py:460-504` chooses LocalAppData/AppData and product state; `token_tracker/codex_client.py:42-46` has Windows Codex executable candidates; `token_tracker/claude_provider.py:52-57` already derives Claude Code's home from `Path.home()` or `CLAUDE_HOME`. Implement a single platform path provider before changing these call sites. Keep provider-owned data read-only except for explicitly consented Claude hook settings and Branchglance's own event/state files.
+The cross-platform data code still contains Windows-specific default paths. `token_tracker/product.py:212-214`, `token_tracker/product.py:460-504` chooses LocalAppData/AppData and product state; `token_tracker/codex_client.py:42-46` has Windows Codex executable candidates; `token_tracker/claude_provider.py:52-57` already derives Claude Code's home from `Path.home()` or `CLAUDE_CONFIG_DIR`. Implement a single platform path provider before changing these call sites. Keep provider-owned data read-only except for explicitly consented Claude hook settings and Branchglance's own event/state files.
 
 ## Tests that need platform guards or split adapters
 
