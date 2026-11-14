@@ -33,7 +33,7 @@ assert.equal(dashboard.state.metric,"tokens","unpriced payload switches the togg
 // (1) Hero shows the tokens headline, never an empty or "not available" cost hero.
 let html=dashboard.insightsHTML();
 assert.match(html,/class="dash-hero"/);
-assert.match(html,/<strong class="dash-hero-number">3\.57<span class="dash-hero-mag">B<\/span><\/strong><span class="dash-hero-unit">tokens<\/span>/);
+assert.match(html,/<strong class="dash-hero-number">3\.57<span class="dash-hero-mag">B<\/span><\/strong><span class="sr-only"> tokens<\/span>/);
 assert.match(html,/Tokens over 30 days/);
 assert.doesNotMatch(html,/not available|dash-hero-currency/);
 
@@ -58,7 +58,7 @@ for(const count of [1,2,0]){
   dashboard.state.insights=payload;checkHits(dashboard.insightsHTML(),count);
 }
 dashboard.state.insights=livePayload();
-assert.match(html,/Daily · tokens/);
+assert.match(html,/<span class="dash-section-title">Daily tokens<\/span>/);
 
 // (3) Zero figures next to non-zero tokens are treated as missing, not shown as 0.
 assert.doesNotMatch(html,/dash-summary|sessions|subagents|active|cache hits/);
@@ -105,7 +105,7 @@ dashboard.state.metric="cost";dashboard.state.metricExplicit=true;dashboard.stat
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost");
 html=dashboard.insightsHTML();
-assert.match(html,/dash-hero-currency/);assert.match(html,/Daily · API-equivalent cost estimate/);
+assert.match(html,/dash-hero-currency/);assert.match(html,/<span class="dash-section-title">Daily cost<\/span>/);
 
 // Stats-only fallback with a cost-free window still shows tokens and no fake cost.
 responseQueue=[{ok:false,status:404,json:async()=>({})},{ok:true,json:async()=>({generatedAt:today.toISOString(),providers:[{name:"Claude",tracked31Days:1200,cache:{percent:null},activity:[{date:dateOffset(0),value:1200}],modelUsage:[]}]})}];
@@ -113,7 +113,7 @@ dashboard.state.metric="cost";dashboard.state.range="24h";dashboard.state.insigh
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/dash-hero-currency/);
-assert.match(html,/dash-hero-number">1\.2<span class="dash-hero-mag">K<\/span><\/strong><span class="dash-hero-unit">tokens/);
+assert.match(html,/dash-hero-number">1\.2<span class="dash-hero-mag">K<\/span><\/strong><span class="sr-only"> tokens/);
 assert.match(html,/latest recorded date/,"fallback describes daily coverage rather than rolling 24 hours");
 assert.match(html,/Insights unavailable · Daily fallback/,"stats fallback reports Insights unavailable, not a failed refresh");
 assert.doesNotMatch(html,/Update failed/);
@@ -161,7 +161,7 @@ assert.ok(page.indexOf('href="runway_refined.css"')<page.indexOf('href="dashboar
   dashboard.state.insights=livePayload({range:"24h",providers:livePayload().providers.map(p=>({...p,series:hours}))});
   values.set("branchglanceClockFormat","24");
   const day=dashboard.insightsHTML();
-  assert.match(day,/class="dash-chart-section"/);assert.match(day,/Hourly · /);
+  assert.match(day,/class="dash-chart-section"/);assert.match(day,/<span class="dash-section-title">Hourly tokens<\/span>/);
   assert.equal((day.match(/class="dash-hit"/g)||[]).length,24);
   for(const label of ["00:00","06:00","12:00","now"])assert.match(day,new RegExp(">"+label+"<"),"24-hour tick "+label);
   assert.match(day,/class="dash-chips"/,"provider chips are available at 24h");

@@ -29,7 +29,7 @@ assert.equal(work.rows[0].name,"Opus 5.5");
 assert.equal(work.rows[3].other,true);
 assert.match(work.rows[3].name,/Other · 3 models/);
 assert.doesNotMatch(ui.workHTML(work),/>\?</,"empty work cells never show a literal question mark");
-assert.match(ui.workHTML(work),/aria-label="None"><span aria-hidden="true">·<\/span>/,"empty work cells show a centred dot labelled None");
+assert.match(ui.workHTML(work),/aria-label="No usage"><span aria-hidden="true">—<\/span>/,"empty work cells show an em dash labelled No usage");
 assert.ok(!work.kinds.includes("debug"),"unknown kinds fold into Other");
 assert.ok(work.kinds.includes("other"));
 const grand=1880;
@@ -42,9 +42,17 @@ const otherCell=work.rows[3].cells.other;
 assert.equal(otherCell.unpriced,true);
 const html=ui.workHTML(work);
 assert.match(html,/API-equivalent cost by model and kind of work/);
-assert.match(html,/≥ \$0\.00 API-equivalent|No published price/);
+assert.match(html,/≥ \$0\.00005 API-equivalent/);
+assert.match(html,/aria-label="All models, all work: at least \$0\.00185 API-equivalent cost; some usage has no published price"/);
+assert.match(html,/≥ \$0\.00185 API-equivalent \(some usage has no published price\)/);
+assert.doesNotMatch(html,/0\.0018499999999999999/);
 assert.doesNotMatch(html,/>\? /,"partial-price cells show ≥, never a corrupted ?");
 assert.doesNotMatch(html,/dash-work-foot/);
+
+ui.state.ledger=ledger([row("Claude","rounding","build",5,1.5),row("Claude","rounding","review",4,12.3456789)]);
+const roundedHTML=ui.workHTML(ui.workData());
+assert.match(roundedHTML,/aria-label="rounding, Build: \$1\.50 API-equivalent cost"/);
+assert.match(roundedHTML,/aria-label="rounding, Review: \$12\.345679 API-equivalent cost"/);
 
 // Same name under two providers gets the provider appended, when both are shown.
 ui.state.ledger=ledger([row("Claude","unknown","build",5,null,{costComplete:false}),row("Codex","unknown","build",4,null,{costComplete:false})]);
