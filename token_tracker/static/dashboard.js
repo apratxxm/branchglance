@@ -75,7 +75,6 @@
     // Stats fallback: a day with no recorded row is zero usage, not missing provider data. Live /api/insights gaps stay null.
     const seriesFor=key=>dates.map(date=>{const point={date};for(const p of allProviders){const row=(p.series||[]).find(item=>item.date===date);point[p.name]=row?finite(row[key]):(fallback?0:null);point[p.name+"__partial"]=row?.costPartial===true;}return point;});
     const seriesByKey={tokens:seriesFor("tokens"),apiEquivalentCost:seriesFor("apiEquivalentCost")};
-    const positive=rows=>rows.some(row=>allProviders.some(p=>(finite(row[p.name])||0)>0));
     const costHero=requestCost&&totals.apiEquivalentCost!=null;
     const chartKey=costHero&&seriesByKey.apiEquivalentCost.some(row=>allProviders.some(p=>finite(row[p.name])!=null))?"apiEquivalentCost":"tokens";
     const heroKey=costHero?"apiEquivalentCost":totals.tokens!=null?"tokens":totals.apiEquivalentCost!=null?"apiEquivalentCost":null;

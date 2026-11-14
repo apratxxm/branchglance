@@ -714,7 +714,6 @@ const QUESTION_STALE_MS=24*60*60*1000;
 const isAsking = chat => (!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS))&&(Boolean(chat.pendingQuestion)||normalizeStatus(chat.status)==="needs-input");
 // A failure is only actionable while it is recent (30 min).
 const recentFail = chat => chat.status==="failed"&&Date.now()-stamp(chat.updatedAt)<FAIL_WINDOW_MS;
-const needsAttention = chat => isAsking(chat)||recentFail(chat);
 const agentLive = chat => chat.status==="running"||chat.status==="compacting"||chat.status==="quiet"||isAsking(chat);
 const runwayTerminated = chat => Boolean(chat.deleted||chat.isDeleted)||[chat.stateDetail,chat.sourceStatus].some(value=>/^(?:completed|finished|stopped|interrupted|deleted|expired)$/i.test(String(value||'')));
 const runwayWaiting = chat => !chat.telemetryUnavailable&&!runwayTerminated(chat)&&isAsking(chat);
@@ -822,7 +821,6 @@ function shortModel(value) {
   return text.replace(/^claude-/,"").replace(/^gpt-/,"").replace(/-20\d{6}$/,"");
 }
 const modelLabel = chat => isAutoReview(chat)&&(!chat.model||chat.model==="Codex") ? "review" : shortModel(chat.model);
-const agentModelLabel = chat => /^gpt-/i.test(chat.model||"") ? "GPT-"+modelLabel(chat).replace(/-(astra|sol|luna|terra)$/i,(_,family)=>" "+family[0].toUpperCase()+family.slice(1)) : modelLabel(chat);
 function runwayModelLabel(chat) {
   if(isAutoReview(chat))return "Auto-review";
   const model=String(chat.model||"").trim().replace(/-20\d{6}$/,'');if(!model||model.toLowerCase()==='codex')return "";
@@ -1419,7 +1417,6 @@ function runwayActivityAge(chat) {
   if(!chat.latest)return "";
   const age=ageShort(chat.latest);return age==="now"?"now":age+" ago";
 }
-const runwayRecordedAt = chat => Math.max(stamp(chat.updatedAt),stamp(chat.usageUpdatedAt));
 const runwayInstructionText = text => /^(?:#\s*)?(?:AGENTS\.md instructions|<INSTRUCTIONS>|<environment_context>|subagent\b|spawned\b)/i.test(String(text||'').trim());
 const runwayRequest = chat => runwayInstructionText(chat.latestRequest)?'':chat.latestRequest||'';
 function runwayCurrentSnippet(chat) {
@@ -1656,7 +1653,6 @@ function noteLiveness(chat, live) {
   if(was&&!live)state.finishedAt.set(chat.key,Date.now());
   return Date.now()-(state.finishedAt.get(chat.key)||0)<1000;
 }
-const sortAgents = agents => [...agents].sort((a,b)=>(isAsking(b)-isAsking(a))||(recentFail(b)-recentFail(a))||((b.status==="running")-(a.status==="running"))||b.latest-a.latest);
 // The tray is a live control surface, not agent history. Never retain completed or failed children.
 // Auto-review/guardian sessions are internal bookkeeping; surface them only when they need a reply.
 const runwayActionable = a => runwayCurrentEvidenceFresh()&&!runwayTerminated(a)&&(runwayWaiting(a)||recentFail(a)||runwayEffectiveStatus(a)==='failed');
@@ -1830,7 +1826,6 @@ function renderChats(providers) {
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
   // The compact tree always paints its empty state (the list is hidden by CSS while the widget is collapsed), never a blank panel.
-  const searchCanShowEmpty=true;
   if(!realDom(list)) {
     const html=(roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):emptyHTML(forest,providers));
     if(list.innerHTML!==html)list.innerHTML=html;

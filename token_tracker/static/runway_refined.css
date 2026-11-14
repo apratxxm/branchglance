@@ -110,14 +110,14 @@ body.runway-refined:not(.phone) .runway-refined-row .runway-refined-timing>*,
 body.runway-refined:not(.phone) .runway-refined-row .runway-refined-activity>*,
 body.runway-refined:not(.phone) .runway-refined-row .runway-refined-path>*{grid-column:1;min-width:0;max-width:100%;}
 body.runway-refined:not(.phone) .runway-refined-title>.r-title,
-body.runway-refined:not(.phone) .runway-refined-title>.runway-agent-name{grid-row:1;justify-self:stretch;width:100%;min-width:0;padding:0;display:flex;align-items:center;gap:5px;overflow:hidden;color:var(--ink);font-size:18px;line-height:23px;font-weight:650;letter-spacing:-.35px;white-space:nowrap;text-overflow:ellipsis;}
+body.runway-refined:not(.phone) .runway-refined-title>.runway-agent-name{grid-row:1;justify-self:stretch;width:100%;min-width:0;padding:0;display:flex;align-items:center;gap:5px;color:var(--ink);font-size:18px;line-height:23px;font-weight:650;letter-spacing:-.35px;}
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status.t-attn) .r-title,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status.t-attn) .runway-agent-name,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status.t-attn) .runway-agent-label{color:var(--orange);}
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status[data-child-waiting="true"]) .r-title,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status[data-child-waiting="true"]) .runway-agent-name,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status[data-child-waiting="true"]) .runway-agent-label{color:var(--orange);}
-body.runway-refined:not(.phone) .runway-refined-title .runway-agent-label{flex:0 1 auto;min-width:0;width:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow-wrap:normal;}
+body.runway-refined:not(.phone) .runway-refined-title .runway-agent-label{flex:0 1 auto;width:auto;}
 body.runway-refined:not(.phone) .runway-refined-title .runway-message-slot:has(.runway-message-indicator){position:static;inset:auto;transform:none;z-index:auto;display:inline-flex;align-items:center;justify-content:flex-start;flex:0 0 auto;width:auto;height:auto;min-width:0;max-width:none;overflow:visible;margin-left:5px;pointer-events:auto;}
 body.runway-refined:not(.phone) .runway-refined-title .runway-message-slot:not(:has(.runway-message-indicator)){display:none;}
 body.runway-refined:not(.phone) .runway-refined-title>.runway-telemetry-model{grid-row:2;justify-self:stretch;width:100%;height:21px;display:flex;align-items:center;overflow:hidden;color:var(--muted);font-size:15px;line-height:21px;font-weight:400;white-space:nowrap;}
