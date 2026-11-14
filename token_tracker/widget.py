@@ -887,14 +887,19 @@ class WindowApi:
             return self._set_keep_open(keep_open, expected_revision)
         return self.get_keep_open()
 
-    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None) -> None:
+    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None, transition_id=None) -> None:
         if self._notch and isinstance(expanded, bool) and isinstance(reduced_motion, bool):
             if mode is not None:
+                if transition_id is not None and (type(transition_id) is not int or not 0 <= transition_id <= 9007199254740991):
+                    return
                 try:
                     _compact_notch_dimensions(mode, height)
                 except ValueError:
                     return
-                self._notch(expanded, height, reduced_motion, mode)
+                if transition_id is None:
+                    self._notch(expanded, height, reduced_motion, mode)
+                else:
+                    self._notch(expanded, height, reduced_motion, mode, transition_id)
                 return
             if height is None:
                 if reduced_motion:
@@ -2303,7 +2308,7 @@ class WidgetApp:
         if self.compact_profile:
             mode = self._compact_notch_mode or "idle"
             width_logical, height_logical = _compact_notch_dimensions(
-                mode, self.notch_height if mode == "inspect" else None)
+                mode, self.notch_height if mode in ("inspect", "dashboard") else None)
             width = min(round(width_logical * scale), right-left)
             height = min(round(height_logical * scale), bottom-top)
             x, y = left + (right-left-width) // 2, top
@@ -2420,8 +2425,9 @@ class WidgetApp:
             return
         self.window.resize(width, height)
 
-    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None) -> None:
+    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None, transition_id=None) -> None:
         if (not isinstance(expanded, bool) or not isinstance(reduced_motion, bool)
+                or (transition_id is not None and (type(transition_id) is not int or not 0 <= transition_id <= 9007199254740991))
                 or (mode is not None and (not isinstance(mode, str) or mode not in COMPACT_NOTCH_MODES))):
             return
         try:
@@ -2433,8 +2439,10 @@ class WidgetApp:
             return
         if not self.window or not self.notch_mode or self.quitting:
             return
+        notice = None
         with self._notch_lock:
             self.sync_window_state()
+            previous_mode = self._compact_notch_mode
             self.compact_profile = mode is not None
             self._compact_notch_mode = mode
             if self.widget_locked and not self.compact_profile:
@@ -2463,17 +2471,27 @@ class WidgetApp:
             if self.maximized:
                 self.window.restore()
                 self.maximized = False
-            duration = (COMPACT_NOTCH_TRANSITION_SECONDS if self.compact_profile and expanded else
+            duration = (COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS if previous_mode == "dashboard" and mode != "dashboard" else
+                        COMPACT_NOTCH_TRANSITION_SECONDS if self.compact_profile and expanded else
                         COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS if self.compact_profile else
                         NOTCH_OPEN_TRANSITION_SECONDS if expanded and not was_expanded else NOTCH_TRANSITION_SECONDS)
-            self._apply_notch_bounds(animate=not reduced_motion, duration=duration)
+            notice = self._apply_notch_bounds(animate=not reduced_motion, duration=duration,
+                                               notice=(self.window, mode, expanded, transition_id))
+        if notice:
+            self._notify_notch_settled(*notice)
 
     def _cancel_notch_transition(self) -> None:
         with self._notch_lock:
             self._notch_transition = None
             self._notch_wake.set()
 
-    def _apply_notch_bounds(self, *, animate=True, duration=NOTCH_TRANSITION_SECONDS, expanded=None) -> None:
+    def _notify_notch_settled(self, window, mode, expanded, transition_id) -> None:
+        if window and mode and not self.quitting and self.window is window:
+            with suppress(Exception):
+                window.evaluate_js("window.tokenTrackerNotchSettled?.(%s, %s, %s)" % (
+                    json.dumps(mode), json.dumps(expanded), json.dumps(transition_id)))
+
+    def _apply_notch_bounds(self, *, animate=True, duration=NOTCH_TRANSITION_SECONDS, expanded=None, notice=None):
         if not self.window or self.quitting:
             return
         hwnd = self._native_window_handle()
@@ -2488,11 +2506,14 @@ class WidgetApp:
                 start = (rect[2], rect[3], rect[0], rect[1])
                 # Identical content measurements must not restart the animation.
                 if self._notch_transition and self._notch_transition[1] == native_target:
+                    if notice is not None:
+                        self._notch_transition_notice = notice
                     return
                 if start == native_target:
                     self._cancel_notch_transition()
-                    return
+                    return notice
                 self._notch_transition = (start, native_target, time.monotonic(), duration)
+                self._notch_transition_notice = notice
                 self._notch_wake.set()
                 if self._notch_thread is None:
                     self._notch_thread = threading.Thread(target=self._animate_notch, daemon=True)
@@ -2509,6 +2530,7 @@ class WidgetApp:
                     self.window.move(x, y)
                 finally:
                     self._notch_placing = False
+            return notice
 
     def _animate_notch(self) -> None:
         transition = None
@@ -2544,13 +2566,16 @@ class WidgetApp:
                         self._notch_transition = None
                         if not placed:
                             return
-                        return
+                        notice = getattr(self, "_notch_transition_notice", None)
+                        break
                     after_placement = time.monotonic()
                     next_sample_deadline = _advance_notch_deadline(
                         next_sample_deadline, after_placement)
                     final_deadline = started + duration
                     wait_seconds = max(0.0, min(next_sample_deadline, final_deadline) - after_placement)
                 self._notch_wake.wait(wait_seconds)
+            if notice:
+                self._notify_notch_settled(*notice)
         except Exception:
             # Native teardown or an unavailable backend must not restart a
             # failed transition in an unbounded series of daemon workers.

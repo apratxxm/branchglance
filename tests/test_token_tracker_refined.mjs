@@ -221,6 +221,7 @@ dispatchDocument("pointerdown", { target: { insideDashboard: true, closest: () =
 assert.equal(T.dashboardState.open, true, "chart controls inside the dashboard stay open");
 dispatchDocument("pointerdown", { target: { closest: () => null } });
 assert.equal(T.dashboardState.open, false, "outside pointer closes the dashboard");
+fireTimer(T.dashboardState.timer); context.window.tokenTrackerNotchSettled('controls', false, T.dashboardState.generation); fireTimer(T.dashboardState.timer);
 assert.ok(widgetListeners.has("focusin"), "compact inspection also opens on keyboard focus");
 T.notch.active = 0; T.notch.hover = false; T.notch.qualifiedHover = false; T.notch.autoExpanded = false;
 T.notch.manual = false; T.notch.inspecting = false; T.state.searchOpen = false; T.keepOpenState.value = false;

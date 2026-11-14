@@ -60,7 +60,7 @@ const notch={active:0,expanded:false,mode:'idle',manual:false,keyboardInspecting
 const widgetLock={known:Boolean(window.__TOKEN_TRACKER_TEST__),locked:false,expanded:false,revision:-1,pending:false};
 const keepOpenState={known:false,value:false,revision:-1,pending:false,loading:false,error:false};
 const compactBridge={busy:false,pending:null,inFlightSignature:null,appliedSignature:null};
-const dashboardState={open:false,returnMode:null,restoreMode:null};
+const dashboardState={open:false,returnMode:null,restoreMode:null,closing:false,swapping:false,generation:0,timer:null,returnHeight:110,height:608};
 let compactInputModality='pointer';
 const lockIcon=locked=>locked?'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 4 0V5"/></svg>':'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 3.6-1.2"/></svg>';
 function updateWidgetLockButton() {
@@ -181,26 +181,53 @@ async function recenterWidget(){
 }
 function openDashboard(tab){
   if(dashboardState.open)return false;
-  dashboardState.returnMode=notch.mode||'controls';dashboardState.restoreMode=null;dashboardState.open=true;
-  window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:tab==='settings'?'settings':'insights'});
-  setNotch(notch.expanded);return true;
+  const reopening=dashboardState.closing||dashboardState.swapping,gen=++dashboardState.generation;
+  clearTimeout(dashboardState.timer);dashboardState.timer=null;dashboardState.closing=false;dashboardState.swapping=false;
+  document.body?.classList?.remove?.('dashboard-crossfade');document.body?.classList?.remove?.('dashboard-closing');
+  if(!reopening){dashboardState.returnMode=notch.mode||'controls';dashboardState.returnHeight=notchHeight();}
+  dashboardState.restoreMode=null;dashboardState.open=true;
+  const content=$('#dashboard-content');content?.classList?.toggle('dashboard-transition-hidden',!reducedMotion());
+  if(!reopening)window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:tab==='settings'?'settings':'insights'});
+  if(!reopening){dashboardState.height=window.TokenTrackerDashboard?.windowHeight?.()||608;$('#dashboard-view')?.style?.setProperty?.('--dashboard-height',dashboardState.height+'px');}
+  setNotch(notch.expanded);
+  if(!reducedMotion())dashboardState.timer=setTimeout(()=>{if(gen===dashboardState.generation&&dashboardState.open&&!dashboardState.closing)$('#dashboard-content')?.classList?.remove('dashboard-transition-hidden');},406);
+  return true;
 }
 function closeDashboard(){
-  if(!dashboardState.open)return false;
-  const previous=dashboardState.returnMode;dashboardState.open=false;dashboardState.returnMode=null;
+  if(!dashboardState.open||dashboardState.closing)return false;
+  const gen=++dashboardState.generation,previous=dashboardState.returnMode;
+  dashboardState.open=false;dashboardState.closing=true;dashboardState.finish=null;clearTimeout(dashboardState.timer);document.body?.classList?.add?.('dashboard-closing');
   dashboardState.restoreMode=['idle','rest','controls','inspect'].includes(previous)?previous:'controls';
-  window.TokenTrackerDashboard?.close?.();
-  const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');}
-  setNotch(notch.expanded);return true;
+  const finish=()=>{if(gen!==dashboardState.generation||!dashboardState.closing)return;
+    clearTimeout(dashboardState.timer);dashboardState.timer=null;dashboardState.closing=false;dashboardState.open=false;
+    const reduced=reducedMotion();dashboardState.swapping=!reduced;document.body?.classList?.remove?.('dashboard-closing');
+    if(!reduced)document.body?.classList?.add?.('dashboard-crossfade');
+    setNotch(notch.expanded);
+    const complete=()=>{if(gen!==dashboardState.generation)return;dashboardState.swapping=false;dashboardState.returnMode=null;window.TokenTrackerDashboard?.close?.();const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');}document.body?.classList?.remove?.('dashboard-crossfade');
+      const widget=$('.widget'),rect=widget?.getBoundingClientRect?.(),x=notch.globalPointerX,y=notch.globalPointerY;
+      if(rect&&Number.isFinite(x)&&Number.isFinite(y)){const left=(window.screenX||0)+rect.left,top=(window.screenY||0)+rect.top;if(x<left||x>left+rect.width||y<top||y>top+rect.height){notch.hover=false;widget?.dispatchEvent?.(new Event('pointerleave'));}}
+    };
+    if(reduced)complete();else dashboardState.timer=setTimeout(complete,90);
+  };
+  const shrink=()=>{if(gen!==dashboardState.generation||!dashboardState.closing)return;
+    dashboardState.finish=finish;
+    const mode=dashboardState.restoreMode,expanded=mode==='inspect',height=dashboardState.returnHeight,reduced=reducedMotion();
+    const api=window.pywebview?.api?.set_notch,signature=mode+':'+expanded+':'+height+':'+reduced+':'+gen;
+    if(api&&widgetLock.known)sendCompactNotch(api,[expanded,height,reduced,mode,gen],signature);
+    if(reduced)finish();else if(dashboardState.closing)dashboardState.timer=setTimeout(finish,340);
+  };
+  $('#dashboard-content')?.classList?.add('dashboard-transition-hidden');
+  if(reducedMotion())shrink();else dashboardState.timer=setTimeout(shrink,90);
+  return true;
 }
+window.tokenTrackerNotchSettled=(mode,expanded,id)=>{
+  if(id==null||id!==dashboardState.generation)return;
+  if(dashboardState.closing){if(dashboardState.finish&&mode===dashboardState.restoreMode)dashboardState.finish();return;}
+  if(dashboardState.open&&mode==='dashboard'){clearTimeout(dashboardState.timer);dashboardState.timer=null;$('#dashboard-content')?.classList?.remove('dashboard-transition-hidden');}
+};
 window.tokenTrackerCloseDashboard=closeDashboard;
 // The dashboard sizes the window (720 wide, 608 tall, or the shorter 24h panel). The window may not shrink below that while it is open.
-window.addEventListener?.('dashboard-size',()=>{if(dashboardState.open)setNotch(notch.expanded);});
-window.addEventListener?.('resize',()=>{
-  if(!dashboardState.open)return;
-  const height=window.TokenTrackerDashboard?.windowHeight?.()||608;
-  if(window.innerWidth<720||window.innerHeight<height){const api=window.pywebview?.api?.set_notch;if(api)Promise.resolve(api(true,height,reducedMotion(),'dashboard')).catch(()=>{});}
-});
+window.addEventListener?.('dashboard-size',()=>{});
 window.tokenTrackerOpenDashboard=tab=>openDashboard(tab);
 window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
@@ -221,7 +248,7 @@ function runwayMaxNotchHeight() {
   return max;
 }
 function notchHeight() {
-  if(notch.mode==='dashboard')return window.TokenTrackerDashboard?.windowHeight?.()||608;
+  if(notch.mode==='dashboard')return dashboardState.height;
   if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
   if(notch.mode==='idle'||notch.mode==='rest')return 100;
   if(notch.mode==='controls')return 110;
@@ -312,6 +339,7 @@ function put(el,key,value){if(el&&el[key]!==value)el[key]=value;}
 function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttribute?.(name,value);}
 function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
+  if(dashboardState.closing)return;
   const mode=compactModeForState();
   if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
   if(mode==='inspect'){
@@ -323,7 +351,7 @@ function setNotch(expanded, treeSynced=false) {
   notch.mode=mode;notch.expanded=mode==='inspect';
   if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
   const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
-  if(dashboardView){put(dashboardView,'hidden',!dashboardVisible);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
+  if(dashboardView){put(dashboardView,'hidden',!dashboardVisible&&!dashboardState.swapping);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
   const hidden=!notch.expanded,sections=[$('.chats'),$('.totals')].filter(Boolean);
   if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
   for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
@@ -335,8 +363,8 @@ function setNotch(expanded, treeSynced=false) {
   cls(document.body,'notch-inspecting',mode==='inspect');
   if(notch.expanded&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
   renderRunwayCounts(notch.counts);
-  const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
-  if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded||mode==='dashboard',height,reduced,mode],signature);}
+  const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),transitionId=mode==='dashboard'?dashboardState.generation:null,signature=mode+':'+notch.expanded+':'+height+':'+reduced+(transitionId==null?'':':'+transitionId);
+  if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,transitionId==null?[notch.expanded,height,reduced,mode]:[true,height,reduced,mode,transitionId],signature);}
   if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
 }
 function expandForNewWork() {
@@ -2546,7 +2574,7 @@ function handleClick(event) {
 function handleKey(event) {
   const typing=/INPUT|TEXTAREA/.test(event.target?.tagName||"");
   if(event.key==="Escape"){
-    if(dashboardState.open){event.preventDefault();event.stopImmediatePropagation?.();closeDashboard();return;}
+    if(dashboardState.open||dashboardState.closing){event.preventDefault();event.stopImmediatePropagation?.();closeDashboard();return;}
     if(state.popover){closePopover({restoreFocus:true});event.preventDefault();event.stopImmediatePropagation?.();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
     if(state.searchOpen){openSearch(false);event.preventDefault();event.stopImmediatePropagation?.();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
     return;
