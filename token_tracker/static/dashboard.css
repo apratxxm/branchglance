@@ -30,7 +30,6 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .lay
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #popover{display:none!important;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .dashboard-content{width:100%;min-width:0;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view[hidden]{display:none!important;}
-body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .resize-edge{display:block;opacity:.3;}
 /* Insights and Settings frame. */
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view:not([hidden]){position:relative;order:1;display:flex;flex-direction:column;flex:1 1 540px;align-self:stretch;width:100%;height:540px;margin:0;min-width:0;max-width:none;min-height:0;overflow:hidden;border:0;border-radius:0;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 7%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 8%,transparent),transparent 52%);}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .widget{padding:0;gap:0;background:#05070b;}

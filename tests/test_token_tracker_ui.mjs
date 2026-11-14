@@ -389,22 +389,6 @@ T.render(tree);
   for(const selector of ["#chat-list","#totals"])assert.doesNotMatch(node(selector).innerHTML,/Claude|claude/);
 }
 
-// ---------- native resize bridge ----------
-{
-  const listeners=new Map(),sizes=[];
-  const edge={dataset:{resize:"corner"},setPointerCapture(){},addEventListener(n,fn){listeners.set(n,fn)},removeEventListener(n){listeners.delete(n)}};
-  context.document.querySelectorAll=()=>[edge];
-  let resolveSize;
-  context.window.pywebview={api:{resize_start:()=>new Promise(resolve=>{resolveSize=resolve}),resize:(w,h)=>sizes.push([w,h])}};
-  T.setupResize();
-  const drag=listeners.get("pointerdown")({button:0,pointerId:1,screenX:400,screenY:800,preventDefault(){}});
-  listeners.get("pointermove")({screenX:300,screenY:600});
-  listeners.get("pointerup")();
-  resolveSize({width:420,height:880});
-  await drag;
-  assert.deepEqual(sizes,[[320,680]]);
-  context.document.querySelectorAll=()=>[];
-}
 console.log("Token Tracker UI tests passed");
 {
   // Waiting choices are available through the compact question popover.

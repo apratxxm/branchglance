@@ -29,8 +29,6 @@ assert.doesNotMatch(refined,/linear-gradient\(to bottom,var\(--tree-(?:claude|co
 assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
-assert.match(app,/function captureSourceSnapshot\(list\)/,"source changes retain the old provider content for a real crossfade");
-assert.match(css,/\.source-switch-snapshot\.is-fading\{animation:source-switch-fade 150ms/);
 assert.match(page,/placeholder="[^"]*is:hidden/);
 assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
 assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 58px/);
@@ -136,29 +134,6 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   empty.T.state.searchOpen=true;empty.T.state.query="not-found";
   empty.T.render(snapshotOf({codex:idle,claude:[]}));
   assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty">No matches</div>');
-}
-
-// The source-change overlay retains the old content and palette until it fades over the new rows.
-{
-  const {T,node,context}=boot(),list=node("#chat-list"),frameCallbacks=[],added=[],removed=[],styleValues={};
-  list.innerHTML='<div class="chat" id="old-chat">old rows</div>';
-  list.children=[{outerHTML:list.innerHTML,classList:{contains:()=>false}}];
-  list.appendChild=overlay=>{added.push(overlay);};list.querySelectorAll=()=>[];
-  const ids=[{removeAttribute(name){removed.push(name);}}];
-  context.document.createElement=()=>({style:{setProperty(name,value){styleValues[name]=value;}},classList:{add(name){this[name]=true;}},
-    attributes:{},setAttribute(name,value){this.attributes[name]=value;},removeAttribute(name){this.attributes[name]=null;},querySelectorAll:()=>ids,
-    addEventListener(name,handler){this[name]=handler;},removeEventListener(){},remove(){this.removed=true;}});
-  context.window.getComputedStyle=()=>({getPropertyValue:name=>name==="--source-accent"?"rgb(66, 93, 246)":""});
-  context.requestAnimationFrame=callback=>{frameCallbacks.push(callback);return frameCallbacks.length;};
-  const overlay=T.captureSourceSnapshot(list);
-  assert.match(overlay.innerHTML,/old rows/);assert.equal(styleValues["--source-accent"],"rgb(66, 93, 246)");
-  assert.deepEqual(removed,["id"]);
-  T.revealSourceSnapshot(list,overlay);assert.equal(added[0],overlay);
-  frameCallbacks[0]();assert.equal(overlay.classList["is-fading"],true);
-  overlay.animationend();assert.equal(overlay.removed,true,"the old layer is removed after the crossfade completes");
-  // The caller is told when the old rows are gone, so the window can resize and the new rows fade in.
-  let done=0;const second=T.captureSourceSnapshot(list);T.revealSourceSnapshot(list,second,()=>done++);
-  second.animationend();assert.equal(done,1);
 }
 
 // While the old rows fade, the open widget keeps its height; it resizes once they are gone.

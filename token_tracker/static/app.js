@@ -204,7 +204,7 @@ const COMPACT_MAX_NOTCH_HEIGHT=420;
 // Height of everything around the tree list: the window is sized to this plus the list's content.
 function notchChromeHeight() {
   const visibleHeight=selector=>{const node=$(selector);if(!node||node.hidden||node.getAttribute?.('aria-hidden')==='true')return 0;const rects=node.getClientRects?.();if(rects&&rects.length===0)return 0;return node.offsetHeight||0;};
-  const fixed=['.titlebar','.resets','#weekly-resets','.totals','#strip'].reduce((sum,selector)=>sum+visibleHeight(selector),0)+
+  const fixed=['.titlebar','.resets','#weekly-resets','.totals'].reduce((sum,selector)=>sum+visibleHeight(selector),0)+
     (state.searchOpen?visibleHeight('#chats-head'):0);
   return fixed+16;
 }
@@ -320,7 +320,7 @@ function setNotch(expanded, treeSynced=false) {
   if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
   const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
   if(dashboardView){put(dashboardView,'hidden',!dashboardVisible);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
-  const hidden=!notch.expanded,sections=[$('.chats'),$('.totals'),$('#strip')].filter(Boolean);
+  const hidden=!notch.expanded,sections=[$('.chats'),$('.totals')].filter(Boolean);
   if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
   for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
   for(const name of ['idle','rest','controls','inspect','dashboard'])cls(document.body,'compact-'+name,mode===name);
@@ -1157,10 +1157,6 @@ function questionDismissToken(chat) {
     chat.pendingQuestion||"",chat.pendingOptions||[],chat.pendingQuestionAt||null,chat.attentionSince||null
   ]);
 }
-function renderStrip() {
-  const node=$("#strip");if(!node)return;
-  node.replaceChildren?.();node.innerHTML="";node.hidden=true;node.classList?.remove("open");
-}
 const reducedMotion = () => Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 function clearNotchOpening() {
   clearTimeout(state.notchOpeningTimer);state.notchOpeningTimer=null;
@@ -1794,27 +1790,6 @@ function setSource(name,{persist=true,manual=true}={}) {
   if(!state.snapshot)renderQuotaState();
   return true;
 }
-function captureSourceSnapshot(list) {
-  if(!list?.innerHTML||!list.appendChild||reducedMotion()||typeof document.createElement!=="function")return null;
-  const snapshot=document.createElement("div");snapshot.className="source-switch-snapshot";
-  snapshot.innerHTML=[...list.children].filter(child=>!child.classList?.contains("source-switch-snapshot")).map(child=>child.outerHTML).join("");
-  snapshot.setAttribute("aria-hidden","true");snapshot.inert=true;
-  const computed=window.getComputedStyle?.(document.body);
-  for(const property of ["--source-accent","--source-accent-soft","--source-hover","--source-focus","--source-muted","--source-glow-primary","--source-glow-secondary","--source-edge","--source-edge-strong","--blue","--blue-soft"]){
-    const value=computed?.getPropertyValue?.(property)?.trim();if(value)snapshot.style.setProperty(property,value);
-  }
-  snapshot.removeAttribute("id");for(const element of snapshot.querySelectorAll?.("[id]")||[])element.removeAttribute("id");
-  return snapshot;
-}
-function revealSourceSnapshot(list,snapshot,done) {
-  if(!snapshot||!list?.appendChild)return;
-  for(const previous of list.querySelectorAll?.(".source-switch-snapshot")||[])previous.remove();
-  const finish=()=>{snapshot.removeEventListener?.("animationend",finish);snapshot.removeEventListener?.("animationcancel",finish);snapshot.remove?.();done?.();};
-  snapshot.addEventListener?.("animationend",finish);snapshot.addEventListener?.("animationcancel",finish);
-  list.appendChild(snapshot);
-  const reveal=()=>snapshot.classList.add("is-fading");
-  if(typeof requestAnimationFrame==="function")requestAnimationFrame(reveal);else reveal();
-}
 function selectSourceForNewWork(items) {
   // Fresh work determines the auto-open source; only an explicit active inspection locks the current view.
   if(!state.snapshot||notch.manual||notch.keyboardInspecting||state.searchOpen||state.popover||(widgetLock.locked&&widgetLock.expanded))return false;
@@ -2125,7 +2100,6 @@ function render(snapshot) {
   const priorSourceSwitching=state.sourceSwitching;if(firstRunwayPaint)state.sourceSwitching=true;
   try{renderTitle(providers);renderResets(limits);renderChats(chatProviders);renderTotals(providers);renderAnalytics(snapshot);}
   finally{state.sourceSwitching=priorSourceSwitching;}
-  renderStrip();
   window.TokenTrackerDashboard?.setSnapshot?.(snapshot);
   syncLastKnownFollowup();
   return true;
@@ -2141,10 +2115,9 @@ function renderLoading() {
 }
 function tick() {
   syncCompactClock();
-  if(!state.snapshot){renderTitle([]);renderQuotaState();if(state.failSince)renderStrip();return;}
+  if(!state.snapshot){renderTitle([]);renderQuotaState();return;}
   const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
   renderTitle(providers);renderResets(limits);renderChats(providers);renderAnalytics(state.snapshot);
-  renderStrip();
   window.TokenTrackerDashboard?.setSnapshot?.(state.snapshot);
   syncLastKnownFollowup();
 }
@@ -2477,20 +2450,6 @@ async function pollLive() {
     }
   }catch{markFail();}finally{state.liveBusy=false;}
 }
-function setupResize() {
-  document.querySelectorAll(".resize-edge").forEach(edge=>edge.addEventListener("pointerdown",async event=>{
-    if(event.button!==0||!window.pywebview?.api?.resize_start)return;
-    event.preventDefault();edge.setPointerCapture(event.pointerId);
-    const startX=event.screenX,startY=event.screenY;
-    let size=null,lastX=startX,lastY=startY;
-    const apply=()=>{if(size&&(lastX!==startX||lastY!==startY))window.pywebview.api.resize(size.width+(edge.dataset.resize==="bottom"?0:lastX-startX),size.height+(edge.dataset.resize==="right"?0:lastY-startY));};
-    const move=next=>{lastX=next.screenX;lastY=next.screenY;apply();};
-    const cleanup=()=>{edge.removeEventListener("pointermove",move);edge.removeEventListener("pointerup",cleanup);edge.removeEventListener("pointercancel",cleanup);};
-    edge.addEventListener("pointermove",move);edge.addEventListener("pointerup",cleanup);edge.addEventListener("pointercancel",cleanup);
-    try{size=await window.pywebview.api.resize_start();apply();}catch{cleanup();}
-  }));
-}
-
 /* ---------- interaction ---------- */
 async function openInCodex(thread, button) {
   if(!thread)return false;
@@ -2632,7 +2591,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderStrip,renderResets,renderTotals,handleClick,handleKey,setupResize,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,captureSourceSnapshot,revealSourceSnapshot,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
   renderLoading,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,

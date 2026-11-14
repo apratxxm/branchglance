@@ -30,7 +30,6 @@ assert.doesNotMatch(page,/<footer id="totals"/);
 assert.doesNotMatch(page,/Greeter status unavailable/);
 assert.match(cssRule('.layout'),/overflow-y:auto/);assert.match(cssRule('.layout'),/overflow-x:hidden/);
 assert.match(cssRule('.chat-list'),/flex:none/);assert.match(cssRule('.chat-list'),/overflow:visible/);
-assert.match(cssRule('.strip'),/display:none!important/,'the desktop attention strip stays outside the notch roster');
 // Quota meters show usage while preserving semantic warning and error colors.
 assert.match(cssRule('.meter i'),/background:var\(--source-accent\)/);
 assert.match(cssRule('.meter i.t-attn'),/background:var\(--orange\)/);
@@ -574,7 +573,6 @@ context.fetch=priorFetch;T.state.live=priorLive;T.state.loading=false;T.state.re
   assert.doesNotMatch(html,/runway-message-indicator/);
 }const waitingSnapshot={...snapshot,providers:[{...provider,chats:[{...root,id:'waiting-title',title:'Waiting parent',status:'needs-input',pendingQuestion:'Choose?',pendingQuestionAt:ago(1),attentionSince:ago(1)}]}]};
 T.render(waitingSnapshot);
-assert.equal(node('#strip').hidden,true);assert.equal(node('#strip').innerHTML,'');
 assert.equal(T.notch.counts.waiting,1);assert.match(node('#notch-counts').innerHTML,/aria-label="1 waiting[",]/);
 assert.equal(T.notch.counts.roots,1);assert.equal(T.notch.counts.total,1);
 assert.match(node('#chat-list').innerHTML,/Waiting parent/);
@@ -825,7 +823,6 @@ T.render(snapshot);T.setNotch(true);
 node(".titlebar").offsetHeight=30;node(".resets").offsetHeight=66;
 node("#chats-head").offsetHeight=18;node("#chats-head").hidden=true;
 node(".totals").offsetHeight=28;node(".totals").hidden=true;
-node("#strip").offsetHeight=10;node("#strip").hidden=true;
 const measuredList=node("#chat-list"),originalListQuerySelectorAll=measuredList.querySelectorAll;measuredList.scrollHeight=200;measuredList.children=[];
 measuredList.querySelectorAll=selector=>selector===".chat"?[{offsetHeight:900}]:[];
 assert.equal(T.notchHeight(),312,"the production refined rail plus actual list content sets the height without a buffer");
@@ -901,8 +898,7 @@ const futureMessage={...child,parentId:"question-parent",latestMessageAt:new Dat
 assert.equal(T.runwayAgentHasNewMessage(futureMessage),false);
 assert.match(T.runwayQuestionPopover({...exactAsk,pendingQuestionId:"q2"}),/Continue &lt;now&gt;\?/);
 const asks={...snapshot,providers:[{...provider,chats:[root,ask]}]};
-T.render(asks);T.renderStrip();
-assert.equal(node("#strip").hidden,true);assert.equal(node("#strip").innerHTML,"");
+T.render(asks);
 assert.match(node("#chat-list").innerHTML,/data-key="Codex:ask"[\s\S]*?runway-refined-status t-attn"[\s\S]*?data-action="runway-question" data-key="Codex:ask"/,"the waiting child row shows its Waiting control");
 
 // Selecting a display uses the native API; refresh does not alter placement.
