@@ -33,11 +33,12 @@
       <p id="feature-message" class="message" role="status" aria-live="polite"></p>
     </section>
     <section id="ledger-history" class="ledger-history" aria-labelledby="ledger-heading">
-      <div><h2 id="ledger-heading">Saved usage history</h2><p id="ledger-note" class="note">Removes Branchglance's saved totals for this provider. Your transcripts stay on disk and are read again if you turn collection back on.</p></div>
+      <div><h2 id="ledger-heading">Saved usage history</h2><p id="ledger-note" class="note">Removes Branchglance's saved totals for this provider. Your transcripts stay on disk and are read again if you turn collection back on.</p><button id="manage-settings" class="quiet" type="button" hidden>Manage providers, automation and history…</button></div>
       <div class="ledger-row"><span class="ledger-name">Claude Code</span><button class="quiet" type="button" data-purge="Claude" disabled>Delete saved history</button><p class="note" data-reason="Claude" hidden></p><p class="message" data-status="Claude" role="status" aria-live="polite"></p></div>
       <div class="ledger-row"><span class="ledger-name">Codex</span><button class="quiet" type="button" data-purge="Codex" disabled>Delete saved history</button><p class="note" data-reason="Codex" hidden></p><p class="message" data-status="Codex" role="status" aria-live="polite"></p></div>
     </section>
     <p id="permission" class="message" role="status" aria-live="polite"></p>
+    <section id="embedded-policy-state" class="embedded-policy-state" aria-live="polite" hidden><span id="embedded-policy-message"></span><button id="embedded-policy-retry" class="quiet" type="button" hidden>Retry</button></section>
     <section id="picker" hidden>
       <label class="search-label" for="search">Select chats <span id="selected-count">0 selected</span></label>
       <input id="search" type="search" placeholder="Search chats" autocomplete="off">

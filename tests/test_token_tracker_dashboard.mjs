@@ -7,9 +7,10 @@ const values=new Map();
 let requests=[];
 let responseQueue=[];
 const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))};
-const document={querySelector(){return null;},querySelectorAll(){return [];},addEventListener(){}};
-const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
-const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://127.0.0.1:8765"},fetch:async url=>{if(String(url).startsWith("/api/ledger"))return {ok:false,status:503,json:async()=>({})};requests.push(String(url));return responseQueue.shift()||{ok:false,status:404,json:async()=>({})};}};
+const events={},tabNodes={"#dashboard-tab-insights":{tabIndex:0,focus(){this.focused=true;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-tab-settings":{tabIndex:-1,focus(){this.focused=true;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-view":{dataset:{},setAttribute(){}}};
+const document={activeElement:null,querySelector(selector){return tabNodes[selector]||null;},querySelectorAll(){return [];},addEventListener(name,fn){events[name]=fn;}};
+const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
+const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},requestAnimationFrame:fn=>fn(),setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},location:{origin:"http://127.0.0.1:8765"},fetch:async url=>{if(String(url).startsWith("/api/ledger"))return {ok:false,status:503,json:async()=>({})};requests.push(String(url));return responseQueue.shift()||{ok:false,status:404,json:async()=>({})};}};
 vm.createContext(context);vm.runInContext(source,context);
 const dashboard=window.__tokenTrackerDashboardTest;
 const today=new Date();today.setHours(12,0,0,0);
@@ -30,7 +31,8 @@ assert.match(insights,/API-equivalent cost/);
 assert.match(insights,/dash-hero-currency/);
 assert.match(insights,/estimated/);
 assert.match(insights,/Claude/);assert.match(insights,/Codex/);
-assert.match(insights,/>Models</);assert.match(insights,/Highest usage/);
+assert.match(insights,/<th scope="col">Model<\/th>/);assert.match(insights,/Highest usage/);
+assert.match(insights,/local time/);
 assert.match(insights,/<dt>Subagents<\/dt><dd>6<\/dd>/);
 assert.doesNotMatch(insights,/vs previous/,"no period delta at 30 days");
 assert.match(insights,/area-fill/);assert.match(insights,/area-edge/);
@@ -66,7 +68,7 @@ const fallbackHtml=dashboard.insightsHTML();
 assert.match(fallbackHtml,/dash-hero-currency">\$<\/span><strong class="dash-hero-number">1\.20/);
 assert.doesNotMatch(fallbackHtml,/sessions|subagents|active/i);
 assert.doesNotMatch(fallbackHtml,/>\?/);
-assert.match(fallbackHtml,/<span class="dash-none" role="img" aria-label="No published price">—<\/span>/,"unpriced model costs are explicitly marked");
+assert.match(fallbackHtml,/<span class="dash-none" role="img" aria-label="No published price">&mdash;<\/span>/,"unpriced model costs are explicitly marked");
 assert.match(fallbackHtml,/Haiku 5\.5/);
 dashboard.state.range="24h";
 const fallback24=dashboard.insightsHTML();
@@ -105,23 +107,104 @@ assert.match(settings,/<p class="dash-setting-note">Version 1\.0\.0\+abc123<\/p>
 dashboard.state.identity={version:"<script>",build:"&"};
 assert.match(dashboard.settingsHTML(),/Version &lt;script&gt;\+&amp;/,"identity values are escaped");
 dashboard.state.identity=null;
-assert.doesNotMatch(dashboard.settingsHTML(),/Version /,"missing identity is not fabricated");
+assert.match(dashboard.settingsHTML(),/Version unavailable/,"missing identity is described without fabricating a version");
 assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget open/);
-assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/<small>send<\/small><b>Off<\/b>/,"provider rows state their flags inline");assert.match(settings,/Monitor/);assert.match(settings,/Recenter/);
+assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Send off/,"provider rows state their flags in plain text");assert.match(settings,/Monitor/);assert.match(settings,/Recenter/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
-assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Change Claude tracking/);
+assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage providers, automation and history/);assert.match(settings,/Cost comparison/);assert.match(settings,/After a Codex quota reset/);
 assert.match(source,/open_reset_actions/);
 assert.doesNotMatch(source,/X-Branchglance-Settings-Token|settingsToken/,"dashboard never reads or stores the Claude settings token");
 
+// Persisted All migrates to the supported 30-day range; provider selection scopes each section.
+values.set("branchglanceInsightsRange","all");
+assert.equal(dashboard.storedRange(),"30d");assert.equal(values.get("branchglanceInsightsRange"),"30d");
+dashboard.state.range="7d";dashboard.state.metric="tokens";
+dashboard.state.insights={range:"7d",providers:[provider("Claude"),provider("Codex")]};
+dashboard.toggleProvider("Codex");
+assert.equal(dashboard.insightsData().totals.tokens,1000000);
+assert.equal(dashboard.insightsData().models.length,1);
+assert.match(dashboard.insightsHTML(),/data-dashboard-provider="Codex" aria-pressed="false"/);
+dashboard.toggleProvider("Claude");assert.equal(dashboard.insightsData().totals.tokens,1000000,"at least one provider remains visible");
+dashboard.toggleProvider("Codex");
+
+// Lines mode places one marker at each visible provider value; its tooltip still contains the total.
+dashboard.setChartStyle("lines");
+const lineChart=dashboard.seriesChart(dashboard.insightsData());
+assert.equal((lineChart.match(/dash-provider-marker/g)||[]).length,6);
+assert.match(lineChart,/Total:/);
+assert.equal(dashboard.planMultiple(1.29,true),"1.2");
+assert.equal(dashboard.planMultiple(10.9,true),"10");
+assert.doesNotMatch(dashboard.insightsHTML(),/excludes unpriced usage/);
+
+// Lock state disables both placement controls and gives the required explanation.
+dashboard.state.lock={locked:true};
+const lockedSettings=dashboard.settingsHTML();
+assert.match(lockedSettings,/Unlock the widget to move it/);
+assert.match(lockedSettings,/data-dashboard-action="recenter" disabled/);
+assert.match(lockedSettings,/data-dashboard-action="monitor" disabled/);
+dashboard.state.lock=null;
+dashboard.state.insights={generatedAt:new Date(Date.now()-120000).toISOString(),providers:[provider("Claude")]};
+dashboard.state.loading=false;dashboard.state.loadError=false;
+assert.match(dashboard.statusText(),/Updated 2m ago/);
+
+// Tabs use roving focus, arrows/Home/End select the tab, and close restores the opener.
+const tabEvent={key:"End",target:{closest:selector=>selector.includes("role=tab")?{dataset:{dashboardTab:"insights"}}:null},preventDefault(){this.prevented=true;}};
+events.keydown(tabEvent);
+assert.equal(dashboard.state.tab,"settings");assert.equal(tabNodes["#dashboard-tab-settings"].tabIndex,0);
+tabEvent.key="Home";tabEvent.target={closest:selector=>selector.includes("role=tab")?{dataset:{dashboardTab:"settings"}}:null};events.keydown(tabEvent);
+assert.equal(dashboard.state.tab,"insights");assert.equal(tabNodes["#dashboard-tab-insights"].tabIndex,0);
+events.click({target:{closest:selector=>selector==="[data-dashboard-tab]"?{dataset:{dashboardTab:"settings"}}:null}});
+assert.equal(dashboard.state.tab,"settings","native Enter/Space button activation reaches the tab click handler");
+events.click({target:{closest:selector=>selector==="[data-dashboard-tab]"?{dataset:{dashboardTab:"insights"}}:null}});
+const opener={focus(){this.restored=true;}};document.activeElement=opener;
+window.TokenTrackerDashboard.open({tab:"insights"});
+assert.equal(tabNodes["#dashboard-tab-insights"].focused,true);
+window.TokenTrackerDashboard.close();assert.equal(opener.restored,true);
+
 console.log("Insights and Settings dashboard contracts passed");
+
+// Every Insights attempt has a bounded signal; the header Refresh button retries a failed load.
+let timedOptions=null,insightCalls=0;
+context.fetch=async(url,options={})=>{if(String(url).startsWith("/api/ledger"))return {ok:false,status:503};if(String(url).startsWith("/api/insights")){timedOptions=options;insightCalls++;return {ok:false,status:503};}return {ok:false,status:503};};
+dashboard.state.insights=null;dashboard.state.loadError=false;dashboard.state.range="30d";
+await dashboard.loadInsights();
+assert.equal(timedOptions.signal.timeout,12000,"Insights fetch uses AbortSignal.timeout");
+assert.equal(dashboard.state.loadError,true,"failed initial load is reported");
+const callsBeforeRetry=insightCalls;
+events.click({target:{closest:selector=>selector==="#dashboard-refresh"?{}:null}});
+await new Promise(resolve=>globalThis.setTimeout(resolve,0));
+assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
+
+// A Settings preference update moves the same iframe node and restores focus to its initiating control.
+{
+  const frame={contentWindow:{},replaceWith(node){this.replaced=node;}};
+  const root={dataset:{},addEventListener(){}};
+  const insightPanel={_html:"",control:null,set innerHTML(value){this._html=value;this.control={dataset:{dashboardProvider:"Codex"},focus(){this.focused=true;}};},querySelectorAll(selector){return selector==="[data-dashboard-provider]"?[this.control]:[];},querySelector(){return null;}};
+  let currentControl={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}};
+  let liveFrame=null;
+  const settings={querySelector(selector){if(selector==="iframe.reset-embed")return liveFrame;if(selector.includes("data-dashboard-action"))return currentControl;return null;},replaceChildren(fragment){liveFrame=fragment.frame;currentControl={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}};}};
+  const docs={activeElement:{dataset:{dashboardProvider:"Codex"}},querySelector(selector){return selector==="#dashboard-settings"?settings:selector==="#dashboard-insights"?insightPanel:selector==="#dashboard-view"?root:null;},querySelectorAll:()=>[],addEventListener(){}};
+  const win={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){}};
+  const ctx={window:win,document:docs,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://localhost"},fetch:async()=>({ok:false}),setInterval:()=>1,clearInterval(){},requestAnimationFrame:fn=>fn(),Event};
+  docs.createElement=tag=>{assert.equal(tag,"template");const content={frame:{...frame,replaceWith(node){content.frame=node;}},querySelector(selector){return selector==="iframe.reset-embed"?content.frame:null;}};return {content,set innerHTML(_value){}};};
+  vm.createContext(ctx);vm.runInContext(source,ctx);
+  const local=win.__tokenTrackerDashboardTest;local.state.open=true;local.state.tab="insights";local.state.range="7d";local.state.insights={range:"7d",providers:[provider("Claude"),provider("Codex")]};
+  win.TokenTrackerDashboard.render();
+  assert.equal(insightPanel.control.focused,true,"Insights rerender restores focus to the provider chip that triggered it");
+  local.state.tab="settings";local.state.settingsLoaded=true;docs.activeElement={dataset:{dashboardAction:"lock"}};local.state.renderKey="";
+  win.TokenTrackerDashboard.render();const mounted=liveFrame;
+  docs.activeElement={dataset:{dashboardAction:"lock"}};local.state.lock={locked:true};local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
+  assert.equal(liveFrame,mounted,"the reset form iframe remains the same mounted node");
+  assert.equal(currentControl.focused,true,"settings rerender returns focus to the control that triggered it");
+}
 
 // Accepted data stays labeled with its captured range during a later request.
 let resolvePending;
 dashboard.state.range="7d";
 dashboard.state.metric="tokens";
-responseQueue=[{ok:true,json:async()=>({range:"7d",providers:[provider("Claude")]})}];
+context.fetch=async url=>String(url).startsWith("/api/ledger")?{ok:false}:String(url).includes("range=7d")?{ok:true,json:async()=>({range:"7d",providers:[provider("Claude")]})}:{ok:false};
 await dashboard.loadInsights();
-context.fetch=()=>new Promise(resolve=>{resolvePending=resolve;});
+context.fetch=url=>String(url).startsWith("/api/ledger")?Promise.resolve({ok:false}):new Promise(resolve=>{resolvePending=resolve;});
 dashboard.state.range="30d";
 const pending=dashboard.loadInsights();
 assert.match(dashboard.insightsHTML(),/Tokens over 7 days/);
@@ -152,14 +235,14 @@ assert.match(dashboard.insightsHTML(),/dash-chart/,"observed zero has a chart");
 // A mismatched response cannot be accepted as the requested period.
 dashboard.state.range="7d";dashboard.state.insights=null;
 let replies=[{ok:true,json:async()=>({range:"30d",providers:[provider("Wrong")]})},{ok:true,json:async()=>({providers:[{name:"Fallback",tracked31Days:5,activity:[{date:dateOffset(0),value:5}]}]})}];
-context.fetch=async()=>replies.shift();
+context.fetch=async url=>String(url).startsWith("/api/ledger")?{ok:false}:replies.shift();
 await dashboard.loadInsights();
 assert.equal(dashboard.state.insights.providers[0].name,"Fallback");
 assert.match(dashboard.insightsHTML(),/Daily fallback/);
 
 // Closing invalidates in-flight requests even if the network responds later.
 let late;
-context.fetch=()=>new Promise(resolve=>{late=resolve;});
+context.fetch=url=>String(url).startsWith("/api/ledger")?Promise.resolve({ok:false}):new Promise(resolve=>{late=resolve;});
 const inflight=dashboard.loadInsights();
 const before=dashboard.state.insights;
 window.TokenTrackerDashboard.close();
@@ -207,7 +290,7 @@ const tip={classList:{add:x=>tipClasses.add(x),remove:x=>tipClasses.delete(x)},s
 const root={dataset:{},addEventListener:(name,fn)=>{listeners[name]=fn;}};
 const docs={querySelector:sel=>({"#dashboard-content":content,"#dashboard-view":root,"#dash-tooltip":tip}[sel]||null),querySelectorAll:()=>[],addEventListener(){}};
 const win={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},innerWidth:800,innerHeight:600};
-const fake={window:win,document:docs,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://localhost"},fetch:async()=>({ok:false}),setTimeout:fn=>{const id=++nextTimer;scheduled.set(id,fn);return id;},clearTimeout:id=>scheduled.delete(id),setInterval:()=>1,clearInterval(){},requestAnimationFrame:fn=>frames.push(fn)};
+const fake={window:win,document:docs,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://localhost"},fetch:async()=>({ok:false}),setTimeout:fn=>{const id=++nextTimer;scheduled.set(id,fn);return id;},clearTimeout:id=>scheduled.delete(id),setInterval:()=>1,clearInterval(){},requestAnimationFrame:fn=>frames.push(fn)};
 vm.createContext(fake);vm.runInContext(source,fake);
 const ui=win.__tokenTrackerDashboardTest;ui.state.open=true;ui.state.range="30d";ui.state.tab="insights";
 ui.setRange("7d");ui.setRange("30d");
@@ -233,7 +316,7 @@ assert.equal(tip["aria-hidden"],"true","scroll cannot restore a stale tooltip");
 dashboard.state.insights=dashboard.normalizeStats({providers:[{name:"Old",tracked31Days:2,activity:[]}]});
 dashboard.state.range="30d";
 let fallbackResponses=[{ok:false},{ok:true,json:async()=>({providers:[{name:"New",tracked31Days:3,activity:[]}]})}];
-context.fetch=async()=>fallbackResponses.shift();
+context.fetch=async url=>String(url).startsWith("/api/ledger")?{ok:false}:fallbackResponses.shift();
 await dashboard.loadInsights();
 assert.equal(dashboard.state.insights.providers[0].name,"New");
 const latestFallback=dashboard.state.insights;
@@ -261,9 +344,9 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   const docsDom={querySelector:sel=>sel==="#dashboard-insights"?panelDom:null,querySelectorAll:()=>[],addEventListener(){}};
   const responses=[];
   const ctx={window:{__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},TokenTrackerFormatModel:({model})=>String(model)},
-    document:docsDom,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://localhost"},
+    document:docsDom,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://localhost"},
     setTimeout:fn=>{fn();return 0;},clearTimeout(){},setInterval:()=>1,clearInterval(){},
-    fetch:async()=>responses.shift()||{ok:false,status:404,json:async()=>({})}};
+    fetch:async url=>String(url).startsWith("/api/ledger")?{ok:false,status:503,json:async()=>({})}:responses.shift()||{ok:false,status:404,json:async()=>({})}};
   vm.createContext(ctx);vm.runInContext(source,ctx);
   const ui=ctx.window.__tokenTrackerDashboardTest;
   ui.state.open=true;ui.state.range="30d";ui.state.metric="tokens";ui.state.tab="insights";
@@ -316,7 +399,7 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
 // One shown provider: Settings carries one quiet line naming the other; two shown providers: no line.
 {
   dashboard.state.policy={providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:false,collect:false,send:false}]};
-  assert.match(dashboard.settingsHTML(),/dash-add-provider">Add Claude to track its agents too\./);
+  assert.match(dashboard.settingsHTML(),/dash-add-provider">Add Claude to track its agents too\./);assert.match(dashboard.settingsHTML(),/Hidden/);
   dashboard.state.policy={providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:true,collect:true,send:false}]};
-  assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider/);
+  assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider/);assert.match(dashboard.settingsHTML(),/Shown/);
 }

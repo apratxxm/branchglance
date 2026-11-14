@@ -111,3 +111,13 @@ html.settings-embedded,body.settings-embedded{--d-ink:#f3f4f6;--d-sub:#b7bcc8;--
 .ledger-history .ledger-row .message:empty{display:none}
 .settings-embedded .ledger-history{padding:6px 8px;gap:4px}
 .settings-embedded .ledger-history h2{font-size:13px}
+
+/* The embedded reset form has its own reachable scroll path and does not expose disabled history controls. */
+html.settings-embedded,body.settings-embedded{height:auto;min-height:100%;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#667085 transparent;}
+html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scrollbar{display:block;width:6px;}
+html.settings-embedded::-webkit-scrollbar-thumb,body.settings-embedded::-webkit-scrollbar-thumb{background:#667085;border-radius:8px;}
+.settings-embedded .settings{height:auto;min-height:100%;overflow:visible;padding-bottom:12px;}
+.settings-embedded .ledger-history .ledger-row{display:none;}
+.settings-embedded #manage-settings{display:inline-block;margin-top:4px;}
+.embedded-policy-state{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 8px;border:1px solid #30394a;border-radius:7px;color:#c0cada;font-size:12px;}
+.embedded-policy-state[hidden],.embedded-policy-state button[hidden]{display:none!important;}

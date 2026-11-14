@@ -3,12 +3,13 @@
   const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:31};
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
   const RANGE_PREVIOUS={"24h":"previous 24 hours","7d":"previous 7 days","30d":"previous 30 days",all:"previous period"};
-  const state={open:false,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0};
+  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
   const readPref=(key,fallback)=>{try{return localStorage.getItem(key)??fallback;}catch{return fallback;}};
   const writePref=(key,value)=>{try{localStorage.setItem(key,value);}catch{}};
+  const storedRange=()=>{let value=readPref("branchglanceInsightsRange","30d");if(value==="all"){value="30d";writePref("branchglanceInsightsRange",value);}return isRange(value)?value:"30d";};
   const reducedMotion=()=>window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches===true;
   const nfmt=new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3});
   const usd=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2});
@@ -44,7 +45,7 @@
   // Round scale top for a chart axis: the smallest 1, 2, 4, 6, 8 or 10 times a power of ten at or above the value.
   function niceCeil(value){if(!(value>0))return 0;const power=10**Math.floor(Math.log10(value));for(const step of [1,1.2,1.5,2,3,4,5,6,8,10])if(step*power>=value*(1-1e-9))return step*power;return value;}
   function insightsData(requestCost=state.metric==="cost"){
-    const fallback=state.insights?.fallback===true,range=state.resultValue===state.insights?(state.resultRange||state.range):(isRange(state.insights?.range)?state.insights.range:state.range),allProviders=availableProviders();
+    const fallback=state.insights?.fallback===true,range=state.resultValue===state.insights?(state.resultRange||state.range):(isRange(state.insights?.range)?state.insights.range:state.range),allProviders=availableProviders().filter(p=>!hiddenProviders.has(p.name));
     let dates=[...new Set(allProviders.flatMap(p=>(p.series||[]).map(row=>row.date).filter(Boolean)))].sort(),end=dates.at(-1);
     const days=RANGE_DAYS[range];
     // 24h comes back as hourly points whose date is the local hour start (an ISO datetime). They are used as they are.
@@ -85,15 +86,15 @@
   }
   const joinNames=names=>names.length<=2?names.join(" and "):`${names.slice(0,-1).join(", ")} and ${names.at(-1)}`;
   const tokenHero=value=>{const [figure,unit]=value>=1e9?[(value/1e9).toFixed(2),"B tokens"]:value>=1e6?[(value/1e6).toFixed(1),"M tokens"]:value>=1e3?[(value/1e3).toFixed(1),"K tokens"]:[String(Math.round(value)),"tokens"];return `<strong class="dash-hero-number">${esc(figure)}</strong><span class="dash-hero-unit">${esc(unit)}</span>`;};
-  // Provider series hidden from the chart by clicking its legend name; the split and the Models list are unaffected.
-  const hiddenProviders=new Set();
+  // Provider chips scope all Insights sections wherever provider identity is available.
+  const hiddenProviders=new Set((()=>{try{const value=JSON.parse(localStorage.getItem("branchglanceHiddenProviders")||"[]");return Array.isArray(value)?value:[];}catch{return [];}})());
   // At least one provider stays on; the last one cannot be hidden.
   function toggleProvider(name){
     if(!name)return;
     if(hiddenProviders.has(name))hiddenProviders.delete(name);
     else if(availableProviders().some(p=>p.name!==name&&!hiddenProviders.has(p.name)))hiddenProviders.add(name);
     else return;
-    state.renderKey="";render();
+    writePref("branchglanceHiddenProviders",JSON.stringify([...hiddenProviders]));state.renderKey="";render();
   }
   // Chart style: "stacked" (default) or "lines". Chosen with the small control in the chart header and remembered in localStorage.
   const chartStyle=()=>readPref("branchglanceChartStyle","stacked")==="lines"?"lines":"stacked";
@@ -105,8 +106,8 @@
   const chartStyleHTML=()=>{const current=chartStyle();return `<div class="dash-chart-style" role="group" aria-label="Chart style">${[["lines","Lines"],["stacked","Stacked"]].map(([key,label])=>`<button type="button" data-dashboard-chart-style="${key}" aria-pressed="${current===key}">${label}</button>`).join("")}</div>`;};
   // Explicit provider filter chips beside the chart heading: a dot, the name and a checked state.
   const chipsHTML=data=>{
-    if(data.providers.length<2)return "";
-    return `<div class="dash-chips" role="group" aria-label="Providers shown in the chart">${data.providers.map(p=>{const on=!hiddenProviders.has(p.name);return `<button type="button" class="dash-chip ${providerKey(p.name)}-color" data-dashboard-provider="${esc(p.name)}" aria-pressed="${on}" title="${on?"Hide":"Show"} ${esc(p.name)} in the chart"><i class="dash-dot ${providerKey(p.name)}" aria-hidden="true"></i>${esc(p.name)}<span class="dash-chip-check" aria-hidden="true">${on?"\u2713":""}</span></button>`;}).join("")}</div>`;
+    const providers=availableProviders();if(providers.length<2)return "";
+    return `<div class="dash-chips" role="group" aria-label="Providers included in all available Insights sections">${providers.map(p=>{const on=!hiddenProviders.has(p.name);return `<button type="button" class="dash-chip ${providerKey(p.name)}-color" data-dashboard-provider="${esc(p.name)}" aria-pressed="${on}" title="${on?"Hide":"Show"} ${esc(p.name)} across Insights"><i class="dash-dot ${providerKey(p.name)}" aria-hidden="true"></i>${esc(p.name)}<span class="dash-chip-check" aria-hidden="true">${on?"\u2713":""}</span></button>`;}).join("")}</div>`;
   };
   function seriesChart(data){
     const key=data.chartKey,cost=key==="apiEquivalentCost",format=value=>cost?money(value):number(value);
@@ -168,7 +169,8 @@
       const accessible=`${row.date}. ${totalLabel}. ${parts.join(". ")}${unknown?". Missing provider data":""}${excludedLabel?". "+excludedLabel:""}`;
       const tip=`<span class="tip-date">${esc(pointLabel(row.date))}</span><b class="tip-total">${esc(unknown?"—":(partial?"Recorded subtotal · ":"")+format(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(finite(row[p.name])==null?"—":format(row[p.name])+(cost&&row[p.name+"__partial"]?" (partial)":""))}</strong></span>`).join("")}${unknown?'<span>Missing provider data</span>':""}${excludedLabel?`<span>${esc(excludedLabel)}</span>`:""}`;
       const left=index===0?L:(xAt(index-1)+x)/2,right=index===rows.length-1?W-R:(x+xAt(index+1))/2;
-      return `<g class="dash-point" tabindex="0" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/>${total==null?"":`<circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/>`}</g>`;
+      const markers=lines?providers.map(p=>finite(row[p.name])==null?"":`<circle class="dash-provider-marker ${providerKey(p.name)}" cx="${x.toFixed(1)}" cy="${yAt(row[p.name]).toFixed(1)}" r="2.8"/>`).join(""):total==null?"":`<circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/>`;
+      return `<g class="dash-point" tabindex="0" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/>${markers}</g>`;
     }).join("");
     return `${excluded.length?`<p class="dash-cost-note">Daily estimate excludes ${esc(joinNames(excluded.map(p=>p.name)))} (no recorded price)</p>`:""}<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg></div>${dates}`;
   }
@@ -179,7 +181,7 @@
     const sum=all.reduce((total,row)=>total+(row.value>0?row.value:0),0);
     if(!sum)return null;
     const bar=data.providers.length>1?`<div class="dash-split" aria-hidden="true">${all.filter(row=>row.value>0).map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div>`:"";
-    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span><span class="dash-legend-head">Share</span><span class="dash-legend-head dash-plan-head" title="Last 30 days (calendar, incl. today) API-equivalent cost divided by the monthly plan price (default $20). It does not change with the range.">30d / plan</span>`;
+    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span><span class="dash-legend-head">Share</span><span class="dash-legend-head dash-plan-head">vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>`;
     let unpriced=false;
     const items=all.map(row=>{
       const cls=`${providerKey(row.name)}-color`;
@@ -188,17 +190,19 @@
       if(plan.includes("some unpriced"))unpriced=true;
       return `<span class="dash-legend-item ${cls}"><span class="dash-legend-name">${esc(row.name)}</span>${value}${plan}</span>`;
     }).join("");
-    return {bar,legend:`<div class="dash-split-legend">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">≥ excludes unpriced usage</p>':""}`};
+    return {bar,legend:`<div class="dash-split-legend">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">At least means some usage has no published price, so the real figure is higher.</p>':""}`};
   }
   // One provider has no split to compare against, so its plan multiple gets one line of its own.
   function singlePlanHTML(data){const p=data.providers[0];if(!p)return "";return `<div class="dash-plan-single ${providerKey(p.name)}-color"><span class="dash-legend-name">${esc(p.name)}</span>${planCellsHTML(p.name)}</div>`;}
   function emptyHTML(){return `<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded usage in this range</p></section>`;}
   // Status text for the Insights status line; background refreshes update only this element.
   function statusText(){
-    if(!state.insights)return state.loading?"Loading usage…":state.loadError?"Usage could not be loaded.":"";
-    const data=insightsData(false);
-    const fallbackLabel=data.fallback?(state.insightsUnavailable?"Insights unavailable · Daily fallback":"Daily fallback"):"";
-    return [state.loading?"Updating…":state.loadError?"Update failed":"",fallbackLabel].filter(Boolean).join(" · ");
+    if(!state.insights)return state.loading?"Loading usage...":state.loadError?"Usage could not be loaded.":"";
+    const data=insightsData(false),fallbackLabel=data.fallback?(state.insightsUnavailable?"Insights unavailable \u00b7 Daily fallback":"Daily fallback"):"";
+    const generated=state.insights.generatedAt?new Date(state.insights.generatedAt).getTime():NaN;
+    const age=Number.isFinite(generated)?Math.max(0,Math.floor((Date.now()-generated)/60000)):null;
+    const freshness=age==null?"":`Updated ${age<1?"just now":`${age}m ago`}`;
+    return [state.loading?"Updating...":state.loadError?"Update failed":"",fallbackLabel,freshness].filter(Boolean).join(" \u00b7 ");
   }
   // Failures and fallbacks are notices shown above the content; a plain freshness stamp sits at the end.
   const isNotice=()=>Boolean(state.loadError||state.insightsUnavailable||(state.insights&&insightsData(false).fallback));
@@ -215,18 +219,19 @@
     const data=insightsData(),key=data.heroKey;
     const stamp=state.insights.generatedAt?new Date(state.insights.generatedAt):null;
     const status=statusText();
-    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}</p>`:"";
+    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}${state.loadError?" Use Refresh to retry.":""}</p>`:"";
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">estimated</span>`:tokenHero(value);
-    const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">${data.hourly?"Hourly":"Daily"} · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost estimate":"tokens"}</span>${chipsHTML(data)}${chartStyleHTML()}</div>${chart}</section>`:"";
+    const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Usage over time</span><span class="dash-section-note">${data.hourly?"Hourly":"Daily"} · ${data.chartKey==="apiEquivalentCost"?"API-equivalent cost estimate":"tokens"}</span>${chartStyleHTML()}</div>${chart}</section>`:"";
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
     const tokensPresent=finite(data.totals.tokens)>0;
     const missing=v=>finite(v)==null||(v===0&&tokensPresent);
     const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hits"],[data.totals.activeHours,v=>`${number(v)}h`,"Active"]].filter(([v])=>!missing(v));
     const statsHTML=stats.length?`<dl class="dash-summary">${stats.map(([v,format,label])=>`<div><dt>${label}</dt><dd>${esc(format(v))}</dd></div>`).join("")}</dl>`:"";
-    const coverage=data.fallback?(data.range==="30d"||data.range==="all"?"31-day totals":data.dates.length?`Daily coverage: ${dayLabel(data.dates[0])}${data.dates.length>1?" – "+dayLabel(data.dates.at(-1)):""}${data.range==="24h"?" (latest recorded date)":" (recorded daily values)"}`: "31-day totals"):RANGE_NAME[data.range];
-    const hero=`<section class="dash-hero"><div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`API-equivalent cost estimate · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
+    const coverage=data.fallback?(data.range==="30d"||data.range==="all"?"31-day totals":data.dates.length?`Daily coverage: ${dayLabel(data.dates[0])}${data.dates.length>1?" - "+dayLabel(data.dates.at(-1)):""}${data.range==="24h"?" (latest recorded date)":" (recorded daily values)"}`: "31-day totals"):RANGE_NAME[data.range];
+    const period=data.dates.length?`${dayLabel(data.dates[0])}${data.dates.length>1?` - ${dayLabel(data.dates.at(-1))}`:""}, local time`:coverage;
+    const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div><div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`${data.costPartial?"Priced usage subtotal":"API-equivalent cost estimate"} · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
     const models=data.models;
     // One row per model (long-context variants are merged into it). Seven rows fit beside the chart; beyond that the top six show and the rest sum into one Other row.
     const modelRows=(()=>{if(models.length<=7)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,6).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(6);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other · ${rest.length} models`,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true}];})();
@@ -235,8 +240,9 @@
     const barKey=data.heroKey==="apiEquivalentCost"?"apiEquivalentCost":"tokens";
     const barMax=Math.max(0,...modelRows.map(row=>finite(row[barKey])||0));
     const work=workData(),workView=work!=null&&modelsView()==="work";
-    if(workView)return hero+`<section class="dash-lower is-single${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${chartHTML}</section>`+statusHTML;
-    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head">${work?breakdownToggle("models"):"<span>Models</span>"}<small aria-hidden="true"></small><small>Tokens</small><small title="API-equivalent estimate">Est. cost</small></div>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<div class="dash-model-row"><span class="dash-model-name ${row.family}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag" title="Includes long-context usage">long ctx</small>':'<small class="dash-model-tag is-empty" aria-hidden="true"></small>'}<i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i><b>${esc(number(row.tokens))}</b><b title="Estimated API-equivalent cost">${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">—</span>':esc(money(row.apiEquivalentCost))}</b></div>`;}).join("")}</div>`:"";
+    const providerScope=chipsHTML(data);
+    if(workView)return hero+providerScope+`<section class="dash-lower is-single${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${chartHTML}</section>`+statusHTML;
+    const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head">${work?breakdownToggle("models"):"<span>Models</span>"}</div><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">Model</th><th scope="col" aria-label="Relative usage">Usage</th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row" class="dash-model-name ${row.family}"><i></i>${esc(row.name)}${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td>${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':esc(money(row.apiEquivalentCost))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
     const peakCell=value=>value==null?'<span aria-label="Not recorded">—</span>':`${Math.round(value)}%`;
     const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value!=null&&value>=99.5));
@@ -245,7 +251,7 @@
     const side=limits||activity?`<div class="dash-side">${limits}${activity}</div>`:"";
     // Models and the side column share one row; the chart runs the full width under both. Without a chart (24h has no hourly series) the row stretches to the panel body.
     const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}${chartHTML?"":" is-day"}">${modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:""}${side}${chartHTML}</section>`:chartHTML;
-    return hero+lower+statusHTML;
+    return hero+providerScope+lower+statusHTML;
   }
   // By work: ledger tokens per model and kind of work. It takes the place of the Models list and the side column, so the panel never grows.
   // Kinds outside the classifier's list fold into Other, so every cell, row and column adds up to the ledger's totals.
@@ -259,6 +265,7 @@
     if(!ledger||state.ledgerRange!==state.range||!Array.isArray(ledger.rows)||!ledger.rows.length)return null;
     const byModel=new Map();
     for(const row of ledger.rows){
+      if(hiddenProviders.has(String(row.provider||"")))continue;
       const tokens=finite(row.totalTokens)||0;if(tokens<=0)continue;
       const kind=WORK_KINDS.includes(row.kind)?row.kind:"other",id=`${row.provider}\u0000${row.modelId}`;
       let model=byModel.get(id);
@@ -267,7 +274,8 @@
       addCell(model.cells[kind]||(model.cells[kind]=workCell()),{tokens,known:cost||0,priced:cost!=null,unpriced:row.costComplete===false||finite(row.unpricedTokens)>0||cost==null});
       model.total+=tokens;
     }
-    const ranked=[...byModel.values()].sort((a,b)=>b.total-a.total);
+    const metric=state.metric==="cost"?"cost":"tokens",measure=row=>metric==="cost"?Object.values(row.cells).reduce((sum,cell)=>sum+cell.known,0):row.total;
+    const ranked=[...byModel.values()].sort((a,b)=>measure(b)-measure(a));
     if(!ranked.length)return null;
     // Four rows fit in the Models list's height; past that the top three show and the rest sum into one Other row.
     let rows=ranked;
@@ -282,7 +290,7 @@
     const kinds=WORK_KINDS.filter(kind=>rows.some(row=>row.cells[kind]?.tokens>0));
     const totals={cells:{},all:workCell()};
     for(const row of rows){row.sum=workCell();for(const kind of kinds){const cell=row.cells[kind];if(cell){addCell(totals.cells[kind]||(totals.cells[kind]=workCell()),cell);addCell(row.sum,cell);addCell(totals.all,cell);}}}
-    return {rows,kinds,totals,coverage:ledger.coverage||{},service:ledger.service||{}};
+    return {rows,kinds,totals,coverage:ledger.coverage||{},service:ledger.service||{},metric};
   }
   function workCost(cell){
     if(!cell.priced)return "No published price";
@@ -293,7 +301,7 @@
     const coverage=work.coverage;
     if(work.service.state==="error")return {text:"Ledger paused",title:"The ledger hit an error and is retrying; figures are from its last pass."};
     if(coverage.status==="catching-up")return {text:"Catching up",title:"Still reading older transcripts; totals will grow."};
-    if(coverage.status==="verifying")return {text:"Verifying",title:"Some recent usage is waiting for its file to be re-checked."};
+    if(coverage.status==="verifying"){const stamp=coverage.lastIngestedAt?new Date(coverage.lastIngestedAt):null,last=stamp&&!Number.isNaN(stamp.getTime())?stamp.toLocaleString():"time unavailable";return {text:`Checking usage records - Last ingestion ${last}`,title:"Some recent usage is waiting for its file to be re-checked. The ledger has not confirmed completion."};}
     if(coverage.status!=="partial")return null;
     const causes=[[coverage.gapCount,"gap","gaps"],[coverage.unknownUsageRecords,"turn without usage","turns without usage"],[coverage.readFailures,"read failure","read failures"]]
       .filter(([count])=>finite(count)>0).map(([count,one,many])=>`${number(count)} ${count===1?one:many}`);
@@ -304,18 +312,19 @@
   const breakdownToggle=active=>`<span class="dash-breakdown" role="group" aria-label="Breakdown">${[["models","Models"],["work","By work"]].map(([value,label])=>`<button type="button" data-dashboard-models="${value}" aria-pressed="${active===value}" class="${active===value?"is-active":""}"${value==="work"?' title="Tokens by kind of work. Kind is inferred from job titles and kind: tags."':""}>${label}</button>`).join("")}</span>`;
   function workHTML(work){
     const note=workNote(work),label=kind=>kind[0].toUpperCase()+kind.slice(1);
-    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero" aria-label="None">·</span>'
-      :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(compact.format(cell.tokens))}</span>`;
+    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero" aria-label="None">?</span>'
+      :work.metric==="cost"?cell.known<=0?'<span role="cell" tabindex="0" class="dash-work-cell is-zero" aria-label="No published price for this usage">Unpriced</span>':`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${cell.unpriced?"at least ":""}${money(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> ? ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${cell.unpriced?"? ":""}${esc(money(cell.known))}</span>`
+      :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens; ${workCost(cell)}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> ? ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(compact.format(cell.tokens))}</span>`;
     const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span></span>${work.kinds.map(kind=>`<span role="columnheader">${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
     const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}"${row.other?"":` title="${esc(`${row.provider} · ${row.name}`)}"`}><i></i>${esc(row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
     const foot=`<div role="row" class="dash-work-row is-foot"><span role="rowheader">Total</span>${work.kinds.map(kind=>cellHTML(work.totals.cells[kind],"All models",label(kind),true)).join("")}${cellHTML(work.totals.all,"All models","all work",true)}</div>`;
-    return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}"><div class="dash-section-label dash-work-head">${breakdownToggle("work")}${note?`<small class="dash-work-note is-qualified" title="${esc(note.title)}">${esc(note.text)}</small>`:"<small>Tokens</small>"}</div><div class="dash-work-grid" role="table" aria-label="Tokens by model and kind of work">${head}${body}${foot}</div></div>`;
+    return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}"><div class="dash-section-label dash-work-head">${breakdownToggle("work")}<small>${work.metric==="cost"?"API-equivalent cost":"Tokens"}</small>${note?`<small class="dash-work-note is-qualified" title="${esc(note.title)}">${esc(note.text)}</small>`:""}</div><div class="dash-work-grid" role="table" aria-label="${work.metric==="cost"?"API-equivalent cost":"Tokens"} by model and kind of work">${head}${body}${foot}</div></div>`;
   }
   async function loadLedger(range){
     const token=state.ledgerToken=(state.ledgerToken||0)+1;
     const drop=()=>{if(state.ledger!=null){state.ledger=null;state.ledgerKey="";state.renderKey="";render();}};
     try{
-      const response=await fetch("/api/ledger?range="+encodeURIComponent(range),{cache:"no-store"});
+      const response=await fetch("/api/ledger?range="+encodeURIComponent(range),{cache:"no-store",signal:AbortSignal.timeout(10000)});
       if(token!==state.ledgerToken)return;
       if(!response.ok){drop();return;}
       const value=await response.json();if(token!==state.ledgerToken)return;
@@ -335,7 +344,7 @@
   const PLAN_PROVIDERS=["Claude","Codex"];
   const planPrice=name=>{const raw=Number(readPref(`branchglancePlanPrice.${name}`,""));return Number.isFinite(raw)&&raw>0?raw:20;};
   // A lower bound (unpriced models present) that rounds to zero reads "0.0", never "<0.1", which would claim an upper bound.
-  const planMultiple=(value,lowerBound)=>value<.1?(lowerBound?"0.0":"<0.1"):value>=10?Math.round(value).toLocaleString("en-US"):value.toFixed(1);
+  const planMultiple=(value,lowerBound)=>{if(lowerBound){const precision=value>=10?0:1,factor=10**precision;return (Math.floor(value*factor)/factor).toFixed(precision);}return value<.1?"<0.1":value>=10?Math.round(value).toLocaleString("en-US"):value.toFixed(1);};
   function rollingRows(){
     const sum=values=>{const present=values.map(finite).filter(value=>value!==null);return present.length?present.reduce((total,value)=>total+value,0):null;};
     return state.month.providers.map(p=>{
@@ -356,13 +365,13 @@
     if(!(row.tokens>0))return planCells(`<span class="dash-plan-text">No usage</span>`);
     if(row.cost==null)return planCells(`<span class="dash-plan-text" title="No published price for these models">Unpriced</span>`);
     const price=planPrice(name),multiple=row.cost/price,prefix=row.unpriced?"≥":"";
-    return planCells(`<span title="${esc(`${row.unpriced?"≥ excludes usage with no published price. ":""}Last 30 days (calendar, incl. today) API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
+    return planCells(`<span title="${esc(`${row.unpriced?"At least means some usage has no published price, so the real figure is higher. ":""}Last 30 days (calendar, incl. today) API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
   }
   async function loadMonth(){
     const token=++state.monthToken;
     const content=value=>JSON.stringify({...value,generatedAt:undefined});
     try{
-      const response=await fetch("/api/insights?range=30d",{cache:"no-store"});
+      const response=await fetch("/api/insights?range=30d",{cache:"no-store",signal:AbortSignal.timeout(10000)});
       if(!response.ok)throw new Error("Rolling 30-day totals unavailable");
       const value=await response.json();
       if(token!==state.monthToken)return;
@@ -385,20 +394,15 @@
   const rowHTML=(label,description,control="")=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control">${control}</div></div>`;
   function settingsHTML(){
     const clock=readPref("branchglanceClockFormat","12")==="24"?"24":"12",policies=Array.isArray(state.policy?.providers)?state.policy.providers:[];
-    const providers=policies.length?`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers <span class="count">Policy controlled</span></h2>${policies.map(row=>rowHTML(esc(row.name),"",`<span class="dash-policy-flags">${["show","collect","send"].map(key=>`<span><small>${key}</small><b>${row[key]===true?"On":row[key]===false?"Off":"—"}</b></span>`).join("")}</span>`)).join("")}${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<p class="dash-setting-note">Show, collect and send flags are set in the policy file.${/[\\/]/.test(String(state.policy?.policyFile||""))?` <code>${esc(state.policy.policyFile)}</code>`:""}</p></section>`:"";
-    // Reset actions stays isolated in its existing frame; the dashboard never receives a settings token.
-    const reset=state.settingsLoaded?`<iframe class="reset-embed" title="Auto-greet, continue and Claude tracking settings" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status">${esc(state.settingsStatus||"Loading reset settings…")}</p>`;
-    const notifications=`<section class="dash-settings-group"><h2>Notifications</h2>${reset}${rowHTML("Claude tracking and features",`<span id="dash-claude-status">${esc(state.claudeStatus||"")}</span>`,`<button class="dash-action" data-dashboard-action="claude-settings">Change Claude tracking…</button>`)}</section>`;
-    const general=`<section class="dash-settings-group"><h2>General</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","Use a 12 or 24-hour clock",`<button class="dash-picker" data-dashboard-action="clock">${clock}-hour <i class="chevron" aria-hidden="true"></i></button>`)}</section>`;
-    const plan=`<section class="dash-settings-group"><h2>Plan</h2><div class="dash-plan-group"><span class="dash-setting-label">Monthly plan price</span><span class="dash-setting-description">Used for the 30-day multiple</span><div class="dash-plan-fields">${PLAN_PROVIDERS.map(name=>`<label class="dash-plan-field"><span class="dash-plan-field-name">${esc(name)}</span><span aria-hidden="true">$</span><input type="number" min="1" step="any" inputmode="decimal" value="${esc(planPrice(name))}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label>`).join("")}</div></div></section>`;
-    const monitorOptions=state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("");
-    const display=`<section class="dash-settings-group"><h2>Display</h2>${state.monitors.length?rowHTML("Monitor","Choose where the widget opens",`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor">${monitorOptions}</select>`):""}${rowHTML("Recenter widget","Return to the selected display",`<button class="dash-action" data-dashboard-action="recenter">Recenter</button>`)}</section>`;
+    const providerRows=policies.length?policies.map(row=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(row.name)}</span></div><div class="dash-policy-flags"><span>${row.show===true?"Shown":row.show===false?"Hidden":"Unavailable"}</span><span>${row.collect===true?"Collecting":row.collect===false?"Collection off":"Unavailable"}</span><span>${row.send===true?"Can send":row.send===false?"Send off":"Unavailable"}</span></div></div>`).join(""):'<p class="dash-setting-note">Provider status unavailable.</p>';
+    const providers=`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers</h2>${providerRows}${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<p class="dash-setting-note">Set by your policy file.${/[\\/]/.test(String(state.policy?.policyFile||""))?` <code>${esc(state.policy.policyFile)}</code>`:""}</p><button class="dash-action" data-dashboard-action="claude-settings">Manage providers, automation and history&#8230;</button></section>`;
+    const reset=state.settingsLoaded?`<iframe class="reset-embed" title="After a Codex quota reset" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status" role="status">Loading</p>`;
+    const widget=`<section class="dash-settings-group"><h2>Widget</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","",`<div class="dash-clock-segment" role="group" aria-label="Clock format">${[["12","12-hour"],["24","24-hour"]].map(([value,label])=>`<button type="button" data-dashboard-clock="${value}" aria-pressed="${clock===value}">${label}</button>`).join("")}</div>`)}${rowHTML("Monitor",state.lock?.locked?"Unlock the widget to move it":"Choose where the widget opens",`<div class="dash-monitor-controls">${state.monitors.length?`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor" ${state.lock?.locked?"disabled":""}>${state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("")}</select>`:""}<button class="dash-action" data-dashboard-action="recenter" ${state.lock?.locked?"disabled":""}>Recenter</button></div>`)}</section>`;
+    const plan=`<details class="dash-settings-group dash-plan-details"><summary>Cost comparison</summary><div class="dash-plan-group"><span class="dash-setting-label">Monthly plan price</span><span class="dash-setting-description">Used only for the 'vs plan' figure in Insights: your 30-day API-equivalent estimate divided by this monthly price.</span><div class="dash-plan-fields">${PLAN_PROVIDERS.map(name=>`<label class="dash-plan-field"><span class="dash-plan-field-name">${esc(name)}</span><span aria-hidden="true">$</span><input type="number" min="1" step="any" inputmode="decimal" value="${esc(planPrice(name))}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label>`).join("")}</div></div></details>`;
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
-    const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:"";
-    // Both columns fit the fixed panel body: the reset frame keeps the second column, the rest share the first.
-    // The preview is text in a read-only box: the report is never parsed as HTML.
-    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="Report a bug"><h2>Report a bug</h2><p class="dash-setting-note">Builds a text report with no chat text, file paths, account details or tokens. Review it before sharing.</p><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-preview">Preview debug report</button></div><div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
-    return `<div class="dash-settings-columns"><div class="dash-settings-column">${general}${plan}${providers}${display}</div><div class="dash-settings-column">${notifications}${status}${version}${debug}</div></div>`;
+    const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:state.settingsLoaded?'<p class="dash-setting-note">Version unavailable</p>':"";
+    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="About and bug report"><h2>About</h2>${version}<p class="dash-setting-note">Builds a text report with no chat text, file paths, account details or tokens. Review it before sharing.</p><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-preview">Preview</button></div><div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
+    return `<div class="dash-settings-columns">${widget}${providers}<section class="dash-settings-group"><h2>After a Codex quota reset</h2>${reset}</section>${plan}${status}${debug}</div>`;
   }
   const DEBUG_ISSUE_URL="https://github.com/apratxxm/branchglance/issues/new?template=bug_report.yml";
   const DEBUG_TITLE="# Branchglance debug report";
@@ -409,7 +413,7 @@
   async function previewDebugReport(){
     setDebugStatus("Building report…");
     try{
-      const response=await fetch("/api/debug-report",{cache:"no-store"});
+      const response=await fetch("/api/debug-report",{cache:"no-store",signal:AbortSignal.timeout(10000)});
       const text=response.ok?await response.text():"";
       if(!text.startsWith(DEBUG_TITLE))throw new Error("unavailable");
       state.debugReport=text;
@@ -481,7 +485,7 @@
   }
   function syncTabs(){
     const root=$("#dashboard-view");if(root)root.dataset.tab=state.tab;syncSize();
-    for(const key of ["insights","settings"]){const button=$("#dashboard-tab-"+key),panel=$("#dashboard-"+key);if(button){button.classList.toggle("is-active",key===state.tab);button.setAttribute("aria-selected",String(key===state.tab));}if(panel)panel.hidden=key!==state.tab;}
+    for(const key of ["insights","settings"]){const button=$("#dashboard-tab-"+key),panel=$("#dashboard-"+key);if(button){button.classList.toggle("is-active",key===state.tab);button.setAttribute("aria-selected",String(key===state.tab));button.tabIndex=key===state.tab?0:-1;}if(panel)panel.hidden=key!==state.tab;}
   }
   function syncSegments(){
     document.querySelectorAll("[data-dashboard-range]").forEach(button=>{const active=button.dataset.dashboardRange===state.range;button.classList.toggle("is-active",active);button.setAttribute("aria-pressed",String(active));});
@@ -491,7 +495,7 @@
   function selectTab(name){
     if(name!=="insights"&&name!=="settings")return;
     cancelFade();if(name===state.tab)return;
-    crossFade(()=>{state.tab=name;syncTabs();state.renderKey="";render();if(name==="settings"&&!state.settingsLoaded)void loadSettings();});
+    crossFade(()=>{state.tab=name;syncTabs();state.renderKey="";render();if(name==="settings")void loadSettings();});
   }
   function setRange(range){
     if(!isRange(range))return;
@@ -505,14 +509,14 @@
   }
   async function loadSettings(){
     if(state.settingsBusy)return;state.settingsBusy=true;state.settingsError=false;state.settingsStatus="Loading settings…";render();const api=window.pywebview?.api;
-    try{const [policyResponse,identityResponse]=await Promise.all([fetch("/api/provider-policy",{cache:"no-store"}),fetch("/api/identity",{cache:"no-store"})]);if(policyResponse.ok)state.policy=await policyResponse.json();if(identityResponse.ok)state.identity=await identityResponse.json();const [monitors,lock,keep]=await Promise.all([api?.get_monitors?.()||[],api?.get_widget_lock?.()||null,api?.get_keep_open?.()||null]);state.monitors=Array.isArray(monitors)?monitors:[];state.lock=lock;state.keepOpen=keep;state.settingsStatus="";state.settingsLoaded=true;}
-    catch(error){state.settingsError=true;state.settingsStatus=error?.message||"Settings could not be loaded.";}
+    try{const [policyResponse,identityResponse]=await Promise.all([fetch("/api/provider-policy",{cache:"no-store",signal:AbortSignal.timeout(10000)}),fetch("/api/identity",{cache:"no-store",signal:AbortSignal.timeout(10000)})]);if(!policyResponse.ok)throw new Error("Provider policy is unavailable.");state.policy=await policyResponse.json();state.identity=identityResponse.ok?await identityResponse.json():null;const [monitors,lock,keep]=await Promise.all([api?.get_monitors?.()||[],api?.get_widget_lock?.()||null,api?.get_keep_open?.()||null]);state.monitors=Array.isArray(monitors)?monitors:[];state.lock=lock;state.keepOpen=keep;state.settingsStatus="";state.settingsLoaded=true;}
+    catch(error){state.policy=null;state.identity=null;state.monitors=[];state.lock=null;state.keepOpen=null;state.settingsLoaded=true;state.settingsError=true;state.settingsStatus=error?.message||"Settings could not be loaded.";}
     finally{state.settingsBusy=false;state.settingsRenderKey="";render();}
   }
   async function chooseMonitor(id){
     const api=window.pywebview?.api;if(typeof api?.select_monitor!=="function")return;
-    try{const result=await api.select_monitor(id);state.monitors=Array.isArray(result)?result:state.monitors;state.settingsError=false;state.settingsStatus="";}
-    catch(error){state.settingsError=true;state.settingsStatus=error?.message||"Monitor could not be selected.";}
+    try{const result=await api.select_monitor(id);state.monitors=Array.isArray(result)?result:state.monitors;if(typeof api.get_widget_lock==="function")state.lock=await api.get_widget_lock();state.settingsError=false;state.settingsStatus="";}
+    catch(error){state.lock=null;state.settingsError=true;state.settingsStatus=error?.message||"Monitor could not be selected.";}
     finally{state.settingsRenderKey="";render();}
   }
   async function toggleSetting(action){
@@ -528,30 +532,30 @@
   function toggleClock(){setClockFormat(readPref("branchglanceClockFormat","12")==="12"?"24":"12");}
   function render(){
     if(!state.open)return;
+    const active=document.activeElement,focusData=active?.dataset||{};
     const insightsKey=[state.version,state.source,state.range,state.metric,state.tab,chartStyle()].join("|");
-    if(insightsKey!==state.renderKey){dismissTooltip();state.renderKey=insightsKey;const insights=$("#dashboard-insights");if(insights)insights.innerHTML=insightsHTML();}
+    if(insightsKey!==state.renderKey){dismissTooltip();state.renderKey=insightsKey;const insights=$("#dashboard-insights");if(insights){insights.innerHTML=insightsHTML();let replacement=null;if(focusData.dashboardProvider!=null)replacement=[...insights.querySelectorAll("[data-dashboard-provider]")].find(node=>node.dataset.dashboardProvider===focusData.dashboardProvider);else if(focusData.dashboardRange)replacement=insights.querySelector(`[data-dashboard-range="${focusData.dashboardRange}"]`);else if(focusData.dashboardMetric)replacement=insights.querySelector(`[data-dashboard-metric="${focusData.dashboardMetric}"]`);else if(focusData.dashboardChartStyle)replacement=insights.querySelector(`[data-dashboard-chart-style="${focusData.dashboardChartStyle}"]`);else if(focusData.dashboardModels)replacement=insights.querySelector(`[data-dashboard-models="${focusData.dashboardModels}"]`);replacement?.focus?.();}}
     const settings=$("#dashboard-settings");
     if(settings&&state.tab==="settings"){
-      const settingsKey=[state.source,state.policy?.generation,state.identity?.version,state.identity?.build,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.lock?.revision,state.keepOpen?.keepOpenRevision,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
-      if(settingsKey!==state.settingsRenderKey){state.settingsRenderKey=settingsKey;settings.innerHTML=settingsHTML();state.frame=$("#dashboard-settings iframe");}
+      const settingsKey=[state.source,JSON.stringify(state.policy),state.identity?.version,state.identity?.build,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.lock?.revision,state.keepOpen?.keepOpenRevision,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
+      if(settingsKey!==state.settingsRenderKey){const focus=document.activeElement,selector=focus?.dataset?.dashboardAction?`[data-dashboard-action="${focus.dataset.dashboardAction}"]`:focus?.dataset?.dashboardClock?`[data-dashboard-clock="${focus.dataset.dashboardClock}"]`:focus?.dataset?.dashboardPlan?`[data-dashboard-plan="${focus.dataset.dashboardPlan}"]`:null,oldFrame=settings.querySelector("iframe.reset-embed");state.settingsRenderKey=settingsKey;const template=document.createElement("template");template.innerHTML=settingsHTML();const newFrame=template.content.querySelector("iframe.reset-embed");if(oldFrame&&newFrame)newFrame.replaceWith(oldFrame);settings.replaceChildren(template.content);state.frame=settings.querySelector("iframe.reset-embed");if(selector)settings.querySelector(selector)?.focus();}
     }
     bindTooltipsOnce();
     syncSize();
   }
   function open({source,tab}={}){
-    state.open=true;state.tab=tab==="settings"?"settings":"insights";if(typeof source==="string")state.source=source;
-    state.range=readPref("branchglanceInsightsRange","30d");if(!isRange(state.range))state.range="30d";
+    state.opener=document.activeElement;state.open=true;state.tab=tab==="settings"?"settings":"insights";if(typeof source==="string")state.source=source;
+    state.range=storedRange();
     state.metricExplicit=readPref("branchglanceInsightsMetric",null)!==null;state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
-    syncTabs();syncSegments();render();void loadInsights();void loadMonth();if(state.tab==="settings"&&!state.settingsLoaded)void loadSettings();
+    syncTabs();syncSegments();render();requestAnimationFrame(()=>$("#dashboard-tab-"+state.tab)?.focus());void loadInsights();void loadMonth();if(state.tab==="settings")void loadSettings();
     if(state.refreshTimer!=null)clearInterval(state.refreshTimer);
     state.refreshTimer=setInterval(()=>{if(state.open&&!state.loading)void loadInsights();void loadMonth();},120000);
   }
   function close(){
     state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
     $("#dashboard-content")?.classList.remove("is-switching");const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
-    const frame=$("#dashboard-settings iframe");if(frame)frame.src="about:blank";
-    state.frame=null;state.settingsLoaded=false;state.settingsRenderKey="";
+    state.frame=null;state.settingsRenderKey="";state.opener?.focus?.();state.opener=null;
   }
   function normalizeStats(snapshot){
     const providers=Array.isArray(snapshot?.providers)?snapshot.providers:[];
@@ -559,8 +563,8 @@
   }
   async function loadInsights(){
     const token=++state.loadToken,requestRange=state.range;
-    // The ledger loads after Insights settles, so it never delays or reorders the main request.
-    try{return await loadInsightsOnce(token,requestRange);}finally{if(token===state.loadToken)void loadLedger(requestRange);}
+    void loadLedger(requestRange);
+    return await loadInsightsOnce(token,requestRange);
   }
   async function loadInsightsOnce(token,requestRange){
     state.loading=true;state.loadError=false;updateStatusLine();
@@ -576,7 +580,7 @@
     try{
       let value=null;
       try{
-        const response=await fetch("/api/insights?range="+encodeURIComponent(requestRange),{cache:"no-store"});
+        const response=await fetch("/api/insights?range="+encodeURIComponent(requestRange),{cache:"no-store",signal:AbortSignal.timeout(12000)});
         if(!current())return state.insights;
         if(response.ok){const candidate=await response.json();if(!current())return state.insights;if(Array.isArray(candidate?.providers)&&(candidate.range==null||candidate.range===requestRange))value=candidate;}
       }catch{}
@@ -585,7 +589,7 @@
       // Keep a trusted result on failed refresh; a fallback cannot replace its coverage.
       if(state.insights&&!state.insights.fallback)throw new Error("Insights unavailable");
       try{
-        const fallback=await fetch("/api/stats?background=1",{cache:"no-store"});if(!current())return state.insights;
+        const fallback=await fetch("/api/stats?background=1",{cache:"no-store",signal:AbortSignal.timeout(12000)});if(!current())return state.insights;
         if(fallback.ok){const stats=await fallback.json();if(!current())return state.insights;state.statsSnapshot=stats;return accept(normalizeStats(stats),false,true);}
       }catch{}
       if(!current())return state.insights;
@@ -604,6 +608,8 @@
   function setSource(source){if(typeof source==="string"&&source!==state.source){state.source=source;state.renderKey="";render();}}
   document.addEventListener("click",event=>{
     const tab=event.target?.closest?.("[data-dashboard-tab]");if(tab){selectTab(tab.dataset.dashboardTab);return;}
+    if(event.target?.closest?.("#dashboard-refresh")){void loadInsights();return;}
+    const clock=event.target?.closest?.("[data-dashboard-clock]");if(clock){setClockFormat(clock.dataset.dashboardClock);return;}
     const provider=event.target?.closest?.("[data-dashboard-provider]");if(provider){toggleProvider(provider.dataset.dashboardProvider);return;}
     const range=event.target?.closest?.("[data-dashboard-range]");if(range){setRange(range.dataset.dashboardRange);return;}
     const metric=event.target?.closest?.("[data-dashboard-metric]");if(metric){setMetric(metric.dataset.dashboardMetric);return;}
@@ -614,20 +620,26 @@
     if(name==="close")window.tokenTrackerCloseDashboard?.();
     else if(name==="lock"||name==="keep-open")void toggleSetting(name);
     else if(name==="clock")toggleClock();
-    else if(name==="recenter")void window.tokenTrackerRecenter?.();
+    else if(name==="recenter"){if(state.lock?.locked)return;void Promise.resolve(window.tokenTrackerRecenter?.()).then(()=>loadPlacement());}
+    else if(name==="dashboard-recenter")void window.tokenTrackerRecenter?.();
     else if(name==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
     else if(name==="debug-preview")void previewDebugReport();
     else if(name==="debug-copy")void copyDebugReport();
     else if(name==="debug-issue")openDebugIssue();
   });
+  document.addEventListener("keydown",event=>{const tab=event.target?.closest?.("[role=tab][data-dashboard-tab]");if(!tab)return;const keys=["insights","settings"],index=keys.indexOf(tab.dataset.dashboardTab);let next=null;if(event.key==="ArrowRight")next=keys[(index+1)%keys.length];else if(event.key==="ArrowLeft")next=keys[(index+keys.length-1)%keys.length];else if(event.key==="Home")next=keys[0];else if(event.key==="End")next=keys.at(-1);if(next){event.preventDefault();selectTab(next);requestAnimationFrame(()=>$("#dashboard-tab-"+next)?.focus());}});
   document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);if(target?.dataset?.dashboardPlan)setPlanPrice(target.dataset.dashboardPlan,target.value);});
   window.addEventListener("message",event=>{
     if(event.origin!==location.origin||event.source!==state.frame?.contentWindow)return;
     if(event.data?.type==="dashboard-reset-cancel")window.tokenTrackerCloseDashboard?.();
+    if(event.data?.type==="dashboard-open-settings")void window.pywebview?.api?.open_reset_actions?.();
     // The frame reports the Claude Code status; it shows in the "Claude tracking" row, not inside the frame.
+    if(event.data?.type==="dashboard-reset-state"){const frame=state.frame;const status=frame?.parentElement?.querySelector(".dash-reset-state");if(status)status.textContent=String(event.data.text||"");}
     if(event.data?.type==="dashboard-claude-status"){state.claudeStatus=String(event.data.text||"").slice(0,120);const node=$("#dash-claude-status");if(node)node.textContent=state.claudeStatus;}
   });
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
+  window.addEventListener("focus",()=>{if(state.open&&state.tab==="settings")void loadSettings();});
+  async function loadPlacement(){const api=window.pywebview?.api;try{if(typeof api?.get_widget_lock==="function")state.lock=await api.get_widget_lock();if(typeof api?.get_monitors==="function")state.monitors=await api.get_monitors();state.settingsStatus="";state.settingsError=false;}catch{state.lock=null;state.settingsStatus="Widget placement status is unavailable.";state.settingsError=true;}state.settingsRenderKey="";render();}
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,normalizeStats,emptyHTML,planCellsHTML,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,statusText,normalizeStats,emptyHTML,planCellsHTML,planMultiple,storedRange,toggleProvider,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,loadInsightsOnce,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};
 })();

@@ -25,6 +25,7 @@
         <button id="toolbar-more" class="icon-btn" data-action="toolbar-more" aria-haspopup="true" aria-expanded="false" aria-controls="toolbar-menu" aria-label="More actions" title="More"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><circle cx="2.5" cy="6" r=".9"/><circle cx="6" cy="6" r=".9"/><circle cx="9.5" cy="6" r=".9"/></svg></button>
         <div id="toolbar-menu" class="toolbar-menu" role="group" aria-label="More actions" hidden>
           <button id="toolbar-settings" class="toolbar-menu-item" data-action="open-settings" aria-label="Open Settings" title="Settings">Settings</button>
+          <button id="toolbar-recenter" class="toolbar-menu-item" data-dashboard-action="dashboard-recenter" aria-label="Recenter widget">Recenter</button>
           <button id="monitor-toggle" class="sync-age" aria-label="Move to next monitor" title="Move to next monitor">Monitor</button>
         </div>
       </div>
@@ -59,8 +60,9 @@
           <button id="dashboard-tab-settings" class="dashboard-tab" role="tab" aria-selected="false" aria-controls="dashboard-settings" data-dashboard-tab="settings">Settings</button>
         </nav>
         <div class="dashboard-controls" id="dashboard-insights-controls">
-          <div class="dash-segment" role="group" aria-label="Date range"><button data-dashboard-range="24h" aria-label="24 hours">24h</button><button data-dashboard-range="7d" aria-label="7 days">7d</button><button data-dashboard-range="30d" class="is-active" aria-label="30 days">30d</button><button data-dashboard-range="all" aria-label="All, 31 days">All</button></div>
+          <div class="dash-segment" role="group" aria-label="Date range"><button data-dashboard-range="24h" aria-label="24 hours">24h</button><button data-dashboard-range="7d" aria-label="7 days">7d</button><button data-dashboard-range="30d" class="is-active" aria-label="30 days">30d</button></div>
           <div class="dash-segment" role="group" aria-label="Metric"><button data-dashboard-metric="tokens">Tokens</button><button data-dashboard-metric="cost" class="is-active">Cost</button></div>
+          <button id="dashboard-refresh" type="button" aria-label="Refresh Insights">Refresh</button>
         </div>
         <button id="dashboard-close" class="dashboard-close" data-dashboard-action="close" aria-label="Close dashboard and return to widget" title="Close dashboard"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button>
       </header>

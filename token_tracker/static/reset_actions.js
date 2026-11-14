@@ -1,13 +1,15 @@
 (() => {
   const $ = (s) => document.querySelector(s);
   const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
-  if(embedded){const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Change this with “Change Claude tracking…” below.";const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="One-shot for the next genuine quota reset. Saving only arms it; nothing is sent now.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
+  if(embedded){document.querySelectorAll("#ledger-history .ledger-row").forEach(row=>row.remove());const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Manage this in the provider settings window.";const ledgerNote=document.getElementById("ledger-note");if(ledgerNote)ledgerNote.textContent="Delete saved usage history in the Manage providers, automation and history window.";const manage=document.getElementById("manage-settings");if(manage)manage.hidden=false;const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="One-shot for the next genuine quota reset. Saving only arms it; nothing is sent now.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
   let settingsToken="";
   try {
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
     window.history?.replaceState?.(null,"",`${window.location.pathname}${window.location.search}`);
   } catch {}
   const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0, ledger: null, purge: {} };
+  function setEmbeddedState(text,unavailable=false){if(!embedded)return;const box=$("#embedded-policy-state"),message=$("#embedded-policy-message"),retry=$("#embedded-policy-retry");if(box)box.hidden=false;if(message)message.textContent=text;if(retry)retry.hidden=!unavailable;window.parent.postMessage({type:"dashboard-reset-state",text},window.location.origin);}
+  function renderEmbeddedPolicy(){if(!embedded)return;if(!state.policyReady){setEmbeddedState("Unavailable - Permission status is not confirmed.",true);return;}let missing="";if(!state.policy.collect)missing="Codex collection is off";else if(!state.policy.show)missing="Codex display is off";else if(!state.canGreet&&!state.canContinue)missing="Codex startup permissions do not allow automatic actions";if(missing)setEmbeddedState(`Off - ${missing}`);else setEmbeddedState("Available");}
   // Saved usage history: the purge needs the settings token, so the embedded frame shows its rows read-only.
   const LEDGER_PROVIDERS = ["Claude", "Codex"];
   const PURGE_CONFIRM_MS = 5000, PURGE_POLL_MS = 2000, PURGE_POLL_LIMIT = 30;
@@ -116,12 +118,13 @@
     state.canGreet=Boolean(policy?.collect&&policy.show&&policy.send&&policy.capabilities.greet&&["provider_env","legacy_global"].includes(policy.sendOrigin));
     state.canContinue=Boolean(policy?.collect&&policy.show&&policy.send&&policy.sendOrigin==="provider_env"&&policy.capabilities.continue);
     if(!state.canContinue||previousGeneration&&previousGeneration!==policy?.generation){state.selected.clear();if(state.action?.mode==="continue"){state.action={...state.action,threadIds:[],lastRun:state.action.lastRun?.targets?{...state.action.lastRun,targets:[]}:state.action.lastRun};}}
+    renderEmbeddedPolicy();
   }
   function updatePermissionCopy() {
     const greet=$("#greet-help"),continuation=$("#continue-help"),note=$("#permission");
-    if(greet)greet.textContent=state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.";
-    if(continuation)continuation.textContent=state.canContinue?"Queue the exact message “continue” for the next genuine reset.":"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.";
-    if(note)note.textContent=!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy.show||!state.policy.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue&&!embedded?"Chat continuation requires explicit Codex send permission.":"";
+    if(greet)greet.textContent=!state.policyReady?"Checking permission status.":state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.";
+    if(continuation)continuation.textContent=!state.policyReady?"Checking permission status.":state.canContinue?"Queue the exact message “continue” for the next genuine reset.":"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.";
+    if(note)note.textContent=!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue&&!embedded?"Chat continuation requires explicit Codex send permission.":"";
   }
   function render() {
     const cont=mode()==="continue"; $("#picker").hidden=!cont;
@@ -153,7 +156,7 @@
   }
   function titleFor(id) { return state.threads.find(t=>t.id===id)?.title || id || "Unknown chat"; }
   async function load() {
-    state.busy=true; render(); message("Loading settings…");
+    state.busy=true;state.policyReady=false; render(); message("Loading settings…");if(embedded)setEmbeddedState("Loading permission status...");
     try {
       const policyResponse=await fetch("/api/provider-policy",{cache:"no-store",signal:AbortSignal.timeout(10000)});
       if(!policyResponse.ok)throw new Error("Permission status is unavailable.");
@@ -165,16 +168,17 @@
       const action=data.action&&typeof data.action==="object"?{...data.action}:null;
       const reusable=Boolean(state.canContinue&&action?.mode==="continue"&&action?.schemaVersion===2&&action?.armed===true);
       if(action){if(action.mode!=="continue"||!reusable)action.threadIds=[];if(!state.canContinue||action.mode==="continue"&&!reusable){if(action.lastRun?.targets)action.lastRun={...action.lastRun,targets:[]};}}
-      state.action=action; state.threads=Array.isArray(data.threads)?data.threads:[];
+      state.action=action;state.threads=Array.isArray(data.threads)?data.threads:[];
       if(!state.loaded&&!state.dirty){
         if(reusable&&Array.isArray(state.action?.threadIds))state.selected=new Set(state.action.threadIds);
         const preferred=state.action?.mode==="continue"&&reusable?"continue":state.action?.mode==="greet"&&state.canGreet?"greet":state.canGreet?"greet":state.canContinue?"continue":"greet";
         const radio=document.querySelector(`input[name="mode"][value="${preferred}"]`);if(radio)radio.checked=true;
       }
       state.loaded=true;
+      renderEmbeddedPolicy();
       const staleSelection=action?.mode==="continue"&&!reusable;
       message(data.threadsAvailable===false?`${data.error||"Chat list unavailable."} Retry to refresh the list.`:staleSelection?"Saved chat selections were not restored. Re-select chats and save to arm a new one-shot action.":"");
-    } catch(e) { if(!state.policyReady){state.canGreet=false;state.canContinue=false;state.action=null;state.threads=[];state.selected.clear();}message(e.message||"Could not load settings. Retry to try again.",true); }
+    } catch(e) { if(!state.policyReady){state.canGreet=false;state.canContinue=false;state.action=null;state.threads=[];state.selected.clear();if(embedded)setEmbeddedState("Unavailable - Permission status could not be loaded.",true);}else if(embedded)setEmbeddedState("Unavailable - Reset action settings could not be loaded.",true);message(e.message||"Could not load settings. Retry to try again.",true); }
     finally { state.busy=false; render(); }
   }
   async function save() {
@@ -259,14 +263,18 @@
       renderLedger();
     },PURGE_POLL_MS);
   }
+  async function reloadAll(){await Promise.all([load(),loadClaude(),loadLedger(),loadClaudeGreeting(),loadFeatures()]);}
   document.addEventListener("change",e=>{if(e.target.matches('input[name="mode"]')){state.dirty=true;render();}if(e.target.matches('#threads input[type="checkbox"]')){state.dirty=true;e.target.checked?state.selected.add(e.target.dataset.id):state.selected.delete(e.target.dataset.id);render();}});
   document.addEventListener("keydown",event=>{if(embedded&&event.key==="Escape"){event.preventDefault();window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);}});
-  $("#search").addEventListener("input",()=>{state.page=0;render();}); $("#page-prev")?.addEventListener("click",()=>{state.page--;render();}); $("#page-next")?.addEventListener("click",()=>{state.page++;render();}); $("#refresh").addEventListener("click",load); $("#save").addEventListener("click",save);
-  $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude); $("#refresh").addEventListener("click",()=>{load();loadClaude();loadLedger();});
+  $("#search").addEventListener("input",()=>{state.page=0;render();}); $("#page-prev")?.addEventListener("click",()=>{state.page--;render();}); $("#page-next")?.addEventListener("click",()=>{state.page++;render();}); $("#refresh").addEventListener("click",reloadAll); $("#save").addEventListener("click",save);
+  $("#embedded-policy-retry")?.addEventListener("click",reloadAll);
+  $("#manage-settings")?.addEventListener("click",()=>window.parent.postMessage({type:"dashboard-open-settings"},window.location.origin));
+  $("#cancel").addEventListener("click",()=>{if(embedded)window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);else window.close();}); $("#claude-toggle").addEventListener("click",toggleClaude);
   for(const provider of LEDGER_PROVIDERS)document.querySelector(`[data-purge="${provider}"]`)?.addEventListener("click",()=>purgeClick(provider));
   $('#claude-rearm')?.addEventListener('click',rearmClaudeGreeting);
   for(const name of ['live_usage','ledger','claude_send']) $(`[data-feature="${name}"]`)?.addEventListener('change',e=>changeFeature(name,e.target.checked));
   $('#statusline-toggle')?.addEventListener('click',toggleStatusline);
+  if(embedded)setEmbeddedState("Loading permission status...");
   loadFeatures();
   load();loadClaude();loadLedger();loadClaudeGreeting();
   if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude};

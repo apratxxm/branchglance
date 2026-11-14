@@ -13,7 +13,7 @@ assert.match(html,/Enabling adds Branchglance hooks to Claude Code settings \(wi
 assert.match(html,/Open settings from the Branchglance widget to change this\./);
 assert.match(html,/one-shot action for the next genuine quota reset/i);
 assert.match(html,/queued chat has not necessarily started/i);
-// The embedded frame never scrolls: its chat list pages instead (Previous and Next), and the frame styles carry no inner scroll.
+// The embedded frame pages its chat list and now has a reachable vertical scroll path.
 assert.match(html,/id="pager"[^>]*hidden/);assert.match(html,/id="page-prev"/);assert.match(html,/id="page-next"/);
 assert.match(source,/PAGE_SIZE = 3/);assert.match(source,/embedded\?available\.slice\(state\.page\*PAGE_SIZE/);
 const frameCss=fs.readFileSync(new URL("../token_tracker/static/reset_actions.css",import.meta.url),"utf8");
@@ -23,7 +23,8 @@ assert.match(app,/api\?\.open_reset_actions/);
 assert.match(app,/window\.open\?\.\("\/reset_actions\.html","_blank","noopener"\)/);
 
 const elements=new Map();
-function element(selector){if(!elements.has(selector))elements.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return elements.get(selector);}
+const listenerCounts=new Map();
+function element(selector){if(!elements.has(selector))elements.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;listenerCounts.set(`${selector}:${type}`,(listenerCounts.get(`${selector}:${type}`)||0)+1);}});return elements.get(selector);}
 const radios=[{value:"greet",checked:true,disabled:false},{value:"continue",checked:false,disabled:false}];
 const listeners={};
 const document={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:element(selector),querySelectorAll:()=>[],addEventListener:(type,fn)=>listeners[type]=fn};
@@ -140,6 +141,7 @@ assert.equal(element("#claude-status").textContent,"Off");
 assert.equal(element("#claude-toggle").disabled,false);
 assert.equal(requestMethods.filter((method,index)=>requests[index]==="/api/claude-collection"&&method==="GET").length,4,"status is refreshed after uncertain mutations");
 assert.equal(requestMethods.filter((method,index)=>requests[index]==="/api/claude-collection"&&method==="POST").length,3);
+assert.equal(listenerCounts.get("#refresh:click"),1,"Refresh registers one listener");
 assert.ok(requests.every(url=>!url.includes(settingsToken)),"the settings token is never put in the URL");
 assert.ok(requestHeaders.some(headers=>headers["X-Branchglance-Settings-Token"]===settingsToken),"mutation carries the token in a header");
 assert.match(element("#threads").innerHTML,/&lt;img/);
@@ -229,6 +231,42 @@ assert.equal(T.state.threads.length,0);
   assert.equal(node('[data-reason="Codex"]').textContent,"Ledger is off");
   assert.equal(node('[data-purge="Codex"]').disabled,true);
   assert.equal(sent.length,1,"nothing is sent while the ledger is off");
+}
+
+// Embedded policy failures read as Unavailable with an inline Retry; a known missing prerequisite reads Off.
+{
+  const nodes=new Map(),node=selector=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,checked:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  let policyAttempts=0,actionReads=0;
+  const embeddedPolicy={schemaVersion:1,generation:"off",providers:[{name:"Codex",collect:false,show:true,send:false,sendOrigin:"default",capabilities:{greet:false,continue:false}}]};
+  const embeddedDoc={querySelector:node,getElementById:id=>node(`#${id}`),querySelectorAll:()=>[],addEventListener(){},documentElement:{classList:{add(){}}},body:{classList:{add(){}},dataset:{}}};
+  const embeddedWindow={location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage(){}},history:{replaceState(){}}};
+  const embeddedRequests=[];
+  const embeddedContext={document:embeddedDoc,window:embeddedWindow,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>{
+    embeddedRequests.push(url);
+    if(url==="/api/provider-policy"){policyAttempts++;if(policyAttempts===1)throw new Error("policy offline");return {ok:true,json:async()=>embeddedPolicy};}
+    if(url==="/api/reset-action"){actionReads++;return {ok:true,json:async()=>({ok:true,action:null,threads:[]})};}
+    if(url==="/api/claude-collection")return {ok:true,json:async()=>({ok:true,state:"off"})};
+    if(url==="/api/ledger/status")return {ok:true,json:async()=>({ok:true,state:"disabled",collect:{}})};
+    if(url==="/api/features")return {ok:true,json:async()=>({ok:true})};
+    if(url==="/api/statusline")return {ok:true,json:async()=>({ok:true,connected:false})};
+    return {ok:false,status:404,json:async()=>({})};
+  }};
+  vm.createContext(embeddedContext);vm.runInContext(source,embeddedContext);
+  assert.match(node("#embedded-policy-message").textContent,/Loading permission status/);
+  const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
+  await settle();
+  assert.match(node("#embedded-policy-message").textContent,/Unavailable/);
+  assert.equal(node("#embedded-policy-retry").hidden,false);
+  assert.equal(actionReads,0,"unknown permission state never loads reset actions as Off");
+  node("#embedded-policy-retry").onclick();await settle();
+  assert.match(node("#embedded-policy-message").textContent,/Off - Codex collection is off/);
+  assert.equal(node("#embedded-policy-retry").hidden,true);
+  assert.equal(actionReads,0,"known Off prerequisite prevents action settings from loading");
+  const beforeRefresh=embeddedRequests.length,policiesBefore=policyAttempts;
+  node("#refresh").onclick();await settle();
+  assert.equal(policyAttempts,policiesBefore+1,"Refresh makes one permission request");
+  assert.equal(embeddedRequests.slice(beforeRefresh).filter(url=>url==="/api/ledger/status").length,1,"Refresh makes one coordinated ledger request");
+  assert.equal(embeddedRequests.slice(beforeRefresh).filter(url=>url==="/api/claude-collection").length,1,"Refresh makes one coordinated Claude status request");
 }
 
 // Purge results are per provider and per ticket: Deleted needs an explicit matching done result. Polls are shortened here.

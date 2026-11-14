@@ -91,7 +91,7 @@ function widget(){
 // Settings from the overflow menu opens the dashboard straight on the Settings tab.
 {
   const dash=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8"),appSrc=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
-  assert.match(dash,/function open\(\{source,tab\}=\{\}\)\{\s*state\.open=true;state\.tab=tab==="settings"\?"settings":"insights";/);
+  assert.match(dash,/function open\(\{source,tab\}=\{\}\)\{\s*state\.opener=document\.activeElement;state\.open=true;state\.tab=tab==="settings"\?"settings":"insights";/);
   assert.match(appSrc,/window\.tokenTrackerOpenDashboard=tab=>openDashboard\(tab\);/);assert.match(appSrc,/action==='open-settings'\)\{closeToolbarMenu\(\);openDashboard\('settings'\)/);
 }
 console.log("Token Tracker routing alert tests passed");

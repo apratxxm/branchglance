@@ -19,7 +19,7 @@ function bootDashboard({fetchText = REPORT, fetchOk = true, platform = "Win32", 
     navigator: {platform, clipboard: {writeText: async text => { calls.clipboard.push(text); }}},
     localStorage: {getItem: () => null, setItem() {}},
     location: {origin: "http://127.0.0.1:8765"},
-    Intl, Date, Math, Number, JSON, Map, Set, Array, Promise, URL,
+    Intl, Date, Math, Number, JSON, Map, Set, Array, Promise, URL, AbortSignal: {timeout: ms => ({timeout: ms})},
     fetch: async (url, options) => {
       calls.fetch.push({url: String(url), options});
       return {ok: fetchOk, status: fetchOk ? 200 : 503, text: async () => fetchText, json: async () => ({})};

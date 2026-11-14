@@ -12,7 +12,7 @@ let responseQueue=[];
 const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))};
 const document={querySelector(){return null;},querySelectorAll(){return [];},addEventListener(){}};
 const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
-const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://127.0.0.1:8765"},requestAnimationFrame:f=>f(),setTimeout:(f)=>f(),fetch:async()=>responseQueue.shift()||{ok:false,status:404,json:async()=>({})}};
+const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://127.0.0.1:8765"},requestAnimationFrame:f=>f(),setTimeout:(f)=>f(),fetch:async url=>String(url).startsWith("/api/ledger")?{ok:false,status:503}:responseQueue.shift()||{ok:false,status:404,json:async()=>({})}};
 vm.createContext(context);vm.runInContext(source,context);
 const dashboard=window.__tokenTrackerDashboardTest;
 
@@ -63,8 +63,8 @@ assert.doesNotMatch(html,/dash-summary|sessions|subagents|active|cache hits/);
 
 // (4) Model table shows when rows exist; limit panel hidden when peaks are null; no empty lower band.
 assert.match(html,/>Models</);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);
-assert.match(html,/dash-model-head[^]*?<small>Tokens<\/small><small title="API-equivalent estimate">Est. cost<\/small>/);
-assert.equal((html.match(/class="dash-none" role="img" aria-label="No published price">—/g)||[]).length,2,"each unpriced model has a cost placeholder");
+assert.match(html,/<th scope="col">Tokens<\/th><th scope="col">Est\. cost<\/th>/,"Models is a semantic table with unit headers");
+assert.equal((html.match(/class="dash-none" role="img" aria-label="No published price">&mdash;/g)||[]).length,2,"each unpriced model has a cost placeholder");
 assert.doesNotMatch(html,/dash-share/);
 assert.equal((html.match(/class="dash-axis-value"/g)||[]).length,3);
 assert.doesNotMatch(html,/<text class="dash-(axis-value|date)"/,"chart labels remain undistorted HTML");
@@ -72,7 +72,7 @@ assert.match(html,/class="dash-legend-name">Claude<\/span><b>3\.2B<\/b>/);
 assert.match(html,/class="dash-legend-name">Codex<\/span><b>370M<\/b>/);
 // Provider filtering lives in explicit chips beside the chart heading, not in the split table.
 assert.match(html,/class="dash-chip claude-color" data-dashboard-provider="Claude" aria-pressed="true"/);assert.doesNotMatch(html,/dash-legend-toggle/);
-assert.match(html,/30d \/ plan/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
+assert.match(html,/vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
 assert.ok(html.indexOf('dash-hero')<html.indexOf('dash-lower')&&html.indexOf('dash-lower')<html.indexOf('dash-chart-section'));
 assert.doesNotMatch(html,/Highest usage/);
 assert.match(html,/class="dash-lower is-single"/);
