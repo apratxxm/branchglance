@@ -280,7 +280,10 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-debug-text{box-sizing:border-box;width:100%;min-height:150px;margin:8px 0 0;padding:8px 10px;border:1px solid var(--d-track);border-radius:7px;background:var(--d-well);color:var(--d-sub);font:12px/1.45 Consolas,"Cascadia Mono",monospace;resize:vertical;white-space:pre;overflow:auto;}
 .dash-plan-field{display:flex;align-items:center;gap:5px;width:96px;height:26px;box-sizing:border-box;padding:0 8px;border:1px solid var(--d-edge);border-radius:7px;color:var(--d-ink);background:var(--d-well);font:13px var(--sans,Geist,system-ui,sans-serif);}
 .dash-plan-field input{flex:1;min-width:0;width:34px;text-align:right;padding:0;border:0;color:inherit;background:transparent;font:inherit;font-variant-numeric:tabular-nums;}
-.dash-plan-field input:focus-visible{outline:2px solid var(--source-accent);outline-offset:2px;}
+.dash-plan-field:focus-within{border-color:var(--d-codex-text);box-shadow:0 0 0 1px var(--d-codex-text);}
+.dash-plan-field input:focus-visible{outline:none!important;}
+.dash-plan-field input[type=number]{appearance:textfield;-moz-appearance:textfield;}
+.dash-plan-field input[type=number]::-webkit-inner-spin-button,.dash-plan-field input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
 .reset-embed{color-scheme:dark;display:block;width:100%;height:250px;min-height:160px;max-height:380px;border:0;border-radius:0;background:transparent;overflow:auto;}
 
 @media(max-width:600px){
@@ -335,6 +338,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-setting-control .dash-action{margin-right:-6px;}
 .dash-settings-group>.dash-action{margin-left:-6px;}
 .dash-setting-error{margin:4px 0 0;color:var(--d-claude-text);font-size:12px;line-height:1.35;}
+#dashboard-settings{font-variant-numeric:normal;font-feature-settings:normal;letter-spacing:0;}
 .dash-provider-status{display:block;margin-top:1px;color:var(--d-mute);font-size:12px;line-height:1.35;}
 .dash-plan-set{padding:0;border:0;background:transparent;color:var(--d-codex-text);font:inherit;text-decoration:none;cursor:pointer;}
 .dash-plan-set:hover,.dash-plan-set:focus-visible{text-decoration:underline;}

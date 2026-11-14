@@ -301,10 +301,38 @@ assert.equal(T.state.threads.length,0);
   await win.__resetActionsTest.load();
   assert.equal(radios[0].disabled,false,"greet stays selectable when only continue is blocked");
   assert.equal(radios[1].disabled,true,"continue is blocked for a legacy send origin");
-  assert.equal(node("#greet-help").textContent,"Keep the current greeting behavior.");
+  assert.equal(node("#greet-help").textContent,"Show the greeting in the widget.");
   assert.equal(node("#continue-help").textContent,"Unavailable: Codex startup settings do not allow this.","continue-only help names no permission that is on");
   assert.equal(node("#permission").textContent,"","no other denial text appears when only continue is blocked");
-  assert.equal(node("#embedded-policy-message").textContent,"Available");
+  assert.equal(node("#embedded-policy-state").hidden,true,"the permitted state shows no policy line");
+}
+
+// Chat checkboxes update in place: toggling one keeps focus on the same chat and does not rebuild the list.
+{
+  const nodes=new Map(),node=selector=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  const threads=node("#threads");let html="",renders=0;
+  Object.defineProperty(threads,"innerHTML",{get(){return html;},set(value){html=value;renders++;}});
+  const listeners={},radios=[{value:"greet",checked:true,disabled:false},{value:"continue",checked:false,disabled:false}];
+  const doc={activeElement:null,querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:node(selector),getElementById:id=>node(`#${id}`),querySelectorAll:()=>[],addEventListener:(type,fn)=>listeners[type]=fn,documentElement:{classList:{add(){}}},body:{classList:{add(){}},dataset:{}}};
+  const win={__RESET_ACTIONS_TEST__:true,location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage(){}},history:{replaceState(){}}};
+  const policy={schemaVersion:1,generation:"chat-toggle",providers:[{name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}}]};
+  const actionThreads=[{id:"11111111-1111-4111-8111-111111111111",title:"First",status:"idle"},{id:"22222222-2222-4222-8222-222222222222",title:"Second",status:"idle"}];
+  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:{mode:"greet",threadIds:[]},threads:actionThreads}:{ok:true}})};
+  vm.createContext(ctx);vm.runInContext(source,ctx);
+  for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
+  const first={dataset:{id:actionThreads[0].id},checked:false,focus(){doc.activeElement=this;}};
+  first.focus();
+  const rendersBefore=renders;
+  first.checked=true;
+  listeners.change({target:{...first,matches:selector=>selector==='#threads input[type="checkbox"]'}});
+  assert.equal(renders,rendersBefore,"toggling a chat does not rebuild the list");
+  assert.equal(doc.activeElement,first,"focus stays on the same chat after a toggle");
+  assert.equal(node("#selected-count").textContent,"1 selected");
+  assert.equal(node("#save").disabled,false,"the saved state follows the selection in place");
+  first.checked=false;
+  listeners.change({target:{...first,matches:selector=>selector==='#threads input[type="checkbox"]'}});
+  assert.equal(node("#selected-count").textContent,"0 selected");
+  assert.equal(doc.activeElement,first,"focus stays on the chat after it is cleared");
 }
 
 // Embedded cancel restores the saved mode without closing the parent; standalone cancel still closes.
@@ -320,7 +348,7 @@ assert.equal(T.state.threads.length,0);
   for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(node("footer").hidden,true,"saved mode hides footer");
   assert.equal(node("#save").textContent,"Save");
-  assert.equal(node("#oneshot-note").textContent,"Runs once at the next quota reset. Saving doesn't send anything.");
+  assert.equal(node("#oneshot-note").textContent,"Runs once, at the next reset. Saving sends nothing.");
   radios[0].checked=false;radios[1].checked=true;
   listeners.change({target:{matches:selector=>selector==='input[name="mode"]'}});
   assert.equal(node("footer").hidden,false,"changed mode shows footer");
