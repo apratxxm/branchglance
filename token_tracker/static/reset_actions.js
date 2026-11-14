@@ -10,7 +10,12 @@
   } catch {}
   const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, dirty: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0, ledger: null, purge: {} };
   function setEmbeddedState(text,unavailable=false){if(!embedded)return;const box=$("#embedded-policy-state"),message=$("#embedded-policy-message"),retry=$("#embedded-policy-retry");if(box)box.hidden=false;if(message)message.textContent=text;if(retry)retry.hidden=!unavailable;window.parent.postMessage({type:"dashboard-reset-state",text},window.location.origin);}
-  function renderEmbeddedPolicy(){if(!embedded)return;if(!state.policyReady){setEmbeddedState(policyFailed?"Couldn't load reset permissions.":"Checking reset permissions…",policyFailed);return;}let missing="";if(!state.policy.collect)missing="Codex collection is off";else if(!state.policy.show)missing="Codex display is off";else if(!state.canGreet&&!state.canContinue)missing="Codex startup permissions do not allow automatic actions";if(missing)setEmbeddedState(`Off: ${missing}`);else setEmbeddedState("Available");}
+  // Permission names follow the Providers line: display (shown), collecting, auto-send. Only permissions that are really off are named.
+  const PERMISSION_LABELS=[["show","display"],["collect","collecting"],["send","auto-send"]];
+  const missingPermissions=()=>PERMISSION_LABELS.filter(([key])=>state.policy?.[key]!==true).map(([,label])=>label);
+  const joinLabels=items=>items.length<2?items.join(""):`${items.slice(0,-1).join(", ")} and ${items.at(-1)}`;
+  const reactionsDenied=()=>state.policyReady&&!state.canGreet&&!state.canContinue;
+  function renderEmbeddedPolicy(){if(!embedded)return;if(!state.policyReady){setEmbeddedState(policyFailed?"Couldn't load reset permissions.":"Checking reset permissions…",policyFailed);return;}if(reactionsDenied()){const missing=missingPermissions();setEmbeddedState(missing.length===1?`Off: ${missing[0]} is off for Codex in your policy file.`:missing.length?`Off: turn on ${joinLabels(missing)} for Codex in your policy file.`:"Off: Codex startup permissions do not allow automatic actions.");}else setEmbeddedState("Available");}
   // Saved usage history: the purge needs the settings token, so the embedded frame shows its rows read-only.
   const LEDGER_PROVIDERS = ["Claude", "Codex"];
   const PURGE_CONFIRM_MS = 5000, PURGE_POLL_MS = 2000, PURGE_POLL_LIMIT = 30;
@@ -121,11 +126,14 @@
     if(!state.canContinue||previousGeneration&&previousGeneration!==policy?.generation){state.selected.clear();if(state.action?.mode==="continue"){state.action={...state.action,threadIds:[],lastRun:state.action.lastRun?.targets?{...state.action.lastRun,targets:[]}:state.action.lastRun};}}
     renderEmbeddedPolicy();
   }
+  // Embedded mode names a denial once, in the policy state line. Both radios keep no help text when both actions are denied.
+  function continueBlockedCopy(){const missing=missingPermissions();return missing.length?`Needs ${joinLabels(missing)} on for Codex.`:"Unavailable: Codex startup settings do not allow this.";}
   function updatePermissionCopy() {
-    const greet=$("#greet-help"),continuation=$("#continue-help"),note=$("#permission");
-    if(greet)greet.textContent=!state.policyReady?(embedded?"":policyFailed?"Unavailable until permission status loads.":"Checking permission status."):state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.";
-    if(continuation)continuation.textContent=!state.policyReady?(embedded?"":policyFailed?"Unavailable until permission status loads.":"Checking permission status."):state.canContinue?"Queue the exact message “continue” for the next genuine reset.":"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.";
-    if(note)note.textContent=!state.policyReady?(embedded?"":"Permission status is unavailable. No action settings were loaded."):!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue&&!embedded?"Chat continuation requires explicit Codex send permission.":"";
+    const greet=$("#greet-help"),continuation=$("#continue-help"),note=$("#permission"),denied=embedded&&reactionsDenied();
+    const pending=!state.policyReady?(embedded?"":policyFailed?"Unavailable until permission status loads.":"Checking permission status."):null;
+    if(greet)greet.textContent=pending??(denied?"":state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.");
+    if(continuation)continuation.textContent=pending??(denied?"":state.canContinue?"Queue the exact message “continue” for the next genuine reset.":embedded?continueBlockedCopy():"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.");
+    if(note){note.hidden=embedded;note.textContent=embedded?"":!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue?"Chat continuation requires explicit Codex send permission.":"";}
   }
   function savedMode() { return state.action?.mode==="continue"&&state.canContinue?"continue":state.action?.mode==="greet"&&state.canGreet?"greet":state.canGreet?"greet":state.canContinue?"continue":"greet"; }
   function render() {
@@ -138,7 +146,7 @@
     else if(mode()==="greet"&&!state.canGreet&&state.canContinue&&continueRadio)continueRadio.checked=true;
     updatePermissionCopy();
     if(embedded){
-      $("#modes").hidden=policyFailed;$("#oneshot-note").hidden=policyFailed;$("#message").hidden=!state.policyReady;
+      $("#modes").hidden=policyFailed;$("#oneshot-note").hidden=policyFailed||reactionsDenied();$("#message").hidden=!state.policyReady;
       $("#picker").hidden=policyFailed||mode()!=="continue";
       $("footer").hidden=!state.policyReady||!state.dirty;
       $("#save").textContent="Save";
