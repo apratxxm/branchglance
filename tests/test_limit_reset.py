@@ -503,6 +503,33 @@ def test_codex_keepalive_attempts_at_99_percent_weekly(tmp_path):
     assert provider(watcher, "Codex")["phase"] == "greeting_verifying"
 
 
+def test_snapshot_shutdown_during_reset_inspection_finalizes_dispatch(tmp_path):
+    from token_tracker import providers
+
+    watcher = make(tmp_path)
+    watcher._reset_actions.list_candidates = lambda limit=100: [
+        {"id": "00000000-0000-4000-8000-000000000001", "archived": False, "status": "idle"}
+    ][:limit]
+    watcher._reset_actions.queue_continue = lambda _thread_id: {"status": "queued"}
+    watcher.configure_reset_action("continue", ["00000000-0000-4000-8000-000000000001"])
+
+    def cancel_inspection(_thread_id):
+        raise providers.SnapshotShutdown("provider snapshots are shutting down")
+
+    watcher._reset_actions.inspect_target = cancel_inspection
+    watcher._sending.add("Codex")
+    watcher._dispatch_continue_action("Codex", "shutdown-cycle")
+
+    persisted = json.loads(watcher.state_path.read_text(encoding="utf-8"))
+    action = persisted["resetAction"]
+    cycle = action["ledger"]["cycles"][-1]
+    assert "finalizePending" not in action
+    assert action["lastRun"]["targets"][0]["status"] == "skipped"
+    assert cycle["targets"][0]["status"] == "skipped"
+    assert all(row["status"] != "unknown" for row in cycle["targets"])
+    assert watcher._sending == set()
+
+
 def test_reset_observed_recorded_once_with_sample_details(tmp_path):
     clock = Clock()
     sender = Sender({"ok": False, "error": "network hiccup", "returnCode": 1})

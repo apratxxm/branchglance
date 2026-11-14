@@ -39,8 +39,17 @@ _snapshot_executors: set[ThreadPoolExecutor] = set()
 _snapshot_shutdown = False
 
 
+class SnapshotShutdown(BaseException):
+    """Internal signal that a provider snapshot should stop during shutdown."""
+
+
+def _raise_if_snapshot_shutdown() -> None:
+    if _snapshot_shutdown:
+        raise SnapshotShutdown("provider snapshots are shutting down")
+
+
 def stop_snapshot_workers() -> None:
-    """Reject new snapshot work and cancel queued jobs; running jobs finish."""
+    """Reject new snapshot work, cancel queued jobs, and stop full-file readers at the next line; other running work finishes."""
     global _snapshot_shutdown
     with _snapshot_executor_lock:
         _snapshot_shutdown = True
@@ -732,6 +741,7 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
         committed_offset = start_offset
         valid_unterminated_record = False
         while True:
+            _raise_if_snapshot_shutdown()
             line = handle.readline()
             if not line:
                 break
@@ -3549,6 +3559,7 @@ class CodexProvider:
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as handle:
                     for line in handle:
+                        _raise_if_snapshot_shutdown()
                         try:
                             item = json.loads(line)
                         except json.JSONDecodeError:
@@ -3961,6 +3972,7 @@ class CodexProvider:
             with path.open("r", encoding="utf-8", errors="ignore") as handle:
                 count = 0
                 for line in handle:
+                    _raise_if_snapshot_shutdown()
                     if "turn_context" not in line:
                         continue
                     try:

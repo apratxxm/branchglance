@@ -222,8 +222,9 @@ class LiveCache:
         try:
             value = live_state() if budget is None else live_state(budget_seconds=budget)
             plain = json.dumps(value).encode("utf-8")
-        except Exception as exc:
-            _log_live_failure(exc)
+        except (provider_module.SnapshotShutdown, Exception) as exc:
+            if isinstance(exc, Exception):
+                _log_live_failure(exc)
             with self.condition:
                 self.building = False
                 self.retry_after = time.monotonic() + LIVE_RETRY_COOLDOWN_SECONDS

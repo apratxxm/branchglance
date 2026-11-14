@@ -10,6 +10,7 @@ from typing import Any
 
 from .codex_client import CodexNotStarted
 from .provider_policy import POLICIES, ProviderPolicy, ProviderPolicyError, policy_for
+from .providers import SnapshotShutdown
 
 
 MAX_TARGETS = 20
@@ -309,6 +310,8 @@ class ResetActionDispatcher:
             return "skipped", "Codex chat continuation is unavailable"
         try:
             info = self.inspect_target(thread_id)
+        except SnapshotShutdown:
+            return "skipped", "chat inspection cancelled during shutdown"
         except Exception:
             return "skipped", "chat inspection failed"
         if not isinstance(info, dict) or info.get("exists") is not True:

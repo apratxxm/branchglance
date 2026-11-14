@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import sqlite3
+import threading
 import time
 import types
 from datetime import datetime, timezone
@@ -205,6 +206,37 @@ def test_live_cache_backs_off_when_a_round_makes_no_progress(monkeypatch):
     cache.get()  # a later poll resumes the rounds, and that round stalls again
     with cache.condition:
         assert cache.condition.wait_for(lambda: not cache.building and len(fake.budgets) == 3, timeout=5)
+
+
+def test_live_cache_snapshot_shutdown_releases_refresh_and_preserves_value(monkeypatch):
+    previous = {"old": True}
+    cache = server.LiveCache()
+    cache.value = previous
+    cache.building = True
+    waiting = threading.Event()
+    awakened = threading.Event()
+
+    def wait_for_refresh():
+        with cache.condition:
+            waiting.set()
+            if cache.condition.wait_for(lambda: not cache.building, timeout=2):
+                awakened.set()
+
+    waiter = threading.Thread(target=wait_for_refresh)
+    waiter.start()
+    assert waiting.wait(timeout=1)
+
+    def cancel_live(**_kwargs):
+        raise providers.SnapshotShutdown("provider snapshots are shutting down")
+
+    monkeypatch.setattr(server, "live_state", cancel_live)
+    cache._refresh()
+
+    assert awakened.wait(timeout=0.5)
+    waiter.join(timeout=1)
+    assert not waiter.is_alive()
+    assert cache.building is False
+    assert cache.value is previous
 
 
 # ------------------------------------------------------------------ lineage parity (deferred vs detailed)
