@@ -2,7 +2,7 @@
   const $=selector=>document.querySelector(selector),DAY=86400000;
   const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:31};
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
-  const RANGE_PREVIOUS={"24h":"previous 24 hours","7d":"previous 7 days","30d":"previous 30 days",all:"previous period"};
+  const RANGE_PREVIOUS={"24h":"previous day","7d":"previous week","30d":"previous 30 days",all:"previous period"};
   const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
@@ -16,7 +16,7 @@
   const number=value=>finite(value)==null?"":nfmt.format(value);
   const money=value=>finite(value)==null?"":usd.format(value);
   const localDate=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
-  const dayLabel=value=>{const date=new Date(`${value}T12:00:00`);return Number.isNaN(date.getTime())?String(value||""):new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric"}).format(date);};
+  const dayLabel=value=>{const text=String(value||""),stamp=text.includes("T"),date=new Date(stamp?text:`${text}T12:00:00`);return Number.isNaN(date.getTime())?text:new Intl.DateTimeFormat("en-US",stamp?{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}:{month:"short",day:"numeric"}).format(date);};
   const modelName=raw=>String(window.TokenTrackerFormatModel?.({model:raw})||raw||"");
   const providerKey=name=>/claude/i.test(String(name||""))?"claude":"codex";
   const modelKey=raw=>/^gpt-/i.test(String(raw||""))?"codex":"claude";
@@ -230,8 +230,9 @@
     const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hits"],[data.totals.activeHours,v=>`${number(v)}h`,"Active"]].filter(([v])=>!missing(v));
     const statsHTML=stats.length?`<dl class="dash-summary">${stats.map(([v,format,label])=>`<div><dt>${label}</dt><dd>${esc(format(v))}</dd></div>`).join("")}</dl>`:"";
     const coverage=data.fallback?(data.range==="30d"||data.range==="all"?"31-day totals":data.dates.length?`Daily coverage: ${dayLabel(data.dates[0])}${data.dates.length>1?" - "+dayLabel(data.dates.at(-1)):""}${data.range==="24h"?" (latest recorded date)":" (recorded daily values)"}`: "31-day totals"):RANGE_NAME[data.range];
-    const period=data.dates.length?`${dayLabel(data.dates[0])}${data.dates.length>1?` - ${dayLabel(data.dates.at(-1))}`:""}, local time`:coverage;
-    const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div><div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`${data.costPartial?"Priced usage subtotal":"API-equivalent cost estimate"} · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
+    const period=data.dates.length?`${dayLabel(data.dates[0])}${data.dates.length>1?` – ${dayLabel(data.dates.at(-1))}`:""}, local time`:coverage;
+    const providerScope=chipsHTML(data);
+    const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div>${providerScope}<div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`${data.costPartial?"Priced usage subtotal":"API-equivalent cost estimate"} · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
     const models=data.models;
     // One row per model (long-context variants are merged into it). Seven rows fit beside the chart; beyond that the top six show and the rest sum into one Other row.
     const modelRows=(()=>{if(models.length<=7)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,6).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(6);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other · ${rest.length} models`,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true}];})();
@@ -240,8 +241,7 @@
     const barKey=data.heroKey==="apiEquivalentCost"?"apiEquivalentCost":"tokens";
     const barMax=Math.max(0,...modelRows.map(row=>finite(row[barKey])||0));
     const work=workData(),workView=work!=null&&modelsView()==="work";
-    const providerScope=chipsHTML(data);
-    if(workView)return hero+providerScope+`<section class="dash-lower is-single${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${chartHTML}</section>`+statusHTML;
+    if(workView)return hero+`<section class="dash-lower is-single${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${chartHTML}</section>`+statusHTML;
     const modelHTML=models.length?`<div class="dash-model-block"><div class="dash-section-label dash-model-head">${work?breakdownToggle("models"):"<span>Models</span>"}</div><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">Model</th><th scope="col" aria-label="Relative usage">Usage</th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*Math.sqrt(value/barMax))):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row" class="dash-model-name ${row.family}"><i></i>${esc(row.name)}${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td>${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':esc(money(row.apiEquivalentCost))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
     const peakCell=value=>value==null?'<span aria-label="Not recorded">—</span>':`${Math.round(value)}%`;
@@ -251,7 +251,7 @@
     const side=limits||activity?`<div class="dash-side">${limits}${activity}</div>`:"";
     // Models and the side column share one row; the chart runs the full width under both. Without a chart (24h has no hourly series) the row stretches to the panel body.
     const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}${chartHTML?"":" is-day"}">${modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:""}${side}${chartHTML}</section>`:chartHTML;
-    return hero+providerScope+lower+statusHTML;
+    return hero+lower+statusHTML;
   }
   // By work: ledger tokens per model and kind of work. It takes the place of the Models list and the side column, so the panel never grows.
   // Kinds outside the classifier's list fold into Other, so every cell, row and column adds up to the ledger's totals.
