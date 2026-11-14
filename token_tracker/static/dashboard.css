@@ -92,7 +92,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 /* Hero: the figure and its split on the left, the provider table on the right column. */
 .dash-hero{position:relative;display:grid;grid-template-columns:minmax(0,1fr) var(--d-side);grid-template-areas:"meta providers" "figure providers" "bar providers" "period chips";column-gap:var(--d-gutter);align-items:start;box-sizing:border-box;padding:0 0 14px;border:0;}
 .dash-hero:not(:has(.dash-hero-providers,.dash-plan-single)){grid-template-columns:minmax(0,1fr);grid-template-areas:"meta" "figure" "bar" "period" "chips";}
-.dash-hero-meta{grid-area:meta;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;min-height:18px;}
+.dash-hero-meta{grid-area:meta;display:flex;flex-wrap:nowrap;min-width:0;align-items:baseline;gap:2px 12px;min-height:18px;}
 .dash-hero-meta>*{white-space:nowrap;}
 .dash-delta{display:flex;align-items:center;gap:6px;color:var(--d-sub);font-size:12px;font-weight:560;}
 .dash-delta.is-down{color:var(--d-sub);}
@@ -133,7 +133,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-chart-empty{margin:0 0 6px;color:var(--d-mute);font-size:12px;line-height:1.3;}.dash-plan-text{color:var(--d-sub);}
 
 /* Middle row: Models and the side column; the chart runs the full width under both. */
-.dash-lower{position:relative;flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) var(--d-side);grid-template-rows:auto minmax(0,1fr);column-gap:var(--d-gutter);row-gap:12px;align-items:start;padding:0;}
+.dash-lower{position:relative;flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 216px;grid-template-rows:auto minmax(0,1fr);column-gap:var(--d-gutter);row-gap:12px;align-items:start;padding:0;}
 .dash-lower.is-single{grid-template-columns:minmax(0,1fr);grid-template-rows:none;grid-auto-rows:auto;}
 .dash-lower.is-day{grid-template-rows:minmax(0,1fr);align-items:stretch;}
 .dash-lower-main,.dash-side{min-width:0;}
@@ -164,7 +164,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-side{display:flex;flex-direction:column;gap:18px;}
 .dash-side .dash-section-label,.dash-side .dash-peaks-table thead th:first-child{font-size:14px;font-weight:650;color:var(--d-ink);}
 .dash-peaks-note{margin:4px 0 0;color:var(--d-mute);font-size:11px;line-height:14px;}
-.dash-quota-table :is(th,td):nth-child(n+2){width:84px;}
+.dash-quota-table :is(th,td):nth-child(n+2){width:56px;}
 .dash-quota-table tbody th{width:40%;}
 .dash-quota-main{color:var(--d-ink);font-size:13px;font-weight:550;}
 .dash-lower.is-day{--d-pitch:26px;align-items:start;grid-template-rows:auto minmax(0,1fr);}
@@ -307,7 +307,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-work-head small{text-align:right;}
 .dash-work-note.is-qualified{color:#d9b56a;cursor:help;}
 .dash-work-grid{display:grid;margin-top:2px;}
-.dash-work-row{display:grid;grid-template-columns:minmax(105px,1fr) repeat(var(--work-cols),36px) 48px;column-gap:4px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
+.dash-work-row{display:grid;grid-template-columns:minmax(105px,1fr) repeat(var(--work-cols),38px) 48px;column-gap:8px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
 .dash-work-row.is-head{min-height:20px;color:var(--d-faint);font-size:11px;font-weight:450;}
 .dash-work-row.is-head>span,.dash-work-cell{text-align:right;font-variant-numeric:tabular-nums;}
 .dash-work-row.is-foot{margin-top:2px;padding-top:2px;border-top:1px solid var(--d-edge);color:var(--d-sub);}
@@ -421,7 +421,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-hero:has(.dash-plan-single)>.dash-hero-number-row{align-self:baseline;}
 /* Round 5 (Insights). */
 /* Failure notice: on the hero eyebrow row, right-aligned, 12px. */
-.dash-notice{margin-left:auto;padding-left:12px;font-size:12px;line-height:22px;white-space:nowrap;}
+.dash-notice{margin-left:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;padding-left:12px;font-size:12px;line-height:22px;white-space:nowrap;}
 .dash-notice .dash-fail-time{color:var(--d-sub);}
 /* Skeleton: the final hero and lower grid, with the right column empty. */
 .dash-hero.dash-hero-loading{grid-template-columns:minmax(0,1fr) var(--d-side);grid-template-areas:"meta providers" "figure providers" "bar providers";}
@@ -447,4 +447,18 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-skel-chart{min-height:174px;justify-content:flex-end;padding:0 0 20px 32px;}.dash-skel-chart i{height:1px;width:100%;}
 .dash-loading-status{color:var(--d-sub);text-align:left;}
 
-.dash-quota-table :is(th,td):nth-child(n+2){width:84px;}
+.dash-quota-table :is(th,td):nth-child(n+2){width:56px;}
+
+.dash-hero-meta .dash-eyebrow{flex:none;}
+.dash-split-legend.no-share{grid-template-columns:minmax(0,1fr) auto auto;}
+.dash-legend-unpriced{color:var(--d-mute);text-align:right;font-size:13px;}
+.dash-quota-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;color:var(--d-ink);font-size:14px;font-weight:650;white-space:nowrap;}
+.dash-quota-head small{color:var(--d-mute);font-size:12px;font-weight:400;}
+.dash-quota-table thead th{padding-bottom:0;}.dash-quota-table .dash-quota-row td{padding-bottom:4px;}
+.dash-summary{grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;min-height:44px;margin:18px 0;}
+.dash-summary>div{display:flex;flex-direction:column;align-items:flex-start;justify-content:start;gap:3px;}
+.dash-summary dt{color:var(--d-mute);font-size:12px;}.dash-summary dd{color:var(--d-ink);font-size:17px;font-weight:600;font-variant-numeric:tabular-nums;}
+.dash-lower{grid-template-rows:auto auto minmax(0,1fr);row-gap:0;}
+.dash-lower.is-single{grid-template-rows:auto auto minmax(0,1fr);}.dash-lower.is-day{grid-template-rows:auto auto;}
+.dash-breakdown.dash-segment{display:flex;gap:2px;white-space:nowrap;}.dash-breakdown.dash-segment button{height:26px;border-radius:7px;padding:0 8px;font:500 12px/1 var(--d-font);}
+.dash-work-row.is-head>span:first-child{text-align:left;}.dash-work-row.is-head>span:not(:first-child){white-space:nowrap;font-size:8.5px;}
