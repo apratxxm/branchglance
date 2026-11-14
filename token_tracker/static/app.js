@@ -676,12 +676,6 @@ const ICON = {
   clock: svg('<circle cx="6" cy="6" r="4.5"/><path d="M6 3.6V6l1.7 1.1"/>',"ic ic-clock"),
   pin: svg('<path d="M4.5 1.8h3M5 1.8v3L3.2 6.8h5.6L7 4.8v-3M6 6.8v3.4"/>'),
 };
-const MARK = {
-  openai: svg('<g transform="translate(7 7)"><rect x="-2.3" y="-5.6" width="4.6" height="11.2" rx="2.3"/><rect x="-2.3" y="-5.6" width="4.6" height="11.2" rx="2.3" transform="rotate(60)"/><rect x="-2.3" y="-5.6" width="4.6" height="11.2" rx="2.3" transform="rotate(120)"/></g>',"mk",14),
-  claude: svg('<g transform="translate(7 7)"><path d="M0-5.6V5.6M-4.85-2.8 4.85 2.8M-4.85 2.8 4.85-2.8"/><path d="M-2.8-4.85 2.8 4.85M-5.6 0H5.6M-2.8 4.85 2.8-4.85" opacity=".55"/></g>',"mk",14),
-  review: svg('<path d="M7 1.6 11.6 3.3v3.4c0 2.7-1.9 4.8-4.6 5.7-2.7-.9-4.6-3-4.6-5.7V3.3Z"/><path d="m4.9 7 1.5 1.5 2.8-3"/>',"mk",14),
-};
-
 /* ---------- status semantics ---------- */
 function normalizeStatus(value) {
   const status=String(value || "unknown").toLowerCase().replace(/[ _]+/g,"-");
@@ -868,28 +862,6 @@ function agentLabel(chat) {
   const label=String(name||chat.title||"agent").replace(/[_-]+/g," ").trim();
   return label.charAt(0).toUpperCase()+label.slice(1);
 }
-// Codex subagents wear the avatar the Codex app gives them: avatars[hash(threadId) % n], same
-// hash as the app. Colour while working, grey when idle (CSS). Falls back to monochrome marks.
-function avatarIndex(seed, count) {
-  let value=0;
-  for(const char of String(seed))value=(value*31+char.charCodeAt(0))%2147483647;
-  return value%count;
-}
-function markFor(chat) {
-  if(isAutoReview(chat))return MARK.review;
-  const avatars=state.avatars;
-  if(chat.provider!=="Claude"&&hasTreeParent(chat)&&avatars?.length)
-    return '<img class="av'+(isWorking(chat)?" on":"")+'" alt="" draggable="false" src="'+avatars[avatarIndex(chat.id,avatars.length)]+'">';
-  return chat.provider==="Claude" ? MARK.claude : MARK.openai;
-}
-async function loadAvatars() {
-  try {
-    const response=await fetch("/api/avatars",{signal:AbortSignal.timeout(60000)});
-    const result=response.ok?await response.json():null;
-    if(Array.isArray(result?.avatars)&&result.avatars.length){state.avatars=result.avatars;if(state.snapshot)render(state.snapshot);}
-  } catch {}
-}
-
 /* ---------- data ---------- */
 const knownSum = values => values.every(value=>value==null) ? null : values.reduce((sum,value)=>sum+(value||0),0);
 function resetAt(item, observedAt) {
@@ -1680,7 +1652,6 @@ function noteLiveness(chat, live) {
 }
 const sortAgents = agents => [...agents].sort((a,b)=>(isAsking(b)-isAsking(a))||(recentFail(b)-recentFail(a))||((b.status==="running")-(a.status==="running"))||b.latest-a.latest);
 // The tray is a live control surface, not agent history. Never retain completed or failed children.
-const isWorking = a => agentLive(a)||isAsking(a);
 // Auto-review/guardian sessions are internal bookkeeping; surface them only when they need a reply.
 const runwayActionable = a => runwayCurrentEvidenceFresh()&&!runwayTerminated(a)&&(runwayWaiting(a)||recentFail(a)||runwayEffectiveStatus(a)==='failed');
 const isVisibleAgent = a => a.retainedRun===true||runwayVisibleActive(a)||runwayActionable(a);
@@ -2595,10 +2566,9 @@ window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCou
   renderLoading,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
-  normalizeStatus,statusRank,contextTone,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,avatarIndex,markFor,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
+  normalizeStatus,statusRank,contextTone,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,isAsking,runwayVisibleActive,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;
 if(!window.__TOKEN_TRACKER_TEST__){
-  loadAvatars();
   document.addEventListener("click",handleClick);
   document.addEventListener("keydown",handleKey);
   window.addEventListener?.('resize',()=>{noteInspectViewportResize();refreshInspectCssScale();scheduleNotchSize();},{passive:true});

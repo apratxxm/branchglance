@@ -30,7 +30,7 @@ OUTPUT = ROOT / "docs" / "release" / "screenshots"
 HERE = Path(__file__).resolve().parent
 DEFAULT_LIVE_PORT = 8765  # token_tracker/widget.py HTTP_PORT, the running app's fixed local server
 LIVE_ENDPOINTS = {"/api/stats", "/api/live", "/api/insights", "/api/provider-policy", "/api/identity", "/api/claude-collection", "/api/reset-action",
-                  "/api/quota", "/api/today", "/api/limit-reset", "/api/avatars", "/api/ledger"}
+                  "/api/quota", "/api/today", "/api/limit-reset", "/api/ledger"}
 MODEL_NAMES = {"Codex": ["gpt-6.1-terra", "gpt-6.1-sol", "gpt-6.1-luna", "gpt-6-codex-mini"],
                "Claude": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]}
 MODEL_SHARES = [.4, .3, .2, .1]
@@ -129,7 +129,7 @@ def fixtures(models=2, reset_continue=False, tree_space=False):
                          "limitPeaks": {"fiveHour": 68 if name == "Codex" else 83, "weekly": 52 if name == "Codex" else 37}})
     return {"/api/stats": snapshot, "/api/live": snapshot, "/api/insights": {"range": "30d", "providers": insights},
             "/api/provider-policy": policy, "/api/identity": {}, "/api/quota": {}, "/api/today": {},
-            "/api/limit-reset": {}, "/api/avatars": {},
+            "/api/limit-reset": {},
             "/api/claude-collection": {"ok": True, "state": "off", "reason": "Not collecting Claude Code activity.", "restartRequired": False, "hooks": {"installed": 0}},
             "/api/reset-action": reset_action(reset_continue, iso)}
 

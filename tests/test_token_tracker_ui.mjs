@@ -460,15 +460,13 @@ console.log("Token Tracker UI tests passed");
   console.log("Token Tracker next-turn queue UI tests passed");
 }
 {
-  // Codex avatar hash, verified against the Codex app: Terra foundations shows the blue avatar #2.
-  assert.equal(T.avatarIndex("01a0975c-2855-74c0-83e1-8d7f825b8449",28),2);
   const html=T.filesHTML({files:6,changes:{created:2,modified:3,deleted:1}});
   assert.match(html,/fc fc-add"[^>]*>\+2<[\s\S]*fc fc-mod"[^>]*>~3<[\s\S]*fc fc-del"[^>]*>−1<[\s\S]*files/);
   assert.match(T.filesHTML({files:1,changes:{created:0,modified:1,deleted:0}}),/fc fc-add zero/);
   assert.match(T.filesHTML({files:4,changes:null}),/<b>4<\/b> <i>files<\/i>/);
   // A free-text question still gets an action: Open in Codex.
   assert.match(T.optionsHTML([],"abc"),/data-action="open" data-thread="abc"[\s\S]*Answer in Codex/);
-  console.log("Token Tracker avatar / file changes UI tests passed");
+  console.log("Token Tracker file changes UI tests passed");
 }
 {
   // A free-text ask keeps an Answer action in the compact question popover.

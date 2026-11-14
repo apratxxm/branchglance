@@ -351,14 +351,7 @@ def test_identity_reports_product_build_pid_and_state_root(api):
     assert status == 200 and local["product"] == "Branchglance"
 
 
-@pytest.mark.parametrize("path", ["/api/avatars", "/api/limit-reset"])
+@pytest.mark.parametrize("path", ["/api/limit-reset"])
 def test_sensitive_get_rejects_foreign_origin(api, path):
     _, port = api
     assert request(port, path, headers={"Origin": "https://evil.example"})[0] == 403
-
-
-def test_disabled_avatar_collection_never_discovers(api, monkeypatch):
-    _, port = api
-    monkeypatch.setattr(server, "_codex_allows", lambda action: False)
-    monkeypatch.setattr("token_tracker.codex_avatars._codex_asar", lambda: pytest.fail("discovery called"))
-    assert request(port, "/api/avatars") == (200, {"avatars": []})

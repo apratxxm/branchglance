@@ -56,7 +56,7 @@ DROPPED = ("id", "key", "parentKey", "threadId", "sessionId", "parentId", "paren
            "tokens", "cost", "usage", "identity")
 MODULES = ("agent_links", "bg_codex", "claude_cache", "claude_collection", "claude_events", "claude_hook",
            "claude_hook_install", "claude_identity", "claude_provider", "claude_statusline", "claude_usage_api",
-           "codex_avatars", "codex_client", "debug_report", "features", "insights", "ledger", "ledger_classify",
+           "codex_client", "debug_report", "features", "insights", "ledger", "ledger_classify",
            "ledger_ingest", "ledger_model", "ledger_service", "ledger_store", "limit_reset", "macos_process",
            "macos_server", "product", "provider_policy", "providers", "reset_actions", "reset_delivery", "server",
            "statusline_connect", "widget")

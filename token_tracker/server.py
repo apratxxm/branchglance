@@ -1444,20 +1444,8 @@ class Handler(SimpleHTTPRequestHandler):
         return False
 
     def _get_codex_state(self, parsed):
-        if parsed.path not in {'/api/avatars', '/api/limit-reset', '/api/quota'}:
+        if parsed.path not in {'/api/limit-reset', '/api/quota'}:
             return False
-        if parsed.path == "/api/avatars":
-            if not self._open_request_allowed():
-                self._send_json({"ok": False, "error": "same-origin request required"}, 403)
-                return True
-            if not _codex_allows("collect"):
-                self._send_json({"avatars": []})
-                return True
-            # Codex's own subagent avatars, read from the local app install (cached per version).
-            from .codex_avatars import codex_avatars
-            from .limit_reset import _runtime_dir
-            self._send_json({"avatars": codex_avatars(_runtime_dir())})
-            return True
         if parsed.path == "/api/limit-reset":
             if not self._open_request_allowed():
                 self._send_json({"ok": False, "error": "same-origin request required"}, 403)

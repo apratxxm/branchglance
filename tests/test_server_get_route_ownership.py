@@ -18,7 +18,7 @@ ROUTES = {
         "/api/ledger/export", "/api/live", "/api/today",
     ),
     "_get_open": ("/api/open",),
-    "_get_codex_state": ("/api/avatars", "/api/limit-reset", "/api/quota"),
+    "_get_codex_state": ("/api/limit-reset", "/api/quota"),
     "_get_reset_action": ("/api/reset-action",),
 }
 
@@ -108,9 +108,7 @@ def _allow_success_paths(monkeypatch):
     monkeypatch.setattr(insights.INSIGHTS_CACHE, "get", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(server, "_insights_allowed_names", lambda: set())
     monkeypatch.setattr(server, "_insights_snapshot", lambda: snapshot)
-    import token_tracker.codex_avatars as avatars
     import token_tracker.limit_reset as limit_reset
-    monkeypatch.setattr(avatars, "codex_avatars", lambda _path: [])
     monkeypatch.setattr(limit_reset, "_runtime_dir", lambda: ".")
     monkeypatch.setattr(limit_reset, "codex_quota_http_view", lambda: {})
     monkeypatch.setattr(server, "_is_collected_codex_thread", lambda _thread: True)
