@@ -48,8 +48,8 @@ dashboard.state.range="30d";
 
 dashboard.state.metric="tokens";
 const tokens=dashboard.insightsHTML();
-assert.match(tokens,/<span class="dash-hero-mag">M<\/span><\/strong><span class="dash-hero-unit">tokens<\/span>/);
-assert.match(tokens,/Daily · tokens/);
+assert.match(tokens,/<span class="dash-hero-mag">M<\/span><\/strong><span class="sr-only"> tokens<\/span>/);
+assert.match(tokens,/<span class="dash-section-title">Daily tokens<\/span>/);
 
 dashboard.state.insights={providers:[provider("Claude",{models:[{name:"claude-sonnet-5.5",tokens:800,apiEquivalentCost:2}]})]};
 dashboard.state.metric="cost";
@@ -500,4 +500,33 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   assert.match(dashboard.settingsHTML(),/dash-add-provider">Add Claude to track its agents too\./);assert.match(dashboard.settingsHTML(),/Hidden/);
   dashboard.state.policy={providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:true,collect:true,send:false}]};
   assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider/);assert.match(dashboard.settingsHTML(),/Shown/);
+}
+
+// Stage 2: lower bounds, empty cells, chart range, model folding and quota copy.
+{
+  dashboard.state.range="7d";dashboard.state.resultValue=null;dashboard.state.metric="cost";dashboard.state.ledgerRange="7d";
+  const row=(modelId,kind,knownCostUsd,costComplete=true)=>({provider:"Claude",modelId,kind,totalTokens:100,knownCostUsd,costComplete});
+  dashboard.state.ledger={rows:[row("long model name for truncation","build",1.6,false),row("long model name for truncation","review",0.49,false),row("long model name for truncation","research",0.009,false),row("another model","build",null,false)],coverage:{},service:{}};
+  let html=dashboard.workHTML(dashboard.workData());
+  for(const value of ["\u2265$1","\u226549\u00a2","\u22650\u00a2"])assert.ok(html.includes(value),value);
+  assert.match(html,/\$0\.009 API-equivalent cost/);
+  assert.doesNotMatch(html,/\u2265&lt;/);
+  assert.match(html,/aria-label="No usage"><span aria-hidden="true">\u2014<\/span>/);
+  assert.match(html,/aria-label="Unpriced"/);assert.match(html,/\u00b7 = no published price/);
+  assert.match(html,/title="Claude \u00b7 long model name for truncation"/);
+  dashboard.state.ledger={rows:[row("a","build",1),row("b","review",2)],coverage:{},service:{}};
+  html=dashboard.workHTML(dashboard.workData());assert.doesNotMatch(html,/\u00b7 = no published price/);
+  const many=Array.from({length:6},(_,i)=>({name:`model-${i}`,tokens:600-i*100,apiEquivalentCost:6-i}));
+  const chartProvider=provider("Claude",{models:many});chartProvider.series=[{date:dateOffset(2),tokens:0,apiEquivalentCost:0},{date:dateOffset(1),tokens:null,apiEquivalentCost:null},{date:dateOffset(0),tokens:5,apiEquivalentCost:1}];
+  dashboard.state.insights={range:"7d",providers:[chartProvider]};dashboard.state.metric="tokens";
+  html=dashboard.insightsHTML();assert.equal((html.match(/class="dash-model-row"/g)||[]).length,5);
+  assert.match(html,/aria-label="Other \(2\): model-4: 200 tokens; model-5: 100 tokens"/);
+  assert.match(html,/role="group" aria-label="Daily tokens by provider"/);
+  assert.match(html,new RegExp(`aria-label="${dateOffset(2)}\\. Total: 0`));
+  assert.match(html,/Missing provider data/);
+  dashboard.state.range="24h";dashboard.state.insights={range:"24h",providers:[{...chartProvider,series:[{date:"2026-11-14T12:00:00",tokens:1,apiEquivalentCost:1},{date:"2026-11-14T13:00:00",tokens:2,apiEquivalentCost:2}]}]};
+  assert.match(dashboard.insightsHTML(),/aria-label="Hourly tokens by provider"/);dashboard.state.metric="cost";assert.match(dashboard.insightsHTML(),/aria-label="Hourly API-equivalent cost by provider"/);
+  window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",weekly:{usedPercent:60,countdown:"3d 2h"}}];
+  html=dashboard.insightsHTML();assert.match(html,/>Quota used<\/th>/);assert.match(html,/data-quota-part="five">resets in 2h 40m<\/small><small[^>]+data-quota-part="peak">peak 55%/);assert.match(html,/data-quota-part="week">resets in 3d 2h/);
+  delete window.tokenTrackerQuotaNow;dashboard.state.ledger=null;
 }

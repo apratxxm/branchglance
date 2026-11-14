@@ -58,7 +58,7 @@ responseQueue=[{ok:true,json:async()=>payload([codexUnpriced()])}];
 dashboard.state.metric="cost";dashboard.state.metricExplicit=false;
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"tokens","96% unpriced tokens default the toggle to Tokens");
-assert.match(dashboard.insightsHTML(),/<span class="dash-hero-mag">B<\/span><\/strong><span class="dash-hero-unit">tokens/);
+assert.match(dashboard.insightsHTML(),/<span class="dash-hero-mag">B<\/span><\/strong><span class="sr-only"> tokens/);
 assert.doesNotMatch(dashboard.insightsHTML(),/dash-cost-note/);
 
 dashboard.setMetric("cost");
@@ -85,18 +85,18 @@ dashboard.state.metric="cost";dashboard.state.metricExplicit=false;
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost","unpriced share is under half, so Cost stays the default");
 
-// (3) Model table shows up to seven rows, which fit the fixed panel, with a "+N more" line beyond that; fewer rows show no line.
+// (3) Model table shows up to five rows, folding the rest into Other.
 const many=Array.from({length:8},(_,index)=>({name:`claude-opus-${index}.5`,tokens:(8-index)*1e8,apiEquivalentCost:(8-index)}));
 dashboard.state.insights=payload([{name:"Claude",totals:{tokens:2.8e9,apiEquivalentCost:28,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(2.8e9),models:many,limitPeaks:{fiveHour:null,weekly:null}}]);
 dashboard.state.metric="cost";
 let html=dashboard.insightsHTML();
-assert.equal((html.match(/class="dash-model-row"/g)||[]).length,7,"top six models plus one Other row");
-assert.match(html,/Other · 2 models/,"the models beyond the top six sum into one Other row");
+assert.equal((html.match(/class="dash-model-row"/g)||[]).length,5,"top four models plus one Other row");
+assert.match(html,/Other \(4\)/,"the models beyond the top four sum into one Other row");
 const few=many.slice(0,5);
 dashboard.state.insights=payload([{name:"Claude",totals:{tokens:2.8e9,apiEquivalentCost:28,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(2.8e9),models:few,limitPeaks:{fiveHour:null,weekly:null}}]);
 html=dashboard.insightsHTML();
 assert.equal((html.match(/class="dash-model-row"/g)||[]).length,5);
-assert.doesNotMatch(html,/Other ·/,"no Other row when every model fits");
+assert.doesNotMatch(html,/Other \(\d+\)/,"no Other row when every model fits");
 
 // (4) Insights and Settings never scroll: the shared body is clipped to the fixed panel at every range and on both tabs.
 assert.match(css,/\.dashboard-content\{[^}]*overflow:hidden/);
@@ -178,7 +178,7 @@ dashboard.state.range="30d";dashboard.state.metric="tokens";
 let quota=dashboard.insightsHTML();
 assert.match(quota,/data-quota-part="percent">40%/,"the 5-hour figure is shown");
 assert.match(quota,/<th scope="col">5h<\/th><th scope="col">Week<\/th>/,"the quota head row names both windows");
-assert.match(quota,/data-quota-part="five">in 2h 40m</,"the 5-hour column shows its countdown with no seconds");assert.match(quota,/data-quota-part="week">in 3d 2h</,"the week column shows its countdown");
+assert.match(quota,/data-quota-part="five">resets in 2h 40m</,"the 5-hour column shows its countdown with no seconds");assert.match(quota,/data-quota-part="week">resets in 3d 2h</,"the week column shows its countdown");
 assert.match(quota,/Not available/,"a provider without a weekly reading shows Not available");
 dashboard.toggleProvider("Claude");
 quota=dashboard.insightsHTML();
@@ -230,13 +230,13 @@ const soon=Date.now()+(2*3600+40*60+30)*1000;
 window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:10,countdown:"2h 40m",resetTarget:soon,weekly:{usedPercent:5,countdown:"3d 2h",resetTarget:Date.now()+(3*86400+2*3600+30)*1000}}];
 dashboard.state.insights=payload([provider("Claude")]);dashboard.state.range="30d";dashboard.state.metric="tokens";
 let countdowns=dashboard.insightsHTML();
-assert.match(countdowns,/data-quota-part="five">in 2h 40m</,"a reset time under a day reads hours and minutes");
-assert.match(countdowns,/data-quota-part="week">in 3d 2h</,"a reset time of days reads days and hours");
+assert.match(countdowns,/data-quota-part="five">resets in 2h 40m</,"a reset time under a day reads hours and minutes");
+assert.match(countdowns,/data-quota-part="week">resets in 3d 2h</,"a reset time of days reads days and hours");
 assert.doesNotMatch(countdowns,/data-quota-part="(five|week)">[^<]*\d+s</,"no countdown shows seconds");
 window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:10,countdown:"46m 58s",resetTarget:1,weekly:{usedPercent:5,countdown:"05:12",resetTarget:2}}];
 countdowns=dashboard.insightsHTML();
-assert.match(countdowns,/data-quota-part="five">in 46m</,"a widget countdown with seconds drops them");
-assert.match(countdowns,/data-quota-part="week">in 5m</,"an m:ss widget countdown reads whole minutes");
+assert.match(countdowns,/data-quota-part="five">resets in 46m</,"a widget countdown with seconds drops them");
+assert.match(countdowns,/data-quota-part="week">resets in 5m</,"an m:ss widget countdown reads whole minutes");
 
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:5350000,knownCostUsd:null,costComplete:false,unpricedTokens:5350000}]};
 dashboard.state.ledgerRange="30d";dashboard.state.range="30d";
@@ -247,9 +247,9 @@ const manyModels=[1,2,3,4,5,6].map(i=>({name:`claude-zeta-${i}`,tokens:(10-i)*1e
 manyModels.push({name:"claude-zeta-7",tokens:3e4,apiEquivalentCost:1},{name:"claude-zeta-8",tokens:1e4,apiEquivalentCost:null});
 dashboard.state.insights=payload([provider("Claude",{models:manyModels})]);dashboard.state.metric="tokens";
 const otherRow=dashboard.insightsHTML();
-assert.match(otherRow,/Other · 2 models/,"the two smallest models fold into Other");
-assert.match(otherRow,/≥ \$1\.00/,"an Other row with an unpriced constituent reads at least");
-assert.match(otherRow,/At least \$1\.00; some usage is unpriced/,"the lower bound says why, for screen readers and as a title");
+assert.match(otherRow,/Other \(4\)/,"the four smallest models fold into Other");
+assert.match(otherRow,/≥ \$5\.00/,"an Other row with an unpriced constituent reads at least");
+assert.match(otherRow,/At least \$5\.00; some usage is unpriced/,"the lower bound says why, for screen readers and as a title");
 
 dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[{name:"Claude",totals:{tokens:0,apiEquivalentCost:0,sessions:0,subagentsActive:0,activeHours:0,cacheHitRate:null},previous:null,series:series(0),models:[],limitPeaks:{fiveHour:null,weekly:null}}]};
 dashboard.state.range="7d";dashboard.state.metric="tokens";
@@ -264,7 +264,7 @@ assert.equal((loading.match(/dash-skel-row/g)||[]).length,3,"first load mounts t
 assert.match(loading,/Tokens over/,"first load shows the token eyebrow, not Cost");
 dashboard.state.loading=false;
 
-// (11) Round 5: the failure notice sits on the hero eyebrow row, out of the lower flow; the skeleton carries the final eyebrow; Activity moves left for four or fewer models; empty work cells read a centred dot; a zero total takes the compact height.
+// (11) Round 5: the failure notice sits on the hero eyebrow row, out of the lower flow; the skeleton carries the final eyebrow; Activity moves left for four or fewer models; empty work cells read an em dash; a zero total takes the compact height.
 dashboard.state.loading=false;dashboard.state.loadError=true;dashboard.state.insightsUnavailable=false;
 dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[provider("Claude")]};dashboard.state.range="7d";dashboard.state.metric="tokens";
 const failed=dashboard.insightsHTML();
@@ -278,7 +278,7 @@ dashboard.state.loadError=false;
 dashboard.state.insights=null;dashboard.state.loading=true;dashboard.state.range="7d";dashboard.state.metric="tokens";
 const skeleton=dashboard.insightsHTML();
 assert.match(skeleton,/<span class="dash-eyebrow">Tokens over 7 days<\/span>/,"the skeleton eyebrow matches the final template");
-assert.match(skeleton,/<p class="dash-status-line sr-only" role="status">Loading usage…<\/p>/,"the loading text is screen-reader only");
+assert.match(skeleton,/<p class="dash-status-line dash-loading-status" role="status">Loading usage…<\/p>/,"the loading text is visible");
 dashboard.state.metric="cost";
 assert.match(dashboard.insightsHTML(),/API-equivalent cost · 7 days/,"the cost skeleton uses the cost eyebrow");
 dashboard.state.metric="tokens";dashboard.state.loading=false;
@@ -292,7 +292,7 @@ assert.doesNotMatch(dashboard.insightsHTML(),/is-activity-left/,"more than four 
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:2e6,knownCostUsd:null,costComplete:false,unpricedTokens:2e6},{provider:"Claude",modelId:"claude-sonnet-5.5",displayName:"Sonnet 5.5",kind:"review",totalTokens:1e6,knownCostUsd:null,costComplete:false,unpricedTokens:1e6}]};
 dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="tokens";
 const emptyWork=dashboard.workHTML(dashboard.workData());
-assert.match(emptyWork,/class="dash-work-cell is-zero is-none" aria-label="None"><span aria-hidden="true">·<\/span>/,"an empty work cell shows a centred dot labelled None");
+assert.match(emptyWork,/class="dash-work-cell is-zero is-none" aria-label="No usage"><span aria-hidden="true">—<\/span>/,"an empty work cell shows an em dash labelled No usage");
 dashboard.state.ledger=null;
 
 dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[{name:"Claude",totals:{tokens:0,apiEquivalentCost:0,sessions:0,subagentsActive:0,activeHours:0,cacheHitRate:null},previous:null,series:series(0),models:[],limitPeaks:{fiveHour:null,weekly:null}}]};
