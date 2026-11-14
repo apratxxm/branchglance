@@ -109,9 +109,9 @@ assert.match(dashboard.settingsHTML(),/v&lt;script&gt;\+&amp;/,"identity values 
 dashboard.state.identity=null;
 assert.match(dashboard.settingsHTML(),/Version unavailable/,"missing identity is described without fabricating a version");
 assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget open/);
-assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Shown \u00b7 collecting \u00b7 auto-send off/,"provider rows state their flags in one plain-text line");assert.match(settings,/Shown \u00b7 not collecting \u00b7 auto-send off/);assert.match(settings,/<span class="dash-setting-label">Position<\/span>/,"one monitor is labelled Position");assert.match(settings,/Recenter/);
+assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Shown \u00b7 collecting \u00b7 auto-send off/,"provider rows state their flags in one plain-text line");assert.match(settings,/Shown \u00b7 not collecting \u00b7 auto-send off/);assert.match(settings,/<span class="dash-setting-label">Position<\/span>/,"one monitor is labelled Position");assert.match(settings,/Recenter/);assert.match(settings,/Back to the centre of this screen/,"the position row describes the recentre action");assert.doesNotMatch(settings,/Move the widget back to the centre/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
-assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage providers, automation and history/);assert.match(settings,/<h2>Plan price<\/h2>/);assert.match(settings,/From policy file/);assert.match(settings,/Create report/,"the bug report row replaces Preview");assert.match(settings,/After a Codex quota reset/);
+assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage providers, automation and history/);assert.match(settings,/<h2>Plan price<\/h2>/);assert.match(settings,/Monthly price\. Used for \u201c30d vs plan\u201d in Insights\./,"the plan description uses curly quotes");assert.doesNotMatch(settings,/placeholder=/,"an unset plan price is shown by an empty field, not a placeholder");assert.match(settings,/aria-label="Codex plan price per month"/);assert.match(settings,/From policy file/);assert.match(settings,/Create report/,"the bug report row replaces Preview");assert.match(settings,/No chat text, file paths, account details or tokens\./);assert.doesNotMatch(settings,/Review it before sharing/);assert.match(settings,/After a Codex quota reset/);
 assert.match(source,/open_reset_actions/);
 assert.doesNotMatch(source,/X-Branchglance-Settings-Token|settingsToken/,"dashboard never reads or stores the Claude settings token");
 
@@ -141,6 +141,45 @@ dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];
 dashboard.state.tab="insights";
 events.click({target:{closest:selector=>selector==="[data-dashboard-action]"?{dataset:{dashboardAction:"set-plan"}}:null}});
 assert.equal(dashboard.state.tab,"settings","Set plan switches to the Settings tab");
+
+// Set plan for Codex opens Settings, names Codex in its button and focuses the Codex input, not the first field.
+dashboard.state.month={providers:[{name:"Codex",totals:{costPartial:false},models:[],series:[{date:dateOffset(1),tokens:5e5,apiEquivalentCost:10}]}]};
+dashboard.state.monthError=false;values.delete("branchglancePlanPrice.Codex");
+assert.match(dashboard.planCellsHTML("Codex"),/<button type="button" class="dash-plan-set" data-dashboard-action="set-plan" data-dashboard-plan-provider="Codex" aria-label="Set Codex monthly plan price">Set plan<\/button>/);
+{
+  const codexInput={focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;}},claudeInput={focus(){this.focused=true;},scrollIntoView(){this.scrolled=true;}};
+  tabNodes['#dashboard-settings [data-dashboard-plan="Codex"]']=codexInput;tabNodes['#dashboard-settings [data-dashboard-plan="Claude"]']=claudeInput;
+  dashboard.state.open=true;dashboard.state.tab="insights";
+  events.click({target:{closest:selector=>selector==="[data-dashboard-action]"?{dataset:{dashboardAction:"set-plan",dashboardPlanProvider:"Codex"}}:null}});
+  assert.equal(dashboard.state.tab,"settings","Set plan for Codex switches to Settings");
+  assert.equal(codexInput.focused,true,"Set plan for Codex focuses the Codex input");
+  assert.equal(codexInput.scrolled,true,"the focused input is scrolled into view");
+  assert.notEqual(claudeInput.focused,true,"the Claude input is not focused");
+}
+
+// A switch that settles after the user moved on does not take focus back; one that lost focus to the page gets it back.
+{
+  let resolveLock;
+  window.pywebview={api:{set_widget_lock:()=>new Promise(resolve=>{resolveLock=resolve;})}};
+  const lockSwitch={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}},elsewhere={dataset:{dashboardAction:"recenter"},focus(){this.focused=true;}};
+  tabNodes['#dashboard-settings [data-dashboard-action="lock"]']=lockSwitch;
+  dashboard.state.open=true;dashboard.state.tab="settings";dashboard.state.lock={locked:false,revision:1};dashboard.state.keepOpen={keepOpen:false};
+  document.activeElement=lockSwitch;
+  events.click({target:{closest:selector=>selector==="[data-dashboard-action]"?{dataset:{dashboardAction:"lock"}}:null}});
+  document.activeElement=elsewhere;
+  resolveLock({locked:true,expanded:false,revision:2});
+  await new Promise(resolve=>globalThis.setTimeout(resolve,0));
+  assert.notEqual(lockSwitch.focused,true,"a switch that settles after focus moved on does not take focus");
+  assert.notEqual(elsewhere.focused,true,"focus stays where the user put it");
+  dashboard.state.lock={locked:true,revision:2};
+  document.activeElement=lockSwitch;
+  events.click({target:{closest:selector=>selector==="[data-dashboard-action]"?{dataset:{dashboardAction:"lock"}}:null}});
+  document.activeElement=null;
+  resolveLock({locked:false,expanded:false,revision:3});
+  await new Promise(resolve=>globalThis.setTimeout(resolve,0));
+  assert.equal(lockSwitch.focused,true,"focus lost to the page returns to the switch that settled");
+  document.activeElement=null;delete window.pywebview;
+}
 
 // Persisted All migrates to the supported 30-day range; provider selection scopes each section.
 values.set("branchglanceInsightsRange","all");

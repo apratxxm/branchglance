@@ -265,7 +265,7 @@ assert.equal(T.state.threads.length,0);
   assert.equal(node("#embedded-policy-retry").hidden,false);
   assert.equal(actionReads,0,"unknown permission state never loads reset actions as Off");
   node("#embedded-policy-retry").onclick();await settle();
-  assert.match(node("#embedded-policy-message").textContent,/Off: Codex collection is off/);
+  assert.equal(node("#embedded-policy-message").textContent,"Off: turn on collecting and auto-send for Codex in your policy file.","several missing permissions are named once");
   assert.equal(node("#embedded-policy-retry").hidden,true);
   assert.equal(actionReads,0,"known Off prerequisite prevents action settings from loading");
   const beforeRefresh=embeddedRequests.length,policiesBefore=policyAttempts;
@@ -275,6 +275,37 @@ assert.equal(T.state.threads.length,0);
   assert.equal(embeddedRequests.slice(beforeRefresh).filter(url=>url==="/api/claude-collection").length,1,"Refresh makes one coordinated Claude status request");
 }
 
+
+// Deny state: one policy line names the one permission that is off; the radios carry no help text and the action notes stay hidden.
+// Continue-only blocks keep greet selectable with no denial text. Auto-send off also blocks greet, so no "Needs" line is reachable here.
+{
+  const nodes=new Map(),node=selector=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  const radios=[{value:"greet",checked:true,disabled:false},{value:"continue",checked:false,disabled:false}];
+  let policy={schemaVersion:1,generation:"auto-send-off",providers:[{name:"Codex",collect:true,show:true,send:false,sendOrigin:"default",capabilities:{greet:true,continue:true}}]};
+  const doc={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:node(selector),getElementById:id=>node(`#${id}`),querySelectorAll:()=>[],addEventListener(){},documentElement:{classList:{add(){}}},body:{classList:{add(){}},dataset:{}}};
+  const win={__RESET_ACTIONS_TEST__:true,location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage(){}},history:{replaceState(){}}};
+  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:null,threads:[]}:{ok:true}})};
+  vm.createContext(ctx);vm.runInContext(source,ctx);
+  const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
+  await settle();
+  assert.equal(node("#embedded-policy-message").textContent,"Off: auto-send is off for Codex in your policy file.","one missing permission is named alone");
+  assert.equal(node("#embedded-policy-state").hidden,false);
+  assert.equal(radios[0].disabled,true,"greet is disabled when both actions are denied");
+  assert.equal(radios[1].disabled,true,"continue is disabled when both actions are denied");
+  assert.equal(node("#greet-help").textContent,"","no per-radio help in the deny state");
+  assert.equal(node("#continue-help").textContent,"","no per-radio help in the deny state");
+  assert.equal(node("#permission").hidden,true);assert.equal(node("#permission").textContent,"","the automatic-actions note is not repeated");
+  assert.equal(node("#oneshot-note").hidden,true,"the one-shot note is hidden in the deny state");
+
+  policy={schemaVersion:1,generation:"legacy-origin",providers:[{name:"Codex",collect:true,show:true,send:true,sendOrigin:"legacy_global",capabilities:{greet:true,continue:true}}]};
+  await win.__resetActionsTest.load();
+  assert.equal(radios[0].disabled,false,"greet stays selectable when only continue is blocked");
+  assert.equal(radios[1].disabled,true,"continue is blocked for a legacy send origin");
+  assert.equal(node("#greet-help").textContent,"Keep the current greeting behavior.");
+  assert.equal(node("#continue-help").textContent,"Unavailable: Codex startup settings do not allow this.","continue-only help names no permission that is on");
+  assert.equal(node("#permission").textContent,"","no other denial text appears when only continue is blocked");
+  assert.equal(node("#embedded-policy-message").textContent,"Available");
+}
 
 // Embedded cancel restores the saved mode without closing the parent; standalone cancel still closes.
 {
