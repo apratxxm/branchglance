@@ -3,17 +3,19 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const source=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8");
+const fixedNow=new Date(2026,10,14,12,0,0,0).getTime();
+class TestDate extends Date {constructor(...args){super(...(args.length?args:[fixedNow]));}static now(){return fixedNow;}}
 const values=new Map();
 let requests=[];
 let responseQueue=[];
 const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value)),removeItem:key=>values.delete(key)};
-const events={},tabNodes={"#dashboard-tab-insights":{tabIndex:0,focus(){this.focused=true;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-tab-settings":{tabIndex:-1,focus(){this.focused=true;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-view":{dataset:{},setAttribute(){}}};
+const events={},animationFrames=[],flushAnimationFrames=()=>animationFrames.splice(0).forEach(fn=>fn()),tabNodes={"#dashboard-tab-insights":{tabIndex:0,focus(){this.focused=true;document.activeElement=this;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-tab-settings":{tabIndex:-1,focus(){this.focused=true;document.activeElement=this;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-view":{dataset:{},setAttribute(){}}};
 const document={activeElement:null,querySelector(selector){return tabNodes[selector]||null;},querySelectorAll(){return [];},addEventListener(name,fn){events[name]=fn;}};
 const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
-const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},requestAnimationFrame:fn=>fn(),setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},location:{origin:"http://127.0.0.1:8765"},fetch:async url=>{if(String(url).startsWith("/api/ledger"))return {ok:false,status:503,json:async()=>({})};requests.push(String(url));return responseQueue.shift()||{ok:false,status:404,json:async()=>({})};}};
+const context={window,document,Intl,Date:TestDate,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},requestAnimationFrame:fn=>{animationFrames.push(fn);},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},location:{origin:"http://127.0.0.1:8765"},fetch:async url=>{if(String(url).startsWith("/api/ledger"))return {ok:false,status:503,json:async()=>({})};requests.push(String(url));return responseQueue.shift()||{ok:false,status:404,json:async()=>({})};}};
 vm.createContext(context);vm.runInContext(source,context);
 const dashboard=window.__tokenTrackerDashboardTest;
-const today=new Date();today.setHours(12,0,0,0);
+const today=new Date(fixedNow);
 const dateOffset=days=>{const date=new Date(today.getTime()-days*86400000);return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;};
 const provider=(name,values={})=>({name,totals:{tokens:values.tokens??1000000,apiEquivalentCost:"cost" in values?values.cost:20,sessions:values.sessions??10,subagentsActive:values.subagentsActive??3,activeHours:values.activeHours??12,cacheHitRate:values.cacheHitRate??65},previous:"previous" in values?values.previous:{tokens:900000,apiEquivalentCost:18},series:[0,1,2].map((n)=>({date:dateOffset(n),tokens:(values.tokens??1000000)/(n+1),apiEquivalentCost:"cost" in values?values.cost:(20/(n+1))})),models:values.models??[{name:name==="Claude"?"claude-opus-5.5":"gpt-6-luna",tokens:500000,apiEquivalentCost:12}],limitPeaks:{fiveHour:55,weekly:70}});
 
@@ -212,7 +214,7 @@ dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true},{id:"dis
 assert.match(dashboard.settingsHTML(),/data-dashboard-action="monitor" disabled/,"a locked two-monitor layout disables the select");
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];
 dashboard.state.lock=null;
-dashboard.state.insights={generatedAt:new Date(Date.now()-120000).toISOString(),providers:[provider("Claude")]};
+dashboard.state.insights={generatedAt:new Date(fixedNow-120000).toISOString(),providers:[provider("Claude")]};
 dashboard.state.loading=false;dashboard.state.loadError=false;
 assert.match(dashboard.statusText(),/Updated 2m ago/);
 
@@ -225,10 +227,21 @@ assert.equal(dashboard.state.tab,"insights");assert.equal(tabNodes["#dashboard-t
 events.click({target:{closest:selector=>selector==="[data-dashboard-tab]"?{dataset:{dashboardTab:"settings"}}:null}});
 assert.equal(dashboard.state.tab,"settings","native Enter/Space button activation reaches the tab click handler");
 events.click({target:{closest:selector=>selector==="[data-dashboard-tab]"?{dataset:{dashboardTab:"insights"}}:null}});
-const opener={focus(){this.restored=true;}};document.activeElement=opener;
+const insightsOpener={id:"dashboard-open",focus(){this.restored=true;document.activeElement=this;}},settingsOpener={id:"dashboard-settings-open",focus(){this.restored=true;document.activeElement=this;}};document.activeElement=insightsOpener;
 window.TokenTrackerDashboard.open({tab:"insights"});
+flushAnimationFrames();
 assert.equal(tabNodes["#dashboard-tab-insights"].focused,true);
-window.TokenTrackerDashboard.close();assert.equal(opener.restored,true);
+window.TokenTrackerDashboard.close();assert.notEqual(document.activeElement,insightsOpener,"focus waits for the next animation frame after closing");flushAnimationFrames();assert.equal(document.activeElement,insightsOpener,"the dashboard close control restores the Insights opener");
+document.activeElement=settingsOpener;window.TokenTrackerDashboard.open({tab:"settings"});flushAnimationFrames();window.TokenTrackerDashboard.close();assert.notEqual(document.activeElement,settingsOpener,"Escape focus restoration waits for the next animation frame");flushAnimationFrames();assert.equal(document.activeElement,settingsOpener,"closing with Escape restores the Settings opener");
+{
+  let selections=0;window.pywebview={api:{select_monitor:async id=>{selections++;assert.equal(id,"display-2");return [];}}};
+  window.tokenTrackerSelectMonitor=id=>window.pywebview.api.select_monitor(id);
+  const select={value:"display-2",dataset:{dashboardAction:"monitor"}};
+  events.change({target:select});
+  await new Promise(resolve=>globalThis.setImmediate(resolve));
+  assert.equal(selections,1,"one Settings monitor change sends exactly one native selection");
+  delete window.pywebview;delete window.tokenTrackerSelectMonitor;
+}
 
 console.log("Insights and Settings dashboard contracts passed");
 

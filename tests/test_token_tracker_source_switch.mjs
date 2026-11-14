@@ -30,7 +30,7 @@ assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
 assert.match(page,/placeholder="[^"]*is:hidden/);
-assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
+assert.doesNotMatch(refined,/monitor-toggle/);
 assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 58px/);
 assert.doesNotMatch(refined,/compact-toolbar \.notch-counts\{display:none/,"the toolbar keeps its chat, active and waiting counts");
 assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);

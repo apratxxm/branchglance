@@ -73,7 +73,7 @@ assert.equal(T.predictedInspectLayoutWidth(monitor("invalid",0,1000)),null,"inva
 
 const before=T.getInspectWidthState();
 const first=monitor("display-a",1.25,1000,true),second=monitor("display-b",1.25,600,true);
-assert.equal(T.applyMonitorResult([first],0,0),true);
+assert.equal(T.applyMonitorResult([first],0),true);
 assert.equal(root.style["--runway-inspect-layout-width"],"556px");
 const pending=[],deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});pending.push(resolve);return promise;};
 const stale=deferred(),current=deferred();let reads=0;
@@ -86,14 +86,17 @@ assert.equal(T.getMonitorState().selected,"display-b","an older monitor reply ca
 assert.equal(root.style["--runway-inspect-layout-width"],"476px","selection and its predicted width are applied together");
 
 let finishSelection;
-context.window.pywebview.api.select_monitor=()=>new Promise(resolve=>{finishSelection=resolve;});
+let selections=0;context.window.pywebview.api.select_monitor=()=>{selections++;return new Promise(resolve=>{finishSelection=resolve;});};
 context.window.pywebview.api.get_monitors=async()=>[second,first];
 T.getMonitorState().monitors=[first,second];T.getMonitorState().selected="display-a";
-const selecting=T.toggleMonitor(),obsoleteRefresh=T.syncMonitors();
+const selecting=T.selectMonitor("display-b"),obsoleteRefresh=T.syncMonitors();
 await obsoleteRefresh;
 assert.equal(T.getMonitorState().selected,"display-a","metadata fetched during a monitor selection is ignored");
 finishSelection([{...first,selected:false},{...second,selected:true}]);await selecting;
 assert.equal(T.getMonitorState().selected,"display-b");
+T.widgetLock.known=true;T.widgetLock.locked=true;
+await T.selectMonitor("display-a");assert.equal(selections,1,"monitor selection is blocked while the widget is locked");
+T.widgetLock.locked=false;
 
 context.window.pywebview.api.get_monitors=async()=>[{id:"bad-metadata",scale:0,workArea:{x:0,y:0,width:1000,height:900}}];
 await T.syncMonitors();

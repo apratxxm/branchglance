@@ -70,7 +70,7 @@ function updateWidgetLockButton() {
   button.disabled=widgetLock.pending||!widgetLock.known;
   button.setAttribute?.('aria-pressed',String(widgetLock.locked));button.setAttribute?.('aria-label',label);button.title=title;
   if(button.innerHTML!==lockIcon(widgetLock.locked))button.innerHTML=lockIcon(widgetLock.locked);
-  updateMonitorButton();updateRecenterButton();
+  updateRecenterButton();
 }
 function updateRecenterButton() {
   const button=$('#window-recenter');if(!button)return;
@@ -194,6 +194,7 @@ function closeDashboard(){
   setNotch(notch.expanded);return true;
 }
 window.tokenTrackerCloseDashboard=closeDashboard;
+window.tokenTrackerSelectMonitor=selectMonitor;
 // The dashboard sizes the window (720 wide, 608 tall, or the shorter 24h panel). The window may not shrink below that while it is open.
 window.addEventListener?.('dashboard-size',()=>{if(dashboardState.open)setNotch(notch.expanded);});
 window.addEventListener?.('resize',()=>{
@@ -436,7 +437,6 @@ function setupNotch() {
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!state.popover&&!state.searchOpen){closeInspection();}});
   window.addEventListener('pywebviewready',()=>{notch.sent=null;compactBridge.appliedSignature=null;compactBridge.pending=null;void syncKeepOpen();void syncWidgetLock().then(()=>syncMonitors());});
   if(window.pywebview?.api?.get_widget_lock)void syncWidgetLock().then(()=>syncMonitors());
-  $('#monitor-toggle')?.addEventListener('click',toggleMonitor);
   $('#window-recenter')?.addEventListener('click',()=>{void recenterWidget();});
   updateWidgetLockButton();updateKeepOpenButton();void syncKeepOpen();
   syncMonitors();
@@ -457,16 +457,6 @@ function monitorSignature(monitor){
   const values=[area.x,area.y,area.width,area.height].map(value=>typeof value==='number'?value:Number(value));
   if(values.some(value=>!Number.isFinite(value))||values[2]<=0||values[3]<=0)return null;
   return JSON.stringify([monitor.id,scale,...values]);
-}
-function updateMonitorButton(){
-  const button=$('#monitor-toggle');if(!button)return;
-  const knownSingle=monitorState.known&&!monitorState.pending&&!monitorSelectionPending&&monitorState.monitors.length<=1;
-  button.hidden=knownSingle;
-  const current=monitorState.current;
-  if(current)button.textContent=current.kind==='internal'?'Laptop':current.kind==='external'?'Monitor':current.label||current.name||'Monitor';
-  button.disabled=!monitorState.known||monitorState.pending||!widgetLock.known||widgetLock.pending||widgetLock.locked||monitorSelectionPending||monitorState.monitors.length<2;
-  button.title=monitorSelectionPending?'Changing monitor':monitorState.pending?'Checking available monitors':!monitorState.known?(monitorState.error?'Monitor information unavailable':'Checking available monitors'):!widgetLock.known||widgetLock.pending?'Checking widget lock':widgetLock.locked?'Unlock the widget to move monitors':monitorState.monitors.length<2?'One monitor available':'Move to next monitor';
-  if(current?.label&&monitorState.known&&!monitorState.pending&&!monitorSelectionPending)button.title=current.label+' · '+button.title;
 }
 function predictedInspectLayoutWidth(monitor){
   const signature=monitorSignature(monitor);if(!signature)return null;
@@ -550,17 +540,16 @@ function armInspectLayoutReconcile(signature){
     scheduleNotchSize();
   },180);
 }
-function applyMonitorResult(result,requestGeneration,selectionGeneration){
+function applyMonitorResult(result,requestGeneration,selectionGeneration=monitorSelectionGeneration){
   if(requestGeneration!==monitorRequestGeneration||selectionGeneration!==monitorSelectionGeneration)return false;
   const monitors=Array.isArray(result)?result:Array.isArray(result?.monitors)?result.monitors:null;
   if(!monitors||!monitors.every(m=>m&&typeof m==='object'&&typeof m.id==='string'&&m.id.trim())){
-    monitorState={...monitorState,known:false,pending:false,error:true};updateMonitorButton();return false;
+    monitorState={...monitorState,known:false,pending:false,error:true};return false;
   }
   const selectedId=Array.isArray(result)?null:result?.selected??result?.selectedId??null;
   const current=monitors.find(m=>m.id===selectedId||m.selected)||monitors[0]||null;
   monitorState={known:true,pending:false,error:false,monitors,selected:current?.id??selectedId,current,signature:monitorSignature(current)};
   applyInspectLayoutWidth(current);
-  updateMonitorButton();
   return true;
 }
 function setupWindowDrag() {
@@ -588,32 +577,29 @@ function setupWindowDrag() {
 }
 async function syncMonitors() {
   const requestGeneration=++monitorRequestGeneration,selectionGeneration=monitorSelectionGeneration;
-  monitorState={...monitorState,pending:true,error:false};updateMonitorButton();
+  monitorState={...monitorState,pending:true,error:false};
   try {
     const result=await window.pywebview?.api?.get_monitors?.();
     if(requestGeneration!==monitorRequestGeneration||selectionGeneration!==monitorSelectionGeneration||monitorSelectionPending)return false;
     const applied=applyMonitorResult(result,requestGeneration,selectionGeneration);
-    if(!applied&&requestGeneration===monitorRequestGeneration){monitorState={...monitorState,known:false,pending:false,error:true};updateMonitorButton();}
+    if(!applied&&requestGeneration===monitorRequestGeneration){monitorState={...monitorState,known:false,pending:false,error:true};}
     return applied;
   }catch{
-    if(requestGeneration===monitorRequestGeneration&&selectionGeneration===monitorSelectionGeneration){monitorState={...monitorState,known:false,pending:false,error:true};updateMonitorButton();}
+    if(requestGeneration===monitorRequestGeneration&&selectionGeneration===monitorSelectionGeneration){monitorState={...monitorState,known:false,pending:false,error:true};}
     return false;
   }
 }
-async function toggleMonitor() {
+async function selectMonitor(id){
   if(!monitorState.known||monitorState.pending||!widgetLock.known||widgetLock.pending||widgetLock.locked||monitorSelectionPending||monitorState.monitors.length<2)return;
-  const index=monitorState.monitors.findIndex(m=>m.id===monitorState.selected);
-  const next=monitorState.monitors[(index+1)%monitorState.monitors.length];
-  if(!next)return;
-  const selectionGeneration=++monitorSelectionGeneration;
-  monitorSelectionPending=true;monitorRequestGeneration++;
-  updateMonitorButton();
+  const next=monitorState.monitors.find(m=>m.id===id);if(!next||next.id===monitorState.selected)return;
+  const selectionGeneration=++monitorSelectionGeneration;monitorSelectionPending=true;monitorRequestGeneration++;
   try{
     const result=await window.pywebview?.api?.select_monitor?.(next.id);
     if(selectionGeneration!==monitorSelectionGeneration)return;
     monitorSelectionPending=false;
     if(result){const requestGeneration=++monitorRequestGeneration;if(!applyMonitorResult(result,requestGeneration,selectionGeneration))void syncMonitors();}
     else await syncMonitors();
+    return result;
   }catch{
     if(selectionGeneration===monitorSelectionGeneration){monitorSelectionPending=false;void syncMonitors();}
   }
@@ -2556,7 +2542,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
   renderLoading,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,

@@ -904,51 +904,19 @@ const asks={...snapshot,providers:[{...provider,chats:[root,ask]}]};
 T.render(asks);
 assert.match(node("#chat-list").innerHTML,/data-key="Codex:ask"[\s\S]*?runway-refined-status t-attn"[\s\S]*?data-action="runway-question" data-key="Codex:ask"/,"the waiting child row shows its Waiting control");
 
-// Selecting a display uses the native API; refresh does not alter placement.
+// Monitor discovery state is updated through the live sync path.
 let selected="one";const nativeCalls=[];
-context.window.pywebview={api:{
-  get_monitors:async()=>[{id:"one",index:1,label:"Monitor",kind:"external",selected:selected==="one"},{id:"two",index:2,label:"Laptop",kind:"internal",selected:selected==="two"}],
-  select_monitor:async id=>{nativeCalls.push(["select",id]);selected=id;},
-  set_notch:async (...args)=>nativeCalls.push(["size",...args]),
-  recenter:async()=>nativeCalls.push(["recenter"])
-}};
-nativeCalls.length=0;
-await T.syncMonitors();assert.equal(node("#monitor-toggle").textContent,"Monitor");
-assert.equal(node("#monitor-toggle").hidden,false);assert.equal(node("#monitor-toggle").disabled,false);
-nativeCalls.length=0;
-await T.toggleMonitor();assert.equal(node("#monitor-toggle").textContent,"Laptop");
-assert.deepEqual(nativeCalls,[["select","two"]]);
-const monitorGetter=context.window.pywebview.api.get_monitors;
-context.window.pywebview.api.get_monitors=async()=>[{id:'\\\\.\\DISPLAY1',index:2,label:'Laptop',kind:'internal',selected:true}];
-await T.syncMonitors();assert.equal(node('#monitor-toggle').textContent,'Laptop');
-context.window.pywebview.api.get_monitors=async()=>[{id:'\\\\.\\DISPLAY2',index:1,label:'Monitor',kind:'external',selected:true}];
-await T.syncMonitors();assert.equal(node('#monitor-toggle').textContent,'Monitor');
-context.window.pywebview.api.get_monitors=async()=>[{id:'\\\\.\\DISPLAY2',index:1,label:'Monitor 1',selected:true}];
-await T.syncMonitors();assert.equal(node('#monitor-toggle').textContent,'Monitor 1');
-assert.equal(node('#monitor-toggle').hidden,true,"one confirmed display hides the monitor control");
-let finishPendingMonitors;
-context.window.pywebview.api.get_monitors=()=>new Promise(resolve=>{finishPendingMonitors=resolve;});
-const pendingMonitorSync=T.syncMonitors();
-assert.equal(node('#monitor-toggle').hidden,false);assert.equal(node('#monitor-toggle').disabled,true,"pending discovery keeps the control visible and disabled");
-finishPendingMonitors([{id:'one',label:'Laptop',kind:'internal',selected:true}]);await pendingMonitorSync;
-assert.equal(node('#monitor-toggle').hidden,true);
-context.window.pywebview.api.get_monitors=async()=>({monitors:[{label:'missing identity'}]});
-await T.syncMonitors();assert.equal(node('#monitor-toggle').hidden,false);assert.equal(node('#monitor-toggle').disabled,true);
-assert.match(node('#monitor-toggle').title,/unavailable/i);
-context.window.pywebview.api.get_monitors=async()=>{throw new Error('discovery failed');};
-await T.syncMonitors();assert.equal(node('#monitor-toggle').hidden,false);assert.equal(node('#monitor-toggle').disabled,true);
-context.window.pywebview.api.get_monitors=monitorGetter;await T.syncMonitors();
-nativeCalls.length=0;
-selected="one"; // native selection changed after a manual cross-monitor drag
-const requests=[];
-const refreshedSnapshot={...asks,providers:[{...provider,chats:[{...root,title:"Refreshed parent"},ask]}]};
-requests.length=0;
-context.fetch=async (url,options)=>{
-  requests.push([url,options]);
-  assert.equal(options.signal.aborted,false);
+context.window.pywebview={api:{get_monitors:async()=>[{id:"one",index:1,label:"Monitor",kind:"external",selected:selected==="one"},{id:"two",index:2,label:"Laptop",kind:"internal",selected:selected==="two"}],set_notch:async (...args)=>nativeCalls.push(["size",...args]),recenter:async()=>nativeCalls.push(["recenter"])}};
+const requests=[];const refreshedSnapshot={...asks,providers:[{...provider,chats:[{...root,title:"Refreshed parent"},ask]}]};
+nativeCalls.length=0;await T.syncMonitors();assert.equal(T.getMonitorState().current.id,"one");
+context.window.pywebview.api.get_monitors=async()=>({monitors:[{label:"missing identity"}]});await T.syncMonitors();assert.equal(T.getMonitorState().known,false);
+context.window.pywebview.api.get_monitors=async()=>{throw new Error("discovery failed");};await T.syncMonitors();assert.equal(T.getMonitorState().known,false);
+context.window.pywebview.api.get_monitors=async()=>[{id:"one",selected:true}];await T.syncMonitors();
+nativeCalls.length=0;selected="one";requests.length=0;
+context.fetch=async(url,options)=>{
+  requests.push([url,options]);assert.equal(options.signal.aborted,false);
   if(url.startsWith("/api/stats"))return {ok:true,json:async()=>refreshedSnapshot};
-  assert.equal(url,"/api/limit-reset");
-  return {ok:true,json:async()=>({enabled:false,running:false,providers:{}})};
+  assert.equal(url,"/api/limit-reset");return {ok:true,json:async()=>({enabled:false,running:false,providers:{}})};
 };
 T.handleClick({target:{closest:s=>s==="[data-action]"?{dataset:{action:"refresh"}}:null}});
 await new Promise(resolve=>setImmediate(resolve));
@@ -959,16 +927,14 @@ assert.equal(T.state.snapshot,refreshedSnapshot);
 assert.match(node("#chat-list").innerHTML,/Refreshed parent/);
 assert.equal(T.state.loading,false);
 assert.equal(T.state.failSince,null);
-assert.equal(node("#monitor-toggle").textContent,"Monitor");
 assert.ok(!nativeCalls.some(call=>["select","recenter","fit"].includes(call[0])));
-
 // The real hover handlers protect header targets until the pointer enters content.
 T.render({...asks,providers:[{...provider,chats:[]}]});
 T.notch.manual=false;T.notch.inspecting=false;T.notch.keyboardInspecting=false;T.notch.autoExpanded=false;T.setNotch(false);
 const widgetEvents=new Map(),buttonEvents=new Map();
 node(".widget").addEventListener=(name,handler)=>widgetEvents.set(name,handler);
 node(".titlebar").getBoundingClientRect=()=>({left:0,right:400,top:0,bottom:30});
-for(const selector of ["#monitor-toggle","#dashboard-open","#window-recenter"])
+for(const selector of ["#dashboard-open","#window-recenter"])
   node(selector).addEventListener=(name,handler)=>buttonEvents.set(selector+":"+name,handler);
 const notchDocumentEvents=new Map();
 context.document.addEventListener=(name,handler)=>notchDocumentEvents.set(name,handler);
@@ -1114,7 +1080,7 @@ assert.match(node('#widget-lock').innerHTML,/M4 5V3\.8a2 2 0 0 1 4 0V5/,'the loc
 assert.equal(dragBrand.classList.contains('pywebview-drag-region'),true);assert.equal(dragFill.classList.contains('pywebview-drag-region'),true,"compact position lock still allows deliberate dragging");
 widgetEvents.get('pointerleave')();T.syncNotch(0,[]);
 assert.equal(T.notch.expanded,true,'an open lock survives zero active work and pointer exit');assert.equal(T.notch.autoTimer,null);
-assert.equal(await T.toggleMonitor(),undefined);assert.equal(nativeCalls.some(call=>call[0]==='select'),false,'monitor cycling is ignored while locked');
+
 const newerRevision=nativeLock.revision+1;
 nativeLock={locked:true,expanded:false,revision:newerRevision};assert.equal(T.applyWidgetLock({...nativeLock}),true);
 assert.equal(T.applyWidgetLock({locked:false,expanded:true,revision:newerRevision+0.5}),false,'lock callbacks require a safe integer revision');

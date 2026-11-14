@@ -72,6 +72,7 @@ def fixtures(models=2, reset_continue=False, tree_space=False):
                           "weekly": {"percent": weekly, "resetAt": reset(weekly_minutes)},
                           "limitsUpdatedAt": iso(0)})
     providers[0]["bankedResets"] = {"available": 1, "items": [{"title": "Full reset (Weekly + 5 hr)", "expiresAt": reset(30 * 1440)}]}
+    providers[1]["identityVerified"] = True
     if tree_space:
         providers[0]["chats"] = extra + [other, docs_child]
     snapshot = {"generatedAt": iso(0), "enabledProviders": ["Codex", "Claude"], "providerPolicies": policy,

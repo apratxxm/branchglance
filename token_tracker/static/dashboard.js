@@ -620,7 +620,7 @@
   }
   async function chooseMonitor(id){
     const api=window.pywebview?.api;if(typeof api?.select_monitor!=="function")return;
-    try{const result=await api.select_monitor(id);state.monitors=Array.isArray(result)?result:state.monitors;if(typeof api.get_widget_lock==="function")state.lock=await api.get_widget_lock();state.settingsError=false;state.settingsStatus="";}
+    try{const result=typeof window.tokenTrackerSelectMonitor==="function"?await window.tokenTrackerSelectMonitor(id):await api.select_monitor(id);state.monitors=Array.isArray(result)?result:state.monitors;if(typeof api.get_widget_lock==="function")state.lock=await api.get_widget_lock();state.settingsError=false;state.settingsStatus="";}
     catch(error){state.lock=null;state.settingsError=true;state.settingsStatus=error?.message||"Monitor could not be selected.";}
     finally{state.settingsRenderKey="";render();}
   }
@@ -671,7 +671,7 @@
   function close(){
     state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
     $("#dashboard-content")?.classList.remove("is-switching");const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
-    state.frame=null;state.settingsRenderKey="";state.opener?.focus?.();state.opener=null;
+    state.frame=null;state.settingsRenderKey="";const opener=state.opener;state.opener=null;requestAnimationFrame(()=>opener?.focus?.());
   }
   function normalizeStats(snapshot){
     const providers=Array.isArray(snapshot?.providers)?snapshot.providers:[];

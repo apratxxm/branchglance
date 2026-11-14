@@ -47,7 +47,6 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 .titlebar>.brand,.titlebar>.sync-age,.titlebar>.icon-btn,.titlebar>.window-controls,.titlebar>.notch-counts{flex-shrink:0}
 .sync-age{font:11px var(--mono);padding:2px 3px}
 #sync-age{min-width:28px;height:24px;display:inline-grid;place-items:center}
-#monitor-toggle{width:52px;min-width:52px;max-width:52px;flex:none}
 /* Source switch: two segments in the controls band; the dot marks attention in the unselected source. */
 :root{--claude:#e8813f;--source-dot:#ffd24a}
 .source-switch{position:relative;display:inline-flex;align-items:center;flex:none;height:22px;margin:0 2px;padding:1px;border-radius:7px;background:var(--source-accent-soft);isolation:isolate}
