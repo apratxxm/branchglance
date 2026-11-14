@@ -295,13 +295,62 @@ def test_compact_typed_anchor_centers_expansion_and_drag_saves_actual_width(nati
 def test_dashboard_mode_uses_fixed_size_and_clamps_to_work_area(native_notch):
     app, monitors, rect, calls = native_notch
     app._compact_notch_mode = "dashboard"
+    app.notch_height = 608
     assert widget._compact_notch_dimensions("dashboard") == (720, 608)
     assert app._notch_target() == (720, 608, 600, 0)
     app.set_notch(False, 608, False, "dashboard")
     assert rect == [600, 0, 720, 608]
-    assert calls[-1] == (720, 608, 600, 0)
+    assert calls[-2] == (720, 608, 600, 0)
+    assert calls[-1] == 'window.tokenTrackerNotchSettled?.("dashboard", false, null)'
     monitors[0]["area"] = (0, 0, 640, 480)
     assert app._notch_target() == (640, 480, 0, 0)
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_dashboard_requested_height_and_jump_settle(native_notch):
+    app, _monitors, rect, calls = native_notch
+    for height in (478, 608):
+        app.set_notch(True, height, True, "dashboard")
+        assert rect == [600, 0, 720, height]
+        assert calls[-1] == 'window.tokenTrackerNotchSettled?.("dashboard", true, null)'
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_animation_emits_settle_after_final_frame(native_notch, monkeypatch):
+    app, _monitors, rect, calls = native_notch
+    app._compact_notch_mode = "dashboard"
+    app.notch_expanded = True
+    target = (720, 478, 600, 0)
+    app._notch_transition = ((rect[2], rect[3], rect[0], rect[1]), target, 0, 1)
+    app._notch_transition_notice = (app.window, "dashboard", True, 42)
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 2)
+    app._animate_notch()
+    assert calls[-2] == target
+    assert calls[-1] == 'window.tokenTrackerNotchSettled?.("dashboard", true, 42)'
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_close_can_take_notch_lock_while_jump_settle_blocks(native_notch):
+    app, _monitors, _rect, _calls = native_notch
+    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    def evaluate(_script):
+        entered.set()
+        release.wait(2)
+    app.window.evaluate_js = evaluate
+    sender = threading.Thread(target=lambda: app.set_notch(True, 478, True, "dashboard", 5), daemon=True)
+    closer = threading.Thread(target=lambda: (app.hide(), closed.set()), daemon=True)
+    try:
+        sender.start()
+        assert entered.wait(1)
+        closer.start()
+        assert closed.wait(1), "close must not wait for the evaluator to release the notch lock"
+    finally:
+        release.set()
+        sender.join(2)
+        if closer.ident is not None:
+            closer.join(2)
+    assert not sender.is_alive()
+    assert not closer.is_alive()
 
 
 @pytest.mark.parametrize("native_notch", [True], indirect=True)

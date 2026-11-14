@@ -567,8 +567,9 @@
   function cancelFade(){
     state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;$("#dashboard-content")?.classList.remove("is-switching");
   }
-  function crossFade(change){
+  function crossFade(change,targetTab){
     dismissTooltip();cancelFade();const content=$("#dashboard-content"),generation=state.fadeVersion;
+    if(targetTab){const root=$("#dashboard-view");if(root)root.dataset.tab=targetTab;}
     if(!content||reducedMotion()){change();return;}
     content.classList.add("is-switching");
     state.fadeTimer=setTimeout(()=>{state.fadeTimer=null;if(generation!==state.fadeVersion||!state.open)return;change();requestAnimationFrame(()=>{if(generation===state.fadeVersion&&state.open)content.classList.remove("is-switching");});},90);
@@ -600,8 +601,8 @@
   }
   function selectTab(name){
     if(name!=="insights"&&name!=="settings")return;
-    cancelFade();if(name===state.tab)return;
-    crossFade(()=>{state.tab=name;syncTabs();state.renderKey="";render();if(name==="settings")void loadSettings();});
+    cancelFade();if(name===state.tab){const root=$("#dashboard-view");if(root)root.dataset.tab=name;return;}
+    crossFade(()=>{state.tab=name;syncTabs();state.renderKey="";render();if(name==="settings")void loadSettings();},name);
   }
   function setRange(range){
     if(!isRange(range))return;
@@ -672,7 +673,7 @@
   function close(){
     state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
     $("#dashboard-content")?.classList.remove("is-switching");const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
-    state.frame=null;state.settingsRenderKey="";const opener=state.opener;state.opener=null;requestAnimationFrame(()=>opener?.focus?.());
+    state.frame=null;state.settingsRenderKey="";const opener=state.opener;state.opener=null;requestAnimationFrame(()=>{const valid=opener&&opener.isConnected!==false&&!opener.disabled&&!opener.hidden&&opener.getClientRects?.().length!==0;const target=valid?opener:$("#dashboard-open");target?.focus?.({preventScroll:true,focusVisible:false});});
   }
   function normalizeStats(snapshot){
     const providers=Array.isArray(snapshot?.providers)?snapshot.providers:[];

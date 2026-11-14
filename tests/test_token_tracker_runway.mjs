@@ -107,6 +107,7 @@ assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread',resumeCount:1},false),
 assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread'},false), /runway-resume-badge/);
  assert.equal(T.openDashboard(),true,"the production widget opens the dashboard");
 assert.equal(T.closeDashboard(),true,"the dashboard returns to the widget");
+scheduledTimers.get(T.dashboardState.timer).callback();context.window.tokenTrackerNotchSettled(T.dashboardState.restoreMode,false,T.dashboardState.generation);scheduledTimers.get(T.dashboardState.timer).callback();
 assert.equal(T.writeInspectLayoutWidth(500),true);
 assert.equal(context.document.documentElement.style['--runway-inspect-clock-axis'],'250px');
 T.writeInspectLayoutWidth(556);
@@ -1111,7 +1112,7 @@ assert.match(page,/id="widget-lock"/);
 
 const openedDashboards=[];context.window.TokenTrackerDashboard={open:options=>openedDashboards.push(options),close(){}};context.window.tokenTrackerCloseDashboard();
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?{dataset:{action:"open-settings"}}:null}});
-assert.deepEqual(openedDashboards.map(options=>options.tab),["settings"],"the dock Settings button opens the dashboard on the Settings tab");context.window.tokenTrackerCloseDashboard();nativeCalls.length=0;
+assert.deepEqual(openedDashboards.map(options=>options.tab),["settings"],"the dock Settings button opens the dashboard on the Settings tab");context.window.tokenTrackerCloseDashboard();scheduledTimers.get(T.dashboardState.timer).callback();context.window.tokenTrackerNotchSettled(T.dashboardState.restoreMode,false,T.dashboardState.generation);scheduledTimers.get(T.dashboardState.timer).callback();nativeCalls.length=0;
 // A failed first snapshot retries quickly while visible, without quota fetches until data exists.
 T.state.snapshot=null;T.state.loading=false;T.state.refreshPending=false;T.state.bootstrapRetryMs=2000;
 const bootstrapCalls=[];

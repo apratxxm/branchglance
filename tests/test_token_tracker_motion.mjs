@@ -146,3 +146,57 @@ settle=[...timers].find(([,timer])=>timer.delay===180);
 assert.ok(settle,"the fresh CSS-scale correction still waits for its matching bridge acknowledgement");
 advanceFakeTime(180);
 assert.equal(root.style["--runway-inspect-layout-width"],"536px");
+
+// Dashboard swaps keep the native frame and page state in step.
+{
+  const flags=new Set(),content=node('#dashboard-content'),view=node('#dashboard-view'),calls=[],frames=[];
+  content.classList={toggle(name,on){on?flags.add(name):flags.delete(name);},add(name){flags.add(name);},remove(name){flags.delete(name);}};
+  let focused=false,reduced=false,requestedHeight=478;
+  context.requestAnimationFrame=callback=>{frames.push(callback);return frames.length;};
+  context.cancelAnimationFrame=()=>{};
+  context.window.matchMedia=()=>({matches:reduced});
+  context.Event=class{constructor(type){this.type=type;}};
+  const widget=node('.widget'),widgetListeners=new Map();let leaves=0;
+  widget.addEventListener=(name,fn)=>widgetListeners.set(name,fn);
+  widget.dispatchEvent=event=>{if(event.type==='pointerleave')leaves++;widgetListeners.get(event.type)?.(event);};
+  widget.getBoundingClientRect=()=>({left:0,top:0,width:300,height:100});
+  context.window.screenX=100;context.window.screenY=200;T.notch.manual=false;T.notch.inspecting=false;T.notch.keyboardInspecting=false;T.setupNotch();
+  context.window.pywebview.api.set_notch=async(...args)=>{calls.push(args);};
+  context.window.TokenTrackerDashboard={windowHeight:()=>requestedHeight,open(){view.hidden=false;},close(){view.hidden=true;context.requestAnimationFrame(()=>{focused=true;});}};
+  T.widgetLock.known=true;T.notch.mode='controls';T.notch.manual=false;T.notch.inspecting=false;
+  T.notch.globalPointerX=500;T.notch.globalPointerY=250;T.notch.hover=true;
+  assert.equal(T.openDashboard(),true);
+  assert.equal(T.dashboardState.height,478);requestedHeight=608;T.setNotch(false,true);assert.equal(T.dashboardState.height,478,"range changes preserve the opening height");
+  assert.ok(flags.has('dashboard-transition-hidden'));
+  const firstOpen=T.dashboardState.generation;
+  context.window.tokenTrackerNotchSettled('dashboard',true,null);assert.ok(flags.has('dashboard-transition-hidden'));
+  context.window.tokenTrackerNotchSettled('dashboard',true,firstOpen);
+  assert.ok(!flags.has('dashboard-transition-hidden'));
+  assert.equal(T.closeDashboard(),true);
+  assert.equal(T.dashboardState.open,false);assert.equal(T.dashboardState.closing,true);
+  assert.equal(T.closeDashboard(),false,"a second close does not restart the transition");
+  advanceFakeTime(90);assert.equal(T.notch.mode,'dashboard');
+  context.window.tokenTrackerNotchSettled('controls',false,T.dashboardState.generation);
+  assert.equal(T.notch.mode,'controls');assert.equal(focused,false);assert.equal(leaves,0);advanceFakeTime(90);assert.equal(leaves,1,"an outside pointer follows the existing leave path once after the swap");assert.equal(T.notch.hover,false);assert.ok(T.notch.exitTimer!=null);frames.splice(0).forEach(callback=>callback());assert.equal(focused,true);
+  for(let i=0;i<6;i++)await Promise.resolve();
+  T.notch.globalPointerX=150;T.notch.globalPointerY=250;T.openDashboard();assert.ok(flags.has('dashboard-transition-hidden'));context.window.tokenTrackerNotchSettled('dashboard',true,firstOpen);assert.ok(flags.has('dashboard-transition-hidden'));advanceFakeTime(406);assert.ok(!flags.has('dashboard-transition-hidden'));
+  T.closeDashboard();const closeA=T.dashboardState.generation;advanceFakeTime(90);T.openDashboard();context.window.tokenTrackerNotchSettled('controls',false,closeA);
+  assert.equal(T.notch.mode,'dashboard');assert.equal(view.hidden,false);
+  T.closeDashboard();advanceFakeTime(90);context.window.tokenTrackerNotchSettled('controls',false,closeA);assert.equal(T.notch.mode,'dashboard');advanceFakeTime(340);assert.equal(T.notch.mode,'controls');advanceFakeTime(90);assert.equal(leaves,1,"an inside pointer does not synthesize a leave");
+  reduced=true;T.openDashboard();assert.ok(!flags.has('dashboard-transition-hidden'));T.closeDashboard();assert.equal(T.notch.mode,'controls');
+  assert.ok(calls.some(args=>args[3]==='dashboard'));
+}
+
+// The header controls follow the requested tab as soon as the body fade starts.
+{
+  const dashboard=fs.readFileSync(new URL('../token_tracker/static/dashboard.js',import.meta.url),'utf8');
+  const view={dataset:{tab:'insights'},addEventListener(){}},content={classList:{add(){},remove(){}}},pending=new Map();let next=0;
+  const win={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){}};
+  const doc={querySelector:s=>s==='#dashboard-view'?view:s==='#dashboard-content'?content:null,querySelectorAll:()=>[],addEventListener(){}};
+  const sandbox={window:win,document:doc,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage:{getItem(){return null;},setItem(){}},location:{origin:'http://localhost'},fetch:async()=>({ok:false}),setTimeout:fn=>{pending.set(++next,fn);return next;},clearTimeout:id=>pending.delete(id),setInterval:()=>1,clearInterval(){},requestAnimationFrame(){}};
+  vm.createContext(sandbox);vm.runInContext(dashboard,sandbox);
+  const state=win.__tokenTrackerDashboardTest.state;state.open=true;
+  win.TokenTrackerDashboard.selectTab('settings');assert.equal(view.dataset.tab,'settings');assert.equal(state.tab,'insights');
+  win.TokenTrackerDashboard.selectTab('insights');assert.equal(view.dataset.tab,'insights');assert.equal(pending.size,0,'cancelling the pending switch restores the controls');
+  state.tab='settings';view.dataset.tab='settings';win.TokenTrackerDashboard.selectTab('insights');assert.equal(view.dataset.tab,'insights');assert.equal(state.tab,'settings');
+}

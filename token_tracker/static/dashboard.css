@@ -1,4 +1,14 @@
 .dashboard-view{display:none;}
+html:has(body[data-notch-mode="dashboard"]),body[data-notch-mode="dashboard"]{overflow:hidden;}
+body[data-notch-mode="dashboard"] #dashboard-content{opacity:1;transform:translateY(0);transition:opacity 140ms cubic-bezier(.16,1,.3,1),transform 140ms cubic-bezier(.16,1,.3,1);}
+body[data-notch-mode="dashboard"] #dashboard-content.dashboard-transition-hidden{opacity:0;transform:translateY(4px);}
+body.dashboard-closing #dashboard-content.dashboard-transition-hidden{transition:opacity 90ms ease-in;transform:none;}
+@media(prefers-reduced-motion:reduce){body[data-notch-mode="dashboard"] #dashboard-content{transition:none;transform:none!important;}}
+body.dashboard-crossfade #dashboard-view:not([hidden]){position:absolute;top:0;left:50%;transform:translateX(-50%);width:720px;height:var(--dashboard-height,608px);display:flex!important;flex-direction:column;overflow:hidden;background:#05070b;z-index:10;pointer-events:none;animation:dashboard-fade-out 90ms ease both;}
+body.dashboard-crossfade .widget>:not(#dashboard-view){animation:dashboard-fade-in 90ms ease both;}
+body.dashboard-crossfade #dashboard-content{opacity:0;}
+@keyframes dashboard-fade-out{from{opacity:1}to{opacity:0}}
+@keyframes dashboard-fade-in{from{opacity:0}to{opacity:1}}
 body:not([data-notch-mode="dashboard"]) #dashboard-view,body[data-notch-mode="dashboard"] #dashboard-view[hidden]{display:none!important;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .widget{width:100%;min-width:0;max-width:none;gap:0;padding:8px;background:radial-gradient(ellipse at 5% 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 42%),linear-gradient(150deg,#0b0e15,#07090e 60%,#0a0d14);}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar{position:relative;z-index:1;inset:auto;order:0;flex:none;width:100%;height:30px;min-height:30px;display:flex;align-items:center;justify-content:flex-start;overflow:visible;clip-path:none;opacity:1;pointer-events:auto;padding:0 4px;gap:1px;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;border-radius:5px 5px 0 0;box-shadow:inset 0 1px var(--source-edge-strong),inset 1px 0 var(--source-edge),inset -1px 0 var(--source-edge),0 4px 0 #05070b,inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
@@ -29,7 +39,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #pop
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .dashboard-content{width:100%;min-width:0;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view[hidden]{display:none!important;}
 /* Insights and Settings frame. */
-body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view:not([hidden]){position:relative;order:1;display:flex;flex-direction:column;flex:1 1 540px;align-self:stretch;width:100%;height:auto;margin:0;min-width:0;max-width:none;min-height:0;overflow:hidden;border:0;border-radius:0;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 7%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 8%,transparent),transparent 52%);}
+body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view:not([hidden]){position:absolute;top:0;left:50%;transform:translateX(-50%);order:1;display:flex;flex-direction:column;flex:0 0 608px;align-self:auto;width:720px;height:var(--dashboard-height,608px)!important;margin:0;min-width:720px;max-width:720px;min-height:0;overflow:hidden;border:0;border-radius:0;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 7%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 8%,transparent),transparent 52%);}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .widget{padding:0;gap:0;background:#05070b;}
 
 /* Toolbar clock: width follows the time text so it never runs under the window buttons (all compact notch modes). Later in the cascade than the per-mode widths in runway_refined.css. */
@@ -50,9 +60,9 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dashboard-tab:hover{color:#dfe1e7;background:transparent;}
 .dashboard-tab.is-active{color:#f5f6f8;text-shadow:0 0 12px color-mix(in srgb,var(--source-glow-primary) 35%,transparent);}
 .dashboard-tab.is-active::after{content:"";position:absolute;right:0;bottom:0;left:0;height:2px;border-radius:2px 2px 0 0;background:var(--source-accent);box-shadow:0 0 8px color-mix(in srgb,var(--source-glow-primary) 70%,transparent);}
-.dashboard-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;}
+.dashboard-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;visibility:visible;opacity:1;transition:opacity 90ms ease,visibility 0s linear 0s;}
 .dash-segment{display:flex;align-items:center;gap:2px;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;}
-#dashboard-view[data-tab="settings"] .dashboard-controls{display:none;}
+#dashboard-view[data-tab="settings"] .dashboard-controls{visibility:hidden;opacity:0;transition:opacity 90ms ease,visibility 0s linear 90ms;}
 .dash-segment button{height:26px;min-width:38px;padding:0 10px;border:0;border-radius:7px;color:var(--d-mute);background:transparent;font:500 12px/1 var(--d-font);cursor:pointer;}
 .dash-segment[aria-label="Metric"] button{min-width:52px;}
 .dashboard-controls{gap:16px;}
