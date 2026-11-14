@@ -27,6 +27,10 @@ func renderPreviews(to directory: String) {
         try? png.write(to: URL(fileURLWithPath: directory).appendingPathComponent(name))
     }
     save(MediaView(media: media), "media.png", CGSize(width: 484, height: 150))
+    media.isPlaying = false
+    save(MediaView(media: media), "media-paused.png", CGSize(width: 484, height: 150))
+    media.isPlaying = true
+    save(MediaView(media: NowPlaying()), "media-empty.png", CGSize(width: 484, height: 150))
     save(HUDView(kind: .media, notchWidth: 200, media: media), "activity-media.png", CGSize(width: 200 + 2 * 48, height: 38))
     save(HUDView(kind: .volume(level: 0.6, muted: false), notchWidth: 200, media: media), "activity-volume.png", CGSize(width: 200 + 2 * 84, height: 38))
     save(HUDView(kind: .capsLock(on: true), notchWidth: 200, media: media), "activity-caps.png", CGSize(width: 200 + 2 * 56, height: 38))

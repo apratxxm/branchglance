@@ -12,6 +12,12 @@ enum Player: String, CaseIterable {
     var bundleID: String { self == .spotify ? "com.spotify.client" : "com.apple.Music" }
     var notification: String { self == .spotify ? "com.spotify.client.PlaybackStateChanged" : "com.apple.Music.playerInfo" }
     var isRunning: Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty }
+    var isInstalled: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil }
+
+    func launch() {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: .init())
+    }
 }
 
 final class NowPlaying: ObservableObject {
@@ -43,6 +49,8 @@ final class NowPlaying: ObservableObject {
     private let scriptQueue = DispatchQueue(label: "branchglance.media.applescript")
 
     var hasTrack: Bool { player != nil && !title.isEmpty }
+    /// Identifies the track for artwork and wash transitions.
+    var trackKey: String { (player?.rawValue ?? "") + "\u{1}" + title + "\u{1}" + album }
 
     init() {
         for player in Player.allCases {
@@ -101,6 +109,7 @@ final class NowPlaying: ObservableObject {
         // A paused player never replaces one that is playing.
         if let current = self.player, current != player, isPlaying, !playing { return }
         let changed = self.player != player || self.title != title || isPlaying != playing
+        let newSource = self.player != player
         self.player = player
         self.title = title
         self.artist = artist
@@ -110,6 +119,7 @@ final class NowPlaying: ObservableObject {
         self.positionDate = Date()
         self.duration = duration
         loadArtwork()
+        if newSource { readModes() }
         if changed { onChange?() }
     }
 
@@ -180,8 +190,14 @@ final class NowPlaying: ObservableObject {
             self?.repeating = parts[1] == "true"
         }
     }
-    func next() { send("next track") }
-    func previous() { send("previous track") }
+    func next() { skip("next track") }
+    func previous() { skip("previous track") }
+
+    /// The bar restarts at once; the player's own report replaces it a moment later.
+    private func skip(_ command: String) {
+        position = 0; positionDate = Date()
+        send(command)
+    }
 
     func seek(to fraction: Double) {
         guard let player, duration > 0 else { return }
@@ -191,14 +207,14 @@ final class NowPlaying: ObservableObject {
         run("tell application \"\(player.rawValue)\" to set player position to \(seconds)") { _ in }
     }
 
-    func openPlayer() {
-        guard let player, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: player.bundleID) else { return }
-        NSWorkspace.shared.openApplication(at: url, configuration: .init())
-    }
+    func openPlayer() { player?.launch() }
 
     private func send(_ command: String) {
         guard let player else { return }
-        run("tell application \"\(player.rawValue)\" to \(command)") { [weak self] _ in self?.refresh() }
+        run("tell application \"\(player.rawValue)\" to \(command)") { [weak self] _ in
+            // Players settle their state a beat after a command; read it once they have.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { self?.refresh() }
+        }
     }
 
     /// Re-sync when the media tab opens; the progress bar extrapolates between syncs.
@@ -277,35 +293,42 @@ struct Artwork: View {
     }
 }
 
-/// Album art with a soft glow of its own colours behind it; it settles back and dims when paused.
+/// Album art that settles back and dims when paused, with the source app's badge.
+/// Springs are critically damped: nothing here was thrown, so nothing overshoots.
 struct GlowingArtwork: View {
     @ObservedObject var media: NowPlaying
     var size: CGFloat
+    var badge = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let radius = size * 0.18
         ZStack(alignment: .bottomTrailing) {
-            if let image = media.artwork {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                    .frame(width: size, height: size)
-                    .blur(radius: 26)
-                    .scaleEffect(1.25)
-                    .opacity(media.isPlaying ? 0.55 : 0)
-            }
             Artwork(image: media.artwork, size: size)
-                .overlay(RoundedRectangle(cornerRadius: size * 0.16, style: .continuous)
-                    .fill(Color.black.opacity(media.isPlaying ? 0 : 0.45)))
-                .scaleEffect(media.isPlaying ? 1 : 0.88)
-            if let player = media.player {
+                .id(media.trackKey)
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94)))
+                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Color.black.opacity(media.isPlaying ? 0 : 0.35)))
+                .shadow(color: Color(nsColor: media.accent).opacity(media.isPlaying ? 0.45 : 0), radius: size * 0.16, y: size * 0.06)
+                .scaleEffect(media.isPlaying || reduceMotion ? 1 : 0.92)
+            if badge, let player = media.player {
                 Image(nsImage: appIcon(player.bundleID))
-                    .resizable().frame(width: 26, height: 26)
-                    .offset(x: 7, y: 7)
+                    .resizable().frame(width: size * 0.26, height: size * 0.26)
+                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                    .offset(x: size * 0.07, y: size * 0.07)
             }
         }
         .frame(width: size, height: size)
-        .animation(.spring(response: 0.4, dampingFraction: 0.75), value: media.isPlaying)
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 1), value: media.isPlaying)
+        .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1), value: media.trackKey)
+        .contentShape(Rectangle())
         .onTapGesture { media.openPlayer() }
+        .help("Open \(media.player?.rawValue ?? "player")")
     }
 }
+
 
 /// Width bookkeeping for MarqueeText (an object rather than @State: no SwiftUI macros in this build).
 final class MarqueeModel: ObservableObject {
@@ -355,69 +378,144 @@ private struct WidthKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
+/// The artwork's colours washed across the panel behind the player, faded towards the controls.
+private struct AmbientWash: View {
+    @ObservedObject var media: NowPlaying
+
+    var body: some View {
+        ZStack {
+            if let image = media.artwork {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                    .blur(radius: 48)
+                    .saturation(1.4)
+                    .id(media.trackKey)
+                    .transition(.opacity)
+            }
+        }
+        .opacity(media.isPlaying ? 0.42 : 0.18)
+        .mask(LinearGradient(colors: [.black, .black.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing))
+        .allowsHitTesting(false)
+        .animation(.easeInOut(duration: 0.6), value: media.trackKey)
+        .animation(.easeInOut(duration: 0.5), value: media.isPlaying)
+    }
+}
+
 struct MediaView: View {
     @ObservedObject var media: NowPlaying
 
     var body: some View {
-        if media.hasTrack {
-            HStack(alignment: .center, spacing: 16) {
-                GlowingArtwork(media: media, size: 104)
-                VStack(alignment: .leading, spacing: 2) {
-                    MarqueeText(text: media.title, font: .system(size: 15, weight: .semibold))
-                    MarqueeText(text: media.artist, font: .system(size: 13, weight: .medium),
-                                color: Color(nsColor: media.accent).opacity(0.9))
-                    ProgressBar(media: media).padding(.top, 8)
-                    Controls(media: media).padding(.top, 2)
-                }
-            }
-            .padding(.horizontal, 18).padding(.vertical, 12)
-            .foregroundStyle(.white)
-        } else {
-            VStack(spacing: 6) {
-                Image(systemName: "music.note").font(.system(size: 22))
-                Text("Play something in Spotify or Music").font(.system(size: 12))
-            }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack {
+            AmbientWash(media: media).clipped()
+            if media.hasTrack { player.transition(.opacity) } else { EmptyMedia().transition(.opacity) }
         }
+        .animation(.easeInOut(duration: 0.3), value: media.hasTrack)
+        .foregroundStyle(.white)
+    }
+
+    private var player: some View {
+        HStack(alignment: .center, spacing: 16) {
+            GlowingArtwork(media: media, size: 92)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        MarqueeText(text: media.title, font: .system(size: 15, weight: .semibold))
+                        MarqueeText(text: media.artist, font: .system(size: 13, weight: .medium),
+                                    color: .white.opacity(0.6))
+                    }
+                    NowPlayingGlyph(media: media).padding(.top, 4)
+                }
+                ProgressBar(media: media).padding(.top, 10)
+                Controls(media: media).padding(.top, 2)
+            }
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
+    }
+}
+
+/// Three small bars in the artwork colour while music plays; flat when paused.
+private struct NowPlayingGlyph: View {
+    @ObservedObject var media: NowPlaying
+    var body: some View {
+        IdleBars(media: media).scaleEffect(0.8, anchor: .topTrailing)
+            .opacity(media.isPlaying ? 1 : 0.35)
+            .frame(width: 18, height: 14)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Nothing playing: say so, and offer the players this Mac has.
+private struct EmptyMedia: View {
+    var body: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.07))
+                Image(systemName: "music.note").font(.system(size: 28, weight: .medium)).foregroundStyle(.white.opacity(0.35))
+            }
+            .frame(width: 92, height: 92)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Not Playing").font(.system(size: 15, weight: .semibold))
+                Text("Music and Spotify show up here.").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                HStack(spacing: 8) {
+                    ForEach(Player.allCases.filter(\.isInstalled), id: \.self) { player in
+                        Button { player.launch() } label: {
+                            HStack(spacing: 5) {
+                                Image(nsImage: appIcon(player.bundleID, size: 32)).resizable().frame(width: 14, height: 14)
+                                Text("Open \(player == .music ? "Music" : "Spotify")").font(.system(size: 11, weight: .medium))
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .background(Capsule().fill(Color.white.opacity(0.1)))
+                        }
+                        .buttonStyle(PressStyle(shape: AnyShape(Capsule())))
+                    }
+                }
+                .padding(.top, 6)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
     }
 }
 
 struct Controls: View {
     @ObservedObject var media: NowPlaying
     var body: some View {
-        HStack {
-            ControlButton(symbol: "shuffle", size: 13, active: media.shuffling, action: media.toggleShuffle)
-            Spacer()
-            ControlButton(symbol: "backward.fill", size: 17, action: media.previous)
-            Spacer()
-            ControlButton(symbol: media.isPlaying ? "pause.fill" : "play.fill", size: 24, action: media.playPause)
-            Spacer()
-            ControlButton(symbol: "forward.fill", size: 17, action: media.next)
-            Spacer()
-            ControlButton(symbol: "repeat", size: 13, active: media.repeating, action: media.toggleRepeat)
+        HStack(spacing: 0) {
+            ControlButton(symbol: "shuffle", size: 12, toggle: media.shuffling, action: media.toggleShuffle)
+                .help("Shuffle")
+            Spacer(minLength: 4)
+            ControlButton(symbol: "backward.fill", size: 17, nudge: -1, action: media.previous).help("Previous")
+            Spacer(minLength: 4)
+            ControlButton(symbol: media.isPlaying ? "pause.fill" : "play.fill", size: 26, action: media.playPause)
+                .help(media.isPlaying ? "Pause" : "Play")
+            Spacer(minLength: 4)
+            ControlButton(symbol: "forward.fill", size: 17, nudge: 1, action: media.next).help("Next")
+            Spacer(minLength: 4)
+            ControlButton(symbol: "repeat", size: 12, toggle: media.repeating, action: media.toggleRepeat)
+                .help("Repeat")
         }
-        .padding(.horizontal, 4)
     }
 }
 
-/// Advances every frame from the last synced position while playing; idle when paused.
+/// Thin scrubber that thickens under the pointer and tracks a drag 1:1; times sit beneath it.
+/// Advances every frame from the last synced position while playing, idle when paused.
 struct ProgressBar: View {
     @ObservedObject var media: NowPlaying
+    @StateObject private var pointer = PointerModel()
     private var dragFraction: Double? { media.dragFraction }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !media.isPlaying || dragFraction != nil)) { timeline in
             let position = dragFraction.map { $0 * media.duration } ?? media.estimatedPosition(at: timeline.date)
-            let fraction = media.duration > 0 ? position / media.duration : 0
-            HStack(spacing: 8) {
-                Text(formatTime(position)).frame(width: 34, alignment: .leading)
+            let fraction = media.duration > 0 ? max(0, min(1, position / media.duration)) : 0
+            let active = pointer.hovering || dragFraction != nil
+            VStack(spacing: 4) {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.18))
-                        Capsule().fill(Color.white).frame(width: geo.size.width * max(0, min(1, fraction)))
+                        Capsule().fill(Color.white.opacity(0.16))
+                        Capsule().fill(Color.white.opacity(active ? 1 : 0.85))
+                            .frame(width: max(active ? 7 : 4, geo.size.width * fraction))
                     }
-                    .frame(height: dragFraction == nil ? 5 : 8)
+                    .frame(height: active ? 7 : 4)
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0)
@@ -425,11 +523,20 @@ struct ProgressBar: View {
                         .onEnded { _ in if let fraction = media.dragFraction { media.seek(to: fraction) }; media.dragFraction = nil })
                 }
                 .frame(height: 12)
-                .animation(.easeOut(duration: 0.15), value: dragFraction == nil)
-                Text("-" + formatTime(max(0, media.duration - position))).frame(width: 38, alignment: .trailing)
+                .onHover { pointer.hovering = $0 }
+                .animation(.spring(response: 0.3, dampingFraction: 1), value: active)
+                HStack {
+                    Text(formatTime(position))
+                    Spacer()
+                    Text("-" + formatTime(max(0, media.duration - position)))
+                }
+                .font(.system(size: 10, weight: .medium).monospacedDigit())
+                .foregroundStyle(.white.opacity(active ? 0.75 : 0.45))
+                .animation(.easeOut(duration: 0.15), value: active)
             }
-            .font(.system(size: 10, weight: .medium).monospacedDigit())
-            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue("\(formatTime(position)) of \(formatTime(media.duration))")
         }
     }
 }
@@ -437,29 +544,55 @@ struct ProgressBar: View {
 struct ControlButton: View {
     let symbol: String
     var size: CGFloat = 15
-    var active = false
+    /// Shuffle and repeat: dim when off, lit with a dot when on.
+    var toggle: Bool? = nil
+    /// Previous/next: the glyph leans the way the track moves.
+    var nudge: CGFloat = 0
     let action: () -> Void
+    @StateObject private var pointer = PointerModel()
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            pointer.taps += 1
+            action()
+        } label: {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .semibold))
-                .foregroundStyle(active ? Color.accentColor : .white)
-                .frame(width: size + 16, height: size + 12)
+                .contentTransition(.symbolEffect(.replace.downUp))
+                .symbolEffect(.bounce.byLayer, options: .speed(1.6), value: nudge == 0 ? 0 : pointer.taps)
+                .foregroundStyle(.white.opacity(toggle == false ? 0.4 : 1))
+                .frame(width: size + 18, height: size + 14)
+                .background(Circle().fill(Color.white.opacity(pointer.hovering ? 0.08 : 0)))
+                .overlay(alignment: .bottom) {
+                    if toggle == true { Circle().fill(.white).frame(width: 3, height: 3).offset(y: -1) }
+                }
                 .contentShape(Circle())
         }
         .buttonStyle(PressStyle())
+        .onHover { pointer.hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: pointer.hovering)
+        .animation(.spring(response: 0.3, dampingFraction: 1), value: toggle)
     }
 }
 
+/// Hover and tap bookkeeping for a control (an object rather than @State, as with MarqueeModel).
+final class PointerModel: ObservableObject {
+    @Published var hovering = false
+    @Published var taps = 0
+}
+
+/// Feedback on press, not release: the control shrinks the moment it's pressed and springs back.
 struct PressStyle: ButtonStyle {
+    var shape = AnyShape(Circle())
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .background(Circle().fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0)))
-            .scaleEffect(configuration.isPressed ? 0.9 : 1)
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+            .background(shape.fill(Color.white.opacity(configuration.isPressed ? 0.14 : 0)))
+            .scaleEffect(configuration.isPressed ? 0.86 : 1)
+            .animation(configuration.isPressed ? .easeOut(duration: 0.08) : .spring(response: 0.3, dampingFraction: 1),
+                       value: configuration.isPressed)
     }
 }
+
 
 /// Four bars in the artwork colour beside the closed notch, driven by the player's audio
 /// (bass on the left, treble on the right). Until audio arrives they breathe gently.
