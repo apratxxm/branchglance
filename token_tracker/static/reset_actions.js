@@ -2,7 +2,7 @@
   const $ = (s) => document.querySelector(s);
   const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
   let policyFailed=false;
-  if(embedded){document.querySelectorAll("#ledger-history .ledger-row").forEach(row=>row.remove());const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Manage this in the provider settings window.";const ledgerNote=document.getElementById("ledger-note");if(ledgerNote)ledgerNote.textContent="Delete saved usage history in the Manage providers, automation and history window.";const manage=document.getElementById("manage-settings");if(manage)manage.hidden=false;const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="Runs once at the next quota reset. Saving doesn't send anything.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
+  if(embedded){document.querySelectorAll("#ledger-history .ledger-row").forEach(row=>row.remove());const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Manage this in the provider settings window.";const ledgerNote=document.getElementById("ledger-note");if(ledgerNote)ledgerNote.textContent="Delete saved usage history in the Manage providers, automation and history window.";const manage=document.getElementById("manage-settings");if(manage)manage.hidden=false;const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="Runs once, at the next reset. Saving sends nothing.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
   let settingsToken="";
   try {
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
@@ -15,7 +15,7 @@
   const missingPermissions=()=>PERMISSION_LABELS.filter(([key])=>state.policy?.[key]!==true).map(([,label])=>label);
   const joinLabels=items=>items.length<2?items.join(""):`${items.slice(0,-1).join(", ")} and ${items.at(-1)}`;
   const reactionsDenied=()=>state.policyReady&&!state.canGreet&&!state.canContinue;
-  function renderEmbeddedPolicy(){if(!embedded)return;if(!state.policyReady){setEmbeddedState(policyFailed?"Couldn't load reset permissions.":"Checking reset permissions…",policyFailed);return;}if(reactionsDenied()){const missing=missingPermissions();setEmbeddedState(missing.length===1?`Off: ${missing[0]} is off for Codex in your policy file.`:missing.length?`Off: turn on ${joinLabels(missing)} for Codex in your policy file.`:"Off: Codex startup permissions do not allow automatic actions.");}else setEmbeddedState("Available");}
+  function renderEmbeddedPolicy(){if(!embedded)return;if(!state.policyReady){setEmbeddedState(policyFailed?"Couldn't load reset permissions.":"Checking reset permissions…",policyFailed);return;}if(reactionsDenied()){const missing=missingPermissions();setEmbeddedState(missing.length===1?`Off: ${missing[0]} is off for Codex in your policy file.`:missing.length?`Off: turn on ${joinLabels(missing)} for Codex in your policy file.`:"Off: Codex startup permissions do not allow automatic actions.");}else{setEmbeddedState("Available");const box=$("#embedded-policy-state");if(box)box.hidden=true;}}
   // Saved usage history: the purge needs the settings token, so the embedded frame shows its rows read-only.
   const LEDGER_PROVIDERS = ["Claude", "Codex"];
   const PURGE_CONFIRM_MS = 5000, PURGE_POLL_MS = 2000, PURGE_POLL_LIMIT = 30;
@@ -131,8 +131,8 @@
   function updatePermissionCopy() {
     const greet=$("#greet-help"),continuation=$("#continue-help"),note=$("#permission"),denied=embedded&&reactionsDenied();
     const pending=!state.policyReady?(embedded?"":policyFailed?"Unavailable until permission status loads.":"Checking permission status."):null;
-    if(greet)greet.textContent=pending??(denied?"":state.canGreet?"Keep the current greeting behavior.":"Unavailable: Codex greeting permission is off in startup settings.");
-    if(continuation)continuation.textContent=pending??(denied?"":state.canContinue?"Queue the exact message “continue” for the next genuine reset.":embedded?continueBlockedCopy():"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.");
+    if(greet)greet.textContent=pending??(denied?"":state.canGreet?"Show the greeting in the widget.":"Unavailable: Codex greeting permission is off in startup settings.");
+    if(continuation)continuation.textContent=pending??(denied?"":state.canContinue?"Send “continue” to the chats you pick.":embedded?continueBlockedCopy():"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.");
     if(note){note.hidden=embedded;note.textContent=embedded?"":!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue?"Chat continuation requires explicit Codex send permission.":"";}
   }
   function savedMode() { return state.action?.mode==="continue"&&state.canContinue?"continue":state.action?.mode==="greet"&&state.canGreet?"greet":state.canGreet?"greet":state.canContinue?"continue":"greet"; }
@@ -160,9 +160,14 @@
     $("#threads").innerHTML=visible.length?visible.map(t=>`<label class="thread"><input type="checkbox" data-id="${esc(t.id)}" ${state.selected.has(t.id)?"checked":""}><span class="thread-title" title="${esc(t.title)}">${esc(t.title||"Untitled chat")}</span><span class="status">${esc(t.status||"unknown")}</span></label>`).join(""):'<div class="empty">No matching chats.</div>';
     const pager=$("#pager");
     if(pager){pager.hidden=!embedded||available.length<=PAGE_SIZE;$("#page-info").textContent=available.length?`${state.page*PAGE_SIZE+1}–${state.page*PAGE_SIZE+visible.length} of ${available.length}`:"";$("#page-prev").disabled=state.page<=0;$("#page-next").disabled=state.page>=pages-1;}
+    renderSelection();
+    renderLastRun(state.action?.lastRun);
+  }
+  // Selection controls update in place so a toggled chat keeps keyboard focus (no list rebuild).
+  function renderSelection() {
+    if(embedded)$("footer").hidden=!state.policyReady||!state.dirty;
     $("#selected-count").textContent=`${state.selected.size} selected`;
     $("#save").disabled=state.busy||!state.policyReady||!state.canGreet&&!state.canContinue;
-    renderLastRun(state.action?.lastRun);
   }
   function renderLastRun(run) {
     const box=$("#last-run"); if(!run){box.hidden=true;box.textContent="";return;}
@@ -281,7 +286,7 @@
     },PURGE_POLL_MS);
   }
   async function reloadAll(){await Promise.all([load(),loadClaude(),loadLedger(),loadClaudeGreeting(),loadFeatures()]);}
-  document.addEventListener("change",e=>{if(e.target.matches('input[name="mode"]')){state.dirty=true;render();}if(e.target.matches('#threads input[type="checkbox"]')){state.dirty=true;e.target.checked?state.selected.add(e.target.dataset.id):state.selected.delete(e.target.dataset.id);render();}});
+  document.addEventListener("change",e=>{if(e.target.matches('input[name="mode"]')){state.dirty=true;render();}if(e.target.matches('#threads input[type="checkbox"]')){state.dirty=true;e.target.checked?state.selected.add(e.target.dataset.id):state.selected.delete(e.target.dataset.id);renderSelection();}});
   document.addEventListener("keydown",event=>{if(embedded&&event.key==="Escape"){event.preventDefault();window.parent.postMessage({type:"dashboard-reset-cancel"},window.location.origin);}});
   $("#search").addEventListener("input",()=>{state.page=0;render();}); $("#page-prev")?.addEventListener("click",()=>{state.page--;render();}); $("#page-next")?.addEventListener("click",()=>{state.page++;render();}); $("#refresh").addEventListener("click",reloadAll); $("#save").addEventListener("click",save);
   $("#embedded-policy-retry")?.addEventListener("click",reloadAll);
