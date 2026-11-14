@@ -321,7 +321,8 @@ const trusted=dashboard.state.insights;
 context.fetch=async()=>({ok:false});
 await dashboard.loadInsights();
 assert.equal(dashboard.state.insights,trusted);
-assert.match(dashboard.insightsHTML(),/Update failed/);
+assert.match(dashboard.insightsHTML(),/Update failed\. Use Refresh to retry\./,"full render carries the retry hint");
+assert.match(dashboard.statusText(),/^Update failed\. Use Refresh to retry\./,"status-line path carries the same retry hint");
 // Initial cached snapshot remains visibly marked as fallback after a failed request.
 dashboard.state.insights=null;dashboard.state.snapshot={providers:[{name:"Cached",tracked31Days:7,activity:[]}]};
 await dashboard.loadInsights();

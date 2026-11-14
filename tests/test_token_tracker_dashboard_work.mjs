@@ -28,6 +28,8 @@ assert.equal(work.rows.length,4,"top three plus Other");
 assert.equal(work.rows[0].name,"Opus 5.5");
 assert.equal(work.rows[3].other,true);
 assert.match(work.rows[3].name,/Other · 3 models/);
+assert.doesNotMatch(ui.workHTML(work),/>\?</,"empty work cells never show a literal question mark");
+assert.match(ui.workHTML(work),/aria-label="None"><span aria-hidden="true">—<\/span>/,"empty work cells show an em dash");
 assert.ok(!work.kinds.includes("debug"),"unknown kinds fold into Other");
 assert.ok(work.kinds.includes("other"));
 const grand=1880;
@@ -41,6 +43,7 @@ assert.equal(otherCell.unpriced,true);
 const html=ui.workHTML(work);
 assert.match(html,/API-equivalent cost by model and kind of work/);
 assert.match(html,/≥ \$0\.00 API-equivalent|No published price/);
+assert.doesNotMatch(html,/>\? /,"partial-price cells show ≥, never a corrupted ?");
 assert.doesNotMatch(html,/dash-work-foot/);
 
 // Same name under two providers gets the provider appended, when both are shown.

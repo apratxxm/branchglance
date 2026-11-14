@@ -209,7 +209,7 @@
     const generated=state.insights.generatedAt?new Date(state.insights.generatedAt).getTime():NaN;
     const age=Number.isFinite(generated)?Math.max(0,Math.floor((Date.now()-generated)/60000)):null;
     const freshness=age==null?"":`Updated ${age<1?"just now":`${age}m ago`}`;
-    return [state.loading?"Updating...":state.loadError?"Update failed":"",fallbackLabel,freshness].filter(Boolean).join(" \u00b7 ");
+    return [state.loading?"Updating...":state.loadError?"Update failed. Use Refresh to retry.":"",fallbackLabel,freshness].filter(Boolean).join(" \u00b7 ");
   }
   // Failures and fallbacks are notices shown above the content; a plain freshness stamp sits at the end.
   const isNotice=()=>Boolean(state.loadError||state.insightsUnavailable||(state.insights&&insightsData(false).fallback));
@@ -253,7 +253,7 @@
     const data=insightsData(),key=data.heroKey;
     const stamp=state.insights.generatedAt?new Date(state.insights.generatedAt):null;
     const status=statusText();
-    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}${state.loadError?" Use Refresh to retry.":""}</p>`:"";
+    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}</p>`:"";
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     // The unit line names any shown provider that has no published price, so the total is read as a partial figure.
@@ -345,9 +345,9 @@
   const breakdownToggle=active=>`<span class="dash-breakdown" role="group" aria-label="Breakdown">${[["models","Models"],["work","By work"]].map(([value,label])=>`<button type="button" data-dashboard-models="${value}" aria-pressed="${active===value}" class="${active===value?"is-active":""}"${value==="work"?' title="Tokens by kind of work. Kind is inferred from job titles and kind: tags."':""}>${label}</button>`).join("")}</span>`;
   function workHTML(work){
     const note=workNote(work),label=kind=>kind[0].toUpperCase()+kind.slice(1);
-    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero" aria-label="None">?</span>'
-      :work.metric==="cost"?cell.known<=0?'<span role="cell" tabindex="0" class="dash-work-cell is-zero" aria-label="No published price for this usage">Unpriced</span>':`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${cell.unpriced?"at least ":""}${money(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> ? ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${cell.unpriced?"? ":""}${esc(money(cell.known))}</span>`
-      :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens; ${workCost(cell)}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> ? ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(compact.format(cell.tokens))}</span>`;
+    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero" aria-label="None"><span aria-hidden="true">—</span></span>'
+      :work.metric==="cost"?cell.known<=0?'<span role="cell" tabindex="0" class="dash-work-cell is-zero" aria-label="No published price for this usage">Unpriced</span>':`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${cell.unpriced?"at least ":""}${money(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${cell.unpriced?"≥ ":""}${esc(money(cell.known))}</span>`
+      :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens; ${workCost(cell)}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(compact.format(cell.tokens))}</span>`;
     const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span></span>${work.kinds.map(kind=>`<span role="columnheader">${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
     const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}"${row.other?"":` title="${esc(`${row.provider} · ${row.name}`)}"`}><i></i>${esc(row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
     const foot=`<div role="row" class="dash-work-row is-foot"><span role="rowheader">Total</span>${work.kinds.map(kind=>cellHTML(work.totals.cells[kind],"All models",label(kind),true)).join("")}${cellHTML(work.totals.all,"All models","all work",true)}</div>`;
