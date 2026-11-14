@@ -49,6 +49,14 @@ def proof_handler(key: bytes):
     return MacOSHandler
 
 
+def _warm_snapshot() -> None:
+    # The first transcript scan is the slow cold path; build it before the page asks.
+    try:
+        server.CACHE.get()
+    except Exception:
+        pass
+
+
 def main() -> None:
     secret = os.environ.pop(SECRET_ENV, "")
     if not _HEX_32.fullmatch(secret):
@@ -81,6 +89,17 @@ def main() -> None:
     ledger.start()
     from . import claude_usage_api
     claude_usage_api.REFRESHER.start()
+    # The rest of what the Windows widget starts beside its server.
+    from . import reset_delivery
+    from .claude_hook import start_event_retention
+    from .limit_reset import LimitResetService
+    reset = LimitResetService(list_candidates=reset_delivery.list_candidates,
+                              inspect_target=reset_delivery.inspect_target,
+                              queue_continue=reset_delivery.queue_continue)
+    server.Handler.reset_service = reset
+    reset.start()
+    start_event_retention()
+    threading.Thread(target=_warm_snapshot, name="token-snapshot-warmup", daemon=True).start()
     parent = os.getppid()
 
     def exit_with_parent() -> None:
@@ -96,6 +115,7 @@ def main() -> None:
         pass
     finally:
         ledger.stop()
+        reset.stop()
         claude_usage_api.REFRESHER.stop()
         httpd.server_close()
 

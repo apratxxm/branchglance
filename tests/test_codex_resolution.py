@@ -5,6 +5,12 @@ import pytest
 from token_tracker import codex_client
 
 
+@pytest.fixture(autouse=True)
+def windows_layouts(monkeypatch):
+    # These cases are the Windows PATH layouts; macOS has its own in test_codex_resolve_macos.py.
+    monkeypatch.setattr(codex_client, "_MACOS", False)
+
+
 def test_path_install_takes_priority_over_known_install(tmp_path, monkeypatch):
     cwd = tmp_path / "work"
     cwd.mkdir()

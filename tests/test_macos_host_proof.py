@@ -6,6 +6,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import threading
 
 import pytest
@@ -104,3 +105,49 @@ def test_secret_removed_from_environment_before_server_start(monkeypatch, tmp_pa
     monkeypatch.setattr(macos_server.server, "ThreadingHTTPServer", stop_after_check)
     with pytest.raises(RuntimeError, match="checked"):
         macos_server.main()
+
+
+def test_server_runs_the_services_the_windows_widget_runs(monkeypatch, tmp_path):
+    from token_tracker import agent_links, claude_hook, claude_usage_api, ledger_service, limit_reset, product
+    calls = []
+
+    class Service:
+        def __init__(self, name):
+            self.name = name
+        def start(self):
+            calls.append(("start", self.name))
+        def stop(self):
+            calls.append(("stop", self.name))
+
+    class Server:
+        def __init__(self, *args):
+            pass
+        def serve_forever(self):
+            calls.append(("serve", None))
+        def shutdown(self):
+            pass
+        def server_close(self):
+            pass
+
+    monkeypatch.setenv("BRANCHGLANCE_MACOS_HOST_SECRET", KEY.hex())
+    monkeypatch.setenv("BRANCHGLANCE_POLICY_FILE", str(tmp_path / "policy.json"))
+    monkeypatch.setattr(sys, "argv", ["macos_server"])
+    monkeypatch.setattr(product, "hook_data_root", lambda: tmp_path)
+    monkeypatch.setattr(product, "acquire_macos_instance_lock", lambda: True)
+    monkeypatch.setattr(product, "macos_instance_held", lambda: True)
+    monkeypatch.setattr(macos_server.server, "ThreadingHTTPServer", Server)
+    monkeypatch.setattr(agent_links, "initialize_receipt_inbox", lambda: None)
+    monkeypatch.setattr(ledger_service, "LedgerService", lambda: Service("ledger"))
+    monkeypatch.setattr(limit_reset, "LimitResetService", lambda **kwargs: Service("reset"))
+    monkeypatch.setattr(claude_usage_api, "REFRESHER", Service("usage"))
+    monkeypatch.setattr(claude_hook, "start_event_retention", lambda: calls.append(("start", "retention")))
+    monkeypatch.setattr(macos_server, "_warm_snapshot", lambda: calls.append(("start", "warmup")))
+    monkeypatch.setattr(macos_server.server.Handler, "reset_service", None)
+    macos_server.main()
+    deadline = time.monotonic() + 2  # the warmup runs on its own thread
+    while ("start", "warmup") not in calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    started = {name for kind, name in calls if kind == "start"}
+    assert started == {"ledger", "usage", "reset", "retention", "warmup"}
+    assert macos_server.server.Handler.reset_service.name == "reset"
+    assert {name for kind, name in calls if kind == "stop"} == {"ledger", "usage", "reset"}

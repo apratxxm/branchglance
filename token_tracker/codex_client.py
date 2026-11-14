@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import platform
+import sys
 import subprocess
 import threading
 import time
@@ -112,6 +113,11 @@ def resolve_codex(executable: str | None = None) -> CodexExecutable | None:
                 continue
         except (OSError, RuntimeError):
             continue
+        if _MACOS:
+            found = _macos_codex(directory, safe)
+            if found is not None:
+                return found
+            continue
         found = safe(directory / "codex.exe")
         if found and found.suffix.lower() == ".exe":
             return CodexExecutable(str(found))
@@ -160,6 +166,30 @@ def resolve_codex(executable: str | None = None) -> CodexExecutable | None:
         found = safe(candidate)
         if found and found.suffix.lower() == ".exe":
             return CodexExecutable(str(found))
+    return None
+
+
+_MACOS = sys.platform == "darwin"
+
+
+def _macos_codex(directory: Path, safe) -> CodexExecutable | None:
+    """codex on a macOS PATH: a native binary (Homebrew), or npm's codex.js with its vendored binary."""
+    found = safe(directory / "codex")
+    if found is None:
+        return None
+    if found.suffix != ".js":
+        return CodexExecutable(str(found))
+    root = found.parent.parent
+    if safe(root / "bin" / "codex.js") is None:
+        return None
+    triple, arch = (("aarch64-apple-darwin", "arm64") if platform.machine().lower() in {"arm64", "aarch64"}
+                    else ("x86_64-apple-darwin", "x64"))
+    for vendor in (root / "vendor", root / "node_modules" / "@openai" / ("codex-darwin-" + arch) / "vendor",
+                   root.parent / ("codex-darwin-" + arch) / "vendor"):
+        native = safe(vendor / triple / "codex" / "codex")
+        if native is not None:
+            canonical_root = root.resolve()
+            return CodexExecutable(str(native), str(canonical_root), _package_manager(canonical_root, root))
     return None
 
 

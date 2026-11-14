@@ -35,5 +35,6 @@ def test_hook_records_its_claude_ancestor(monkeypatch):
     table = {10: (1, "claude"), 20: (10, "zsh"), 30: (20, "python")}
     monkeypatch.setattr(claude_hook, "_process_table", lambda: table)
     monkeypatch.setattr(claude_hook.os, "getpid", lambda: 30)
+    monkeypatch.delenv("CLAUDE_PID", raising=False)  # set when the suite runs inside Claude Code
     monkeypatch.setattr(claude_hook, "process_created", lambda pid: 1234 if pid == 10 else None)
     assert claude_hook._claude_process() == (10, 1234)
