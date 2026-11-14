@@ -299,31 +299,52 @@ struct GlowingArtwork: View {
     @ObservedObject var media: NowPlaying
     var size: CGFloat
     var badge = true
+    @StateObject private var pointer = PointerModel()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let radius = size * 0.18
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let lift: CGFloat = media.isPlaying ? 1 : 0.4
         ZStack(alignment: .bottomTrailing) {
             Artwork(image: media.artwork, size: size)
                 .id(media.trackKey)
                 .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94)))
-                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
-                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(Color.black.opacity(media.isPlaying ? 0 : 0.35)))
-                .shadow(color: Color(nsColor: media.accent).opacity(media.isPlaying ? 0.45 : 0), radius: size * 0.16, y: size * 0.06)
+                // Light from above: a gloss across the top and a bright rim along the upper edge.
+                .overlay(shape.fill(LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.04), .clear],
+                                                   startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.55)))
+                    .blendMode(.screen))
+                .overlay(shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.35), .white.opacity(0.06), .black.opacity(0.25)],
+                                                           startPoint: .top, endPoint: .bottom), lineWidth: 0.75))
+                .overlay(shape.fill(Color.black.opacity(media.isPlaying ? 0 : 0.35)))
+                // Three shadows: a tight contact shadow, a soft ambient one far below, and the artwork's own colour.
+                .shadow(color: .black.opacity(0.55), radius: 3, y: 2)
+                .shadow(color: .black.opacity(0.45 * lift), radius: size * 0.14, y: size * 0.12 * lift)
+                .shadow(color: Color(nsColor: media.accent).opacity(0.5 * lift), radius: size * 0.22, y: size * 0.08)
                 .scaleEffect(media.isPlaying || reduceMotion ? 1 : 0.92)
+                // Leans gently towards the pointer, like a card held in the hand.
+                .rotation3DEffect(.degrees(reduceMotion ? 0 : pointer.tilt.height * 10), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+                .rotation3DEffect(.degrees(reduceMotion ? 0 : pointer.tilt.width * -10), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
             if badge, let player = media.player {
                 Image(nsImage: appIcon(player.bundleID))
                     .resizable().frame(width: size * 0.26, height: size * 0.26)
-                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                    .shadow(color: .black.opacity(0.5), radius: 4, y: 2)
                     .offset(x: size * 0.07, y: size * 0.07)
             }
         }
         .frame(width: size, height: size)
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 1), value: media.isPlaying)
         .animation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1), value: media.trackKey)
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: pointer.tilt)
         .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let point):
+                pointer.tilt = CGSize(width: point.x / size - 0.5, height: point.y / size - 0.5)
+            case .ended:
+                pointer.tilt = .zero
+            }
+        }
         .onTapGesture { media.openPlayer() }
         .help("Open \(media.player?.rawValue ?? "player")")
     }
@@ -506,7 +527,7 @@ struct Controls: View {
             Spacer(minLength: 4)
             ControlButton(symbol: "backward.fill", size: 17, nudge: -1, action: media.previous).help("Previous")
             Spacer(minLength: 4)
-            ControlButton(symbol: media.isPlaying ? "pause.fill" : "play.fill", size: 26, action: media.playPause)
+            ControlButton(symbol: media.isPlaying ? "pause.fill" : "play.fill", size: 22, disc: true, action: media.playPause)
                 .help(media.isPlaying ? "Pause" : "Play")
             Spacer(minLength: 4)
             ControlButton(symbol: "forward.fill", size: 17, nudge: 1, action: media.next).help("Next")
@@ -569,6 +590,8 @@ struct ControlButton: View {
     var toggle: Bool? = nil
     /// Previous/next: the glyph leans the way the track moves.
     var nudge: CGFloat = 0
+    /// The play button sits on a raised, lit disc.
+    var disc = false
     let action: () -> Void
     @StateObject private var pointer = PointerModel()
 
@@ -582,8 +605,20 @@ struct ControlButton: View {
                 .contentTransition(.symbolEffect(.replace.downUp))
                 .symbolEffect(.bounce.byLayer, options: .speed(1.6), value: nudge == 0 ? 0 : pointer.taps)
                 .foregroundStyle(.white.opacity(toggle == false ? 0.4 : 1))
+                .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                 .frame(width: size + 18, height: size + 14)
-                .background(Circle().fill(Color.white.opacity(pointer.hovering ? 0.08 : 0)))
+                .background {
+                    if disc {
+                        Circle()
+                            .fill(LinearGradient(colors: [.white.opacity(pointer.hovering ? 0.26 : 0.2), .white.opacity(0.07)],
+                                                 startPoint: .top, endPoint: .bottom))
+                            .overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.4), .white.opacity(0.05)],
+                                                                          startPoint: .top, endPoint: .bottom), lineWidth: 0.75))
+                            .shadow(color: .black.opacity(0.45), radius: 6, y: 3)
+                    } else {
+                        Circle().fill(Color.white.opacity(pointer.hovering ? 0.08 : 0))
+                    }
+                }
                 .overlay(alignment: .bottom) {
                     if toggle == true { Circle().fill(.white).frame(width: 3, height: 3).offset(y: -1) }
                 }
@@ -600,6 +635,8 @@ struct ControlButton: View {
 final class PointerModel: ObservableObject {
     @Published var hovering = false
     @Published var taps = 0
+    /// Pointer offset from the centre, -0.5...0.5 on each axis.
+    @Published var tilt = CGSize.zero
 }
 
 /// Feedback on press, not release: the control shrinks the moment it's pressed and springs back.
