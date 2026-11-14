@@ -378,25 +378,22 @@ private struct WidthKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
-/// The artwork's colours washed across the panel behind the player, faded towards the controls.
+/// A soft gradient in the artwork's colour, strongest behind the artwork and fading towards the controls.
 private struct AmbientWash: View {
     @ObservedObject var media: NowPlaying
 
     var body: some View {
+        let accent = Color(nsColor: media.accent)
+        let strength = media.artwork == nil ? 0 : (media.isPlaying ? 0.34 : 0.16)
         ZStack {
-            if let image = media.artwork {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                    .blur(radius: 48)
-                    .saturation(1.4)
-                    .id(media.trackKey)
-                    .transition(.opacity)
-            }
+            LinearGradient(colors: [accent.opacity(strength), accent.opacity(strength * 0.3), .clear],
+                           startPoint: .leading, endPoint: .trailing)
+            RadialGradient(colors: [accent.opacity(strength * 0.9), .clear],
+                           center: UnitPoint(x: 0.14, y: 0.5), startRadius: 0, endRadius: 140)
         }
-        .opacity(media.isPlaying ? 0.42 : 0.18)
-        .mask(LinearGradient(colors: [.black, .black.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing))
         .allowsHitTesting(false)
-        .animation(.easeInOut(duration: 0.6), value: media.trackKey)
-        .animation(.easeInOut(duration: 0.5), value: media.isPlaying)
+        .animation(.easeInOut(duration: 0.6), value: media.accent)
+        .animation(.easeInOut(duration: 0.5), value: strength)
     }
 }
 
