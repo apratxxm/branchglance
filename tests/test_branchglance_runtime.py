@@ -1137,7 +1137,10 @@ def test_dashboard_assets_expose_insights_controls_without_settings_token_access
     page = (static / "runway.html").read_text(encoding="utf-8")
     dashboard = (static / "dashboard.js").read_text(encoding="utf-8")
     styles = (static / "dashboard.css").read_text(encoding="utf-8")
-    assert 'data-dashboard-range="24h"' in page and 'data-dashboard-range="all"' in page
+    # "All" duplicated 30d and was removed; a stored "all" migrates to 30d in dashboard.js.
+    assert 'data-dashboard-range="24h"' in page and 'data-dashboard-range="30d"' in page
+    assert 'data-dashboard-range="all"' not in page
+    assert 'if(value==="all"){value="30d";' in dashboard
     assert 'data-dashboard-metric="tokens"' in page and 'data-dashboard-metric="cost"' in page
     assert '/api/insights?range=' in dashboard and '/api/stats?background=1' in dashboard
     assert 'branchglanceInsightsRange' in dashboard and 'branchglanceInsightsMetric' in dashboard
