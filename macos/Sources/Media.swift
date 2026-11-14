@@ -378,22 +378,46 @@ private struct WidthKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
-/// A soft gradient in the artwork's colour, strongest behind the artwork and fading towards the controls.
+/// A soft oval of the artwork's colour glowing out from behind the artwork, with a fainter,
+/// slightly shifted hue drifting off to the right. Blurred shapes rather than gradient stops,
+/// so the falloff has no edges or banding.
 private struct AmbientWash: View {
     @ObservedObject var media: NowPlaying
 
     var body: some View {
-        let accent = Color(nsColor: media.accent)
-        let strength = media.artwork == nil ? 0 : (media.isPlaying ? 0.34 : 0.16)
-        ZStack {
-            LinearGradient(colors: [accent.opacity(strength), accent.opacity(strength * 0.3), .clear],
-                           startPoint: .leading, endPoint: .trailing)
-            RadialGradient(colors: [accent.opacity(strength * 0.9), .clear],
-                           center: UnitPoint(x: 0.14, y: 0.5), startRadius: 0, endRadius: 140)
+        let strength = media.artwork == nil ? 0 : (media.isPlaying ? 1.0 : 0.45)
+        let glow = Color(nsColor: shifted(media.accent, hue: 0, saturation: 1.35, brightness: 1))
+        ZStack(alignment: .leading) {
+            // Wide oval centred on the artwork (20pt inset + half of 92pt).
+            Ellipse().fill(glow)
+                .frame(width: 320, height: 180)
+                .offset(x: 66 - 160)
+                .blur(radius: 56)
+                .opacity(0.5 * strength)
+            // Tight halo right behind the artwork, so the colour seems to come from it.
+            Ellipse().fill(glow)
+                .frame(width: 150, height: 120)
+                .offset(x: 66 - 75)
+                .blur(radius: 30)
+                .opacity(0.45 * strength)
+            // A fainter neighbouring hue drifting under the controls, for depth.
+            Ellipse().fill(Color(nsColor: shifted(media.accent, hue: 0.08, saturation: 1.3, brightness: 0.9)))
+                .frame(width: 260, height: 90)
+                .offset(x: 170, y: 38)
+                .blur(radius: 60)
+                .opacity(0.22 * strength)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .allowsHitTesting(false)
-        .animation(.easeInOut(duration: 0.6), value: media.accent)
+        .animation(.easeInOut(duration: 0.7), value: media.accent)
         .animation(.easeInOut(duration: 0.5), value: strength)
+    }
+
+    private func shifted(_ color: NSColor, hue delta: CGFloat, saturation boost: CGFloat, brightness scale: CGFloat) -> NSColor {
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        (color.usingColorSpace(.deviceRGB) ?? color).getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return NSColor(hue: (h + delta).truncatingRemainder(dividingBy: 1), saturation: min(1, s * boost),
+                       brightness: b * scale, alpha: 1)
     }
 }
 
