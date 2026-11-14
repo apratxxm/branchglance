@@ -68,7 +68,7 @@ const fallback=dashboard.normalizeStats({generatedAt:today.toISOString(),provide
 dashboard.state.insights=fallback;dashboard.state.metric="cost";dashboard.state.range="30d";
 const fallbackHtml=dashboard.insightsHTML();
 assert.match(fallbackHtml,/dash-hero-currency">\$<\/span><strong class="dash-hero-number">1\.20/);
-assert.doesNotMatch(fallbackHtml,/sessions|subagents|active/i);
+assert.match(fallbackHtml,/<dt>Sessions<\/dt><dd><span aria-label="Not available">\u2014<\/span><\/dd>/);assert.match(fallbackHtml,/<dt>Subagents<\/dt><dd><span aria-label="Not available">\u2014<\/span><\/dd>/);assert.match(fallbackHtml,/<dt>Active hours<\/dt><dd><span aria-label="Not available">\u2014<\/span><\/dd>/);
 assert.doesNotMatch(fallbackHtml,/>\?/);
 assert.match(fallbackHtml,/<span class="dash-none" role="img" aria-label="No published price">&mdash;<\/span>/,"unpriced model costs are explicitly marked");
 assert.match(fallbackHtml,/Haiku 5\.5/);
@@ -527,6 +527,29 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   dashboard.state.range="24h";dashboard.state.insights={range:"24h",providers:[{...chartProvider,series:[{date:"2026-11-14T12:00:00",tokens:1,apiEquivalentCost:1},{date:"2026-11-14T13:00:00",tokens:2,apiEquivalentCost:2}]}]};
   assert.match(dashboard.insightsHTML(),/aria-label="Hourly tokens by provider"/);dashboard.state.metric="cost";assert.match(dashboard.insightsHTML(),/aria-label="Hourly API-equivalent cost by provider"/);
   window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",weekly:{usedPercent:60,countdown:"3d 2h"}}];
-  html=dashboard.insightsHTML();assert.match(html,/>Quota used<\/th>/);assert.match(html,/data-quota-part="five">resets in 2h 40m<\/small><small[^>]+data-quota-part="peak">peak 55%/);assert.match(html,/data-quota-part="week">resets in 3d 2h/);
+  html=dashboard.insightsHTML();assert.match(html,/>Quota used<\/span><small>% used \u00b7 resets in<\/small>/);assert.match(html,/title="Peak 55% in this range"[^>]*>.*data-quota-part="five">2h 40m<\/small><span class="sr-only">Peak 55% in this range<\/span>/);assert.match(html,/data-quota-part="week">3d 2h/);
+  delete window.tokenTrackerQuotaNow;dashboard.state.ledger=null;
+}
+
+// R8: quota, activity, breakdown segments, provider pricing and model rate.
+{
+  dashboard.state.resultValue=null;dashboard.state.range="7d";dashboard.state.metric="cost";
+  const priced=provider("Claude",{cost:8.02,models:[{name:"rate-model",tokens:1000000,apiEquivalentCost:8.02}]});
+  const unpriced=provider("Codex",{cost:null,models:[]});
+  dashboard.state.insights={range:"7d",providers:[priced,unpriced]};
+  dashboard.state.ledgerRange="7d";dashboard.state.ledger={rows:[{provider:"Claude",modelId:"rate-model",kind:"build",totalTokens:100,knownCostUsd:1,costComplete:true}],coverage:{},service:{}};
+  window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",weekly:{usedPercent:20,countdown:"3d 2h"}}];
+  let html=dashboard.insightsHTML();
+  assert.match(html,/<span>Quota used<\/span><small>% used \u00b7 resets in<\/small>/);
+  assert.match(html,/<td title="Peak 55% in this range"><span class="dash-quota-main"[^>]*>40%<\/span><small[^>]*>2h 40m<\/small><span class="sr-only">Peak 55% in this range<\/span><\/td>/);
+  assert.doesNotMatch(html,/data-quota-part="peak"/);
+  assert.match(html,/<dl class="dash-summary">/);assert.doesNotMatch(html,/class="dash-activity/);
+  assert.ok(html.indexOf('dash-model-block')<html.indexOf('dash-summary')&&html.indexOf('dash-summary')<html.indexOf('dash-chart-section'));
+  for(const label of ["Sessions","Subagents","Cache hit rate","Active hours"])assert.match(html,new RegExp(`<dt>${label}<\\/dt>`));
+  assert.match(html,/<span class="dash-breakdown dash-segment" role="group" aria-label="Breakdown"><button type="button" data-dashboard-models="models" aria-pressed="true" class="is-active">Models<\/button><button type="button" data-dashboard-models="work" aria-pressed="false"/);
+  assert.match(html,/<div class="dash-split-legend no-share">/);assert.doesNotMatch(html,/<span class="dash-legend-head">Share<\/span>/);
+  assert.match(html,/<span class="dash-legend-unpriced">Unpriced<\/span><span class="dash-plan-cell"><\/span><span class="dash-plan-note-cell"><\/span>/);
+  assert.match(html,/<td title="\$8\.02 per 1M tokens"><span class="sr-only">\$8\.02 per 1M tokens\. <\/span>\$8\.02<\/td>/);
+  dashboard.state.insights={range:"7d",providers:[priced,provider("Codex",{cost:5})]};html=dashboard.insightsHTML();assert.match(html,/<span class="dash-legend-head">Share<\/span>/);
   delete window.tokenTrackerQuotaNow;dashboard.state.ledger=null;
 }

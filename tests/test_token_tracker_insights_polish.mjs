@@ -178,7 +178,7 @@ dashboard.state.range="30d";dashboard.state.metric="tokens";
 let quota=dashboard.insightsHTML();
 assert.match(quota,/data-quota-part="percent">40%/,"the 5-hour figure is shown");
 assert.match(quota,/<th scope="col">5h<\/th><th scope="col">Week<\/th>/,"the quota head row names both windows");
-assert.match(quota,/data-quota-part="five">resets in 2h 40m</,"the 5-hour column shows its countdown with no seconds");assert.match(quota,/data-quota-part="week">resets in 3d 2h</,"the week column shows its countdown");
+assert.match(quota,/data-quota-part="five">2h 40m</,"the 5-hour column shows its countdown with no seconds");assert.match(quota,/data-quota-part="week">3d 2h</,"the week column shows its countdown");
 assert.match(quota,/Not available/,"a provider without a weekly reading shows Not available");
 dashboard.toggleProvider("Claude");
 quota=dashboard.insightsHTML();
@@ -230,13 +230,13 @@ const soon=Date.now()+(2*3600+40*60+30)*1000;
 window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:10,countdown:"2h 40m",resetTarget:soon,weekly:{usedPercent:5,countdown:"3d 2h",resetTarget:Date.now()+(3*86400+2*3600+30)*1000}}];
 dashboard.state.insights=payload([provider("Claude")]);dashboard.state.range="30d";dashboard.state.metric="tokens";
 let countdowns=dashboard.insightsHTML();
-assert.match(countdowns,/data-quota-part="five">resets in 2h 40m</,"a reset time under a day reads hours and minutes");
-assert.match(countdowns,/data-quota-part="week">resets in 3d 2h</,"a reset time of days reads days and hours");
+assert.match(countdowns,/data-quota-part="five">2h 40m</,"a reset time under a day reads hours and minutes");
+assert.match(countdowns,/data-quota-part="week">3d 2h</,"a reset time of days reads days and hours");
 assert.doesNotMatch(countdowns,/data-quota-part="(five|week)">[^<]*\d+s</,"no countdown shows seconds");
 window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:10,countdown:"46m 58s",resetTarget:1,weekly:{usedPercent:5,countdown:"05:12",resetTarget:2}}];
 countdowns=dashboard.insightsHTML();
-assert.match(countdowns,/data-quota-part="five">resets in 46m</,"a widget countdown with seconds drops them");
-assert.match(countdowns,/data-quota-part="week">resets in 5m</,"an m:ss widget countdown reads whole minutes");
+assert.match(countdowns,/data-quota-part="five">46m</,"a widget countdown with seconds drops them");
+assert.match(countdowns,/data-quota-part="week">5m</,"an m:ss widget countdown reads whole minutes");
 
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:5350000,knownCostUsd:null,costComplete:false,unpricedTokens:5350000}]};
 dashboard.state.ledgerRange="30d";dashboard.state.range="30d";
@@ -270,9 +270,10 @@ dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[
 const failed=dashboard.insightsHTML();
 assert.match(failed,/<div class="dash-hero-meta">(?:(?!<\/div>)[\s\S])*class="dash-notice" role="status"/,"the failure notice sits on the hero eyebrow row");
 assert.doesNotMatch(failed,/<p class="dash-status-line[^"]*" role="status">[^<]*Update failed/,"the failure notice is out of the lower flow");
-assert.match(failed,/title="Use Refresh to retry\."/,"the retry hint is in the notice title");
+const failureTime=today.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).replace(/\u202f/g," ");
+assert.ok(failed.includes(`title="Update failed. Data from ${failureTime}. Use Refresh to retry."`),"the notice title contains the full sentence");
 assert.match(failed,/<span class="sr-only">\. Use Refresh to retry\.<\/span>/,"the retry hint is in screen-reader text");
-assert.match(failed,/<span class="dash-fail-time"> \u00b7 data from /,"the notice names the time its data is from");
+assert.ok(failed.includes(`<span class="dash-fail-time"> \u00b7 ${failureTime}</span>`),"the notice names the exact time its data is from");
 dashboard.state.loadError=false;
 
 dashboard.state.insights=null;dashboard.state.loading=true;dashboard.state.range="7d";dashboard.state.metric="tokens";
@@ -285,9 +286,9 @@ dashboard.state.metric="tokens";dashboard.state.loading=false;
 
 dashboard.state.insights=payload([provider("Claude",{models:[1,2,3].map(i=>({name:`claude-act-${i}`,tokens:i*1e5,apiEquivalentCost:1}))})]);
 dashboard.state.range="30d";dashboard.state.metric="tokens";
-assert.match(dashboard.insightsHTML(),/<section class="dash-lower[^"]*is-activity-left/,"four or fewer models: Activity moves to the left column");
+assert.match(dashboard.insightsHTML(),/<dl class="dash-summary">/,"four or fewer models: activity uses the full-width strip");
 dashboard.state.insights=payload([provider("Claude",{models:[1,2,3,4,5].map(i=>({name:`claude-many-${i}`,tokens:i*1e5,apiEquivalentCost:1}))})]);
-assert.doesNotMatch(dashboard.insightsHTML(),/is-activity-left/,"more than four models: Activity stays in the right column");
+assert.match(dashboard.insightsHTML(),/<dl class="dash-summary">/,"more than four models: activity uses the full-width strip");assert.doesNotMatch(dashboard.insightsHTML(),/dash-activity/,"no Activity block");
 
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:2e6,knownCostUsd:null,costComplete:false,unpricedTokens:2e6},{provider:"Claude",modelId:"claude-sonnet-5.5",displayName:"Sonnet 5.5",kind:"review",totalTokens:1e6,knownCostUsd:null,costComplete:false,unpricedTokens:1e6}]};
 dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="tokens";
