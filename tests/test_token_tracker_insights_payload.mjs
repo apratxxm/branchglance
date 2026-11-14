@@ -72,7 +72,7 @@ assert.match(html,/class="dash-legend-name">Claude<\/span><b>3\.2B<\/b>/);
 assert.match(html,/class="dash-legend-name">Codex<\/span><b>370M<\/b>/);
 // Provider filtering lives in explicit chips beside the chart heading, not in the split table.
 assert.match(html,/class="dash-chip claude-color" data-dashboard-provider="Claude" aria-pressed="true"/);assert.doesNotMatch(html,/dash-legend-toggle/);
-assert.match(html,/vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
+assert.match(html,/30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
 assert.ok(html.indexOf('dash-hero')<html.indexOf('dash-lower')&&html.indexOf('dash-lower')<html.indexOf('dash-chart-section'));
 assert.doesNotMatch(html,/Highest usage/);
 assert.match(html,/class="dash-lower is-single"/);

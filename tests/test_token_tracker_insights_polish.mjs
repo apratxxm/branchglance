@@ -7,7 +7,7 @@ const source=fs.readFileSync(new URL("dashboard.js",root),"utf8");
 const css=fs.readFileSync(new URL("dashboard.css",root),"utf8");
 const values=new Map();
 let responseQueue=[];
-const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))};
+const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value)),removeItem:key=>values.delete(key)};
 const document={querySelector(){return null;},querySelectorAll(){return [];},addEventListener(){}};
 const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
 const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://127.0.0.1:8765"},requestAnimationFrame:f=>f(),setTimeout:f=>f(),clearTimeout(){},setInterval:()=>1,clearInterval(){},fetch:async url=>String(url).startsWith("/api/ledger")?{ok:false,status:503}:responseQueue.shift()||{ok:false,status:404,json:async()=>({})}};
@@ -104,7 +104,7 @@ assert.doesNotMatch(css,/\.dashboard-content\{[^}]*overflow:auto/);
 assert.doesNotMatch(css,/data-tab="settings"\] \.dashboard-content\{[^}]*overflow:auto/);
 assert.match(css,/\.dashboard-view :not\(\.dashboard-content\)\{scrollbar-width:none;\}/);
 
-// (5) Plan multiple: rolling 30-day API-equivalent cost over the plan price (default $20), shown per provider in the legend. Unpriced models give a lower bound, and unpriced providers are named, never a silent dash.
+// (5) Plan multiple: rolling 30-day API-equivalent cost over the stored plan price, shown per provider in the legend. An unset price offers "Set plan" instead of assuming a price. Unpriced models give a lower bound, and unpriced providers are named, never a silent dash.
 dashboard.state.month={providers:[
   {name:"Claude",totals:{costPartial:false},models:[],series:[{date:"2026-10-05",tokens:1e6,apiEquivalentCost:68}]},
   {name:"Codex",totals:{costPartial:true,unpricedModels:["gpt-6.1-terra"]},models:[],series:[{date:"2026-10-05",tokens:5e5,apiEquivalentCost:null}]}
@@ -112,7 +112,13 @@ dashboard.state.month={providers:[
 dashboard.state.monthError=false;
 values.delete("branchglancePlanPrice.Claude");
 let planCells=dashboard.planCellsHTML("Claude");
-assert.match(planCells,/>3\.4×</,"priced provider shows its multiple against the $20 default");
+assert.match(planCells,/<button type="button" class="dash-plan-set" data-dashboard-action="set-plan">Set plan<\/button>/,"an unset plan price asks for a price instead of assuming $20");
+assert.doesNotMatch(planCells,/×/,"no multiple is computed without a plan price");
+assert.equal((planCells.match(/class="dash-plan-(cell|note-cell)"/g)||[]).length,2,"one action cell and one marker cell per row");
+assert.match(dashboard.settingsHTML(),/id="dash-plan-price"[^>]*value="" placeholder="20"/,"the unset plan input is empty with a 20 placeholder");
+values.set("branchglancePlanPrice.Claude","20");
+planCells=dashboard.planCellsHTML("Claude");
+assert.match(planCells,/>3\.4×</,"a stored $20 plan price gives the 3.4× multiple");
 assert.doesNotMatch(planCells,/≥|some unpriced/,"fully priced provider has no lower-bound marker");
 assert.equal((planCells.match(/class="dash-plan-(cell|note-cell)"/g)||[]).length,2,"one multiple cell and one marker cell per row");
 assert.match(dashboard.planCellsHTML("Codex"),/>Unpriced</,"a provider with no priced cost is named, not dashed");
@@ -126,6 +132,16 @@ assert.match(dashboard.planCellsHTML("Claude"),/>1\.7×</,"the editable plan pri
 dashboard.setPlanPrice("Claude","0");
 assert.equal(dashboard.state.settingsError,true,"a plan price of zero is refused");
 assert.equal(values.get("branchglancePlanPrice.Claude"),"40","the stored price is kept when the input is refused");
+dashboard.setPlanPrice("Claude","abc");
+assert.equal(dashboard.state.settingsError,true,"a non-number is refused");
+dashboard.setPlanPrice("Claude","");
+assert.equal(values.has("branchglancePlanPrice.Claude"),false,"an empty input clears the stored price");
+assert.equal(dashboard.state.settingsError,false,"clearing is not an error");
+assert.match(dashboard.planCellsHTML("Claude"),/data-dashboard-action="set-plan">Set plan</,"a cleared price returns to Set plan");
+values.set("branchglancePlanPrice.Claude","20");
+assert.match(dashboard.planCellsHTML("Claude"),/>3\.4×</,"set 20 gives the multiple again");
+dashboard.setPlanPrice("Claude","");
+assert.match(dashboard.planCellsHTML("Claude"),/data-dashboard-action="set-plan">Set plan</,"set 20, then clear, expects Set plan");
 dashboard.state.monthError=true;
 assert.match(dashboard.planCellsHTML("Claude"),/Unavailable/,"a failed rolling-30-day load says so");
 dashboard.state.monthError=false;
