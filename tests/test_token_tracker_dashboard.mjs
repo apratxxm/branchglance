@@ -6,7 +6,7 @@ const source=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",impo
 const values=new Map();
 let requests=[];
 let responseQueue=[];
-const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))};
+const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value)),removeItem:key=>values.delete(key)};
 const events={},tabNodes={"#dashboard-tab-insights":{tabIndex:0,focus(){this.focused=true;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-tab-settings":{tabIndex:-1,focus(){this.focused=true;},setAttribute(k,v){this[k]=v;},classList:{toggle(){}}},"#dashboard-view":{dataset:{},setAttribute(){}}};
 const document={activeElement:null,querySelector(selector){return tabNodes[selector]||null;},querySelectorAll(){return [];},addEventListener(name,fn){events[name]=fn;}};
 const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
@@ -103,17 +103,44 @@ dashboard.state.policy={policyFile:"D:\\work\\sample-app\\policy.json",providers
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];dashboard.state.settingsLoaded=true;
 dashboard.state.identity={version:"1.0.0",build:"abc123"};
 const settings=dashboard.settingsHTML();
-assert.match(settings,/<p class="dash-setting-note">Version 1\.0\.0\+abc123<\/p>/);
+assert.match(settings,/<span class="dash-h2-note">v1\.0\.0\+abc123<\/span>/);
 dashboard.state.identity={version:"<script>",build:"&"};
-assert.match(dashboard.settingsHTML(),/Version &lt;script&gt;\+&amp;/,"identity values are escaped");
+assert.match(dashboard.settingsHTML(),/v&lt;script&gt;\+&amp;/,"identity values are escaped");
 dashboard.state.identity=null;
 assert.match(dashboard.settingsHTML(),/Version unavailable/,"missing identity is described without fabricating a version");
 assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget open/);
-assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Send off/,"provider rows state their flags in plain text");assert.match(settings,/Monitor/);assert.match(settings,/Recenter/);
+assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Shown \u00b7 collecting \u00b7 auto-send off/,"provider rows state their flags in one plain-text line");assert.match(settings,/Shown \u00b7 not collecting \u00b7 auto-send off/);assert.match(settings,/<span class="dash-setting-label">Position<\/span>/,"one monitor is labelled Position");assert.match(settings,/Recenter/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
-assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage providers, automation and history/);assert.match(settings,/Cost comparison/);assert.match(settings,/After a Codex quota reset/);
+assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage providers, automation and history/);assert.match(settings,/<h2>Plan price<\/h2>/);assert.match(settings,/From policy file/);assert.match(settings,/Create report/,"the bug report row replaces Preview");assert.match(settings,/After a Codex quota reset/);
 assert.match(source,/open_reset_actions/);
 assert.doesNotMatch(source,/X-Branchglance-Settings-Token|settingsToken/,"dashboard never reads or stores the Claude settings token");
+
+dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true},{id:"display-2",label:"Desktop",selected:false}];
+assert.match(dashboard.settingsHTML(),/<span class="dash-setting-label">Monitor<\/span>/,"two monitors keep the Monitor label");
+dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];
+
+// A refused switch keeps its checked state, disables only itself while saving, and explains the failure beside its own row.
+{
+  let rejectLock;
+  window.pywebview={api:{set_widget_lock:()=>new Promise((_,reject)=>{rejectLock=reject;})}};
+  dashboard.state.lock={locked:false,revision:1};dashboard.state.keepOpen={keepOpen:false};dashboard.state.settingsRenderKey="";
+  events.click({target:{closest:selector=>selector==="[data-dashboard-action]"?{dataset:{dashboardAction:"lock"}}:null}});
+  const saving=dashboard.settingsHTML();
+  assert.match(saving,/aria-busy="true" disabled data-dashboard-action="lock"/,"the switch being saved is disabled");
+  assert.equal((saving.match(/aria-busy="true"/g)||[]).length,1,"only the saving switch is busy");
+  rejectLock(new Error("refused"));
+  await new Promise(resolve=>globalThis.setTimeout(resolve,0));
+  assert.equal(dashboard.state.lock.locked,false,"a refused change keeps the previous checked state");
+  const failed=dashboard.settingsHTML();
+  assert.equal((failed.match(/<p class="dash-setting-error" role="alert">Couldn't save\. Try again\.<\/p>/g)||[]).length,1,"the failure is explained once, beside its row");
+  assert.doesNotMatch(failed,/aria-busy="true"/,"the switch is released once the request settles");
+  delete window.pywebview;
+}
+
+// "Set plan" in Insights opens the Settings tab.
+dashboard.state.tab="insights";
+events.click({target:{closest:selector=>selector==="[data-dashboard-action]"?{dataset:{dashboardAction:"set-plan"}}:null}});
+assert.equal(dashboard.state.tab,"settings","Set plan switches to the Settings tab");
 
 // Persisted All migrates to the supported 30-day range; provider selection scopes each section.
 values.set("branchglanceInsightsRange","all");
@@ -141,7 +168,10 @@ dashboard.state.lock={locked:true};
 const lockedSettings=dashboard.settingsHTML();
 assert.match(lockedSettings,/Unlock the widget to move it/);
 assert.match(lockedSettings,/data-dashboard-action="recenter" disabled/);
-assert.match(lockedSettings,/data-dashboard-action="monitor" disabled/);
+assert.doesNotMatch(lockedSettings,/data-dashboard-action="monitor"/,"one monitor renders no select");
+dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true},{id:"display-2",label:"Desktop",selected:false}];
+assert.match(dashboard.settingsHTML(),/data-dashboard-action="monitor" disabled/,"a locked two-monitor layout disables the select");
+dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];
 dashboard.state.lock=null;
 dashboard.state.insights={generatedAt:new Date(Date.now()-120000).toISOString(),providers:[provider("Claude")]};
 dashboard.state.loading=false;dashboard.state.loadError=false;

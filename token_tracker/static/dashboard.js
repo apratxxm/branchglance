@@ -3,12 +3,13 @@
   const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:31};
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
   const RANGE_PREVIOUS={"24h":"previous day","7d":"previous week","30d":"previous 30 days",all:"previous period"};
-  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0};
+  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
   const readPref=(key,fallback)=>{try{return localStorage.getItem(key)??fallback;}catch{return fallback;}};
   const writePref=(key,value)=>{try{localStorage.setItem(key,value);}catch{}};
+  const clearPref=key=>{try{localStorage.removeItem(key);}catch{}};
   const storedRange=()=>{let value=readPref("branchglanceInsightsRange","30d");if(value==="all"){value="30d";writePref("branchglanceInsightsRange",value);}return isRange(value)?value:"30d";};
   const reducedMotion=()=>window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches===true;
   const nfmt=new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3});
@@ -187,7 +188,7 @@
     const sum=all.reduce((total,row)=>total+(row.value>0?row.value:0),0);
     if(!sum)return null;
     const bar=data.providers.length>1?`<div class="dash-split" aria-hidden="true">${all.filter(row=>row.value>0).map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div>`:"";
-    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span><span class="dash-legend-head">Share</span><span class="dash-legend-head dash-plan-head">vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>`;
+    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span><span class="dash-legend-head">Share</span><span class="dash-legend-head dash-plan-head">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>`;
     let unpriced=false;
     const items=all.map(row=>{
       const cls=`${providerKey(row.name)}-color`;
@@ -374,7 +375,7 @@
   }
   // Plan multiple: 30-calendar-day (incl. today) API-equivalent cost over the plan price, per provider. It reads the 30-day window whatever range is selected, so the multiple means the same on every tab.
   const PLAN_PROVIDERS=["Claude","Codex"];
-  const planPrice=name=>{const raw=Number(readPref(`branchglancePlanPrice.${name}`,""));return Number.isFinite(raw)&&raw>0?raw:20;};
+  const planPrice=name=>{const raw=Number(readPref(`branchglancePlanPrice.${name}`,""));return Number.isFinite(raw)&&raw>0?raw:null;};
   // A lower bound (unpriced models present) that rounds to zero reads "0.0", never "<0.1", which would claim an upper bound.
   const planMultiple=(value,lowerBound)=>{if(lowerBound){const precision=value>=10?0:1,factor=10**precision;return (Math.floor(value*factor)/factor).toFixed(precision);}return value<.1?"<0.1":value>=10?Math.round(value).toLocaleString("en-US"):value.toFixed(1);};
   function rollingRows(){
@@ -396,7 +397,7 @@
     if(!row)return planCells(`<span class="dash-plan-text">Unavailable</span>`);
     if(!(row.tokens>0))return planCells(`<span class="dash-plan-text">No usage</span>`);
     if(row.cost==null)return planCells(`<span class="dash-plan-text" title="No published price for these models">Unpriced</span>`);
-    const price=planPrice(name),multiple=row.cost/price,prefix=row.unpriced?"≥":"";
+    const price=planPrice(name);if(price==null)return planCells(`<button type="button" class="dash-plan-set" data-dashboard-action="set-plan">Set plan</button>`);const multiple=row.cost/price,prefix=row.unpriced?"≥":"";
     return planCells(`<span title="${esc(`${row.unpriced?"At least means some usage has no published price, so the real figure is higher. ":""}Last 30 days (calendar, incl. today) API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
   }
   async function loadMonth(){
@@ -418,22 +419,27 @@
   }
   function setPlanPrice(name,value){
     if(!PLAN_PROVIDERS.includes(name))return;
+    if(String(value??"").trim()===""){clearPref(`branchglancePlanPrice.${name}`);state.settingsError=false;state.settingsStatus="";state.settingsRenderKey="";state.renderKey="";render();return;}
     const number=Number(value);
     if(!Number.isFinite(number)||number<=0){state.settingsError=true;state.settingsStatus=`${name} plan price must be a number above 0.`;state.settingsRenderKey="";render();return;}
     writePref(`branchglancePlanPrice.${name}`,String(number));state.settingsError=false;state.settingsStatus="";state.settingsRenderKey="";state.renderKey="";render();
   }
-  const toggleRow=(label,description,action,value)=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control"><button class="dash-toggle${value?" is-on":""}" role="switch" aria-checked="${Boolean(value)}" aria-label="${label}" data-dashboard-action="${action}"></button></div></div>`;
+  const toggleRow=(label,description,action,value)=>{const busy=state.togglePending.has(action),failed=state.toggleErrors.has(action);return `<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control"><button class="dash-toggle${value?" is-on":""}" role="switch" aria-checked="${Boolean(value)}" aria-label="${label}"${busy?' aria-busy="true" disabled':""} data-dashboard-action="${action}"></button></div></div>${failed?'<p class="dash-setting-error" role="alert">Couldn\'t save. Try again.</p>':""}`;};
+
   const rowHTML=(label,description,control="")=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control">${control}</div></div>`;
   function settingsHTML(){
     const clock=readPref("branchglanceClockFormat","12")==="24"?"24":"12",policies=Array.isArray(state.policy?.providers)?state.policy.providers:[];
-    const providerRows=policies.length?policies.map(row=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(row.name)}</span></div><div class="dash-policy-flags"><span>${row.show===true?"Shown":row.show===false?"Hidden":"Unavailable"}</span><span>${row.collect===true?"Collecting":row.collect===false?"Collection off":"Unavailable"}</span><span>${row.send===true?"Can send":row.send===false?"Send off":"Unavailable"}</span></div></div>`).join(""):'<p class="dash-setting-note">Provider status unavailable.</p>';
-    const providers=`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers</h2>${providerRows}${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<p class="dash-setting-note">Set by your policy file.${/[\\/]/.test(String(state.policy?.policyFile||""))?` <code>${esc(state.policy.policyFile)}</code>`:""}</p><button class="dash-action" data-dashboard-action="claude-settings">Manage providers, automation and history&#8230;</button></section>`;
+    const flag=(value,yes,no)=>value===true?yes:value===false?no:"Unavailable";
+    const providerRows=policies.length?policies.map(row=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(row.name)}</span><span class="dash-provider-status">${esc([flag(row.show,"Shown","Hidden"),flag(row.collect,"collecting","not collecting"),flag(row.send,"auto-send on","auto-send off")].join(" \u00b7 "))}</span></div></div>`).join(""):'<p class="dash-setting-note">Provider status unavailable.</p>';
+    const policyPath=String(state.policy?.policyFile||""),policyTitle=/[\\/]/.test(policyPath)?` title="${esc(policyPath)}"`:"";
+    const providers=`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers<span class="dash-h2-note"${policyTitle}>From policy file</span></h2>${providerRows}${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<button class="dash-action" data-dashboard-action="claude-settings">Manage providers, automation and history&#8230;</button></section>`;
     const reset=state.settingsLoaded?`<iframe class="reset-embed" title="After a Codex quota reset" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status" role="status">Loading</p>`;
-    const widget=`<section class="dash-settings-group"><h2>Widget</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","",`<div class="dash-clock-segment" role="group" aria-label="Clock format">${[["12","12-hour"],["24","24-hour"]].map(([value,label])=>`<button type="button" data-dashboard-clock="${value}" aria-pressed="${clock===value}">${label}</button>`).join("")}</div>`)}${rowHTML("Monitor",state.lock?.locked?"Unlock the widget to move it":"Choose where the widget opens",`<div class="dash-monitor-controls">${state.monitors.length?`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor" ${state.lock?.locked?"disabled":""}>${state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("")}</select>`:""}<button class="dash-action" data-dashboard-action="recenter" ${state.lock?.locked?"disabled":""}>Recenter</button></div>`)}</section>`;
-    const plan=`<details class="dash-settings-group dash-plan-details"><summary>Cost comparison</summary><div class="dash-plan-group"><span class="dash-setting-label">Monthly plan price</span><span class="dash-setting-description">Used only for the 'vs plan' figure in Insights: your 30-day API-equivalent estimate divided by this monthly price.</span><div class="dash-plan-fields">${PLAN_PROVIDERS.map(name=>`<label class="dash-plan-field"><span class="dash-plan-field-name">${esc(name)}</span><span aria-hidden="true">$</span><input type="number" min="1" step="any" inputmode="decimal" value="${esc(planPrice(name))}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label>`).join("")}</div></div></details>`;
+    const singleMonitor=state.monitors.length<2;
+    const widget=`<section class="dash-settings-group"><h2>Widget</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","",`<div class="dash-clock-segment" role="group" aria-label="Clock format">${[["12","12-hour"],["24","24-hour"]].map(([value,label])=>`<button type="button" data-dashboard-clock="${value}" aria-pressed="${clock===value}">${label}</button>`).join("")}</div>`)}${rowHTML(singleMonitor?"Position":"Monitor",state.lock?.locked?"Unlock the widget to move it":singleMonitor?"Move the widget back to the centre of this screen":"Choose where the widget opens",`<div class="dash-monitor-controls">${state.monitors.length>1?`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor" ${state.lock?.locked?"disabled":""}>${state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("")}</select>`:""}<button class="dash-action" data-dashboard-action="recenter" ${state.lock?.locked?"disabled":""}>Recenter</button></div>`)}</section>`;
+    const plan=`<section class="dash-settings-group dash-plan-group-section" aria-label="Plan price"><h2>Plan price</h2><div class="dash-plan-group"><span class="dash-setting-description">Monthly price, used for 'vs plan' in Insights.</span><div class="dash-plan-fields">${PLAN_PROVIDERS.map((name,index)=>{const price=planPrice(name);return `<label class="dash-plan-field"><span class="dash-plan-field-name">${esc(name)}</span><span aria-hidden="true">$</span><input${index===0?' id="dash-plan-price"':""} type="number" min="1" step="any" inputmode="decimal" value="${price==null?"":esc(price)}" placeholder="20" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label>`;}).join("")}</div></div></section>`;
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
-    const version=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`<p class="dash-setting-note">Version ${esc(state.identity.version)}+${esc(state.identity.build)}</p>`:state.settingsLoaded?'<p class="dash-setting-note">Version unavailable</p>':"";
-    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="About and bug report"><h2>About</h2>${version}<p class="dash-setting-note">Builds a text report with no chat text, file paths, account details or tokens. Review it before sharing.</p><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-preview">Preview</button></div><div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
+    const versionNote=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`v${esc(state.identity.version)}+${esc(state.identity.build)}`:state.settingsLoaded?"Version unavailable":"";
+    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="About and bug report"><h2>About${versionNote?`<span class="dash-h2-note">${versionNote}</span>`:""}</h2>${rowHTML("Bug report","Builds a text report with no chat text, file paths, account details or tokens. Review it before sharing.",`<button class="dash-action" data-dashboard-action="debug-preview">Create report</button>`)}<div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
     return `<div class="dash-settings-columns">${widget}${providers}<section class="dash-settings-group dash-reset-group"><h2>After a Codex quota reset</h2>${reset}</section>${plan}${status}${debug}</div>`;
   }
   const DEBUG_ISSUE_URL="https://github.com/apratxxm/branchglance/issues/new?template=bug_report.yml";
@@ -562,11 +568,16 @@
     catch(error){state.lock=null;state.settingsError=true;state.settingsStatus=error?.message||"Monitor could not be selected.";}
     finally{state.settingsRenderKey="";render();}
   }
+  // "Set plan" switches to Settings; render focuses the plan price input once it exists.
+  function openPlanPrice(){state.focusPlanPrice=true;selectTab("settings");}
+  // A switch is busy only while its own request is pending; a refused change keeps the previous checked state and says so beside its row.
   async function toggleSetting(action){
-    const api=window.pywebview?.api;
+    if(state.togglePending.has(action))return;
+    const api=window.pywebview?.api,hadFocus=document.activeElement?.dataset?.dashboardAction===action;
+    state.togglePending.add(action);state.toggleErrors.delete(action);state.settingsRenderKey="";render();
     try{if(action==="lock"&&typeof api?.set_widget_lock==="function")state.lock=await api.set_widget_lock(state.lock?.locked!==true,state.lock?.expanded===true,null,state.lock?.revision);if(action==="keep-open"&&typeof api?.set_keep_open==="function")state.keepOpen=await api.set_keep_open(state.keepOpen?.keepOpen!==true,state.keepOpen?.keepOpenRevision);state.settingsError=false;state.settingsStatus="";}
-    catch{state.settingsError=true;state.settingsStatus="Setting could not be changed.";}
-    finally{state.settingsRenderKey="";render();}
+    catch{state.toggleErrors.add(action);}
+    finally{state.togglePending.delete(action);state.settingsRenderKey="";render();if(hadFocus)$(`#dashboard-settings [data-dashboard-action="${action}"]`)?.focus?.();}
   }
   function setClockFormat(value){
     value=String(value);if(!["12","24"].includes(value))return false;
@@ -587,6 +598,7 @@
         else settings.replaceChildren(template.content);
         state.frame=settings.querySelector("iframe.reset-embed");if(selector)settings.querySelector(selector)?.focus();}
     }
+    if(state.focusPlanPrice&&state.tab==="settings"){const input=$("#dash-plan-price");if(input){state.focusPlanPrice=false;input.focus();input.scrollIntoView?.({block:"center"});}}
     bindTooltipsOnce();
     syncSize();
   }
@@ -667,6 +679,7 @@
     if(name==="close")window.tokenTrackerCloseDashboard?.();
     else if(name==="lock"||name==="keep-open")void toggleSetting(name);
     else if(name==="clock")toggleClock();
+    else if(name==="set-plan")openPlanPrice();
     else if(name==="recenter"){if(state.lock?.locked)return;void Promise.resolve(window.tokenTrackerRecenter?.()).then(()=>loadPlacement());}
     else if(name==="dashboard-recenter")void window.tokenTrackerRecenter?.();
     else if(name==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
