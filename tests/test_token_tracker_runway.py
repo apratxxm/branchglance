@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import threading
 import time
+import sys
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ def test_cloned_source_with_conflicting_targets_stays_neutral():
     assert widget._display_kinds_by_device({"\\\\.\\DISPLAY1": {11, 10}}) == {}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: asserts ctypes sizes for the Win32 DisplayConfig ABI")
 def test_display_config_structures_match_win32_abi():
     assert widget.ctypes.sizeof(widget._DisplayConfigPathSourceInfo) == 20
     assert widget.ctypes.sizeof(widget._DisplayConfigPathTargetInfo) == 48

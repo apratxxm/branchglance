@@ -316,6 +316,7 @@ def test_process_scan_accepts_twelve_hop_ancestry():
     assert len(result) == 1 and result[0]["claude_session_id"] == "session-a"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: decodes the UTF-16 PROCESS_COMMAND_LINE_INFORMATION buffer")
 def test_command_line_query_retries_reported_large_size_once():
     text = "x" * 20_000
     encoded = text.encode("utf-16-le")

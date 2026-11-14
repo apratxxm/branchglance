@@ -876,6 +876,7 @@ def test_webview_copy_failure_leaves_no_partial_destination(tmp_path, monkeypatc
     assert (legacy / "file").exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: test creates a junction with cmd mklink /J")
 def test_webview_copy_skips_junctions(tmp_path):
     import subprocess
     legacy = tmp_path / "pywebview"
@@ -893,6 +894,7 @@ def test_webview_copy_skips_junctions(tmp_path):
     assert (outside / "secret.txt").exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: WidgetApp startup calls ctypes.windll Win32 APIs")
 def test_run_passes_explicit_storage_path_to_webview(monkeypatch, tmp_path):
     started = []
     monkeypatch.setattr(widget, "CONTROL_PORT", 0)
@@ -944,6 +946,7 @@ def _tree_snapshot(root):
                   for path in root.rglob("*"))
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: test creates junctions with cmd mklink /J")
 @pytest.mark.parametrize("redirect", ["data-root", "state", "webview", "nested-profile"])
 def test_frozen_redirected_storage_is_refused_visibly_and_target_untouched(tmp_path, monkeypatch, redirect):
     monkeypatch.delenv(product.STATE_ROOT_ENV, raising=False)
@@ -1002,6 +1005,7 @@ def test_dev_storage_is_not_validated(tmp_path):
     assert product.storage_problem(frozen=False, environ={"LOCALAPPDATA": str(tmp_path)}) is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: test creates a junction with cmd mklink /J")
 def test_existing_redirected_webview_destination_is_refused_unmodified(tmp_path):
     target = tmp_path / "legacy-profile"
     target.mkdir()
@@ -1145,7 +1149,8 @@ def test_dashboard_assets_expose_insights_controls_without_settings_token_access
     assert '.area-fill.claude' in styles and '.area-fill.codex' in styles
 
 
-@pytest.mark.parametrize("during", ["http", "limit_reset", "window"])
+@pytest.mark.parametrize("during", ["http", "limit_reset", pytest.param("window", marks=pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows-only: WidgetApp window startup calls ctypes.windll Win32 APIs"))])
 def test_maintenance_exit_during_startup_cancels_remaining_init_and_releases_resources(monkeypatch, during):
     monkeypatch.setattr(widget, "CONTROL_PORT", 0)
     monkeypatch.setattr(widget, "HTTP_PORT", 0)

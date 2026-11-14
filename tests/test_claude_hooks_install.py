@@ -61,8 +61,9 @@ def load(path):
 
 
 # Executables the tests install with (G8: ownership requires a configured executable).
-TEST_EXES = frozenset({"c:/program files/branchglance/branchglance.exe", "c:/apps/branchglance/branchglance.exe",
-                       "c:/python 3/python.exe"})
+TEST_EXES = frozenset({"C:/Program Files/Branchglance/branchglance.exe", "c:/program files/branchglance/branchglance.exe",
+                       "C:/Apps/Branchglance/branchglance.exe", "c:/apps/branchglance/branchglance.exe",
+                       "C:/Python 3/python.exe", "c:/python 3/python.exe"})
 
 
 def ours(data, event):

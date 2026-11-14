@@ -161,6 +161,7 @@ def test_setup_same_version_identical_release_is_noop_before_stopping_running_ap
     assert not any(event[0] == "maintenance-exit" for event in events)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_successful_setup_notifies_shell_once_for_exe_and_only_owned_shortcuts(tmp_path, monkeypatch):
     from branchglance_installer import app as app_module
     from branchglance_installer.app import Paths, install
@@ -198,6 +199,7 @@ def test_successful_setup_notifies_shell_once_for_exe_and_only_owned_shortcuts(t
     assert calls[0][1] == (paths.start_menu / "Branchglance.lnk", paths.startup / "Branchglance.lnk")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_icon_refresh_exception_is_logged_and_does_not_fail_setup(tmp_path, monkeypatch, caplog):
     from branchglance_installer import app as app_module
     from branchglance_installer.app import Paths, install
@@ -310,6 +312,7 @@ def test_setup_staged_selftest_failure_refuses_before_stopping_running_app(tmp_p
     assert not any(event[0] in {"maintenance-exit", "popen", "mutation"} for event in events)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_two_setups_serialize_failure_restore_then_upgrade_the_restored_instance(tmp_path):
     from branchglance_installer.app import Paths, install
     root = _root(tmp_path)
@@ -332,6 +335,7 @@ def test_two_setups_serialize_failure_restore_then_upgrade_the_restored_instance
     assert not (root / ".cutover-handoff.json").exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_delayed_restore_child_is_terminated_before_waiting_setup_updates_pointer(tmp_path, monkeypatch):
     import threading
     import time
@@ -413,6 +417,7 @@ def test_delayed_restore_child_is_terminated_before_waiting_setup_updates_pointe
     assert native.fake_alive[0] is False  # delayed rc.7 never resumes against the new pointer
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_expired_restore_marker_from_crash_is_recovered_before_later_upgrade(tmp_path, monkeypatch):
     import json
     from branchglance_installer import app as app_module
@@ -537,10 +542,15 @@ def _process_alive(pid: int) -> bool:
         kernel.CloseHandle(handle)
 
 
-@pytest.mark.parametrize("running,interrupt,should_relaunch", [(True, None, True),
-                                                                (True, "release-promoted", True),
-                                                                (True, "tool-backed-up", True),
-                                                                (False, None, False)])
+@pytest.mark.parametrize("running,interrupt,should_relaunch", [
+    pytest.param(True, None, True, marks=pytest.mark.skipif(
+        os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")),
+    (True, "release-promoted", True),
+    pytest.param(True, "tool-backed-up", True, marks=pytest.mark.skipif(
+        os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")),
+    pytest.param(False, None, False, marks=pytest.mark.skipif(
+        os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")),
+])
 def test_setup_relaunches_only_previously_running_app_after_success_or_failure(
         tmp_path, running, interrupt, should_relaunch):
     from branchglance_installer.app import Paths, install
@@ -591,6 +601,7 @@ def test_setup_does_not_relaunch_until_old_instance_exit_is_confirmed(tmp_path):
     assert not any(event[0] == "mutation" for event in events)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: setup mutates the handle-bound launcher wrapper")
 def test_slow_old_instance_exits_in_bounded_window_then_installs_before_relaunch(tmp_path):
     from branchglance_installer.app import Paths, install
     root = _root(tmp_path)
@@ -1867,6 +1878,7 @@ def test_resumed_trash_intent_refuses_before_external_changes(tmp_path, monkeypa
     assert native.integration_adapter.registry == before_registry
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_owned_install_upgrade_and_uninstall(tmp_path):
     from branchglance_installer.core import read_owned_ledger
     root = _root(tmp_path)
@@ -1898,6 +1910,7 @@ def test_bg_codex_foreign_collision_is_not_adopted_or_deleted(tmp_path):
     assert foreign.read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_failed_upgrade_restores_old_owned_tool(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1914,6 +1927,7 @@ def test_bg_codex_failed_upgrade_restores_old_owned_tool(tmp_path):
     assert (root / "bg-codex.exe").read_bytes() == b"first wrapper"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_replacement_is_refused_before_uninstall_integration(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1930,6 +1944,7 @@ def test_bg_codex_replacement_is_refused_before_uninstall_integration(tmp_path):
 
 
 @pytest.mark.parametrize("point,changed", [("tool-staged", "staged"), ("tool-backed-up", "backup"), ("tool-replaced", "live")])
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_tampering_refuses_recovery_before_integration(tmp_path, point, changed):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1967,6 +1982,7 @@ def test_bg_codex_missing_provenance_refuses_uninstall(tmp_path):
     assert wrapper.read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_unrecorded_stage_is_retained_before_recovery(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -1990,6 +2006,7 @@ def test_bg_codex_unrecorded_stage_is_retained_before_recovery(tmp_path):
     assert staged.read_bytes() == b"source"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_same_bytes_foreign_replacement_refuses_upgrade(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -2005,6 +2022,7 @@ def test_bg_codex_same_bytes_foreign_replacement_refuses_upgrade(tmp_path):
     assert wrapper.read_bytes() == b"owned"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_destination_race_is_not_overwritten(tmp_path, monkeypatch):
     from branchglance_installer import core
     root = _root(tmp_path)
@@ -2021,6 +2039,7 @@ def test_bg_codex_destination_race_is_not_overwritten(tmp_path, monkeypatch):
     assert (root / "bg-codex.exe").read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_source_swap_before_handle_open_is_not_deleted(tmp_path, monkeypatch):
     from branchglance_installer import core
     root = _root(tmp_path)
@@ -2038,6 +2057,7 @@ def test_bg_codex_source_swap_before_handle_open_is_not_deleted(tmp_path, monkey
     assert (root / "bg-codex.exe").read_bytes() == b"foreign"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_crash_after_new_removed_can_restore_old(tmp_path):
     root = _root(tmp_path)
     source = tmp_path / "bg-codex.exe"
@@ -2057,6 +2077,7 @@ def test_bg_codex_crash_after_new_removed_can_restore_old(tmp_path):
     assert (root / "bg-codex.exe").read_bytes() == b"old"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: _LockedWrapper uses CreateFileW and file handles")
 def test_bg_codex_locked_handle_denies_write_and_rename(tmp_path):
     from branchglance_installer.core import _LockedWrapper
     target = tmp_path / "target"
@@ -2071,6 +2092,7 @@ def test_bg_codex_locked_handle_denies_write_and_rename(tmp_path):
     assert target.read_bytes() == b"original"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
 def test_bg_codex_restore_destination_race_keeps_foreign_and_backup(tmp_path, monkeypatch):
     from branchglance_installer import core
     root = _root(tmp_path)
