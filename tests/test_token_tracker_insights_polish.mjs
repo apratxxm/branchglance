@@ -170,4 +170,58 @@ dashboard.state.insights=payload([{name:"Claude",totals:{tokens:3e8,apiEquivalen
 dashboard.state.metric="tokens";
 assert.match(dashboard.insightsHTML(),/<em class="claude" style="width:50\.0%"/,"bars are linear: half the largest row is half the width");
 
+// (9) Round 3: quota follows the provider chips and shows the weekly column; stamped hours follow the clock; work figures; partial pricing; one point in the tab order.
+const provider=(name,extra={})=>({name,totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(1e6),models:[],limitPeaks:{fiveHour:null,weekly:null},...extra});
+window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",resetTarget:1,weekly:{usedPercent:20,countdown:"3d 2h",resetTarget:2}},{name:"Codex",usedPercent:62,countdown:"1h 5m",resetTarget:3,weekly:{usedPercent:null,countdown:"",resetTarget:null}}];
+dashboard.state.insights=payload([provider("Claude"),provider("Codex")]);
+dashboard.state.range="30d";dashboard.state.metric="tokens";
+let quota=dashboard.insightsHTML();
+assert.match(quota,/data-quota-part="percent">40%/,"the 5-hour figure is shown");
+assert.match(quota,/5h · Week/,"the quota header names both windows");
+assert.match(quota,/resets 2h 40m/,"the 5-hour sub-line shows its reset");
+assert.match(quota,/resets 3d 2h/,"the weekly sub-line shows its reset");
+assert.match(quota,/Not available/,"a provider without a weekly reading shows Not available");
+dashboard.toggleProvider("Claude");
+quota=dashboard.insightsHTML();
+assert.doesNotMatch(quota,/data-quota-key="Claude"/,"quota rows exclude a hidden provider");
+assert.match(quota,/data-quota-key="Codex"/,"the shown provider keeps its quota row");
+dashboard.toggleProvider("Claude");
+
+// Stamped hours (24h) follow the clock preference; the range line has no minutes on 12-hour and keeps hh:mm on 24-hour.
+const hourlyRows=[{date:"2026-11-13T23:00:00",tokens:5e5,apiEquivalentCost:null},{date:"2026-11-14T22:00:00",tokens:5e5,apiEquivalentCost:null}];
+dashboard.state.insights={range:"24h",generatedAt:today.toISOString(),providers:[provider("Claude",{series:hourlyRows})]};
+dashboard.state.range="24h";dashboard.state.metric="tokens";
+values.set("branchglanceClockFormat","12");
+let hourly=dashboard.insightsHTML();
+assert.match(hourly,/Nov 13, 11 PM – Nov 14, 10 PM/,"12-hour stamps read 11 PM with no minutes");
+assert.doesNotMatch(hourly,/local time/,"the range line has no local-time suffix");
+values.set("branchglanceClockFormat","24");
+hourly=dashboard.insightsHTML();
+assert.match(hourly,/Nov 13, 23:00 – Nov 14, 22:00/,"24-hour stamps read 23:00");
+values.set("branchglanceClockFormat","12");
+
+// Work table: one decimal from a million ("2.0M"), whole thousands below ("800K").
+dashboard.state.range="30d";dashboard.state.metric="tokens";
+dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:2e6,knownCostUsd:null,costComplete:false,unpricedTokens:2e6},{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"review",totalTokens:8e5,knownCostUsd:null,costComplete:false,unpricedTokens:8e5}],coverage:{},service:{}};
+dashboard.state.ledgerRange="30d";
+const workTable=dashboard.workHTML(dashboard.workData());
+assert.match(workTable,/>2\.0M</,"work table: a million or more has one decimal");
+assert.match(workTable,/>800K</,"work table: thousands have no decimal");
+dashboard.state.ledger=null;
+
+// Partial pricing: the unit line names an excluded provider and partial models; partial model amounts carry a ≥ prefix.
+dashboard.state.metric="cost";
+dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true,unpricedModels:["claude-haiku-5-5"]},models:[{name:"claude-opus-5.5",tokens:8e5,apiEquivalentCost:9,unpriced:true},{name:"claude-haiku-5.5",tokens:2e5,apiEquivalentCost:null}]}),provider("Codex",{totals:{tokens:1e6,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null}})]);
+const partialHTML=dashboard.insightsHTML();
+assert.match(partialHTML,/estimated · excl\. Codex · some models unpriced/,"the unit line names the excluded provider and the partial models");
+assert.match(partialHTML,/≥ \$9\.00/,"a partially priced model row shows its amount with a ≥ prefix");
+dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true,unpricedModels:["claude-haiku-5-5"]}})]);
+assert.match(dashboard.insightsHTML(),/<span class="dash-hero-unit">estimated · some models unpriced<\/span>/,"partial models alone give their own unit line");
+dashboard.state.metric="tokens";
+
+// Chart: exactly one point sits in the tab order (the roving tabindex).
+dashboard.state.insights=payload([provider("Claude")]);
+assert.equal((dashboard.insightsHTML().match(/class="dash-point" tabindex="0"/g)||[]).length,1,"exactly one chart point is in the tab order");
+values.delete("branchglanceHiddenProviders");
+
 console.log("Insights polish contracts passed");

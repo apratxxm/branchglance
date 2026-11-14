@@ -65,7 +65,7 @@ assert.doesNotMatch(html,/dash-summary|sessions|subagents|active|cache hits/);
 
 // (4) Model table shows when rows exist; limit panel hidden when peaks are null; no empty lower band.
 assert.match(html,/>Models</);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);
-assert.match(html,/<th scope="col"><span class="sr-only">Tokens<\/span><\/th><th scope="col"><span class="sr-only">Est\. cost<\/span><\/th>/,"Models is a semantic table with unit headers");
+assert.match(html,/<th scope="col">Tokens<\/th><th scope="col">Est\. cost<\/th>/,"Models is a semantic table with visible unit headers");
 assert.equal((html.match(/class="dash-none" role="img" aria-label="No published price">&mdash;/g)||[]).length,2,"each unpriced model has a cost placeholder");
 assert.doesNotMatch(html,/dash-share/);
 assert.equal((html.match(/class="dash-axis-value"/g)||[]).length,3);

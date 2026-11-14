@@ -32,7 +32,7 @@ assert.match(insights,/dash-hero-currency/);
 assert.match(insights,/estimated/);
 assert.match(insights,/Claude/);assert.match(insights,/Codex/);
 assert.match(insights,/<th scope="col">Models<\/th>/);assert.match(insights,/Peak quota used/);
-assert.match(insights,/local time/);
+assert.doesNotMatch(insights,/local time/,"range lines no longer carry a local-time suffix");assert.match(insights,/Nov 12 – 14/,"same-month daily range reads Nov 12 – 14");
 assert.match(insights,/<dt>Subagents<\/dt><dd>6<\/dd>/);
 assert.doesNotMatch(insights,/vs previous/,"no period delta at 30 days");
 assert.match(insights,/area-fill/);assert.match(insights,/area-edge/);
@@ -275,7 +275,7 @@ assert.match(partial,/partial estimate/);
 assert.match(partial,/Recorded subtotal/);
 dashboard.state.insights={range:"7d",providers:[{...first,totals:{...first.totals,tokens:0},series:[{date:dateOffset(0),tokens:0}]}]};
 dashboard.state.metric="tokens";
-assert.match(dashboard.insightsHTML(),/dash-chart/,"observed zero has a chart");
+const zeroHTML=dashboard.insightsHTML();assert.match(zeroHTML,/No usage /,"observed zero says no usage");assert.match(zeroHTML,/Show 30 days/,"observed zero offers the 30-day range");assert.doesNotMatch(zeroHTML,/<svg/,"zero usage renders no chart svg");assert.doesNotMatch(zeroHTML,/dash-model-row/,"zero usage renders no model rows");
 
 // A mismatched response cannot be accepted as the requested period.
 dashboard.state.range="7d";dashboard.state.insights=null;

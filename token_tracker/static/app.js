@@ -1329,7 +1329,7 @@ function bankedResetView(banked) {
 // The widget's last provider list, read by the dashboard through tokenTrackerQuotaNow.
 let resetProviders=[];
 // Current 5-hour quota per provider from the same resetView the widget draws; usedPercent is null when the widget shows no measured or last-known value.
-window.tokenTrackerQuotaNow=()=>resetProviders.map(p=>{const view=resetView(p,"fiveHour");return {name:String(p.name||""),usedPercent:view.usedPercent,countdown:view.countdown,resetTarget:view.resetTarget};});
+window.tokenTrackerQuotaNow=()=>resetProviders.map(p=>{const view=resetView(p,"fiveHour"),week=resetView(p,"weekly");return {name:String(p.name||""),usedPercent:view.usedPercent,countdown:view.countdown,resetTarget:view.resetTarget,weekly:{usedPercent:week.usedPercent,countdown:week.countdown,resetTarget:week.resetTarget}};});
 function renderResets(providers) {
   resetProviders=Array.isArray(providers)?providers:[];
   const node=$("#resets"),weeklyNode=$("#weekly-resets");if(!node)return;
