@@ -23,9 +23,19 @@ class ClaudeCollectionError(Exception):
     """A safe, user-displayable collection setting error."""
 
 
+def _change_stamp(info: os.stat_result) -> int:
+    # Python 3.12+ on Windows gives a path stat and a handle stat different
+    # st_ctime values, while st_birthtime_ns agrees (see providers._stat_ctime_ns).
+    if os.name == "nt":
+        birth = getattr(info, "st_birthtime_ns", None)
+        if birth is not None:
+            return birth
+    return info.st_ctime_ns
+
+
 def _same_file(info: os.stat_result, other: os.stat_result) -> bool:
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) == (
-        other.st_dev, other.st_ino, other.st_size, other.st_mtime_ns, other.st_ctime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, _change_stamp(info)) == (
+        other.st_dev, other.st_ino, other.st_size, other.st_mtime_ns, _change_stamp(other))
 
 
 def _info_is_reparse(info: os.stat_result) -> bool:
