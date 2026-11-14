@@ -263,3 +263,48 @@ const loading=dashboard.insightsHTML();
 assert.equal((loading.match(/dash-skel-row/g)||[]).length,3,"first load mounts three Models bar rows");
 assert.match(loading,/Tokens over/,"first load shows the token eyebrow, not Cost");
 dashboard.state.loading=false;
+
+// (11) Round 5: the failure notice sits on the hero eyebrow row, out of the lower flow; the skeleton carries the final eyebrow; Activity moves left for four or fewer models; empty work cells read a centred dot; a zero total takes the compact height.
+dashboard.state.loading=false;dashboard.state.loadError=true;dashboard.state.insightsUnavailable=false;
+dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[provider("Claude")]};dashboard.state.range="7d";dashboard.state.metric="tokens";
+const failed=dashboard.insightsHTML();
+assert.match(failed,/<div class="dash-hero-meta">(?:(?!<\/div>)[\s\S])*class="dash-notice" role="status"/,"the failure notice sits on the hero eyebrow row");
+assert.doesNotMatch(failed,/<p class="dash-status-line[^"]*" role="status">[^<]*Update failed/,"the failure notice is out of the lower flow");
+assert.match(failed,/title="Use Refresh to retry\."/,"the retry hint is in the notice title");
+assert.match(failed,/<span class="sr-only">\. Use Refresh to retry\.<\/span>/,"the retry hint is in screen-reader text");
+assert.match(failed,/<span class="dash-fail-time"> \u00b7 data from /,"the notice names the time its data is from");
+dashboard.state.loadError=false;
+
+dashboard.state.insights=null;dashboard.state.loading=true;dashboard.state.range="7d";dashboard.state.metric="tokens";
+const skeleton=dashboard.insightsHTML();
+assert.match(skeleton,/<span class="dash-eyebrow">Tokens over 7 days<\/span>/,"the skeleton eyebrow matches the final template");
+assert.match(skeleton,/<p class="dash-status-line sr-only" role="status">Loading usage…<\/p>/,"the loading text is screen-reader only");
+dashboard.state.metric="cost";
+assert.match(dashboard.insightsHTML(),/API-equivalent cost · 7 days/,"the cost skeleton uses the cost eyebrow");
+dashboard.state.metric="tokens";dashboard.state.loading=false;
+
+dashboard.state.insights=payload([provider("Claude",{models:[1,2,3].map(i=>({name:`claude-act-${i}`,tokens:i*1e5,apiEquivalentCost:1}))})]);
+dashboard.state.range="30d";dashboard.state.metric="tokens";
+assert.match(dashboard.insightsHTML(),/<section class="dash-lower[^"]*is-activity-left/,"four or fewer models: Activity moves to the left column");
+dashboard.state.insights=payload([provider("Claude",{models:[1,2,3,4,5].map(i=>({name:`claude-many-${i}`,tokens:i*1e5,apiEquivalentCost:1}))})]);
+assert.doesNotMatch(dashboard.insightsHTML(),/is-activity-left/,"more than four models: Activity stays in the right column");
+
+dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:2e6,knownCostUsd:null,costComplete:false,unpricedTokens:2e6},{provider:"Claude",modelId:"claude-sonnet-5.5",displayName:"Sonnet 5.5",kind:"review",totalTokens:1e6,knownCostUsd:null,costComplete:false,unpricedTokens:1e6}]};
+dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="tokens";
+const emptyWork=dashboard.workHTML(dashboard.workData());
+assert.match(emptyWork,/class="dash-work-cell is-zero is-none" aria-label="None"><span aria-hidden="true">·<\/span>/,"an empty work cell shows a centred dot labelled None");
+dashboard.state.ledger=null;
+
+dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[{name:"Claude",totals:{tokens:0,apiEquivalentCost:0,sessions:0,subagentsActive:0,activeHours:0,cacheHitRate:null},previous:null,series:series(0),models:[],limitPeaks:{fiveHour:null,weekly:null}}]};
+dashboard.state.range="7d";dashboard.state.tab="insights";dashboard.state.metric="tokens";
+assert.equal(dashboard.compactPanel(),true,"a zero total takes the compact window height");
+assert.match(dashboard.insightsHTML(),/<section class="dash-hero is-zero-hero">/,"the zero hero puts its chips on the figure row");
+
+// (12) Round 5 C9: the By work cost grid marks unpriced cells with a faint dot labelled Unpriced, explains it once under the grid, and writes whole dollars from $10 up.
+dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:1e6,knownCostUsd:14.2,costComplete:true,unpricedTokens:0},{provider:"Claude",modelId:"claude-sonnet-5.5",displayName:"Sonnet 5.5",kind:"review",totalTokens:5e5,knownCostUsd:null,costComplete:false,unpricedTokens:5e5}]};
+dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="cost";
+const costGrid=dashboard.workHTML(dashboard.workData());
+assert.match(costGrid,/aria-label="Unpriced" title="No published price">·<\/span>/,"an unpriced cost cell is a faint dot labelled Unpriced");
+assert.match(costGrid,/<p class="dash-work-legend">· = no published price<\/p>/,"the unpriced marker is explained once under the grid");
+assert.match(costGrid,/>\$14<\/span>/,"whole dollars from $10 up read without cents");
+dashboard.state.ledger=null;

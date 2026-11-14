@@ -29,7 +29,7 @@ assert.equal(work.rows[0].name,"Opus 5.5");
 assert.equal(work.rows[3].other,true);
 assert.match(work.rows[3].name,/Other · 3 models/);
 assert.doesNotMatch(ui.workHTML(work),/>\?</,"empty work cells never show a literal question mark");
-assert.match(ui.workHTML(work),/aria-label="None"><span aria-hidden="true">—<\/span>/,"empty work cells show an em dash");
+assert.match(ui.workHTML(work),/aria-label="None"><span aria-hidden="true">·<\/span>/,"empty work cells show a centred dot labelled None");
 assert.ok(!work.kinds.includes("debug"),"unknown kinds fold into Other");
 assert.ok(work.kinds.includes("other"));
 const grand=1880;

@@ -218,7 +218,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-chart.is-lines .area-glow{opacity:.22;}
 .dash-chart.is-lines .area-edge{stroke-width:1.8;}
 .dash-chart .area-edge.claude{stroke-dasharray:4 3;}
-.dash-dates{position:relative;height:18px;margin:0 0 0 32px;color:var(--d-faint);font-size:11px;line-height:14px;}
+.dash-dates{position:relative;flex:0 0 20px;height:20px;margin:0 0 0 32px;color:var(--d-faint);font-size:11px;line-height:14px;}
 .dash-date{position:absolute;top:6px;transform:translateX(-50%);white-space:nowrap;}
 .dash-date.is-first{transform:none;}
 .dash-date.is-last{transform:translateX(-100%);}
@@ -309,7 +309,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-work-head small{text-align:right;}
 .dash-work-note.is-qualified{color:#d9b56a;cursor:help;}
 .dash-work-grid{display:grid;margin-top:2px;}
-.dash-work-row{display:grid;grid-template-columns:minmax(128px,1fr) repeat(var(--work-cols),minmax(36px,44px)) minmax(48px,56px);column-gap:4px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
+.dash-work-row{display:grid;grid-template-columns:minmax(90px,1fr) repeat(var(--work-cols),minmax(36px,44px)) 52px;column-gap:6px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
 .dash-work-row.is-head{min-height:20px;color:var(--d-faint);font-size:11px;font-weight:450;}
 .dash-work-row.is-head>span,.dash-work-cell{text-align:right;font-variant-numeric:tabular-nums;}
 .dash-work-row.is-foot{margin-top:2px;padding-top:2px;border-top:1px solid var(--d-edge);color:var(--d-sub);}
@@ -412,14 +412,34 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-quota-sub{display:block;color:var(--d-mute);font-size:11px;font-weight:400;line-height:14px;text-align:right;white-space:nowrap;}
 /* Round 4: loading skeleton: three Models bars at their row pitch; the failure notice splits into name, time and retry tones. */
 .dash-skel-models{display:grid;}
-.dash-skel-row{height:var(--d-pitch);display:flex;align-items:center;}
-.dash-skel-row .dash-model-bar{display:block;width:100%;margin-left:0;background:var(--d-track);}
+.dash-skel-row{height:var(--d-pitch);display:grid;grid-template-columns:minmax(0,1fr) 144px;align-items:center;}
+.dash-skel-row .dash-model-bar{display:block;width:144px;margin-left:0;background:var(--d-track);}
 .dash-fail{color:var(--d-claude-text);}
 .dash-fail-time,.dash-fail-retry{color:var(--d-sub);}
-.dashboard-controls #dashboard-refresh{min-width:92px;text-align:right;}
+.dashboard-controls #dashboard-refresh{min-width:92px;text-align:center;}
 /* Round 4: single-provider plan sits on the figure row, chips to its right. */
 .dash-hero:has(.dash-plan-single){grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"meta meta meta" "figure plan chips" "bar bar bar" "period period period";}
 .dash-plan-single{grid-area:plan;align-self:baseline;display:flex;align-items:baseline;gap:8px;white-space:nowrap;font-size:13px;}
 .dash-plan-single .dash-plan-label{font-size:11px;font-weight:450;color:var(--d-mute);}
 .dash-hero>.dash-chips{align-self:baseline;margin-top:0;}
 .dash-hero:has(.dash-plan-single)>.dash-hero-number-row{align-self:baseline;}
+/* Round 5 (Insights). */
+/* Failure notice: on the hero eyebrow row, right-aligned, 12px. */
+.dash-notice{margin-left:auto;padding-left:12px;font-size:12px;line-height:22px;white-space:nowrap;}
+.dash-notice .dash-fail-time{color:var(--d-sub);}
+/* Skeleton: the final hero and lower grid, with the right column empty. */
+.dash-hero.dash-hero-loading{grid-template-columns:minmax(0,1fr) var(--d-side);grid-template-areas:"meta ." "figure ." "bar .";}
+/* Zero hero: chips sit on the figure row, as in the single-provider layout. */
+.dash-hero.is-zero-hero{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"meta meta" "figure chips" "bar bar" "period period";}
+.dash-hero.is-zero-hero>.dash-chips{align-self:baseline;margin-top:0;}
+.dash-hero.is-zero-hero>.dash-hero-number-row{align-self:baseline;}
+/* Activity under Models for four or fewer models. */
+.dash-lower.is-activity-left .dash-activity-left{margin-top:18px;}
+/* By work: centred empty cells in faint; the block fits its column. */
+.dash-work-cell.is-none{color:var(--d-faint);}
+.dash-work-block{max-width:100%;margin:0;}
+/* Quota sub-lines start on the same top line. */
+.dash-quota-sub-row td{vertical-align:top;}
+/* Round 5 C9: By work cells stay on one line; the unpriced note sits under the grid. */
+.dash-work-cell{white-space:nowrap;}
+.dash-work-legend{margin:4px 0 0;color:var(--d-mute);font-size:11px;line-height:14px;}

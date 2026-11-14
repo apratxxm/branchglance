@@ -223,23 +223,21 @@
     if(state.loadError&&!state.loading){const f=failureParts();return [f.name+f.time+f.retry,fallbackLabel].filter(Boolean).join(" \u00b7 ");}
     return [state.loading?"Updating…":"",fallbackLabel,freshness].filter(Boolean).join(" \u00b7 ");
   }
-  // DOM form of statusText: a failed refresh colours its name in the claude tone and its time and retry hint in the subdued tone.
-  function statusMarkup(){
-    const text=statusText();if(!state.insights||!state.loadError||state.loading)return esc(text);
-    const f=failureParts(),fallbackLabel=insightsData(false).fallback?(state.insightsUnavailable?"Insights unavailable \u00b7 Daily fallback":"Daily fallback"):"";
-    return `<span class="dash-fail">${esc(f.name)}</span><span class="dash-fail-time">${esc(f.time)}</span><span class="dash-fail-retry">${esc(f.retry)}</span>${fallbackLabel?`<span class="dash-fail-retry"> \u00b7 ${esc(fallbackLabel)}</span>`:""}`;
-  }
+  // The failed-refresh notice sits on the hero eyebrow row, out of the vertical flow, so the chart keeps its height. Its retry hint is in the title and in screen-reader text.
+  const failing=()=>Boolean(state.insights&&state.loadError&&!state.loading);
+  const statusLineText=()=>failing()?"":statusText();
+  function failureNotice(data){const shownAt=clockTime(state.insights?.generatedAt),fallbackLabel=data.fallback?(state.insightsUnavailable?"Insights unavailable \u00b7 Daily fallback":"Daily fallback"):"";return `<span class="dash-notice" role="status" title="Use Refresh to retry."><span class="dash-fail">Update failed</span>${shownAt?`<span class="dash-fail-time"> \u00b7 data from ${esc(shownAt)}</span>`:""}${fallbackLabel?`<span class="dash-fail-time"> \u00b7 ${esc(fallbackLabel)}</span>`:""}<span class="sr-only">. Use Refresh to retry.</span></span>`;}
   // Failures and fallbacks are notices shown above the content; a plain freshness stamp sits at the end.
   const isNotice=()=>Boolean(state.loadError||state.insightsUnavailable||(state.insights&&insightsData(false).fallback));
   // The header Refresh button is disabled and busy while Insights loads.
   function syncRefresh(){const button=$("#dashboard-refresh");if(!button)return;const busy=state.loading===true;button.disabled=busy;button.setAttribute("aria-busy",String(busy));const text=busy?"Refreshing…":"Refresh";if(button.textContent!==text)button.textContent=text;}
   function updateStatusLine(){
-    const text=statusText(),panel=$("#dashboard-insights");
+    const text=statusLineText(),panel=$("#dashboard-insights");
     if(!panel)return;
     let el=panel.querySelector(".dash-status-line");
     if(!el){if(!text)return;panel.insertAdjacentHTML("beforeend",'<p class="dash-status-line" role="status"></p>');el=panel.querySelector(".dash-status-line");if(!el)return;}
     if(!text){el.remove();return;}
-    el.innerHTML=statusMarkup();el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());
+    el.textContent=text;el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());
   }
   // Quota: the widget's current 5-hour and weekly figures per provider (window.tokenTrackerQuotaNow), for the providers the chips show. Recorded peaks stand in when no live reading is usable.
   const quotaRows=()=>{let rows=null;try{rows=window.tokenTrackerQuotaNow?.();}catch{rows=null;}if(!Array.isArray(rows))return null;const usable=rows.filter(row=>row&&typeof row.name==="string"&&!hiddenProviders.has(row.name)&&finite(row.usedPercent)!=null);return usable.length?usable:null;};
@@ -276,14 +274,14 @@
     const data=insightsData(false);
     shown.querySelectorAll("[data-quota-part]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaKey);if(!row)return;const part=node.dataset.quotaPart,text=part==="percent"?`${Math.round(quotaValue(row,node.dataset.quotaWindow))}%`:part==="five"?resetText(row,"fiveHour"):part==="week"?resetText(row,"weekly"):peakText(data,row);if(node.textContent!==text)node.textContent=text;});
   }
-  // First load: the hero eyebrow, the full split bar and three Models rows sit at their final positions while usage loads. Tokens is the metric until the data resolves it.
-  function loadingHTML(){const cost=state.metric==="cost";return `<section class="dash-hero dash-hero-loading" aria-busy="true"><div class="dash-hero-meta"><span class="dash-eyebrow">${cost?"API-equivalent cost":"Tokens over"} · ${esc(RANGE_NAME[state.range]||"")}</span></div><div class="dash-hero-number-row"><span class="dash-hero-number" aria-hidden="true">&nbsp;</span></div><div class="dash-hero-bar"><div class="dash-split dash-split-empty" aria-hidden="true"></div></div></section><section class="dash-lower is-single is-loading" aria-hidden="true"><div class="dash-lower-main"><div class="dash-skel-models">${[0,1,2].map(()=>'<div class="dash-skel-row"><i class="dash-model-bar"></i></div>').join("")}</div></div></section><p class="dash-status-line" role="status">Loading usage…</p>`;}
+  // First load: the same hero and lower grid as the loaded view, empty. The eyebrow carries the final template; the split bar sits in the left column; three Models rows carry bars in the bar column only.
+  function loadingHTML(){const cost=state.metric==="cost",range=esc(RANGE_NAME[state.range]||"");const eyebrow=cost?`API-equivalent cost · ${range}`:`Tokens over ${range}`;return `<section class="dash-hero dash-hero-loading" aria-busy="true"><div class="dash-hero-meta"><span class="dash-eyebrow">${eyebrow}</span></div><div class="dash-hero-number-row"><span class="dash-hero-number" aria-hidden="true">&nbsp;</span></div><div class="dash-hero-bar"><div class="dash-split dash-split-empty" aria-hidden="true"></div></div></section><section class="dash-lower is-loading" aria-hidden="true"><div class="dash-lower-main"><div class="dash-skel-models">${[0,1,2].map(()=>'<div class="dash-skel-row"><i class="dash-model-bar"></i></div>').join("")}</div></div></section><p class="dash-status-line sr-only" role="status">Loading usage…</p>`;}
   function insightsHTML(){
     if(!state.insights){if(state.loading)return loadingHTML();return `<p class="dash-status-line${state.loadError?" error":""}" role="status">${state.loadError?"Usage could not be loaded.":""}</p>`;}
     const data=insightsData(),key=data.heroKey;
     const stamp=state.insights.generatedAt?new Date(state.insights.generatedAt):null;
-    const status=statusText();
-    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${statusMarkup()}</p>`:"";
+    const status=statusLineText(),notice=failing()?failureNotice(data):"";
+    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}</p>`:"";
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     // The unit line names any shown provider that has no published price, so the total is read as a partial figure.
@@ -300,9 +298,9 @@
     const coverage=data.fallback?(data.range==="30d"||data.range==="all"?"31-day totals":data.dates.length?`Daily coverage: ${rangeLabel(data.dates)}${data.range==="24h"?" (latest recorded date)":" (recorded daily values)"}`: "31-day totals"):RANGE_NAME[data.range];
     const period=data.dates.length?rangeLabel(data.dates):coverage;
     const providerScope=chipsHTML(data);
-    const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div>${providerScope}<div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`API-equivalent cost · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
+    const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div>${providerScope}<div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`API-equivalent cost · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}${notice}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
     // Zero usage across the shown providers: the hero stays; the left column holds one line where Models would start, Quota keeps the right column, and no chart band is drawn.
-    if(finite(data.totals.tokens)===0){const label=data.dates.length?rangeLabel(data.dates):RANGE_NAME[data.range],more=data.range==="30d"||data.range==="all"?"":' <button type="button" class="dash-link" data-dashboard-range="30d">Show 30 days</button>',quota=limitsHTML(data);return hero+`<section class="dash-lower is-zero"><div class="dash-lower-main"><p class="dash-zero-line">No usage ${esc(label)}.${more}</p></div>${quota?`<div class="dash-side">${quota}</div>`:""}</section>`+statusHTML;}
+    if(finite(data.totals.tokens)===0){const label=data.dates.length?rangeLabel(data.dates):RANGE_NAME[data.range],more=data.range==="30d"||data.range==="all"?"":' <button type="button" class="dash-link" data-dashboard-range="30d">Show 30 days</button>',quota=limitsHTML(data);return hero.replace('<section class="dash-hero">','<section class="dash-hero is-zero-hero">')+`<section class="dash-lower is-zero"><div class="dash-lower-main"><p class="dash-zero-line">No usage ${esc(label)}.${more}</p></div>${quota?`<div class="dash-side">${quota}</div>`:""}</section>`+statusHTML;}
     const models=data.models.filter(row=>row.tokens!==0);
     // One row per model (long-context variants are merged into it). Seven rows fit beside the chart; beyond that the top six show and the rest sum into one Other row.
     const modelRows=(()=>{if(models.length<=7)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,6).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(6);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other · ${rest.length} models`,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true,partial:rest.some(row=>row.partial||(finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null))}];})();
@@ -317,7 +315,13 @@
     if(workView)return hero+`<section class="dash-lower${side?"":" is-single"}${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${side}${chartHTML}</section>`+statusHTML;
     const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${work?breakdownToggle("models"):"Models"}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.name)}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td>${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':(row.partial?`<span class="dash-partial-cost" title="At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced"><span aria-hidden="true">≥ ${esc(money(row.apiEquivalentCost))}</span><span class="sr-only">At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced</span></span>`:esc(money(row.apiEquivalentCost)))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
     // Models and the side column share one row; the chart runs the full width under both. Without a chart (24h has no hourly series) the row stretches to the panel body.
-    const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}${chartHTML?"":" is-day"}">${modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:""}${side}${chartHTML}</section>`:chartHTML;
+    // Models view: with four or fewer models Activity moves under the Models list in the left column and the right column keeps Quota; otherwise Activity stays in the right column.
+    const activityLeft=models.length>0&&models.length<=4&&Boolean(activity);
+    const leftActivity=activityLeft?activity.replace('<div class="dash-activity">','<div class="dash-activity dash-activity-left">'):"";
+    const sideModels=limits?`<div class="dash-side">${limits}${activityLeft?"":activity}</div>`:(activityLeft||!activity?"":`<div class="dash-side">${activity}</div>`);
+    const leftMain=modelHTML?`<div class="dash-lower-main">${modelHTML}${leftActivity}</div>`:"";
+    const twoColumn=Boolean(modelHTML&&(sideModels||activityLeft));
+    const lower=modelHTML||sideModels?`<section class="dash-lower${twoColumn?"":" is-single"}${chartHTML?"":" is-day"}${activityLeft?" is-activity-left":""}">${leftMain}${sideModels}${chartHTML}</section>`:chartHTML;
     return hero+lower+statusHTML;
   }
   // By work: ledger tokens per model and kind of work. It takes the place of the Models list; the side column stays on the right.
@@ -325,6 +329,9 @@
   const WORK_KINDS=["build","review","check","research","chore","design","explore","lead","other"];
   // Work-table figures: one decimal from a million up ("2.0M", "1.2B"), whole thousands below ("800K").
   const workNumber=value=>{const n=finite(value)||0;if(n>=999500000)return (Math.round(n/1e8)/10).toFixed(1)+"B";if(n>=999500)return (Math.round(n/1e5)/10).toFixed(1)+"M";if(n>=1e3)return Math.round(n/1e3)+"K";return String(Math.round(n));};
+  // Compact cost for the By work grid: whole dollars from $10 up ("$14"), cents below ("$1.20").
+  // Grid cost cells: whole dollars from $1 up, "<$1" below. Exact amounts (with cents) stay in tooltips and aria labels.
+  const compactMoney=value=>{const n=finite(value)||0;return n>=1?"$"+Math.round(n).toLocaleString("en-US"):"<$1";};
   const modelsView=()=>readPref("branchglanceModelsView","models")==="work"?"work":"models";
   const workCell=()=>({tokens:0,known:0,priced:false,unpriced:false});
   const addCell=(into,cell)=>{into.tokens+=cell.tokens;into.known+=cell.known;into.priced=into.priced||cell.priced;into.unpriced=into.unpriced||cell.unpriced;return into;};
@@ -348,7 +355,7 @@
     // Four rows fit in the Models list's height; past that the top three show and the rest sum into one Other row.
     let rows=ranked;
     if(ranked.length>4){
-      const rest=ranked.slice(3),other={provider:"",name:`Other · ${rest.length} models`,other:true,total:0,cells:{}};
+      const rest=ranked.slice(3),other={provider:"",name:`Other · ${rest.length} models`,other:true,count:rest.length,total:0,cells:{}};
       for(const model of rest){other.total+=model.total;for(const [kind,cell] of Object.entries(model.cells))addCell(other.cells[kind]||(other.cells[kind]=workCell()),cell);}
       rows=[...ranked.slice(0,3),other];
     }
@@ -382,13 +389,15 @@
   const breakdownToggle=active=>`<span class="dash-breakdown" role="group" aria-label="Breakdown">${[["models","Models"],["work","By work"]].map(([value,label])=>`<button type="button" data-dashboard-models="${value}" aria-pressed="${active===value}" class="${active===value?"is-active":""}"${value==="work"?' title="Tokens by kind of work. Kind is inferred from job titles and kind: tags."':""}>${label}</button>`).join("")}</span>`;
   function workHTML(work){
     const note=workNote(work),label=kind=>kind==="other"&&work.folded?`Other (${work.folded})`:kind[0].toUpperCase()+kind.slice(1);
-    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero" aria-label="None"><span aria-hidden="true">—</span></span>'
-      :work.metric==="cost"?cell.known<=0?'<span role="cell" tabindex="0" class="dash-work-cell is-zero" aria-label="No published price for this usage">Unpriced</span>':`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${cell.unpriced?"at least ":""}${money(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${cell.unpriced?"≥ ":""}${esc(money(cell.known))}</span>`
+    // Unpriced cost cells are a faint dot, explained once under the grid.
+    let sawUnpriced=false;
+    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero is-none" aria-label="None"><span aria-hidden="true">·</span></span>'
+      :work.metric==="cost"?cell.known<=0?(sawUnpriced=true,'<span role="cell" class="dash-work-cell is-zero is-none" aria-label="Unpriced" title="No published price">·</span>'):`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${cell.unpriced?"at least ":""}${money(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${cell.unpriced?"≥":""}${esc(compactMoney(cell.known))}</span>`
       :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens; ${workCost(cell)}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(workNumber(cell.tokens))}</span>`;
     const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span></span>${work.kinds.map(kind=>`<span role="columnheader">${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
-    const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}"${row.other?"":` title="${esc(`${row.provider} · ${row.name}`)}"`}><i></i>${esc(row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
+    const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}"${row.other?"":` title="${esc(`${row.provider} · ${row.name}`)}"`}><i></i>${esc(row.other?`Other (${row.count})`:row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
     const foot=`<div role="row" class="dash-work-row is-foot"><span role="rowheader">Total</span>${work.kinds.map(kind=>cellHTML(work.totals.cells[kind],"All models",label(kind),true)).join("")}${cellHTML(work.totals.all,"All models","all work",true)}</div>`;
-    return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}"><div class="dash-section-label dash-work-head">${breakdownToggle("work")}<small>${work.metric==="cost"?"API-equivalent cost":"Tokens"}</small>${note?`<small class="dash-work-note is-qualified" title="${esc(note.title)}">${esc(note.text)}</small>`:""}</div><div class="dash-work-grid" role="table" aria-label="${work.metric==="cost"?"API-equivalent cost":"Tokens"} by model and kind of work">${head}${body}${foot}</div></div>`;
+    return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}"><div class="dash-section-label dash-work-head">${breakdownToggle("work")}<small>${work.metric==="cost"?"API-equivalent cost":"Tokens"}</small>${note?`<small class="dash-work-note is-qualified" title="${esc(note.title)}">${esc(note.text)}</small>`:""}</div><div class="dash-work-grid" role="table" aria-label="${work.metric==="cost"?"API-equivalent cost":"Tokens"} by model and kind of work">${head}${body}${foot}</div>${sawUnpriced?'<p class="dash-work-legend">· = no published price</p>':""}</div>`;
   }
   async function loadLedger(range){
     const token=state.ledgerToken=(state.ledgerToken||0)+1;
@@ -526,14 +535,17 @@
     const place=(x,y,target)=>{const margin=8,box=tip.getBoundingClientRect(),plot=target?.closest?.(".dash-plot")?.getBoundingClientRect?.();tip.style.left=Math.max(margin,Math.min(x+12,window.innerWidth-margin-box.width))+"px";let top=y+12;if(plot&&y>=plot.top+plot.height*.4)top=Math.max(plot.top,y-box.height-12);tip.style.top=Math.max(margin,Math.min(top,window.innerHeight-margin-box.height))+"px";};
     // Focus tip: inside the plot, 8px under its top; left of the point once the point passes 60% of the plot width. Returns false when layout is unavailable; the caller then uses the pointer placement.
     const placeFocus=target=>{const rect=el=>el?.getBoundingClientRect?.(),plot=rect(target.closest?.(".dash-plot")),box=rect(tip),guide=rect(target.querySelector?.("line"));if(!plot||!box||!guide)return false;const x=guide.left;const left=x-plot.left>plot.width*.6?x-box.width-12:x+12;tip.style.left=Math.max(plot.left+4,Math.min(left,plot.right-4-box.width))+"px";tip.style.top=(plot.top+8)+"px";return true;};
+    // Pointer tip: anchored to the topmost marker of the hovered point; right of it (left once past 60% of the plot width), vertically centred on it, clamped inside the plot so it never covers the dot. Returns false when layout is unavailable.
+    let anchored=false;
+    const placeAtPoint=target=>{const rect=el=>el?.getBoundingClientRect?.(),plot=rect(target.closest?.(".dash-plot")),box=rect(tip),guide=rect(target.querySelector?.("line")),dots=markersOf(target).map(rect).filter(Boolean);if(!plot||!box||!guide||!dots.length)return false;const top=dots.reduce((a,b)=>b.top<a.top?b:a),cy=top.top+top.height/2,x=guide.left;const left=x-plot.left>plot.width*.6?x-box.width-12:x+12;tip.style.left=Math.max(plot.left+4,Math.min(left,plot.right-4-box.width))+"px";tip.style.top=Math.max(plot.top+4,Math.min(cy-box.height/2,plot.bottom-4-box.height))+"px";return true;};
     // Marker dots follow the active point: a 5px dot on hover, an 8px ring on keyboard focus.
     const markersOf=target=>{const plot=target.closest?.(".dash-plot");return plot?.querySelectorAll?[...plot.querySelectorAll(`.dash-marker[data-index="${target.dataset?.index}"]`)]:[];};
-    const show=(target,x,y,mode)=>{activePoint=target;activeMode=mode;document.querySelectorAll(".dash-point.is-hover,.dash-marker.is-hover,.dash-marker.is-focus").forEach(el=>el.classList.remove("is-hover","is-focus"));target.classList?.add("is-hover");markersOf(target).forEach(m=>m.classList.add(mode==="focus"?"is-focus":"is-hover"));tip.innerHTML=target.getAttribute("data-tip-html")||"";tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");if(!(mode==="focus"&&placeFocus(target)))place(x,y,target);};
+    const show=(target,x,y,mode)=>{activePoint=target;activeMode=mode;document.querySelectorAll(".dash-point.is-hover,.dash-marker.is-hover,.dash-marker.is-focus").forEach(el=>el.classList.remove("is-hover","is-focus"));target.classList?.add("is-hover");markersOf(target).forEach(m=>m.classList.add(mode==="focus"?"is-focus":"is-hover"));tip.innerHTML=target.getAttribute("data-tip-html")||"";tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");anchored=mode==="pointer"&&placeAtPoint(target);if(mode==="focus"){if(!placeFocus(target))place(x,y,target);}else if(!anchored)place(x,y,target);};
     root.addEventListener("pointerover",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target&&activeMode!=="focus")show(target,event.clientX,event.clientY,"pointer");});
     root.addEventListener("focusin",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target){const box=target.getBoundingClientRect();show(target,box.right,box.bottom,"focus");}});
     root.addEventListener("pointerout",event=>{if(activeMode==="pointer"&&event.target?.closest?.("[data-tip-html]")===activePoint&&event.relatedTarget?.closest?.("[data-tip-html]")!==activePoint)dismissTooltip();});
     root.addEventListener("focusout",event=>{if(activeMode==="focus"&&event.target?.closest?.("[data-tip-html]")===activePoint&&event.relatedTarget?.closest?.("[data-tip-html]")!==activePoint)dismissTooltip();});
-    root.addEventListener("pointermove",event=>{if(activeMode==="pointer")place(event.clientX,event.clientY,activePoint);});
+    root.addEventListener("pointermove",event=>{if(activeMode==="pointer"&&!anchored)place(event.clientX,event.clientY,activePoint);});
     root.addEventListener("scroll",()=>{
       const focused=activeMode==="focus"?activePoint:null;dismissTooltip();const generation=tooltipGeneration;
       if(focused)requestAnimationFrame(()=>{if(generation===tooltipGeneration&&state.open&&document.activeElement===focused){const box=focused.getBoundingClientRect();show(focused,box.right,box.bottom,"focus");}});
@@ -563,8 +575,11 @@
   }
   // The 24h view has no hourly chart, so its panel is shorter. The widget window follows (see windowHeight).
   const compactPanel=()=>{
-    if(state.tab!=="insights"||state.range!=="24h"||!state.insights)return false;
+    if(state.tab!=="insights"||!state.insights)return false;
     const data=insightsData(false);
+    // A zero total in the shown providers is a one-line panel, so it takes the compact height too.
+    if(finite(data.totals.tokens)===0)return true;
+    if(state.range!=="24h")return false;
     return !(data.fallback||data.hourly);
   };
   const DASHBOARD_HEIGHT=608,COMPACT_DASHBOARD_HEIGHT=478;
@@ -669,14 +684,15 @@
     return await loadInsightsOnce(token,requestRange);
   }
   async function loadInsightsOnce(token,requestRange){
-    state.loading=true;state.loadError=false;updateStatusLine();syncRefresh();if(!state.insights){state.renderKey="";render();}
+    const wasFailing=state.loadError===true;state.loading=true;state.loadError=false;updateStatusLine();syncRefresh();if(!state.insights||wasFailing){state.renderKey="";render();}
     const current=()=>token===state.loadToken;
     const accept=(value,failed=false,unavailable=false)=>{
       // Same range and same content (ignoring the per-response generatedAt stamp): keep the rendered panel and refresh only the status line.
       const content=v=>JSON.stringify({...v,generatedAt:undefined});
+      const wasFailing=state.loadError===true;
       const same=state.insights!=null&&state.resultRange===requestRange&&state.insights.fallback===value.fallback&&content(state.insights)===content(value);
       state.loading=false;state.loadError=failed;state.insightsUnavailable=unavailable;syncRefresh();
-      if(same){state.insights.generatedAt=value.generatedAt;updateStatusLine();return value;}
+      if(same&&!wasFailing){state.insights.generatedAt=value.generatedAt;updateStatusLine();return value;}
       state.resultRange=requestRange;state.resultValue=value;setInsights(value);state.renderKey="";render();return value;
     };
     try{
@@ -700,7 +716,7 @@
       throw new Error("Insights unavailable");
     }catch{
       if(!current())return state.insights;
-      state.loading=false;state.loadError=true;updateStatusLine();syncRefresh();return state.insights;
+      state.loading=false;state.loadError=true;syncRefresh();state.renderKey="";render();return state.insights;
     }
   }
   function setSnapshot(snapshot){
@@ -751,5 +767,5 @@
   async function loadPlacement(){const api=window.pywebview?.api;try{if(typeof api?.get_widget_lock==="function")state.lock=await api.get_widget_lock();if(typeof api?.get_monitors==="function")state.monitors=await api.get_monitors();state.settingsStatus="";state.settingsError=false;}catch{state.lock=null;state.settingsStatus="Widget placement status is unavailable.";state.settingsError=true;}state.settingsRenderKey="";render();}
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
   window.tokenTrackerDashboardSyncQuota=syncQuota;
-  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,statusText,normalizeStats,emptyHTML,planCellsHTML,planMultiple,storedRange,toggleProvider,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,loadInsightsOnce,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};
+  if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={compactPanel,insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,statusText,normalizeStats,emptyHTML,planCellsHTML,planMultiple,storedRange,toggleProvider,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,loadInsightsOnce,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};
 })();
