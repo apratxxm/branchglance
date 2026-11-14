@@ -196,7 +196,7 @@ dashboard.toggleProvider("Codex");
 // Lines mode places one marker at each visible provider value; its tooltip still contains the total.
 dashboard.setChartStyle("lines");
 const lineChart=dashboard.seriesChart(dashboard.insightsData());
-assert.equal((lineChart.match(/dash-provider-marker/g)||[]).length,6);
+assert.equal((lineChart.match(/class="dash-marker /g)||[]).length,6);
 assert.match(lineChart,/Total:/);
 assert.equal(dashboard.planMultiple(1.29,true),"1.2");
 assert.equal(dashboard.planMultiple(10.9,true),"10");
@@ -360,7 +360,7 @@ const trusted=dashboard.state.insights;
 context.fetch=async()=>({ok:false});
 await dashboard.loadInsights();
 assert.equal(dashboard.state.insights,trusted);
-assert.match(dashboard.insightsHTML(),/Update failed\. Use Refresh to retry\./,"full render carries the retry hint");
+assert.match(dashboard.insightsHTML().replace(/<[^>]+>/g,""),/Update failed\. Use Refresh to retry\./,"full render carries the retry hint");assert.match(dashboard.insightsHTML(),/<span class="dash-fail">Update failed<\/span>/,"the failure name is in the claude tone");
 assert.match(dashboard.statusText(),/^Update failed\. Use Refresh to retry\./,"status-line path carries the same retry hint");
 // Initial cached snapshot remains visibly marked as fallback after a failed request.
 dashboard.state.insights=null;dashboard.state.snapshot={providers:[{name:"Cached",tracked31Days:7,activity:[]}]};
@@ -440,7 +440,7 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
     {name:"Codex",totals:{tokens:500,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:[{date:"2026-10-30",tokens:500,apiEquivalentCost:null}],models:[],limitPeaks:null}]});
   responses.push({ok:true,json:async()=>payload()});
   await ui.loadInsights();
-  assert.equal(panelDom.renders,1,"first load renders once");
+  assert.equal(panelDom.renders,2,"first load mounts the skeleton, then renders the data once");
   panelDom._html="SENTINEL";panelDom.renders=0;
   responses.push({ok:true,json:async()=>payload()});
   await ui.loadInsights();

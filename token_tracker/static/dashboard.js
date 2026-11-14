@@ -30,7 +30,7 @@
   const availableProviders=()=>Array.isArray(state.insights?.providers)?state.insights.providers:[];
   // Cost is available only when the 31-day or range totals carry a published price; it never comes from a per-day series alone.
   const costAvailable=()=>insightsData(false).totals.apiEquivalentCost!=null;
-  const setInsights=value=>{state.insights=value;state.version++;const before=state.metric;if(state.metric==="cost"&&(!costAvailable()||(!state.metricExplicit&&insightsData(false).mostlyUnpriced)))state.metric="tokens";if(state.metric!==before)writePref("branchglanceInsightsMetric",state.metric);syncSegments();};
+  const setInsights=value=>{state.insights=value;state.version++;if(state.metric==="cost"&&(!costAvailable()||(!state.metricExplicit&&insightsData(false).mostlyUnpriced)))state.metric="tokens";if(state.metric!==readPref("branchglanceInsightsMetric",null))writePref("branchglanceInsightsMetric",state.metric);syncSegments();};
   const pt=p=>p[0].toFixed(1)+" "+p[1].toFixed(1);
   // Monotone cubic (Fritsch-Carlson): each segment stays between its two end values, so the line never overshoots peaks or dips below the floor.
   function curvePath(points,reverse=false){
@@ -80,7 +80,7 @@
     const chartKey=costHero&&seriesByKey.apiEquivalentCost.some(row=>allProviders.some(p=>finite(row[p.name])!=null))?"apiEquivalentCost":"tokens";
     const heroKey=costHero?"apiEquivalentCost":totals.tokens!=null?"tokens":totals.apiEquivalentCost!=null?"apiEquivalentCost":null;
     const modelMap=new Map();
-    if(!windowed)for(const p of allProviders)for(const row of p.models||[]){const raw=String(row?.name||"");if(!raw)continue;const label=modelName(raw)||raw,longContext=/\s*·\s*long context$/i.test(label),name=label.replace(/\s*·\s*long context$/i,""),item=modelMap.get(name)||{name,raw,tokens:null,apiEquivalentCost:null,longContext:false,partial:false};item.longContext=item.longContext||longContext;item.partial=item.partial||(row.unpriced===true&&finite(row.apiEquivalentCost)!=null);for(const k of ["tokens","apiEquivalentCost"]){const value=finite(row[k]);if(value!=null)item[k]=(item[k]??0)+value;}modelMap.set(name,item);}
+    if(!windowed)for(const p of allProviders)for(const row of p.models||[]){const raw=String(row?.name||"");if(!raw)continue;const label=modelName(raw)||raw,longContext=/\s*·\s*long context$/i.test(label),name=label.replace(/\s*·\s*long context$/i,""),item=modelMap.get(name)||{name,raw,tokens:null,apiEquivalentCost:null,longContext:false,partial:false};item.longContext=item.longContext||longContext;item.partial=item.partial||(row.unpriced===true&&finite(row.apiEquivalentCost)!=null)||(finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null);for(const k of ["tokens","apiEquivalentCost"]){const value=finite(row[k]);if(value!=null)item[k]=(item[k]??0)+value;}modelMap.set(name,item);}
     const sortKey=heroKey||"tokens";
     const models=[...modelMap.values()].filter(row=>row.tokens!=null||row.apiEquivalentCost!=null).sort((a,b)=>(b[sortKey]||0)-(a[sortKey]||0));
     const costPartial=allProviders.some(p=>p.totals?.costPartial===true||finite(p.totals?.apiEquivalentCost)==null);
@@ -172,6 +172,7 @@
     }
     const dates=`<div class="dash-dates">${tickLabels.map(([i,label],n)=>`<span class="dash-date${n===0&&i===0?" is-first":i===rows.length-1&&n>0?" is-last":""}" style="left:${(rows.length>1?i/(rows.length-1)*100:0).toFixed(2)}%">${esc(label)}</span>`).join("")}</div>`;
     const pointLabel=date=>data.hourly?`${weekdayOf(date)}, ${clockLabel(hourOf(date))}`:`${weekdayOf(date)}, ${dayLabel(date)}`;
+    const dotList=[];
     const hover=rows.map((row,index)=>{
       const x=xAt(index),total=totals[index],partial=cost&&(excluded.length>0||providers.some(p=>row[p.name+"__partial"])),unknown=total==null;
       const totalLabel=unknown?"Total unavailable":(partial?"Recorded subtotal: ":"Total: ")+format(total);
@@ -180,10 +181,11 @@
       const accessible=`${row.date}. ${totalLabel}. ${parts.join(". ")}${unknown?". Missing provider data":""}${excludedLabel?". "+excludedLabel:""}`;
       const tip=`<span class="tip-date">${esc(pointLabel(row.date))}</span><b class="tip-total">${esc(unknown?"—":(partial?"Recorded subtotal · ":"")+format(total))}</b>${providers.map(p=>`<span class="tip-row"><span><i class="dash-dot ${providerKey(p.name)}"></i>${esc(p.name)}</span><strong>${esc(finite(row[p.name])==null?"—":format(row[p.name])+(cost&&row[p.name+"__partial"]?" (partial)":""))}</strong></span>`).join("")}${unknown?'<span>Missing provider data</span>':""}${excludedLabel?`<span>${esc(excludedLabel)}</span>`:""}`;
       const left=index===0?L:(xAt(index-1)+x)/2,right=index===rows.length-1?W-R:(x+xAt(index+1))/2;
-      const markers=lines?providers.map(p=>finite(row[p.name])==null?"":`<circle class="dash-provider-marker ${providerKey(p.name)}" cx="${x.toFixed(1)}" cy="${yAt(row[p.name]).toFixed(1)}" r="2.8"/>`).join(""):total==null?"":`<circle cx="${x.toFixed(1)}" cy="${yAt(total).toFixed(1)}" r="2.5"/>`;
-      return `<g class="dash-point" tabindex="${index===rows.length-1?"0":"-1"}" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/>${markers}</g>`;
+      const xp=(x/W*100).toFixed(2),dot=(cls,value)=>`<span class="dash-marker${cls?` ${cls}`:""}" data-index="${index}" style="left:${xp}%;top:${(yAt(value)/H*100).toFixed(2)}%"></span>`;
+      if(lines)providers.forEach(p=>{if(finite(row[p.name])!=null)dotList.push(dot(providerKey(p.name),row[p.name]));});else if(total!=null)dotList.push(dot("",total));
+      return `<g class="dash-point" tabindex="${index===rows.length-1?"0":"-1"}" data-index="${index}" role="group" aria-label="${esc(accessible)}" data-tip-html="${esc(tip)}"><rect class="dash-hit" x="${left.toFixed(1)}" y="${T}" width="${(right-left).toFixed(1)}" height="${PH}"/><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${T}" y2="${T+PH}"/></g>`;
     }).join("");
-    return `<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg></div>${dates}`;
+    return `<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="Daily ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg><div class="dash-markers" aria-hidden="true">${dotList.join("")}</div></div>${dates}`;
   }
   // The split bar sits under the figure it divides; the legend is a four-column table (provider, value, share, plan multiple) so every column aligns.
   function splitParts(data){
@@ -204,10 +206,12 @@
     return {bar,legend:`<div class="dash-split-legend">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">At least means some usage has no published price, so the real figure is higher.</p>':""}`};
   }
   // One provider has no split to compare against, so its plan multiple gets one line of its own.
-  function singlePlanHTML(data){const p=data.providers[0];if(!p)return "";return `<div class="dash-plan-single ${providerKey(p.name)}-color"><span class="dash-legend-name">${esc(p.name)}</span><span class="dash-plan-figure"><span class="dash-plan-label">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>${planCellsHTML(p.name)}</span></div>`;}
+  function singlePlanHTML(data){const p=data.providers[0];if(!p)return "";return `<div class="dash-plan-single ${providerKey(p.name)}-color"><span class="dash-plan-figure"><span class="dash-plan-label">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>${planCellsHTML(p.name)}</span></div>`;}
   function emptyHTML(){return `<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded usage in this range</p></section>`;}
   // Clock-format time of day for a payload stamp ("2:41 PM" or "14:41"); empty when the stamp is missing.
   const clockTime=value=>{const date=value?new Date(value):null;if(!date||Number.isNaN(date.getTime()))return "";return date.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:clockPref()!=="24"}).replace(/\u202f/g," ");};
+  // Failure line parts: the name, the time it still shows, and the retry hint. statusText joins them as plain text; statusMarkup colours them.
+  const failureParts=()=>{const shownAt=clockTime(state.insights?.generatedAt);return {name:"Update failed",time:shownAt?` \u00b7 showing data from ${shownAt}.`:".",retry:" Use Refresh to retry."};};
   // Status text for the Insights status line; background refreshes update only this element.
   function statusText(){
     if(!state.insights)return state.loading?"Loading usage…":state.loadError?"Usage could not be loaded.":"";
@@ -216,9 +220,14 @@
     const age=Number.isFinite(generated)?Math.max(0,Math.floor((Date.now()-generated)/60000)):null;
     const freshness=age==null?"":`Updated ${age<1?"just now":`${age}m ago`}`;
     // A failed refresh with data on screen names the data it still shows; that stamp replaces the freshness line.
-    const shownAt=clockTime(state.insights.generatedAt),failed=shownAt?`Update failed \u00b7 showing data from ${shownAt}. Use Refresh to retry.`:"Update failed. Use Refresh to retry.";
-    if(state.loadError&&!state.loading)return [failed,fallbackLabel].filter(Boolean).join(" \u00b7 ");
+    if(state.loadError&&!state.loading){const f=failureParts();return [f.name+f.time+f.retry,fallbackLabel].filter(Boolean).join(" \u00b7 ");}
     return [state.loading?"Updating…":"",fallbackLabel,freshness].filter(Boolean).join(" \u00b7 ");
+  }
+  // DOM form of statusText: a failed refresh colours its name in the claude tone and its time and retry hint in the subdued tone.
+  function statusMarkup(){
+    const text=statusText();if(!state.insights||!state.loadError||state.loading)return esc(text);
+    const f=failureParts(),fallbackLabel=insightsData(false).fallback?(state.insightsUnavailable?"Insights unavailable \u00b7 Daily fallback":"Daily fallback"):"";
+    return `<span class="dash-fail">${esc(f.name)}</span><span class="dash-fail-time">${esc(f.time)}</span><span class="dash-fail-retry">${esc(f.retry)}</span>${fallbackLabel?`<span class="dash-fail-retry"> \u00b7 ${esc(fallbackLabel)}</span>`:""}`;
   }
   // Failures and fallbacks are notices shown above the content; a plain freshness stamp sits at the end.
   const isNotice=()=>Boolean(state.loadError||state.insightsUnavailable||(state.insights&&insightsData(false).fallback));
@@ -230,21 +239,25 @@
     let el=panel.querySelector(".dash-status-line");
     if(!el){if(!text)return;panel.insertAdjacentHTML("beforeend",'<p class="dash-status-line" role="status"></p>');el=panel.querySelector(".dash-status-line");if(!el)return;}
     if(!text){el.remove();return;}
-    el.textContent=text;el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());
+    el.innerHTML=statusMarkup();el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());
   }
   // Quota: the widget's current 5-hour and weekly figures per provider (window.tokenTrackerQuotaNow), for the providers the chips show. Recorded peaks stand in when no live reading is usable.
   const quotaRows=()=>{let rows=null;try{rows=window.tokenTrackerQuotaNow?.();}catch{rows=null;}if(!Array.isArray(rows))return null;const usable=rows.filter(row=>row&&typeof row.name==="string"&&!hiddenProviders.has(row.name)&&finite(row.usedPercent)!=null);return usable.length?usable:null;};
   const peakFor=(data,name)=>finite(data.peaks.find(p=>p.name===name)?.fiveHour);
   const quotaValue=(row,key)=>key==="weekly"?finite(row.weekly?.usedPercent):finite(row.usedPercent);
-  // One sub-line per provider: "5h resets 2h 40m · peak 68% · week resets 3d 2h". Unavailable parts are left out.
-  const quotaSub=(row,data)=>{const peak=peakFor(data,row.name),five=[row.countdown?`resets ${row.countdown}`:"",peak!=null?`peak ${Math.round(peak)}%`:""].filter(Boolean),week=row.weekly?.countdown?`week resets ${row.weekly.countdown}`:"";return [five.length?`5h ${five.join(" · ")}`:"",week].filter(Boolean).join(" · ");};
+  const pad2=n=>String(n).padStart(2,"0");
+  // Countdown with no seconds: "46m" under an hour, "2h 40m" under a day, "3d 2h" after. From the reset time when it is a real timestamp; otherwise the widget's own text with any seconds removed.
+  const resetIn=(row,key)=>{const view=key==="weekly"?row.weekly:row,target=finite(view?.resetTarget);if(target!=null&&target>1e12){const s=Math.max(0,Math.floor((target-Date.now())/1000));return s>=86400?`${Math.floor(s/86400)}d ${Math.floor(s%86400/3600)}h`:s>=3600?`${Math.floor(s/3600)}h ${pad2(Math.floor(s%3600/60))}m`:`${Math.floor(s/60)}m`;}const text=String(view?.countdown||""),mmss=text.match(/^(\d+):\d\d$/);return mmss?`${Number(mmss[1])}m`:text.replace(/\s+\d+s$/,"");};
+  const resetText=(row,key)=>{const t=resetIn(row,key);return t?`in ${t}`:"";};
+  const peakText=(data,row)=>{const peak=peakFor(data,row.name);return peak!=null?`peak ${Math.round(peak)}%`:"";};
+  const subCell=(row,part,text)=>`<small class="dash-quota-sub" data-quota-key="${esc(row.name)}" data-quota-part="${part}">${esc(text)}</small>`;
   // The shape names the providers and marks a provider with no weekly reading; a change in either re-renders the block.
   const quotaShape=rows=>rows.map(row=>`${row.name}${quotaValue(row,"weekly")==null?"!":""}`).join("|");
   function limitsHTML(data){
     const rows=quotaRows();
     if(rows){
       const cell=(row,key)=>{const value=quotaValue(row,key);return value==null?'<td><span aria-hidden="true">—</span><span class="sr-only">Not available</span></td>':`<td><span class="dash-quota-main" data-quota-key="${esc(row.name)}" data-quota-window="${key}" data-quota-part="percent">${Math.round(value)}%</span></td>`;};
-      return `<div class="dash-limits dash-quota" data-quota-shape="${esc(quotaShape(rows))}"><table class="dash-peaks-table dash-quota-table"><caption class="sr-only">Current quota used per provider, 5-hour and week</caption><thead><tr><th scope="col">Quota</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${rows.map(row=>`<tr class="dash-quota-row"><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th>${cell(row,"fiveHour")}${cell(row,"weekly")}</tr><tr class="dash-quota-sub-row"><td colspan="3"><small class="dash-quota-sub" data-quota-key="${esc(row.name)}" data-quota-part="sub">${esc(quotaSub(row,data))}</small></td></tr>`).join("")}</tbody></table></div>`;
+      return `<div class="dash-limits dash-quota" data-quota-shape="${esc(quotaShape(rows))}"><table class="dash-peaks-table dash-quota-table"><caption class="sr-only">Current quota used per provider, 5-hour and week</caption><thead><tr><th scope="col" title="Time until each limit resets">Quota</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${rows.map(row=>`<tr class="dash-quota-row"><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th>${cell(row,"fiveHour")}${cell(row,"weekly")}</tr><tr class="dash-quota-sub-row"><td></td><td>${subCell(row,"five",resetText(row,"fiveHour"))}${subCell(row,"peak",peakText(data,row))}</td><td>${subCell(row,"week",resetText(row,"weekly"))}</td></tr>`).join("")}</tbody></table></div>`;
     }
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
     const peakCell=value=>value==null?'<span aria-hidden="true">—</span><span class="sr-only">Not recorded</span>':`${Math.round(value)}%`;
@@ -261,16 +274,16 @@
     if(!rows&&!shown)return;
     if(!rows||!shown||shown.dataset.quotaShape!==quotaShape(rows)){state.renderKey="";render();return;}
     const data=insightsData(false);
-    shown.querySelectorAll("[data-quota-part]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaKey);if(!row)return;const text=node.dataset.quotaPart==="percent"?`${Math.round(quotaValue(row,node.dataset.quotaWindow))}%`:quotaSub(row,data);if(node.textContent!==text)node.textContent=text;});
+    shown.querySelectorAll("[data-quota-part]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaKey);if(!row)return;const part=node.dataset.quotaPart,text=part==="percent"?`${Math.round(quotaValue(row,node.dataset.quotaWindow))}%`:part==="five"?resetText(row,"fiveHour"):part==="week"?resetText(row,"weekly"):peakText(data,row);if(node.textContent!==text)node.textContent=text;});
   }
-  // First load: the hero eyebrow and an empty bar sit at their final positions while usage loads.
-  function loadingHTML(){const cost=state.metric==="cost";return `<section class="dash-hero dash-hero-loading" aria-busy="true"><div class="dash-hero-meta"><span class="dash-eyebrow">${cost?"API-equivalent cost":"Tokens over"} · ${esc(RANGE_NAME[state.range]||"")}</span></div><div class="dash-hero-number-row"><span class="dash-hero-number" aria-hidden="true">&nbsp;</span></div><div class="dash-hero-bar"><div class="dash-split dash-split-empty" aria-hidden="true"></div></div></section><p class="dash-status-line" role="status">Loading usage…</p>`;}
+  // First load: the hero eyebrow, the full split bar and three Models rows sit at their final positions while usage loads. Tokens is the metric until the data resolves it.
+  function loadingHTML(){const cost=state.metric==="cost";return `<section class="dash-hero dash-hero-loading" aria-busy="true"><div class="dash-hero-meta"><span class="dash-eyebrow">${cost?"API-equivalent cost":"Tokens over"} · ${esc(RANGE_NAME[state.range]||"")}</span></div><div class="dash-hero-number-row"><span class="dash-hero-number" aria-hidden="true">&nbsp;</span></div><div class="dash-hero-bar"><div class="dash-split dash-split-empty" aria-hidden="true"></div></div></section><section class="dash-lower is-single is-loading" aria-hidden="true"><div class="dash-lower-main"><div class="dash-skel-models">${[0,1,2].map(()=>'<div class="dash-skel-row"><i class="dash-model-bar"></i></div>').join("")}</div></div></section><p class="dash-status-line" role="status">Loading usage…</p>`;}
   function insightsHTML(){
     if(!state.insights){if(state.loading)return loadingHTML();return `<p class="dash-status-line${state.loadError?" error":""}" role="status">${state.loadError?"Usage could not be loaded.":""}</p>`;}
     const data=insightsData(),key=data.heroKey;
     const stamp=state.insights.generatedAt?new Date(state.insights.generatedAt):null;
     const status=statusText();
-    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}</p>`:"";
+    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${statusMarkup()}</p>`:"";
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     // The unit line names any shown provider that has no published price, so the total is read as a partial figure.
@@ -288,11 +301,11 @@
     const period=data.dates.length?rangeLabel(data.dates):coverage;
     const providerScope=chipsHTML(data);
     const hero=`<section class="dash-hero"><div class="dash-period">${esc(period)}</div>${providerScope}<div class="dash-hero-meta"><span class="dash-eyebrow">${data.providers.length===1?`${esc(data.providers[0].name)} · `:""}${cost?`API-equivalent cost · ${coverage}`:`Tokens over ${coverage}`}</span>${delta==null?"":`<span class="dash-delta${delta<0?" is-down":""}">${delta<0?"↓":"↑"} ${Math.abs(delta).toFixed(1)}% <span class="muted">vs ${RANGE_PREVIOUS[data.range]}</span></span>`}</div><div class="dash-hero-number-row">${figure}</div>${data.providers.length>1?(split=>split?`${split.bar?`<div class="dash-hero-bar">${split.bar}</div>`:""}<div class="dash-hero-providers">${split.legend}</div>`:"")(splitParts(data)):singlePlanHTML(data)}</section>`;
-    // Zero usage across the shown providers: the hero and Quota stay; the chart, Models and Activity give way to one line.
-    if(finite(data.totals.tokens)===0){const label=data.dates.length?rangeLabel(data.dates):RANGE_NAME[data.range],more=data.range==="30d"||data.range==="all"?"":' <button type="button" class="dash-link" data-dashboard-range="30d">Show 30 days</button>',quota=limitsHTML(data);return hero+`<section class="dash-lower is-single is-zero"><div class="dash-zero"><p class="dash-zero-line">No usage ${esc(label)}.${more}</p></div>${quota?`<div class="dash-side">${quota}</div>`:""}</section>`+statusHTML;}
+    // Zero usage across the shown providers: the hero stays; the left column holds one line where Models would start, Quota keeps the right column, and no chart band is drawn.
+    if(finite(data.totals.tokens)===0){const label=data.dates.length?rangeLabel(data.dates):RANGE_NAME[data.range],more=data.range==="30d"||data.range==="all"?"":' <button type="button" class="dash-link" data-dashboard-range="30d">Show 30 days</button>',quota=limitsHTML(data);return hero+`<section class="dash-lower is-zero"><div class="dash-lower-main"><p class="dash-zero-line">No usage ${esc(label)}.${more}</p></div>${quota?`<div class="dash-side">${quota}</div>`:""}</section>`+statusHTML;}
     const models=data.models.filter(row=>row.tokens!==0);
     // One row per model (long-context variants are merged into it). Seven rows fit beside the chart; beyond that the top six show and the rest sum into one Other row.
-    const modelRows=(()=>{if(models.length<=7)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,6).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(6);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other · ${rest.length} models`,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true,partial:rest.some(row=>row.partial)}];})();
+    const modelRows=(()=>{if(models.length<=7)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,6).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(6);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other · ${rest.length} models`,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true,partial:rest.some(row=>row.partial||(finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null))}];})();
     // Bars follow the active metric on a linear scale relative to the largest row; a visible row keeps a 2% minimum width.
     // In Cost view a model with no published price gets an empty bar, not a zero-length one that reads as "free".
     const barKey=data.heroKey==="apiEquivalentCost"?"apiEquivalentCost":"tokens";
@@ -302,7 +315,7 @@
     const side=limits||activity?`<div class="dash-side">${limits}${activity}</div>`:"";
     const work=workData(),workView=work!=null&&modelsView()==="work";
     if(workView)return hero+`<section class="dash-lower${side?"":" is-single"}${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${side}${chartHTML}</section>`+statusHTML;
-    const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${work?breakdownToggle("models"):"Models"}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.name)}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td>${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':esc((row.partial?"≥ ":"")+money(row.apiEquivalentCost))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
+    const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${work?breakdownToggle("models"):"Models"}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.name)}"><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td>${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':(row.partial?`<span class="dash-partial-cost" title="At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced"><span aria-hidden="true">≥ ${esc(money(row.apiEquivalentCost))}</span><span class="sr-only">At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced</span></span>`:esc(money(row.apiEquivalentCost)))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
     // Models and the side column share one row; the chart runs the full width under both. Without a chart (24h has no hourly series) the row stretches to the panel body.
     const lower=modelHTML||side?`<section class="dash-lower${modelHTML&&side?"":" is-single"}${chartHTML?"":" is-day"}">${modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:""}${side}${chartHTML}</section>`:chartHTML;
     return hero+lower+statusHTML;
@@ -311,7 +324,7 @@
   // Kinds outside the classifier's list fold into Other, so every cell, row and column adds up to the ledger's totals.
   const WORK_KINDS=["build","review","check","research","chore","design","explore","lead","other"];
   // Work-table figures: one decimal from a million up ("2.0M", "1.2B"), whole thousands below ("800K").
-  const workNumber=value=>{const n=finite(value)||0;if(n>=1e9)return (n/1e9).toFixed(1)+"B";if(n>=999500)return (n/1e6).toFixed(1)+"M";if(n>=1e3)return Math.round(n/1e3)+"K";return String(Math.round(n));};
+  const workNumber=value=>{const n=finite(value)||0;if(n>=999500000)return (Math.round(n/1e8)/10).toFixed(1)+"B";if(n>=999500)return (Math.round(n/1e5)/10).toFixed(1)+"M";if(n>=1e3)return Math.round(n/1e3)+"K";return String(Math.round(n));};
   const modelsView=()=>readPref("branchglanceModelsView","models")==="work"?"work":"models";
   const workCell=()=>({tokens:0,known:0,priced:false,unpriced:false});
   const addCell=(into,cell)=>{into.tokens+=cell.tokens;into.known+=cell.known;into.priced=into.priced||cell.priced;into.unpriced=into.unpriced||cell.unpriced;return into;};
@@ -343,11 +356,11 @@
     const names=rows.map(row=>row.name);
     rows.forEach(row=>{if(!row.other&&names.filter(name=>name===row.name).length>1)row.name+=` · ${row.provider}`;});
     let kinds=WORK_KINDS.filter(kind=>rows.some(row=>row.cells[kind]?.tokens>0));
-    // More than four kinds: the three largest keep their columns and the rest fold into Other, so the table has at most four kind columns.
-    if(kinds.length>4){const kindTokens=kind=>rows.reduce((sum,row)=>sum+(row.cells[kind]?.tokens||0),0);const keep=kinds.filter(kind=>kind!=="other").sort((a,b)=>kindTokens(b)-kindTokens(a)).slice(0,3);for(const row of rows)for(const kind of kinds){if(keep.includes(kind)||kind==="other")continue;const cell=row.cells[kind];if(cell){addCell(row.cells.other||(row.cells.other=workCell()),cell);delete row.cells[kind];}}kinds=WORK_KINDS.filter(kind=>keep.includes(kind)||(kind==="other"&&rows.some(row=>row.cells.other?.tokens>0)));}
+    // More than three named kinds: the three largest keep their columns and the rest fold into Other ("Other (n)"), so the table has at most four kind columns.
+    const namedKinds=kinds.filter(kind=>kind!=="other"),folded=namedKinds.length>3?namedKinds.length-3:0;if(folded){const kindTokens=kind=>rows.reduce((sum,row)=>sum+(row.cells[kind]?.tokens||0),0);const keep=kinds.filter(kind=>kind!=="other").sort((a,b)=>kindTokens(b)-kindTokens(a)).slice(0,3);for(const row of rows)for(const kind of kinds){if(keep.includes(kind)||kind==="other")continue;const cell=row.cells[kind];if(cell){addCell(row.cells.other||(row.cells.other=workCell()),cell);delete row.cells[kind];}}kinds=WORK_KINDS.filter(kind=>keep.includes(kind)||(kind==="other"&&rows.some(row=>row.cells.other?.tokens>0)));}
     const totals={cells:{},all:workCell()};
     for(const row of rows){row.sum=workCell();for(const kind of kinds){const cell=row.cells[kind];if(cell){addCell(totals.cells[kind]||(totals.cells[kind]=workCell()),cell);addCell(row.sum,cell);addCell(totals.all,cell);}}}
-    return {rows,kinds,totals,coverage:ledger.coverage||{},service:ledger.service||{},metric};
+    return {rows,kinds,totals,coverage:ledger.coverage||{},service:ledger.service||{},metric,folded};
   }
   function workCost(cell){
     if(!cell.priced)return "No published price";
@@ -368,7 +381,7 @@
   }
   const breakdownToggle=active=>`<span class="dash-breakdown" role="group" aria-label="Breakdown">${[["models","Models"],["work","By work"]].map(([value,label])=>`<button type="button" data-dashboard-models="${value}" aria-pressed="${active===value}" class="${active===value?"is-active":""}"${value==="work"?' title="Tokens by kind of work. Kind is inferred from job titles and kind: tags."':""}>${label}</button>`).join("")}</span>`;
   function workHTML(work){
-    const note=workNote(work),label=kind=>kind[0].toUpperCase()+kind.slice(1);
+    const note=workNote(work),label=kind=>kind==="other"&&work.folded?`Other (${work.folded})`:kind[0].toUpperCase()+kind.slice(1);
     const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero" aria-label="None"><span aria-hidden="true">—</span></span>'
       :work.metric==="cost"?cell.known<=0?'<span role="cell" tabindex="0" class="dash-work-cell is-zero" aria-label="No published price for this usage">Unpriced</span>':`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${cell.unpriced?"at least ":""}${money(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${cell.unpriced?"≥ ":""}${esc(money(cell.known))}</span>`
       :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens; ${workCost(cell)}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(workNumber(cell.tokens))}</span>`;
@@ -504,21 +517,23 @@
   }
   let activePoint=null,activeMode=null,tooltipBound=false,tooltipGeneration=0;
   function dismissTooltip(){
-    tooltipGeneration++;activePoint=null;activeMode=null;document.querySelectorAll(".dash-point.is-hover").forEach(el=>el.classList.remove("is-hover"));const tip=$("#dash-tooltip");
+    tooltipGeneration++;activePoint=null;activeMode=null;document.querySelectorAll(".dash-point.is-hover,.dash-marker.is-hover,.dash-marker.is-focus").forEach(el=>el.classList.remove("is-hover","is-focus"));const tip=$("#dash-tooltip");
     if(tip){tip.classList.remove("is-visible");tip.setAttribute("aria-hidden","true");}
   }
   function bindTooltips(){
     const root=$("#dashboard-view"),tip=$("#dash-tooltip");if(!root||!tip)return;
-    const place=(x,y)=>{const margin=8,box=tip.getBoundingClientRect();tip.style.left=Math.max(margin,Math.min(x+12,window.innerWidth-margin-box.width))+"px";tip.style.top=Math.max(margin,Math.min(y+12,window.innerHeight-margin-box.height))+"px";};
-    // A focused point puts its tip above the plot, left of the point once it passes 60% of the plot width. The tip stays 20px inside the panel.
-    // Returns false when layout is unavailable; the caller then uses the pointer placement.
-    const placeFocus=target=>{const rect=el=>el?.getBoundingClientRect?.(),plot=rect(target.closest?.(".dash-plot")),panel=rect($("#dashboard-insights")),box=rect(tip),pt=rect(target);if(!plot||!panel||!box||!pt)return false;const cx=(pt.left+pt.right)/2;const left=cx-plot.left>plot.width*.6?cx-box.width-12:cx+12;tip.style.left=Math.max(panel.left+20,Math.min(left,panel.right-20-box.width))+"px";tip.style.top=Math.max(panel.top+20,plot.top-box.height-8)+"px";return true;};
-    const show=(target,x,y,mode)=>{activePoint=target;activeMode=mode;document.querySelectorAll(".dash-point.is-hover").forEach(el=>el.classList.remove("is-hover"));target.classList?.add("is-hover");tip.innerHTML=target.getAttribute("data-tip-html")||"";tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");if(!(mode==="focus"&&placeFocus(target)))place(x,y);};
+    // Pointer tip: right of and below the cursor, or above it when the cursor is in the lower 60% of the plot so it never covers the date labels. Clamped to the plot top and the viewport.
+    const place=(x,y,target)=>{const margin=8,box=tip.getBoundingClientRect(),plot=target?.closest?.(".dash-plot")?.getBoundingClientRect?.();tip.style.left=Math.max(margin,Math.min(x+12,window.innerWidth-margin-box.width))+"px";let top=y+12;if(plot&&y>=plot.top+plot.height*.4)top=Math.max(plot.top,y-box.height-12);tip.style.top=Math.max(margin,Math.min(top,window.innerHeight-margin-box.height))+"px";};
+    // Focus tip: inside the plot, 8px under its top; left of the point once the point passes 60% of the plot width. Returns false when layout is unavailable; the caller then uses the pointer placement.
+    const placeFocus=target=>{const rect=el=>el?.getBoundingClientRect?.(),plot=rect(target.closest?.(".dash-plot")),box=rect(tip),guide=rect(target.querySelector?.("line"));if(!plot||!box||!guide)return false;const x=guide.left;const left=x-plot.left>plot.width*.6?x-box.width-12:x+12;tip.style.left=Math.max(plot.left+4,Math.min(left,plot.right-4-box.width))+"px";tip.style.top=(plot.top+8)+"px";return true;};
+    // Marker dots follow the active point: a 5px dot on hover, an 8px ring on keyboard focus.
+    const markersOf=target=>{const plot=target.closest?.(".dash-plot");return plot?.querySelectorAll?[...plot.querySelectorAll(`.dash-marker[data-index="${target.dataset?.index}"]`)]:[];};
+    const show=(target,x,y,mode)=>{activePoint=target;activeMode=mode;document.querySelectorAll(".dash-point.is-hover,.dash-marker.is-hover,.dash-marker.is-focus").forEach(el=>el.classList.remove("is-hover","is-focus"));target.classList?.add("is-hover");markersOf(target).forEach(m=>m.classList.add(mode==="focus"?"is-focus":"is-hover"));tip.innerHTML=target.getAttribute("data-tip-html")||"";tip.classList.add("is-visible");tip.setAttribute("aria-hidden","false");if(!(mode==="focus"&&placeFocus(target)))place(x,y,target);};
     root.addEventListener("pointerover",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target&&activeMode!=="focus")show(target,event.clientX,event.clientY,"pointer");});
     root.addEventListener("focusin",event=>{const target=event.target?.closest?.("[data-tip-html]");if(target){const box=target.getBoundingClientRect();show(target,box.right,box.bottom,"focus");}});
     root.addEventListener("pointerout",event=>{if(activeMode==="pointer"&&event.target?.closest?.("[data-tip-html]")===activePoint&&event.relatedTarget?.closest?.("[data-tip-html]")!==activePoint)dismissTooltip();});
     root.addEventListener("focusout",event=>{if(activeMode==="focus"&&event.target?.closest?.("[data-tip-html]")===activePoint&&event.relatedTarget?.closest?.("[data-tip-html]")!==activePoint)dismissTooltip();});
-    root.addEventListener("pointermove",event=>{if(activeMode==="pointer")place(event.clientX,event.clientY);});
+    root.addEventListener("pointermove",event=>{if(activeMode==="pointer")place(event.clientX,event.clientY,activePoint);});
     root.addEventListener("scroll",()=>{
       const focused=activeMode==="focus"?activePoint:null;dismissTooltip();const generation=tooltipGeneration;
       if(focused)requestAnimationFrame(()=>{if(generation===tooltipGeneration&&state.open&&document.activeElement===focused){const box=focused.getBoundingClientRect();show(focused,box.right,box.bottom,"focus");}});
@@ -633,7 +648,7 @@
   function open({source,tab}={}){
     state.opener=document.activeElement;state.open=true;state.tab=tab==="settings"?"settings":"insights";if(typeof source==="string")state.source=source;
     state.range=storedRange();
-    state.metricExplicit=readPref("branchglanceInsightsMetric",null)!==null;state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
+    state.metricExplicit=readPref("branchglanceInsightsMetric",null)!==null;state.metric=readPref("branchglanceInsightsMetric","tokens");if(!["tokens","cost"].includes(state.metric))state.metric="tokens";
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
     syncTabs();syncSegments();render();const byKey=Date.now()-(state.keyAt||0)<1000;requestAnimationFrame(()=>{const tab=$("#dashboard-tab-"+state.tab);if(!tab)return;if(byKey)tab.focus();else tab.focus({focusVisible:false});});void loadInsights();void loadMonth();if(state.tab==="settings")void loadSettings();
     if(state.refreshTimer!=null)clearInterval(state.refreshTimer);
@@ -654,7 +669,7 @@
     return await loadInsightsOnce(token,requestRange);
   }
   async function loadInsightsOnce(token,requestRange){
-    state.loading=true;state.loadError=false;updateStatusLine();syncRefresh();
+    state.loading=true;state.loadError=false;updateStatusLine();syncRefresh();if(!state.insights){state.renderKey="";render();}
     const current=()=>token===state.loadToken;
     const accept=(value,failed=false,unavailable=false)=>{
       // Same range and same content (ignoring the per-response generatedAt stamp): keep the rendered panel and refresh only the status line.

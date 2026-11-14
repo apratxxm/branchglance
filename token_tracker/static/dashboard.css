@@ -159,7 +159,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-side{display:flex;flex-direction:column;gap:18px;}
 .dash-side .dash-section-label,.dash-side .dash-peaks-table thead th:first-child{font-size:14px;font-weight:650;color:var(--d-ink);}
 .dash-peaks-note{margin:4px 0 0;color:var(--d-mute);font-size:11px;line-height:14px;}
-.dash-quota-table :is(th,td):nth-child(n+2){width:56px;}
+.dash-quota-table :is(th,td):nth-child(n+2){width:72px;}
 .dash-quota-table tbody th{width:40%;vertical-align:top;line-height:var(--d-pitch);}
 .dash-quota-main{color:var(--d-ink);font-size:13px;font-weight:550;}
 .dash-quota-sub{display:block;color:var(--d-mute);font-size:11px;font-weight:400;line-height:14px;}
@@ -229,8 +229,6 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-point:focus-visible{outline:none;}
 .dash-point:focus line{opacity:1;stroke:var(--d-codex-text);}
 .dash-point circle{fill:transparent;stroke:transparent;}
-.dash-point:hover circle,.dash-point:focus circle,.dash-point.is-hover circle{fill:#e8ebf4;stroke:#101116;stroke-width:1.5;}
-.dash-point:focus circle{r:4px;stroke:var(--d-codex-text);stroke-width:2px;}
 
 /* Freshness and notices. */
 .dash-status-line{margin:0;padding:6px 0 0;color:var(--d-faint);font-size:11px;line-height:16px;text-align:right;}
@@ -308,7 +306,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-work-head small{text-align:right;}
 .dash-work-note.is-qualified{color:#d9b56a;cursor:help;}
 .dash-work-grid{display:grid;margin-top:2px;}
-.dash-work-row{display:grid;grid-template-columns:minmax(84px,1fr) repeat(var(--work-cols),minmax(40px,52px)) minmax(48px,56px);column-gap:4px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
+.dash-work-row{display:grid;grid-template-columns:minmax(128px,1fr) repeat(var(--work-cols),minmax(36px,44px)) minmax(48px,56px);column-gap:4px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
 .dash-work-row.is-head{min-height:20px;color:var(--d-faint);font-size:11px;font-weight:450;}
 .dash-work-row.is-head>span,.dash-work-cell{text-align:right;font-variant-numeric:tabular-nums;}
 .dash-work-row.is-foot{margin-top:2px;padding-top:2px;border-top:1px solid var(--d-edge);color:var(--d-sub);}
@@ -369,9 +367,6 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-none{color:#b7bcc8;}
 .dash-toggle{border-color:#697181;}
 .dash-reset-state{margin:0;color:var(--d-sub);font-size:12px;}
-.dash-provider-marker.codex{fill:var(--d-codex);stroke:#080a10;stroke-width:1;}
-.dash-provider-marker.claude{fill:var(--d-claude);stroke:#080a10;stroke-width:1;}
-.dash-point:not(:hover,:focus,.is-hover) .dash-provider-marker{opacity:0;}
 .dash-status-line button{margin-left:6px;}
 .dash-period{grid-area:period;align-self:center;margin-top:8px;color:var(--d-mute);font-size:11px;}
 .dash-hero>.dash-chips{grid-area:chips;justify-self:end;align-self:end;margin-top:8px;}
@@ -383,8 +378,8 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-peaks-table thead th.dash-quota-head{font-size:11px;font-weight:450;color:var(--d-mute);}
 .dash-split-empty{background:var(--d-track);border-radius:4px;}
 .dashboard-controls #dashboard-refresh:disabled,.dashboard-controls #dashboard-refresh:disabled:hover{color:var(--d-mute);background:transparent;cursor:progress;}
-.dash-zero{display:grid;place-items:center;min-height:112px;}
-.dash-zero-line{margin:0;color:var(--d-sub);font-size:13px;line-height:1.4;text-align:center;}
+.dash-lower.is-zero{grid-template-rows:auto;align-content:start;}
+.dash-zero-line{margin:0;color:var(--d-sub);font-size:13px;line-height:22px;text-align:left;}
 .dash-link{padding:0;border:0;border-radius:4px;background:transparent;color:var(--d-link);font:inherit;cursor:pointer;}
 .dash-link:hover{text-decoration:underline;}
 .dash-link:focus-visible{outline:2px solid var(--source-accent);outline-offset:2px;}
@@ -399,5 +394,28 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-quota-table .dash-quota-row td{vertical-align:top;}
 .dash-quota-sub-row td{padding:0 0 4px;}
 .dash-quota-sub{display:block;overflow:hidden;color:var(--d-mute);font-size:11px;font-weight:400;line-height:14px;text-align:right;white-space:nowrap;text-overflow:ellipsis;}
-.dash-work-row .dash-model-name{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+.dash-work-row .dash-model-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;min-width:0;overflow:hidden;white-space:normal;line-height:14px;}
 .dash-work-row .dash-model-name i{display:inline-block;margin-right:8px;vertical-align:middle;}
+/* Round 4 (Insights). Chart: the focus outline is removed on points and their parts; markers are round HTML dots over the plot. */
+#dashboard-view .dash-point:focus-visible,#dashboard-view .dash-point *:focus-visible{outline:none!important}
+.dash-markers{position:absolute;top:0;bottom:0;left:32px;right:0;pointer-events:none;}
+.dash-marker{position:absolute;box-sizing:border-box;width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#e8ebf4;opacity:0;}
+.dash-marker.codex{background:var(--d-codex);}
+.dash-marker.claude{background:var(--d-claude);}
+.dash-marker.is-hover{opacity:1;}
+.dash-marker.is-focus{opacity:1;width:8px;height:8px;margin:-4px 0 0 -4px;border:2px solid var(--d-codex-text);}
+/* Round 4: quota sub-lines split per column; the Quota head names its countdowns. */
+.dash-quota-sub{display:block;color:var(--d-mute);font-size:11px;font-weight:400;line-height:14px;text-align:right;white-space:nowrap;}
+/* Round 4: loading skeleton: three Models bars at their row pitch; the failure notice splits into name, time and retry tones. */
+.dash-skel-models{display:grid;}
+.dash-skel-row{height:var(--d-pitch);display:flex;align-items:center;}
+.dash-skel-row .dash-model-bar{display:block;width:100%;margin-left:0;background:var(--d-track);}
+.dash-fail{color:var(--d-claude-text);}
+.dash-fail-time,.dash-fail-retry{color:var(--d-sub);}
+.dashboard-controls #dashboard-refresh{min-width:92px;text-align:right;}
+/* Round 4: single-provider plan sits on the figure row, chips to its right. */
+.dash-hero:has(.dash-plan-single){grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"meta meta meta" "figure plan chips" "bar bar bar" "period period period";}
+.dash-plan-single{grid-area:plan;align-self:baseline;display:flex;align-items:baseline;gap:8px;white-space:nowrap;font-size:13px;}
+.dash-plan-single .dash-plan-label{font-size:11px;font-weight:450;color:var(--d-mute);}
+.dash-hero>.dash-chips{align-self:baseline;margin-top:0;}
+.dash-hero:has(.dash-plan-single)>.dash-hero-number-row{align-self:baseline;}

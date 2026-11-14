@@ -178,8 +178,7 @@ dashboard.state.range="30d";dashboard.state.metric="tokens";
 let quota=dashboard.insightsHTML();
 assert.match(quota,/data-quota-part="percent">40%/,"the 5-hour figure is shown");
 assert.match(quota,/<th scope="col">5h<\/th><th scope="col">Week<\/th>/,"the quota head row names both windows");
-assert.match(quota,/5h resets 2h 40m · week resets 3d 2h/,"the sub-line leads with the 5-hour reset and ends with the week reset");
-assert.match(quota,/resets 3d 2h/,"the weekly sub-line shows its reset");
+assert.match(quota,/data-quota-part="five">in 2h 40m</,"the 5-hour column shows its countdown with no seconds");assert.match(quota,/data-quota-part="week">in 3d 2h</,"the week column shows its countdown");
 assert.match(quota,/Not available/,"a provider without a weekly reading shows Not available");
 dashboard.toggleProvider("Claude");
 quota=dashboard.insightsHTML();
@@ -225,3 +224,42 @@ assert.equal((dashboard.insightsHTML().match(/class="dash-point" tabindex="0"/g)
 values.delete("branchglanceHiddenProviders");
 
 console.log("Insights polish contracts passed");
+
+// (10) Round 4: countdowns carry no seconds; work figures round on whole increments; a partly priced Other row says at least; a zero range keeps the two-column grid with one line on the left; first load mounts the skeleton.
+const soon=Date.now()+(2*3600+40*60+30)*1000;
+window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:10,countdown:"2h 40m",resetTarget:soon,weekly:{usedPercent:5,countdown:"3d 2h",resetTarget:Date.now()+(3*86400+2*3600+30)*1000}}];
+dashboard.state.insights=payload([provider("Claude")]);dashboard.state.range="30d";dashboard.state.metric="tokens";
+let countdowns=dashboard.insightsHTML();
+assert.match(countdowns,/data-quota-part="five">in 2h 40m</,"a reset time under a day reads hours and minutes");
+assert.match(countdowns,/data-quota-part="week">in 3d 2h</,"a reset time of days reads days and hours");
+assert.doesNotMatch(countdowns,/data-quota-part="(five|week)">[^<]*\d+s</,"no countdown shows seconds");
+window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:10,countdown:"46m 58s",resetTarget:1,weekly:{usedPercent:5,countdown:"05:12",resetTarget:2}}];
+countdowns=dashboard.insightsHTML();
+assert.match(countdowns,/data-quota-part="five">in 46m</,"a widget countdown with seconds drops them");
+assert.match(countdowns,/data-quota-part="week">in 5m</,"an m:ss widget countdown reads whole minutes");
+
+dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:5350000,knownCostUsd:null,costComplete:false,unpricedTokens:5350000}]};
+dashboard.state.ledgerRange="30d";dashboard.state.range="30d";
+assert.match(dashboard.workHTML(dashboard.workData()),/>5\.4M</,"5,350,000 rounds to 5.4M on whole increments");
+dashboard.state.ledger=null;
+
+const manyModels=[1,2,3,4,5,6].map(i=>({name:`claude-zeta-${i}`,tokens:(10-i)*1e5,apiEquivalentCost:2}));
+manyModels.push({name:"claude-zeta-7",tokens:3e4,apiEquivalentCost:1},{name:"claude-zeta-8",tokens:1e4,apiEquivalentCost:null});
+dashboard.state.insights=payload([provider("Claude",{models:manyModels})]);dashboard.state.metric="tokens";
+const otherRow=dashboard.insightsHTML();
+assert.match(otherRow,/Other · 2 models/,"the two smallest models fold into Other");
+assert.match(otherRow,/≥ \$1\.00/,"an Other row with an unpriced constituent reads at least");
+assert.match(otherRow,/At least \$1\.00; some usage is unpriced/,"the lower bound says why, for screen readers and as a title");
+
+dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[{name:"Claude",totals:{tokens:0,apiEquivalentCost:0,sessions:0,subagentsActive:0,activeHours:0,cacheHitRate:null},previous:null,series:series(0),models:[],limitPeaks:{fiveHour:null,weekly:null}}]};
+dashboard.state.range="7d";dashboard.state.metric="tokens";
+const zeroRange=dashboard.insightsHTML();
+assert.match(zeroRange,/<section class="dash-lower is-zero"><div class="dash-lower-main"><p class="dash-zero-line">No usage /,"zero state: the one line sits in the left column where Models starts");
+assert.match(zeroRange,/<\/p><\/div><div class="dash-side">/,"zero state: Quota keeps the right column");
+assert.doesNotMatch(zeroRange,/dash-chart-section/,"zero state: no chart band");
+
+dashboard.state.insights=null;dashboard.state.loading=true;dashboard.state.metric="tokens";
+const loading=dashboard.insightsHTML();
+assert.equal((loading.match(/dash-skel-row/g)||[]).length,3,"first load mounts three Models bar rows");
+assert.match(loading,/Tokens over/,"first load shows the token eyebrow, not Cost");
+dashboard.state.loading=false;
