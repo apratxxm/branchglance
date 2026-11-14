@@ -46,6 +46,47 @@ def _reduced_pid_session(sid, pid, created, first, last=None):
     return file_state["keys"][(sid, "")]
 
 
+@pytest.mark.parametrize("late,ambiguous", [(1000.004, False), (999.999, True)])
+def test_same_session_reordered_hooks_preserve_proven_process_links(late, ambiguous):
+    sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    parent_created, child_created = map(_filetime, (900, 1001))
+    state = claude_events.new_file_state()
+    base = {"session_id": sid, "claude_pid": 10, "claude_pid_created": parent_created}
+    for ts, event in ((1000, "SessionStart"), (1000.005, "UserPromptSubmit"),
+                      (late, "SubagentStart")):
+        claude_events.reduce_event(state, {**base, "ts": ts, "event": event})
+    association = state["process_sessions"][(10, parent_created)]
+    assert association["ambiguous"] is ambiguous
+    assert association["observed_last"] == 1000.005
+    assert association["last"] == 1000.005
+
+    table = {20: (10, "codex.exe"), 10: (1, "claude.exe"), 1: (0, "explorer.exe")}
+    kwargs = dict(table=table, current_sid=b"sid", process_sid=lambda _pid: b"sid",
+                  equal_sid=lambda left, right: left == right,
+                  created=lambda pid: {20: child_created, 10: parent_created, 1: _filetime(800)}[pid],
+                  command_line=lambda _pid: f"codex.exe exec resume {thread}",
+                  claude_states=state["keys"])
+    linked = agent_links.scan_codex_processes(**kwargs)
+    assert [row["claude_session_id"] for row in linked] == ([] if ambiguous else [sid])
+    receipt = {"thread_id": thread, "codex_pid": 20, "codex_created": child_created,
+               "claude_session_id": sid}
+    assert agent_links.validate_receipt_process(receipt, **kwargs) is not ambiguous
+
+
+def test_late_previous_session_event_still_rejects_overlapping_links():
+    sid_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    sid_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    state = claude_events.new_file_state()
+    for ts, sid in ((1000, sid_a), (1020, sid_b), (1030, sid_b), (1025, sid_a)):
+        claude_events.reduce_event(state, {"ts": ts, "event": "UserPromptSubmit",
+                                           "session_id": sid, "claude_pid": 10,
+                                           "claude_pid_created": _filetime(900)})
+    associations = agent_links._association_map(state["keys"])[(10, _filetime(900))]
+    matches = {sid for sid, first, last in associations if first <= 1040 < last}
+    assert matches == {sid_a, sid_b}
+
+
 def test_resume_thread_parser_accepts_only_uuid_after_exec_resume():
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     assert agent_links.parse_exec_resume_thread(f'"codex.exe" exec resume {thread}') == thread

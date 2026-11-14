@@ -142,9 +142,9 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
         process_sessions = file_state.setdefault("process_sessions", {})
         active = process_sessions.get(identity)
         if active is not None and active.get("sid") == sid:
-            if ts < active.get("observed_last", ts):
+            if ts < active["first"]:
                 active["ambiguous"] = True
-            active["observed_last"] = ts
+            active["observed_last"] = max(active.get("observed_last", ts), ts)
             active["last"] = max(active.get("last") or ts, ts)
         else:
             if active is not None:
