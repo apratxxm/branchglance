@@ -1,6 +1,6 @@
 pywebview==6.2.1
 pystray==0.19.5
-Pillow==12.3.0
+Pillow==13.0.0
 zstandard==0.25.0
 
 # Development and source-test dependency
