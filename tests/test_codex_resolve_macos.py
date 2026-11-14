@@ -58,3 +58,39 @@ def test_codex_in_the_working_directory_is_never_used(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(planted.parent))
     monkeypatch.chdir(planted.parent)
     assert codex_client.resolve_codex() is None
+
+
+FAKE_APP_SERVER = '''#!{python}
+import json, sys
+assert sys.argv[1:] == ["app-server", "--stdio"], sys.argv
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    if message["method"] == "initialize":
+        result = {{"userAgent": "fake"}}
+    elif message["method"] == "account/rateLimits/read":
+        result = {{"rateLimits": {{"primary": {{"usedPercent": 37, "resetsAt": 1900000000}},
+                                   "secondary": {{"usedPercent": 61, "resetsAt": 1900500000}}}}}}
+    else:
+        result = {{}}
+    print(json.dumps({{"jsonrpc": "2.0", "id": message["id"], "result": result}}), flush=True)
+'''
+
+
+def test_codex_limits_and_reset_times_reach_a_mac_with_codex_installed(tmp_path, monkeypatch):
+    from token_tracker import limit_reset
+    codex = tmp_path / "bin" / "codex"
+    codex.parent.mkdir()
+    codex.write_text(FAKE_APP_SERVER.format(python=sys.executable))
+    codex.chmod(0o755)
+    monkeypatch.setenv("PATH", str(codex.parent))
+    _elsewhere(tmp_path, monkeypatch)
+    client = codex_client.CodexAppServer(timeout=10)
+    try:
+        assert client.executable == str(codex.resolve())
+        sample = limit_reset._read_codex_limit_sample(client)
+    finally:
+        client.close()
+    assert (sample.five_hour_percent, sample.weekly_percent) == (37, 61)
+    assert (sample.reset_at, sample.weekly_reset_at) == (1900000000, 1900500000)
