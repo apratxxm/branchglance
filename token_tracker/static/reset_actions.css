@@ -59,7 +59,7 @@ html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scroll
 /* Round 3: the embedded frame is part of the Settings surface. No boxes, no scrolling, one 13px/600 heading style. */
 .settings-embedded .settings{padding:0;gap:4px;}
 .settings-embedded fieldset{gap:0;}
-.settings-embedded legend{margin:0 0 1px;padding:0;color:#8d929c;font-size:12px;font-weight:600;letter-spacing:0;}
+.settings-embedded legend{margin:0 0 1px;padding:0;color:var(--d-ink);font-size:14px;font-weight:650;letter-spacing:0;}
 .settings-embedded .mode{padding:4px 0;border:0;border-radius:0;background:transparent;gap:10px;align-items:flex-start;}
 .settings-embedded .mode input{margin:2px 0 0;}
 .settings-embedded .mode b{color:#f3f4f6;font-size:13px;font-weight:550;}
@@ -98,6 +98,7 @@ html.settings-embedded,body.settings-embedded{--d-ink:#f3f4f6;--d-sub:#b7bcc8;--
 .settings-embedded .settings>footer{margin-top:6px;}
 .settings-embedded .mode small{color:var(--d-sub);}
 .settings-embedded .note,.settings-embedded .status,.settings-embedded .search-label,.settings-embedded legend{color:var(--d-mute);}
+.settings-embedded legend{color:var(--d-ink);}
 .settings-embedded input[type=search]{border-color:var(--d-edge);background:var(--d-well);}
 .settings-embedded .quiet,.settings-embedded .primary{border-color:var(--d-edge);}
 

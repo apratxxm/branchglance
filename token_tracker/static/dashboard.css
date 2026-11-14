@@ -253,7 +253,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-tooltip .tip-row strong{color:#d4d6dc;font-weight:520;}
 
 /* Settings: the same grid. Left column holds the preferences, right column holds the reset frame. Group headings, no rules. */
-.dash-settings-group h2{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-height:22px;margin:0 0 6px;color:var(--d-mute);font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;}
+.dash-settings-group h2{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-height:22px;margin:0 0 6px;color:var(--d-ink);font-size:14px;font-weight:650;letter-spacing:0;text-transform:none;}
 .dash-settings-group h2 .count{color:var(--d-mute);font-size:12px;font-weight:450;}
 .dash-setting-row{min-height:36px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:3px 0;}
 .dash-setting-copy{min-width:0;}
@@ -321,7 +321,7 @@ body[data-notch-mode="dashboard"] .resets,body[data-notch-mode="dashboard"] .wee
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view:not([hidden]){height:auto;flex:1 1 auto;min-height:0;overflow:hidden;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #dashboard-view[data-size="compact"]:not([hidden]){height:auto;flex-basis:auto;}
 .dashboard-content{overflow:hidden;}
-#dashboard-settings{min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--d-mute) transparent;}
+#dashboard-settings{min-height:0;overflow-y:scroll!important;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--d-mute) transparent;}
 #dashboard-settings:not([hidden]){display:block;flex:1 1 auto;}
 #dashboard-settings{scrollbar-width:thin!important;scrollbar-color:var(--d-mute) transparent!important;}
 #dashboard-settings::-webkit-scrollbar{display:block!important;width:4px!important;height:4px!important;}
@@ -330,7 +330,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-settings-columns{display:grid;grid-template-columns:minmax(0,1fr);gap:24px 10px;padding:12px 20px 18px;}
 .dash-settings-group{min-width:0;padding:0;margin-top:0;}
 .dash-settings-group h2{justify-content:flex-start;}
-.dash-h2-note{margin-left:8px;color:var(--d-mute);font-size:11px;font-weight:400;}
+.dash-h2-note{margin-left:8px;color:var(--d-mute);font-size:12px;font-weight:400;}
 .dash-setting-control .dash-action{margin-right:-6px;}
 .dash-settings-group>.dash-action{margin-left:-6px;}
 .dash-setting-error{margin:4px 0 0;color:var(--d-claude-text);font-size:12px;line-height:1.35;}
@@ -348,8 +348,11 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-select,.dash-plan-field{border-color:var(--d-edge);background:#10131b;}
 .dash-select:disabled,.dash-action:disabled{opacity:.55;cursor:not-allowed;}
 .dash-monitor-controls{display:flex;align-items:center;gap:8px;}
-.dashboard-controls #dashboard-refresh{height:26px;padding:0 8px;border:0;border-radius:7px;color:var(--d-sub);background:transparent;font:500 12px/1 var(--d-font);cursor:pointer;}
+.dashboard-controls #dashboard-refresh{position:relative;display:grid;place-items:center;box-sizing:border-box;width:28px;min-width:28px;height:28px;padding:0;border:0;border-radius:7px;color:var(--d-mute);background:transparent;font-size:0;line-height:0;text-indent:-100vw;white-space:nowrap;overflow:hidden;cursor:pointer;}
+.dashboard-controls #dashboard-refresh::before{content:"";display:block;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M10 4.8A4.5 4.5 0 1 0 10 7' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round'/%3E%3Cpath d='M7.7 2.2H10v2.3' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M10 4.8A4.5 4.5 0 1 0 10 7' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round'/%3E%3Cpath d='M7.7 2.2H10v2.3' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;}
 .dashboard-controls #dashboard-refresh:hover{color:var(--d-ink);background:#ffffff0a;}
+.dashboard-controls #dashboard-refresh[aria-busy="true"]::before{animation:dashboard-refresh-spin .8s linear infinite;}
+@keyframes dashboard-refresh-spin{to{transform:rotate(360deg);}}
 .dash-settings-group .reset-embed{display:block;width:100%;height:250px;min-height:0;max-height:none;border:0;overflow:hidden;}
 .dash-work-cell.is-zero{color:var(--d-sub);font-weight:400;}
 .dash-model-table{display:table;width:100%;border-collapse:collapse;table-layout:fixed;}
@@ -378,6 +381,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-model-table thead th:first-child{color:var(--d-ink);font-size:14px;font-weight:650;}
 .dash-split-empty{background:var(--d-track);border-radius:4px;}
 .dashboard-controls #dashboard-refresh:disabled,.dashboard-controls #dashboard-refresh:disabled:hover{color:var(--d-mute);background:transparent;cursor:progress;}
+@media(prefers-reduced-motion:reduce){.dashboard-controls #dashboard-refresh[aria-busy="true"]::before{animation:none;opacity:.5;}}
 .dash-lower.is-zero{grid-template-rows:auto;align-content:start;}
 .dash-zero-line{margin:0;color:var(--d-sub);font-size:13px;line-height:22px;text-align:left;}
 .dash-link{padding:0;border:0;border-radius:4px;background:transparent;color:var(--d-link);font:inherit;cursor:pointer;}
@@ -412,7 +416,6 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-skel-row .dash-model-bar{display:block;width:144px;margin-left:0;background:var(--d-track);}
 .dash-fail{color:var(--d-claude-text);}
 .dash-fail-time{color:var(--d-sub);}
-.dashboard-controls #dashboard-refresh{min-width:92px;text-align:center;}
 /* Round 4: single-provider plan sits on the figure row, chips to its right. */
 .dash-hero:has(.dash-plan-single){grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"meta meta meta" "figure plan chips" "bar bar bar" "period period period";}
 .dash-plan-single{grid-area:plan;align-self:baseline;display:flex;align-items:baseline;gap:8px;white-space:nowrap;font-size:13px;}

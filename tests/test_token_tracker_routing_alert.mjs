@@ -72,15 +72,14 @@ function widget(){
   assert.ok(rank({status:"running"})<rank({status:"idle",runEndedAt:ended}),"running before finished");
   assert.ok(rank({status:"idle",runEndedAt:ended})<rank({status:"idle",runEndedAt:old}),"finished before idle");
 }
-// Toolbar: Settings and Move-monitor live in the overflow menu; lock and pin are on the left, window actions stay on the right.
+// Toolbar: dashboard actions, refresh, and widget position are grouped in visual order.
 {
   const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
   const css=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
   const toolbar=page.match(/<header class="titlebar compact-toolbar[\s\S]*?<\/header>/)[0];
   assert.doesNotMatch(toolbar,/id="toolbar-more"|id="toolbar-menu"/,"the overflow menu is gone");
   assert.match(toolbar,/id="dashboard-settings-open"[^>]*data-action="open-settings"/);
-  assert.ok(toolbar.indexOf('id="widget-lock"')<toolbar.indexOf('id="dashboard-settings-open"')&&toolbar.indexOf('id="window-recenter"')<toolbar.indexOf('class="window-controls"'));
-  assert.ok(toolbar.indexOf('id="widget-keep-open"')<toolbar.indexOf('id="sync-age"')&&toolbar.indexOf('id="sync-age"')<toolbar.indexOf('id="dashboard-open"'),"Refresh sits after the pin and before the Insights button");
+  assert.ok(toolbar.indexOf('id="dashboard-open"')<toolbar.indexOf('id="dashboard-settings-open"')&&toolbar.indexOf('id="dashboard-settings-open"')<toolbar.indexOf('id="sync-age"')&&toolbar.indexOf('id="sync-age"')<toolbar.indexOf('id="widget-lock"')&&toolbar.indexOf('id="widget-lock"')<toolbar.indexOf('id="widget-keep-open"')&&toolbar.indexOf('id="widget-keep-open"')<toolbar.indexOf('id="window-recenter"')&&toolbar.indexOf('id="window-recenter"')<toolbar.indexOf('class="window-controls"'),"toolbar DOM order matches Insights, Settings | Refresh | Lock, Keep open, Recenter");
   // One quota grid for both bands, identical tracks, "resets in" stated once.
   assert.match(css,/#resets,body\.runway-refined\.runway-compact:not\(\.phone\) \.weekly-resets\{box-sizing:border-box;grid-template-columns:68px minmax\(0,1fr\) minmax\(0,1fr\);column-gap:14px;padding:0 12px;\}/);
   assert.match(css,/\.resets::after,body\.runway-refined\.runway-compact:not\(\.phone\) \.weekly-resets::after\{content:"resets in"/);
