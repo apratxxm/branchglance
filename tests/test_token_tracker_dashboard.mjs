@@ -41,7 +41,7 @@ assert.match(insights,/Opus 5\.5/);assert.match(insights,/GPT-6 Luna/);
 assert.match(insights,/class="dash-model-name codex"/);assert.match(insights,/class="dash-model-name claude"/);
 
 dashboard.state.range="7d";
-assert.match(dashboard.insightsHTML(),/vs previous 7 days/,"delta shown when the API supplies previous totals");
+assert.match(dashboard.insightsHTML(),/vs previous week/,"delta shown when the API supplies previous totals");
 dashboard.state.range="30d";
 
 dashboard.state.metric="tokens";
