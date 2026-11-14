@@ -7,6 +7,7 @@ const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.
 const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
 const refinedCss=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const dashboardCss=fs.readFileSync(new URL("../token_tracker/static/dashboard.css",import.meta.url),"utf8");
+const resetCss=fs.readFileSync(new URL("../token_tracker/static/reset_actions.css",import.meta.url),"utf8");
 const dashboardScript=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8");
 const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector)?.[2]||"";
 assert.match(page,/window\.__TOKEN_TRACKER_RUNWAY__=true/);
@@ -19,7 +20,17 @@ assert.doesNotMatch(page,/id="monitor-toggle"|id="toolbar-more"|id="toolbar-menu
 assert.match(page,/id="dashboard-open"[^>]*data-action="dashboard"[^>]*aria-label="Open Insights dashboard"/);
 assert.match(page,/id="window-recenter" class="icon-btn" aria-label="Recenter widget" title="Recenter widget"><svg class="ic"/,"the dock renders the Recenter icon button");
 assert.match(page,/id="dashboard-settings-open" class="icon-btn" data-action="open-settings" aria-label="Open Settings" title="Settings"><svg class="ic"/,"the dock renders the Settings icon button");
-assert.ok(page.indexOf('id="dashboard-open"')<page.indexOf('id="dashboard-settings-open"')&&page.indexOf('id="dashboard-settings-open"')<page.indexOf('id="window-recenter"')&&page.indexOf('id="window-recenter"')<page.indexOf('class="tb-fill'),"the dock order is Insights, Settings, Recenter");
+assert.ok(page.indexOf('id="dashboard-open"')<page.indexOf('id="dashboard-settings-open"')&&page.indexOf('id="dashboard-settings-open"')<page.indexOf('id="sync-age"')&&page.indexOf('id="sync-age"')<page.indexOf('id="widget-lock"')&&page.indexOf('id="widget-lock"')<page.indexOf('id="widget-keep-open"')&&page.indexOf('id="widget-keep-open"')<page.indexOf('id="window-recenter"')&&page.indexOf('id="window-recenter"')<page.indexOf('class="tb-fill'),"dock order is Insights, Settings | Refresh | Lock, Keep open, Recenter");
+assert.match(page,/id="dashboard-refresh" type="button" aria-label="Refresh Insights" title="Refresh"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4\.8A4\.5 4\.5 0 1 0 10 7"/);
+assert.match(dashboardCss,/\.dashboard-controls #dashboard-refresh\{[^}]*width:28px[^}]*height:28px/);
+assert.match(dashboardCss,/dashboard-refresh-spin \.8s linear infinite/);assert.match(dashboardCss,/prefers-reduced-motion:reduce\)\{\.dashboard-controls #dashboard-refresh\[aria-busy="true"\]::before\{animation:none;opacity:\.5/);
+assert.doesNotMatch(dashboardCss,/dashboard-controls #dashboard-refresh\{[^}]*min-width:92px/);
+assert.match(dashboardCss,/\.dash-settings-group h2\{[^}]*color:var\(--d-ink\);font-size:14px;font-weight:650/);
+assert.match(dashboardCss,/\.dash-h2-note\{[^}]*color:var\(--d-mute\);font-size:12px/);
+assert.match(resetCss,/\.settings-embedded legend\{[^}]*color:var\(--d-ink\);font-size:14px;font-weight:650/);
+assert.match(dashboardCss,/#dashboard-settings\{[^}]*overflow-y:scroll!important/);
+assert.match(dashboardCss,/#dashboard-settings::-webkit-scrollbar\{display:block!important;width:4px!important/);
+assert.match(dashboardCss,/#dashboard-settings::-webkit-scrollbar-thumb\{background:var\(--d-mute\)/);
 assert.match(page,/id="dashboard-view"[^>]*aria-label="Insights and Settings dashboard"/);
 assert.match(page,/src="dashboard.js"><\/script>\s*<script src="app.js"/);
 assert.match(dashboardCss,/data-notch-mode="dashboard"/);assert.match(dashboardCss,/prefers-reduced-motion/);

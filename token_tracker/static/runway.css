@@ -45,6 +45,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 .tb-fill{flex:1}
 .titlebar>.tb-fill{align-self:stretch;min-width:0}
 .titlebar>.brand,.titlebar>.sync-age,.titlebar>.icon-btn,.titlebar>.window-controls,.titlebar>.notch-counts{flex-shrink:0}
+.toolbar-group{display:flex;align-items:center;gap:1px;flex:none}
 .sync-age{font:11px var(--mono);padding:2px 3px}
 #sync-age{min-width:28px;height:24px;display:inline-grid;place-items:center}
 /* Source switch: two segments in the controls band; the dot marks attention in the unselected source. */
