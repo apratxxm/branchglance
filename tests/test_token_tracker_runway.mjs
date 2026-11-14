@@ -15,8 +15,11 @@ assert.match(page,/id="hidden-chats-toggle"[^>]*data-action="show-hidden"/);
 assert.doesNotMatch(page,/<div class="ch-normal">|class="ch-title"[^>]*>Chats/);
 assert.match(page,/<div class="ch-search">[\s\S]*id="hidden-chats-toggle"[^>]*data-action="show-hidden"/);
 assert.match(page,/id="sync-age"[^>]*data-action="refresh"[^>]*aria-label="Refresh usage"/);
-assert.match(page,/id="monitor-toggle"[^>]*aria-label="Move to next monitor"/);
+assert.doesNotMatch(page,/id="monitor-toggle"|id="toolbar-more"|id="toolbar-menu"/,"the dock has no monitor item or overflow menu");
 assert.match(page,/id="dashboard-open"[^>]*data-action="dashboard"[^>]*aria-label="Open Insights dashboard"/);
+assert.match(page,/id="window-recenter" class="icon-btn" aria-label="Recenter widget" title="Recenter widget"><svg class="ic"/,"the dock renders the Recenter icon button");
+assert.match(page,/id="dashboard-settings-open" class="icon-btn" data-action="open-settings" aria-label="Open Settings" title="Settings"><svg class="ic"/,"the dock renders the Settings icon button");
+assert.ok(page.indexOf('id="dashboard-open"')<page.indexOf('id="dashboard-settings-open"')&&page.indexOf('id="dashboard-settings-open"')<page.indexOf('id="window-recenter"')&&page.indexOf('id="window-recenter"')<page.indexOf('class="tb-fill'),"the dock order is Insights, Settings, Recenter");
 assert.match(page,/id="dashboard-view"[^>]*aria-label="Insights and Settings dashboard"/);
 assert.match(page,/src="dashboard.js"><\/script>\s*<script src="app.js"/);
 assert.match(dashboardCss,/data-notch-mode="dashboard"/);assert.match(dashboardCss,/prefers-reduced-motion/);
@@ -965,12 +968,14 @@ T.notch.manual=false;T.notch.inspecting=false;T.notch.keyboardInspecting=false;T
 const widgetEvents=new Map(),buttonEvents=new Map();
 node(".widget").addEventListener=(name,handler)=>widgetEvents.set(name,handler);
 node(".titlebar").getBoundingClientRect=()=>({left:0,right:400,top:0,bottom:30});
-for(const selector of ["#monitor-toggle","#dashboard-open"])
+for(const selector of ["#monitor-toggle","#dashboard-open","#window-recenter"])
   node(selector).addEventListener=(name,handler)=>buttonEvents.set(selector+":"+name,handler);
 const notchDocumentEvents=new Map();
 context.document.addEventListener=(name,handler)=>notchDocumentEvents.set(name,handler);
 context.window.addEventListener=()=>{};
 T.setupNotch();await new Promise(resolve=>setImmediate(resolve));nativeCalls.length=0;
+buttonEvents.get("#window-recenter:click")();await new Promise(resolve=>setImmediate(resolve));
+assert.deepEqual(nativeCalls,[["recenter"]],"clicking the dock Recenter button calls the native recenter API");nativeCalls.length=0;
 widgetEvents.get("pointerenter")({target:node(".widget"),clientX:100,clientY:15});
 assert.equal(T.notch.hover,true);assert.equal(T.notch.expanded,false);
 assert.equal(T.notch.contentHover,false);
@@ -1104,6 +1109,7 @@ failLockWrite=true;T.handleClick({target:{closest:selector=>selector==='[data-ac
 assert.equal(T.widgetLock.locked,false);assert.equal(node('#widget-lock').getAttribute('aria-pressed'),'false','failed native writes do not optimistically change the lock button');
 assert.equal(await T.setWidgetLock(true),true);assert.deepEqual(lockWriteArgs,[true,true,null,nativeLock.revision-1]);
 assert.equal(T.widgetLock.locked,true);assert.equal(node('#widget-lock').getAttribute('aria-pressed'),'true');
+assert.equal(node('#window-recenter').disabled,true,'the dock Recenter button is disabled while the position is locked');assert.equal(node('#window-recenter').title,'Unlock the widget to move it');
 assert.match(node('#widget-lock').innerHTML,/M4 5V3\.8a2 2 0 0 1 4 0V5/,'the locked button uses the closed shackle icon');
 assert.equal(dragBrand.classList.contains('pywebview-drag-region'),true);assert.equal(dragFill.classList.contains('pywebview-drag-region'),true,"compact position lock still allows deliberate dragging");
 widgetEvents.get('pointerleave')();T.syncNotch(0,[]);
@@ -1118,7 +1124,7 @@ T.setNotch(true);T.syncNotch(1,[{key:'Codex:locked-launch',active:true,subagent:
 assert.equal(T.notch.expanded,true,'new work can reveal the widget while position is locked');assert.notEqual(T.notch.autoTimer,null);
 assert.equal(T.applyWidgetLock({locked:false,expanded:false,revision:newerRevision-1}),false,'older native messages cannot restore stale lock state');
 assert.equal(T.widgetLock.locked,true);
-await T.setWidgetLock(false);assert.equal(T.widgetLock.locked,false);
+await T.setWidgetLock(false);assert.equal(T.widgetLock.locked,false);assert.equal(node('#window-recenter').disabled,false,'unlocking re-enables the dock Recenter button');
 assert.equal(dragBrand.classList.contains('pywebview-drag-region'),true);assert.equal(dragFill.classList.contains('pywebview-drag-region'),true,'unlock restores original drag-region class membership');
 T.notch.active=1;T.setNotch(true);assert.equal(T.notch.expanded,true);
 await T.setWidgetLock(true);assert.equal(T.widgetLock.locked,true);
@@ -1137,6 +1143,9 @@ releaseLockWrite();assert.equal(await lateLockAck,false);deferLockWrite=false;
 assert.equal(T.widgetLock.locked,false,'a late acknowledgement from before recenter cannot reinstate the lock');
 assert.match(page,/id="widget-lock"/);
 
+const openedDashboards=[];context.window.TokenTrackerDashboard={open:options=>openedDashboards.push(options),close(){}};context.window.tokenTrackerCloseDashboard();
+T.handleClick({target:{closest:selector=>selector==="[data-action]"?{dataset:{action:"open-settings"}}:null}});
+assert.deepEqual(openedDashboards.map(options=>options.tab),["settings"],"the dock Settings button opens the dashboard on the Settings tab");context.window.tokenTrackerCloseDashboard();nativeCalls.length=0;
 // A failed first snapshot retries quickly while visible, without quota fetches until data exists.
 T.state.snapshot=null;T.state.loading=false;T.state.refreshPending=false;T.state.bootstrapRetryMs=2000;
 const bootstrapCalls=[];

@@ -77,11 +77,9 @@ function widget(){
   const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
   const css=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
   const toolbar=page.match(/<header class="titlebar compact-toolbar[\s\S]*?<\/header>/)[0];
-  const menu=toolbar.match(/<div id="toolbar-menu"[\s\S]*?<\/div>/)[0];
-  assert.match(menu,/id="toolbar-settings"[^>]*data-action="open-settings"/);assert.match(menu,/id="monitor-toggle"/);
-  assert.ok(menu.indexOf('id="toolbar-settings"')<menu.indexOf('id="monitor-toggle"'),"menu order: Settings, then Move to next monitor");
-  assert.doesNotMatch(menu,/id="sync-age"/,"Refresh is back in the toolbar row");
-  assert.ok(toolbar.indexOf('id="widget-lock"')<toolbar.indexOf('id="toolbar-more"')&&toolbar.indexOf('id="toolbar-more"')<toolbar.indexOf('class="window-controls"'));
+  assert.doesNotMatch(toolbar,/id="toolbar-more"|id="toolbar-menu"/,"the overflow menu is gone");
+  assert.match(toolbar,/id="dashboard-settings-open"[^>]*data-action="open-settings"/);
+  assert.ok(toolbar.indexOf('id="widget-lock"')<toolbar.indexOf('id="dashboard-settings-open"')&&toolbar.indexOf('id="window-recenter"')<toolbar.indexOf('class="window-controls"'));
   assert.ok(toolbar.indexOf('id="widget-keep-open"')<toolbar.indexOf('id="sync-age"')&&toolbar.indexOf('id="sync-age"')<toolbar.indexOf('id="dashboard-open"'),"Refresh sits after the pin and before the Insights button");
   // One quota grid for both bands, identical tracks, "resets in" stated once.
   assert.match(css,/#resets,body\.runway-refined\.runway-compact:not\(\.phone\) \.weekly-resets\{box-sizing:border-box;grid-template-columns:68px minmax\(0,1fr\) minmax\(0,1fr\);column-gap:14px;padding:0 12px;\}/);
@@ -92,6 +90,6 @@ function widget(){
 {
   const dash=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8"),appSrc=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
   assert.match(dash,/function open\(\{source,tab\}=\{\}\)\{\s*state\.open=true;state\.tab=tab==="settings"\?"settings":"insights";/);
-  assert.match(appSrc,/window\.tokenTrackerOpenDashboard=tab=>openDashboard\(tab\);/);assert.match(appSrc,/action==='open-settings'\)\{closeToolbarMenu\(\);openDashboard\('settings'\)/);
+  assert.match(appSrc,/window\.tokenTrackerOpenDashboard=tab=>openDashboard\(tab\);/);assert.match(appSrc,/action==='open-settings'\)\{openDashboard\('settings'\)/);
 }
 console.log("Token Tracker routing alert tests passed");

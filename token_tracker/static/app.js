@@ -70,7 +70,12 @@ function updateWidgetLockButton() {
   button.disabled=widgetLock.pending||!widgetLock.known;
   button.setAttribute?.('aria-pressed',String(widgetLock.locked));button.setAttribute?.('aria-label',label);button.title=title;
   if(button.innerHTML!==lockIcon(widgetLock.locked))button.innerHTML=lockIcon(widgetLock.locked);
-  updateMonitorButton();
+  updateMonitorButton();updateRecenterButton();
+}
+function updateRecenterButton() {
+  const button=$('#window-recenter');if(!button)return;
+  button.disabled=!widgetLock.known||widgetLock.pending||widgetLock.locked;
+  button.title=widgetLock.locked?'Unlock the widget to move it':'Recenter widget';
 }
 function updateKeepOpenButton() {
   const button=$('#widget-keep-open');if(!button)return;
@@ -308,7 +313,6 @@ function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttrib
 function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
   const mode=compactModeForState();
-  if(notch.mode&&notch.mode!==mode)closeToolbarMenu();
   if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
   if(mode==='inspect'){
     if(notch.mode!=='inspect'){inspectLayoutGeneration++;inspectWidthCorrectionUsed=false;clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}
@@ -409,7 +413,6 @@ function setupNotch() {
   };
   const scheduleInspect=()=>{if(notch.inspectTimer!=null||!state.runwaySnapshotPainted)return;notch.inspectTimer=setTimeout(()=>{notch.inspectTimer=null;if(notch.hover&&!notch.hoverSuppressed&&state.runwaySnapshotPainted){notch.inspecting=true;setNotch(true);}},60);};
   const leave=()=>{clearTimeout(notch.exitTimer);notch.exitTimer=setTimeout(()=>{
-    if(!notch.hover&&!compactHasFocus())closeToolbarMenu();
     const held=keepOpenState.value||state.searchOpen||Boolean(state.popover);
     if(!notch.hover&&!compactHasFocus()&&!notch.keyboardInspecting&&!held){const wasInspecting=notch.inspecting||notch.manual;notch.inspecting=false;notch.manual=false;if(wasInspecting){clearTimeout(notch.autoTimer);notch.autoTimer=null;notch.autoExpanded=false;}}
     setNotch(false);
@@ -434,6 +437,7 @@ function setupNotch() {
   window.addEventListener('pywebviewready',()=>{notch.sent=null;compactBridge.appliedSignature=null;compactBridge.pending=null;void syncKeepOpen();void syncWidgetLock().then(()=>syncMonitors());});
   if(window.pywebview?.api?.get_widget_lock)void syncWidgetLock().then(()=>syncMonitors());
   $('#monitor-toggle')?.addEventListener('click',toggleMonitor);
+  $('#window-recenter')?.addEventListener('click',()=>{void recenterWidget();});
   updateWidgetLockButton();updateKeepOpenButton();void syncKeepOpen();
   syncMonitors();
   setInterval(syncMonitors,10000);
@@ -1371,17 +1375,7 @@ function renderGreeterStatus(providers) {
   node.textContent=label;node.className="greeter-status"+(w.needsLogin||error?" error":"");
   node.title=(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
 }
-function toolbarMenu(open) {
-  const menu=$("#toolbar-menu"),button=$("#toolbar-more");if(!menu||!button)return;
-  const next=open??menu.hidden;
-  menu.hidden=!next;button.setAttribute?.("aria-expanded",String(next));
-}
-const toggleToolbarMenu=()=>toolbarMenu();
-function closeToolbarMenu(){toolbarMenu(false);}
-document.addEventListener?.("pointerdown",event=>{const menu=$("#toolbar-menu");if(menu&&!menu.hidden&&!event.target?.closest?.(".toolbar-more"))closeToolbarMenu();});
 document.addEventListener?.("pointerdown",event=>{const view=$("#dashboard-view");if(dashboardState.open&&view&&!view.contains?.(event.target))closeDashboard();});
-window.addEventListener?.("blur",closeToolbarMenu);
-document.addEventListener?.("keydown",event=>{if(event.key==="Escape"){const menu=$("#toolbar-menu");if(menu&&!menu.hidden){closeToolbarMenu();$("#toolbar-more")?.focus?.({preventScroll:true});}}});
 /* ---------- chat rows (layer 1) ---------- */
 function runwayContextPair(chat) {
   const tokens=safeNumber(chat.contextTokens),windowSize=safeNumber(chat.contextWindow),observed=stamp(chat.contextObservedAt),compacted=stamp(chat.compactionStartedAt);
@@ -2516,8 +2510,7 @@ function handleClick(event) {
   if(!button)return;
   const {action,key}=button.dataset;
   if(action==='widget-lock'){void toggleWidgetLock();return;}
-  if(action==='toolbar-more'){toggleToolbarMenu();return;}
-  if(action==='open-settings'){closeToolbarMenu();openDashboard('settings');return;}
+  if(action==='open-settings'){openDashboard('settings');return;}
   if(action==='jump-waiting'){jumpToWaiting();return;}
   if(action==='source'){setSource(button.dataset.source);return;}
   if(action==='dashboard'){openDashboard();return;}
@@ -2562,7 +2555,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,toggleToolbarMenu,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
   renderLoading,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
