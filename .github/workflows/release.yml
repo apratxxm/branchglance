@@ -239,7 +239,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Download original component inventory
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.build.outputs.inventory_artifact_id }}
           path: ${{ runner.temp }}/branchglance-component-inventory
@@ -418,7 +418,7 @@ jobs:
       id-token: write
     steps:
       - name: Download signed release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: branchglance-signed-release-assets
           path: ${{ runner.temp }}/branchglance-release-assets
@@ -524,13 +524,13 @@ jobs:
       attestations: write
     steps:
       - name: Download unsigned setup build
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: branchglance-unsigned-build
           path: ${{ runner.temp }}/branchglance-unsigned-build
 
       - name: Download unsigned components
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: branchglance-unsigned-components
           path: ${{ runner.temp }}/branchglance-components
