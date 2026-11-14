@@ -67,7 +67,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dashboard-close:hover{color:#e8e9ed;background:#ffffff0b;}
 .dashboard-close .ic{width:12px;height:12px;}
 .dash-segment button:focus-visible,.dashboard-close:focus-visible,.dash-chart-style button:focus-visible{outline:2px solid var(--source-accent);outline-offset:-2px;}
-.dashboard-tab:focus-visible{outline:none;}
+.dashboard-tab:focus-visible,body.runway-refined:not(.phone) .dashboard-tab:focus-visible{outline:none;}
 .dashboard-tab:focus-visible::before{content:"";position:absolute;inset:7px 0;border-radius:7px;box-shadow:0 0 0 2px var(--d-codex-text);}
 
 /* The panel body is clipped to the fixed panel and never scrolls. */
@@ -159,7 +159,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-side{display:flex;flex-direction:column;gap:18px;}
 .dash-side .dash-section-label,.dash-side .dash-peaks-table thead th:first-child{font-size:14px;font-weight:650;color:var(--d-ink);}
 .dash-peaks-note{margin:4px 0 0;color:var(--d-mute);font-size:11px;line-height:14px;}
-.dash-quota-table :is(th,td):nth-child(n+2){width:auto;}
+.dash-quota-table :is(th,td):nth-child(n+2){width:56px;}
 .dash-quota-table tbody th{width:40%;vertical-align:top;line-height:var(--d-pitch);}
 .dash-quota-main{color:var(--d-ink);font-size:13px;font-weight:550;}
 .dash-quota-sub{display:block;color:var(--d-mute);font-size:11px;font-weight:400;line-height:14px;}
@@ -199,11 +199,11 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-chip-check{display:inline-block;width:10px;color:var(--d-mute);font-size:11px;text-align:center;}
 .dash-chip:focus-visible{outline:2px solid var(--source-accent);outline-offset:1px;}
 .dash-chip[aria-disabled="true"]{cursor:default;}
-.dash-plot{position:relative;flex:1 1 auto;display:flex;min-height:112px;margin-top:6px;padding-left:32px;}
+.dash-plot{position:relative;flex:1 1 auto;display:flex;min-height:120px;margin-top:6px;padding-left:32px;}
 .dash-axis{position:absolute;top:0;bottom:0;left:0;width:28px;pointer-events:none;}
 .dash-axis-value{position:absolute;right:0;transform:translateY(-50%);color:#7b818d;font-size:11px;line-height:1;white-space:nowrap;}
 
-.dash-chart{display:block;flex:1;width:100%;height:auto;min-height:112px;overflow:visible;}
+.dash-chart{display:block;flex:1;width:100%;height:auto;min-height:120px;overflow:visible;}
 .dash-chart .dash-grid,.dash-chart path{vector-effect:non-scaling-stroke;}
 .dash-grid{stroke:#1a1d27;stroke-width:1;}
 .area-fill{opacity:1;}
@@ -308,7 +308,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-work-head small{text-align:right;}
 .dash-work-note.is-qualified{color:#d9b56a;cursor:help;}
 .dash-work-grid{display:grid;margin-top:2px;}
-.dash-work-row{display:grid;grid-template-columns:minmax(118px,1fr) repeat(var(--work-cols),minmax(40px,52px)) 64px;column-gap:6px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
+.dash-work-row{display:grid;grid-template-columns:minmax(84px,1fr) repeat(var(--work-cols),minmax(40px,52px)) minmax(48px,56px);column-gap:4px;align-items:center;min-height:var(--d-pitch);color:#c9cbd1;font-size:13px;}
 .dash-work-row.is-head{min-height:20px;color:var(--d-faint);font-size:11px;font-weight:450;}
 .dash-work-row.is-head>span,.dash-work-cell{text-align:right;font-variant-numeric:tabular-nums;}
 .dash-work-row.is-foot{margin-top:2px;padding-top:2px;border-top:1px solid var(--d-edge);color:var(--d-sub);}
@@ -391,3 +391,13 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 /* Legend stroke sample: solid for Codex, dashed for Claude, in the provider colour. */
 .dash-legend-item .dash-legend-name::before{content:"";display:inline-block;width:12px;height:0;margin-right:6px;vertical-align:middle;border-top:2px solid var(--d-codex);}
 .dash-legend-item.claude-color .dash-legend-name::before{border-top-style:dashed;border-top-color:var(--d-claude);}
+/* Quota (round 4): one head row, two value columns, one sub-line per provider. */
+.dash-quota-table thead th{padding:0 0 6px;font-size:11px;font-weight:450;color:var(--d-mute);text-align:right;line-height:22px;}
+.dash-quota-table thead th:first-child{font-size:14px;font-weight:650;color:var(--d-ink);text-align:left;}
+.dash-quota-table tbody th{vertical-align:top;line-height:var(--d-pitch);}
+.dash-quota-table .dash-quota-main{display:block;color:var(--d-ink);font-size:13px;font-weight:550;line-height:var(--d-pitch);text-align:right;white-space:nowrap;}
+.dash-quota-table .dash-quota-row td{vertical-align:top;}
+.dash-quota-sub-row td{padding:0 0 4px;}
+.dash-quota-sub{display:block;overflow:hidden;color:var(--d-mute);font-size:11px;font-weight:400;line-height:14px;text-align:right;white-space:nowrap;text-overflow:ellipsis;}
+.dash-work-row .dash-model-name{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+.dash-work-row .dash-model-name i{display:inline-block;margin-right:8px;vertical-align:middle;}

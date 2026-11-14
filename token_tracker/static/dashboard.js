@@ -236,13 +236,16 @@
   const quotaRows=()=>{let rows=null;try{rows=window.tokenTrackerQuotaNow?.();}catch{rows=null;}if(!Array.isArray(rows))return null;const usable=rows.filter(row=>row&&typeof row.name==="string"&&!hiddenProviders.has(row.name)&&finite(row.usedPercent)!=null);return usable.length?usable:null;};
   const peakFor=(data,name)=>finite(data.peaks.find(p=>p.name===name)?.fiveHour);
   const quotaValue=(row,key)=>key==="weekly"?finite(row.weekly?.usedPercent):finite(row.usedPercent);
-  const quotaSub=(row,key,data)=>{if(key==="weekly")return row.weekly?.countdown?`resets ${row.weekly.countdown}`:"";const peak=peakFor(data,row.name);return [row.countdown?`resets ${row.countdown}`:"",peak!=null?`peak ${Math.round(peak)}%`:""].filter(Boolean).join(" · ");};
+  // One sub-line per provider: "5h resets 2h 40m · peak 68% · week resets 3d 2h". Unavailable parts are left out.
+  const quotaSub=(row,data)=>{const peak=peakFor(data,row.name),five=[row.countdown?`resets ${row.countdown}`:"",peak!=null?`peak ${Math.round(peak)}%`:""].filter(Boolean),week=row.weekly?.countdown?`week resets ${row.weekly.countdown}`:"";return [five.length?`5h ${five.join(" · ")}`:"",week].filter(Boolean).join(" · ");};
   // The shape names the providers and marks a provider with no weekly reading; a change in either re-renders the block.
   const quotaShape=rows=>rows.map(row=>`${row.name}${quotaValue(row,"weekly")==null?"!":""}`).join("|");
-  const quotaCell=(row,key,data)=>{const value=quotaValue(row,key);if(value==null)return '<td><span aria-hidden="true">—</span><span class="sr-only">Not available</span></td>';const attrs=`data-quota-key="${esc(row.name)}" data-quota-window="${key}"`;return `<td><span class="dash-quota-main" ${attrs} data-quota-part="percent">${Math.round(value)}%</span><small class="dash-quota-sub" ${attrs} data-quota-part="sub">${esc(quotaSub(row,key,data))}</small></td>`;};
   function limitsHTML(data){
     const rows=quotaRows();
-    if(rows)return `<div class="dash-limits dash-quota" data-quota-shape="${esc(quotaShape(rows))}"><div class="dash-section-label"><span>Quota</span><small>Now</small></div><table class="dash-peaks-table dash-quota-table"><caption class="sr-only">Current quota used per provider, 5-hour and week</caption><thead><tr><th scope="col"><span class="sr-only">Provider</span></th><th scope="colgroup" colspan="2" class="dash-quota-head">5h · Week</th></tr></thead><tbody>${rows.map(row=>`<tr><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th>${quotaCell(row,"fiveHour",data)}${quotaCell(row,"weekly",data)}</tr>`).join("")}</tbody></table></div>`;
+    if(rows){
+      const cell=(row,key)=>{const value=quotaValue(row,key);return value==null?'<td><span aria-hidden="true">—</span><span class="sr-only">Not available</span></td>':`<td><span class="dash-quota-main" data-quota-key="${esc(row.name)}" data-quota-window="${key}" data-quota-part="percent">${Math.round(value)}%</span></td>`;};
+      return `<div class="dash-limits dash-quota" data-quota-shape="${esc(quotaShape(rows))}"><table class="dash-peaks-table dash-quota-table"><caption class="sr-only">Current quota used per provider, 5-hour and week</caption><thead><tr><th scope="col">Quota</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${rows.map(row=>`<tr class="dash-quota-row"><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th>${cell(row,"fiveHour")}${cell(row,"weekly")}</tr><tr class="dash-quota-sub-row"><td colspan="3"><small class="dash-quota-sub" data-quota-key="${esc(row.name)}" data-quota-part="sub">${esc(quotaSub(row,data))}</small></td></tr>`).join("")}</tbody></table></div>`;
+    }
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
     const peakCell=value=>value==null?'<span aria-hidden="true">—</span><span class="sr-only">Not recorded</span>':`${Math.round(value)}%`;
     const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value!=null&&value>=99.5));
@@ -258,7 +261,7 @@
     if(!rows&&!shown)return;
     if(!rows||!shown||shown.dataset.quotaShape!==quotaShape(rows)){state.renderKey="";render();return;}
     const data=insightsData(false);
-    shown.querySelectorAll("[data-quota-part]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaKey);if(!row)return;const key=node.dataset.quotaWindow;const text=node.dataset.quotaPart==="percent"?`${Math.round(quotaValue(row,key))}%`:quotaSub(row,key,data);if(node.textContent!==text)node.textContent=text;});
+    shown.querySelectorAll("[data-quota-part]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaKey);if(!row)return;const text=node.dataset.quotaPart==="percent"?`${Math.round(quotaValue(row,node.dataset.quotaWindow))}%`:quotaSub(row,data);if(node.textContent!==text)node.textContent=text;});
   }
   // First load: the hero eyebrow and an empty bar sit at their final positions while usage loads.
   function loadingHTML(){const cost=state.metric==="cost";return `<section class="dash-hero dash-hero-loading" aria-busy="true"><div class="dash-hero-meta"><span class="dash-eyebrow">${cost?"API-equivalent cost":"Tokens over"} · ${esc(RANGE_NAME[state.range]||"")}</span></div><div class="dash-hero-number-row"><span class="dash-hero-number" aria-hidden="true">&nbsp;</span></div><div class="dash-hero-bar"><div class="dash-split dash-split-empty" aria-hidden="true"></div></div></section><p class="dash-status-line" role="status">Loading usage…</p>`;}
@@ -632,7 +635,7 @@
     state.range=storedRange();
     state.metricExplicit=readPref("branchglanceInsightsMetric",null)!==null;state.metric=readPref("branchglanceInsightsMetric","cost");if(!["tokens","cost"].includes(state.metric))state.metric="cost";
     const root=$("#dashboard-view");if(root){root.hidden=false;root.inert=false;root.setAttribute("aria-hidden","false");}
-    syncTabs();syncSegments();render();const byPointer=Date.now()-(state.pointerAt||0)<1000;requestAnimationFrame(()=>{const tab=$("#dashboard-tab-"+state.tab);if(!tab)return;if(byPointer)tab.focus({focusVisible:false});else tab.focus();});void loadInsights();void loadMonth();if(state.tab==="settings")void loadSettings();
+    syncTabs();syncSegments();render();const byKey=Date.now()-(state.keyAt||0)<1000;requestAnimationFrame(()=>{const tab=$("#dashboard-tab-"+state.tab);if(!tab)return;if(byKey)tab.focus();else tab.focus({focusVisible:false});});void loadInsights();void loadMonth();if(state.tab==="settings")void loadSettings();
     if(state.refreshTimer!=null)clearInterval(state.refreshTimer);
     state.refreshTimer=setInterval(()=>{if(state.open&&!state.loading)void loadInsights();void loadMonth();},120000);
   }
@@ -690,7 +693,7 @@
     if(state.open&&!state.loading&&(!state.insights||state.insights.fallback)){state.statsSnapshot=snapshot;const value=normalizeStats(snapshot);state.resultRange=state.range;state.resultValue=value;setInsights(value);render();}
   }
   function setSource(source){if(typeof source==="string"&&source!==state.source){state.source=source;state.renderKey="";render();}}
-  document.addEventListener("pointerdown",()=>{state.pointerAt=Date.now();},true);
+  document.addEventListener("keydown",()=>{state.keyAt=Date.now();},true);
   document.addEventListener("click",event=>{
     const tab=event.target?.closest?.("[data-dashboard-tab]");if(tab){selectTab(tab.dataset.dashboardTab);return;}
     if(event.target?.closest?.("#dashboard-refresh")){void loadInsights();return;}
