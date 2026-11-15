@@ -3,7 +3,7 @@
   const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:31};
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
   const RANGE_PREVIOUS={"24h":"previous day","7d":"previous week","30d":"previous 30 days",all:"previous period"};
-  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
+  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,pendingViewChange:null,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
@@ -560,6 +560,7 @@
   function bindTooltipsOnce(){if(tooltipBound)return;tooltipBound=true;bindTooltips();}
   function cancelFade(){
     state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;$("#dashboard-content")?.classList.remove("is-switching");
+    state.pendingViewChange=null;
     const root=$("#dashboard-view");if(root)root.dataset.tab=state.tab;
   }
   function crossFade(change,targetTab){
@@ -570,16 +571,22 @@
     state.fadeTimer=setTimeout(()=>{state.fadeTimer=null;if(generation!==state.fadeVersion||!state.open)return;change();requestAnimationFrame(()=>{if(generation===state.fadeVersion&&state.open)content.classList.remove("is-switching");});},90);
   }
   // The 24h view has no hourly chart, so its panel is shorter. The widget window follows (see windowHeight).
+  const cachedEmptyRange=()=>{
+    if(!state.insights)return false;
+    const cachedRange=state.resultRange||(isRange(state.insights.range)?state.insights.range:null);
+    return cachedRange===state.range&&finite(insightsData(false).totals.tokens)===0;
+  };
   const compactPanel=()=>{
     if(state.tab!=="insights"||!state.insights)return false;
     const data=insightsData(false);
-    // A zero total in the shown providers is a one-line panel, so it takes the compact height too.
+    if(cachedEmptyRange())return true;
+    // Retain the existing one-line zero-state behavior when the range marker is absent.
     if(finite(data.totals.tokens)===0)return true;
     if(state.range!=="24h")return false;
     return !(data.fallback||data.hourly);
   };
   const DASHBOARD_HEIGHT=608,COMPACT_DASHBOARD_HEIGHT=478;
-  const windowHeight=()=>compactPanel()?COMPACT_DASHBOARD_HEIGHT:DASHBOARD_HEIGHT;
+  const windowHeight=()=>cachedEmptyRange()||compactPanel()?COMPACT_DASHBOARD_HEIGHT:DASHBOARD_HEIGHT;
   function syncSize(){
     const size=compactPanel()?"compact":"full",root=$("#dashboard-view");
     if(root)root.dataset.size=size;
@@ -601,14 +608,38 @@
   }
   function setRange(range){
     if(!isRange(range))return;
-    cancelFade();if(range===state.range)return;
-    crossFade(()=>{state.range=range;writePref("branchglanceInsightsRange",range);syncSegments();syncSize();state.renderKey="";void loadInsights();render();});
+    queueViewChange("range",range);
   }
   function setMetric(metric){
     if(!["tokens","cost"].includes(metric))return;
-    cancelFade();if(metric===state.metric)return;
     if(metric==="cost"&&state.insights&&!costAvailable())return;
-    crossFade(()=>{state.metricExplicit=true;state.metric=metric;writePref("branchglanceInsightsMetric",metric);syncSegments();state.renderKey="";render();});
+    queueViewChange("metric",metric);
+  }
+  function queueViewChange(key,value){
+    const hadPending=state.pendingViewChange!=null;
+    if(!hadPending)cancelFade();
+    const pending=state.pendingViewChange||{range:state.range,metric:state.metric};pending[key]=value;
+    if(pending.range===state.range&&pending.metric===state.metric){cancelFade();return;}
+    state.pendingViewChange=pending;
+    const content=$("#dashboard-content");
+    if(reducedMotion()||!content){if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;content?.classList.remove("is-switching");commitViewChange(state.fadeVersion,false);return;}
+    if(hadPending&&state.fadeTimer!=null)return;
+    const generation=state.fadeVersion;
+    dismissTooltip();content.classList.add("is-switching");
+    state.fadeTimer=setTimeout(()=>commitViewChange(generation),90);
+  }
+  function commitViewChange(generation,requireOpen=true){
+    if(generation!==state.fadeVersion||(requireOpen&&!state.open))return;
+    state.fadeTimer=null;const pending=state.pendingViewChange;if(!pending)return;state.pendingViewChange=null;
+    const rangeChanged=pending.range!==state.range;
+    // Data may refresh during the fade. Do not persist Cost if the current data no longer prices it.
+    const metric=pending.metric==="cost"&&state.insights&&!costAvailable()?state.metric:pending.metric,metricChanged=metric!==state.metric;
+    if(rangeChanged){state.range=pending.range;writePref("branchglanceInsightsRange",state.range);}
+    if(metricChanged){state.metricExplicit=true;state.metric=metric;writePref("branchglanceInsightsMetric",state.metric);}
+    syncSegments();syncSize();state.renderKey="";
+    if(rangeChanged)void loadInsights();
+    render();
+    requestAnimationFrame(()=>{if(generation===state.fadeVersion&&state.open)$("#dashboard-content")?.classList.remove("is-switching");});
   }
   async function loadSettings(){
     if(state.settingsBusy)return;state.settingsBusy=true;state.settingsError=false;state.settingsStatus="Loading settings…";render();const api=window.pywebview?.api;
@@ -667,7 +698,7 @@
     state.refreshTimer=setInterval(()=>{if(state.open&&!state.loading)void loadInsights();void loadMonth();},120000);
   }
   function close(){
-    state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
+    state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;state.pendingViewChange=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
     $("#dashboard-content")?.classList.remove("is-switching");const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
     state.frame=null;state.settingsRenderKey="";const opener=state.opener;state.opener=null;requestAnimationFrame(()=>{const valid=opener&&opener.isConnected!==false&&!opener.disabled&&!opener.hidden&&opener.getClientRects?.().length!==0;const target=valid?opener:$("#dashboard-open");target?.focus?.({preventScroll:true,focusVisible:false});});
   }

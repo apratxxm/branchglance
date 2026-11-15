@@ -22,7 +22,8 @@ assert.match(page,/id="window-recenter" class="icon-btn" aria-label="Recenter wi
 assert.match(page,/id="dashboard-settings-open" class="icon-btn" data-action="open-settings" aria-label="Open Settings" title="Settings"><svg class="ic"/,"the dock renders the Settings icon button");
 assert.ok(page.indexOf('id="dashboard-open"')<page.indexOf('id="dashboard-settings-open"')&&page.indexOf('id="dashboard-settings-open"')<page.indexOf('id="sync-age"')&&page.indexOf('id="sync-age"')<page.indexOf('id="widget-lock"')&&page.indexOf('id="widget-lock"')<page.indexOf('id="widget-keep-open"')&&page.indexOf('id="widget-keep-open"')<page.indexOf('id="window-recenter"')&&page.indexOf('id="window-recenter"')<page.indexOf('class="tb-fill'),"dock order is Insights, Settings | Refresh | Lock, Keep open, Recenter");
 assert.match(page,/id="dashboard-refresh" type="button" aria-label="Refresh Insights" title="Refresh"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4\.8A4\.5 4\.5 0 1 0 10 7"/);
-assert.match(dashboardCss,/\.dashboard-controls #dashboard-refresh\{[^}]*width:28px[^}]*height:28px/);
+assert.match(dashboardCss,/\.dashboard-controls #dashboard-refresh\{[^}]*position:relative[^}]*width:28px[^}]*height:28px/);
+assert.match(dashboardCss,/\.dashboard-controls #dashboard-refresh::before\{[^}]*position:absolute;left:6px;top:6px/,"the refresh glyph is explicitly centred inside its button");
 assert.match(dashboardCss,/dashboard-refresh-spin \.8s linear infinite/);assert.match(dashboardCss,/prefers-reduced-motion:reduce\)\{\.dashboard-controls #dashboard-refresh\[aria-busy="true"\]::before\{animation:none;opacity:\.5/);
 assert.doesNotMatch(dashboardCss,/dashboard-controls #dashboard-refresh\{[^}]*min-width:92px/);
 assert.match(dashboardCss,/\.dash-settings-group h2\{[^}]*color:var\(--d-ink\);font-size:14px;font-weight:650/);
