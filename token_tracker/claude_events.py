@@ -144,6 +144,7 @@ def reduce_event(file_state: dict[str, Any], record: Any) -> None:
         if active is not None and active.get("sid") == sid:
             if ts < active["first"]:
                 active["ambiguous"] = True
+                active["first"] = ts
             active["observed_last"] = max(active.get("observed_last", ts), ts)
             active["last"] = max(active.get("last") or ts, ts)
         else:

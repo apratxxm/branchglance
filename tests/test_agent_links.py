@@ -87,6 +87,61 @@ def test_late_previous_session_event_still_rejects_overlapping_links():
     assert matches == {sid_a, sid_b}
 
 
+def _same_process_reordered_sessions():
+    sid_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    sid_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    created = _filetime(900)
+    state = claude_events.new_file_state()
+    for ts, sid in ((1000, sid_a), (1040, sid_a), (1010, sid_a),
+                    (1030, sid_b), (1020, sid_b)):
+        claude_events.reduce_event(state, {"ts": ts, "event": "UserPromptSubmit",
+                                           "session_id": sid, "claude_pid": 10,
+                                           "claude_pid_created": created})
+    return state, sid_a, sid_b, created
+
+
+def test_reordered_ambiguous_new_session_closes_scanner_ownership_interval():
+    state, sid_a, sid_b, parent_created = _same_process_reordered_sessions()
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    child_created = _filetime(1025)
+    table = {20: (10, "codex.exe"), 10: (1, "claude.exe"), 1: (0, "explorer.exe")}
+    kwargs = dict(table=table, current_sid=b"sid", process_sid=lambda _pid: b"sid",
+                  equal_sid=lambda left, right: left == right,
+                  created=lambda pid: {20: child_created, 10: parent_created,
+                                       1: _filetime(800)}[pid],
+                  command_line=lambda _pid: f"codex.exe exec resume {thread}",
+                  watched_threads={thread}, claude_states=state["keys"])
+    rows = agent_links.scan_codex_processes(**kwargs)
+    assert len(rows) == 1
+    assert rows[0]["claude_session_id"] is None
+
+    association_b = state["process_sessions"][(10, parent_created)]
+    assert association_b["sid"] == sid_b
+    assert association_b["first"] == 1020
+    assert association_b["ambiguous"] is True
+    assert association_b["observed_last"] == 1030
+    association_a = state["keys"][(sid_a, "")]["pid_associations"][0]
+    assert association_a["first"] == 1000
+    assert association_a["last"] == 1040
+    assert association_a["observed_last"] == 1040
+
+
+def test_reordered_ambiguous_new_session_rejects_stale_parent_receipt():
+    state, sid_a, sid_b, parent_created = _same_process_reordered_sessions()
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    child_created = _filetime(1025)
+    table = {20: (10, "codex.exe"), 10: (1, "claude.exe"), 1: (0, "explorer.exe")}
+    kwargs = dict(table=table, current_sid=b"sid", process_sid=lambda _pid: b"sid",
+                  equal_sid=lambda left, right: left == right,
+                  created=lambda pid: {20: child_created, 10: parent_created,
+                                       1: _filetime(800)}[pid],
+                  command_line=lambda _pid: f"codex.exe exec resume {thread}",
+                  claude_states=state["keys"])
+    receipt = {"thread_id": thread, "codex_pid": 20, "codex_created": child_created,
+               "claude_session_id": sid_a}
+    assert not agent_links.validate_receipt_process(receipt, **kwargs)
+
+
 def test_resume_thread_parser_accepts_only_uuid_after_exec_resume():
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     assert agent_links.parse_exec_resume_thread(f'"codex.exe" exec resume {thread}') == thread
