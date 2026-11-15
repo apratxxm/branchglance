@@ -110,7 +110,43 @@ def fixtures(models=2, reset_continue=False, tree_space=False):
                          "sessions": 24, "subagentsActive": 8, "activeHours": 35, "cacheHitRate": 78},
                          "series": series, "models": model_rows,
                          "limitPeaks": {"fiveHour": 68 if name == "Codex" else 83, "weekly": 52 if name == "Codex" else 37}})
+    overflow_cells = [
+        ("claude-custom-long-model-name-for-overflow-fixture", "build", 603400000),
+        ("claude-custom-long-model-name-for-overflow-fixture", "review", 87100000),
+        ("claude-custom-long-model-name-for-overflow-fixture", "check", 609500000),
+        ("claude-research-model", "research", 455500000),
+        ("claude-research-model", "design", 317300000),
+        ("claude-research-model", "chore", 179500000),
+        ("claude-research-model", "build", 15600000),
+        ("claude-research-model", "lead", 100000),
+        ("claude-check-model", "build", 680500000),
+        *((f"claude-overflow-other-{index+1}", kind, 30000000 + (index+1)*1000000)
+          for index, kind in enumerate(("explore", "lead", "design", "chore", "research", "check", "build"))),
+    ]
+    model_tokens = {}
+    for model, _kind, tokens in overflow_cells:
+        model_tokens[model] = model_tokens.get(model, 0) + tokens
+    overflow_total = sum(model_tokens.values())
+    overflow_series = [{"date": (now.date() - dt.timedelta(days=29-index)).isoformat(),
+                        "tokens": round(overflow_total / 30), "apiEquivalentCost": None}
+                       for index in range(30)]
+    overflow_insights = {"range": "30d", "generatedAt": iso(0), "providers": [{
+        "name": "Claude",
+        "totals": {"tokens": overflow_total, "apiEquivalentCost": None, "sessions": 24,
+                   "subagentsActive": 8, "activeHours": 35, "cacheHitRate": 78},
+        "previous": None, "series": overflow_series,
+        "models": [{"name": model, "tokens": tokens, "apiEquivalentCost": None}
+                   for model, tokens in model_tokens.items()],
+        "limitPeaks": {"fiveHour": 83, "weekly": 37},
+    }]}
+    overflow_ledger = {"range": "30d", "rows": [
+        {"provider": "Claude", "modelId": model, "kind": kind, "totalTokens": tokens,
+         "knownCostUsd": None, "costComplete": True, "unpricedTokens": 0}
+        for model, kind, tokens in overflow_cells],
+        "coverage": {"status": "partial", "gapCount": 3}, "service": {"state": "ready"}}
     return {"/api/stats": snapshot, "/api/live": snapshot, "/api/insights": {"range": "30d", "providers": insights},
+            "/api/insights-work-overflow": overflow_insights,
+            "/api/ledger-work-overflow": overflow_ledger,
             "/api/provider-policy": policy, "/api/identity": {}, "/api/quota": {}, "/api/today": {},
             "/api/limit-reset": {},
             "/api/claude-collection": {"ok": True, "state": "off", "reason": "Not collecting Claude Code activity.", "restartRequired": False, "hooks": {"installed": 0}},
@@ -162,7 +198,7 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 response = self.responses[path]
                 requested = parse_qs(urlsplit(self.path).query).get("range", [None])[0]
-                if path == "/api/insights" and requested in ("7d", "30d", "all"):
+                if path in ("/api/insights", "/api/insights-work-overflow") and requested in ("7d", "30d", "all"):
                     response = {**response, "range": requested}
                 if path == "/api/insights" and requested == "24h":
                     providers = []

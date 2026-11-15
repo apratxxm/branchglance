@@ -63,6 +63,10 @@ assert.match(html,/<span class="dash-section-title">Daily tokens<\/span>/);
 // (3) Reported zero figures stay visible beside non-zero tokens; missing fields stay unavailable.
 assert.match(html,/<dt>Sessions<\/dt><dd>0<\/dd>.*<dt>Subagents<\/dt><dd>0<\/dd>.*<dt>Active hours<\/dt><dd>0h<\/dd>/,"reported zero activity stays visible beside positive tokens");
 assert.match(html,/<dt>Cache hit rate<\/dt><dd><span aria-label="Not available">/,"a missing cache rate remains unavailable");
+dashboard.state.insights=livePayload({providers:[{...livePayload().providers[0],totals:{...livePayload().providers[0].totals,tokens:3.2e9,sessions:null,subagentsActive:null,activeHours:null}}]});
+const missingActivity=dashboard.insightsHTML();
+for(const label of ["Sessions","Subagents","Active hours"])assert.match(missingActivity,new RegExp(`<dt>${label}<\\/dt><dd><span aria-label="Not available">`),`${label} stays unavailable when the builder has no source inputs`);
+dashboard.state.insights=livePayload();
 
 // (4) Model table shows when rows exist; limit panel hidden when peaks are null.
 assert.match(html,/>Models</);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);

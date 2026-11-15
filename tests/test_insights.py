@@ -119,6 +119,26 @@ def test_insights_24h_uses_hour_series_and_all_is_bounded_to_31_days(tmp_path):
     assert thirty["providers"][0]["previous"] is None
 
 
+def test_missing_activity_inputs_are_unavailable_but_explicit_empty_inputs_are_zero(tmp_path):
+    snapshot, now = _fixture()
+    claude = snapshot["providers"][0]["_insightsData"]
+    claude.pop("sessions")
+    claude.pop("activeHours")
+
+    missing = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))["providers"][0]
+    assert missing["totals"]["tokens"] > 0
+    assert missing["totals"]["sessions"] is None
+    assert missing["totals"]["subagentsActive"] is None
+    assert missing["totals"]["activeHours"] is None
+
+    claude["sessions"] = []
+    claude["activeHours"] = []
+    empty = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))["providers"][0]
+    assert empty["totals"]["sessions"] == 0
+    assert empty["totals"]["subagentsActive"] == 0
+    assert empty["totals"]["activeHours"] == 0.0
+
+
 def _unpriced_row(tokens=1):
     return {"input_tokens": tokens, "cached_tokens": 0, "cache_5m_tokens": 0,
             "cache_1h_tokens": 0, "output_tokens": 0, "total_tokens": tokens}

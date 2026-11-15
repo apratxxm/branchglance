@@ -236,7 +236,7 @@
     let el=panel.querySelector(".dash-status-line");
     if(!el){if(!text)return;panel.insertAdjacentHTML("beforeend",'<p class="dash-status-line" role="status"></p>');el=panel.querySelector(".dash-status-line");if(!el)return;}
     if(!text){el.remove();return;}
-    el.textContent=text;el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());
+    el.textContent=text;el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());el.classList.toggle("is-freshness",Boolean(state.insights&&!isNotice()&&text.includes("Updated")));
   }
   // Quota: the widget's current 5-hour and weekly figures per provider (window.tokenTrackerQuotaNow), for the providers the chips show. Recorded peaks stand in when no live reading is usable.
   const quotaRows=()=>{let rows=null;try{rows=window.tokenTrackerQuotaNow?.();}catch{rows=null;}if(!Array.isArray(rows))return null;const usable=rows.filter(row=>row&&typeof row.name==="string"&&!hiddenProviders.has(row.name)&&finite(row.usedPercent)!=null);return usable.length?usable:null;};
@@ -280,7 +280,7 @@
     const data=insightsData(),key=data.heroKey;
     const stamp=state.insights.generatedAt?new Date(state.insights.generatedAt):null;
     const status=statusLineText(),notice=failing()?failureNotice(data):"";
-    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}" role="status">${esc(status)}</p>`:"";
+    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}${!isNotice()&&status.includes("Updated")?" is-freshness":""}" role="status">${esc(status)}</p>`:"";
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     // The unit line names any shown provider that has no published price, so the total is read as a partial figure.
@@ -292,7 +292,7 @@
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
     const missing=v=>finite(v)==null;
     const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hit rate"],[data.totals.activeHours,v=>`${number(v)}h`,"Active hours"]];
-    const statsHTML=stats.some(([v])=>!missing(v))?`<dl class="dash-summary">${stats.map(([v,format,label])=>`<div><dt>${label}</dt><dd>${missing(v)?'<span aria-label="Not available">—</span>':esc(format(v))}</dd></div>`).join("")}</dl>`:"";
+    const statsHTML=stats.some(([v])=>!missing(v))||finite(data.totals.tokens)>0?`<dl class="dash-summary">${stats.map(([v,format,label])=>`<div><dt>${label}</dt><dd>${missing(v)?'<span aria-label="Not available">—</span>':esc(format(v))}</dd></div>`).join("")}</dl>`:"";
     const coverage=data.fallback?(data.range==="30d"||data.range==="all"?"31-day totals":data.dates.length?`Daily coverage: ${rangeLabel(data.dates)}${data.range==="24h"?" (latest recorded date)":" (recorded daily values)"}`: "31-day totals"):RANGE_NAME[data.range];
     const period=data.dates.length?rangeLabel(data.dates):coverage;
     const providerScope=chipsHTML(data);
@@ -310,7 +310,7 @@
     const side=limits?`<div class="dash-side">${limits}</div>`:"";
     const work=workData(),workView=work!=null&&modelsView()==="work";
     if(workView)return hero+`<section class="dash-lower${side?"":" is-single"}${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${side}${statsHTML}${chartHTML}</section>`+statusHTML;
-    const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${work?breakdownToggle("models"):"Models"}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.details||row.name)}"${row.other?` tabindex="0" data-tip-html="${esc(esc(row.details))}" aria-label="${esc(`${row.name}: ${row.details}`)}"`:""}><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?` title="${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens"`:""}>${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?`<span class="sr-only">${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens. </span>`:""}${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':(row.partial?`<span class="dash-partial-cost" title="At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced"><span aria-hidden="true">≥ ${esc(money(row.apiEquivalentCost))}</span><span class="sr-only">At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced</span></span>`:esc(money(row.apiEquivalentCost)))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
+    const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${work?breakdownToggle("models"):"Models"}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.details||row.name)}"${row.other?` tabindex="0" data-tip-html="${esc(esc(row.details))}" aria-label="${esc(`${row.name}: ${row.details}`)}"`:""}><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?` title="${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens"`:""}>${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?`<span class="sr-only">${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens. </span>`:""}${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':(row.partial?`<span class="dash-partial-cost" title="≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}; some usage is unpriced"><span aria-hidden="true">≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}</span><span class="sr-only">At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced</span></span>`:esc(money(row.apiEquivalentCost)))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
     const leftMain=modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:"";
     const twoColumn=Boolean(modelHTML&&side);
     const lower=modelHTML||side||statsHTML?`<section class="dash-lower${twoColumn?"":" is-single"}${chartHTML?"":" is-day"}">${leftMain}${side}${statsHTML}${chartHTML}</section>`:chartHTML;
@@ -319,11 +319,16 @@
   // By work: ledger tokens per model and kind of work. It takes the place of the Models list; the side column stays on the right.
   // Kinds outside the classifier's list fold into Other, so every cell, row and column adds up to the ledger's totals.
   const WORK_KINDS=["build","review","check","research","chore","design","explore","lead","other"];
-  // Work-table figures: one decimal from a million up ("2.0M", "1.2B"), whole thousands below ("800K").
-  const workNumber=value=>{const n=finite(value)||0;if(n>=999500000)return (Math.round(n/1e8)/10).toFixed(1)+"B";if(n>=999500)return (Math.round(n/1e5)/10).toFixed(1)+"M";if(n>=1e3)return Math.round(n/1e3)+"K";return String(Math.round(n));};
-  // Compact cost for the By work grid: whole dollars from $10 up ("$14"), cents below ("$1.20").
-  // Grid cost cells: whole dollars from $1 up, "<$1" below. Exact amounts (with cents) stay in tooltips and aria labels.
-  const compactMoney=value=>{const n=finite(value)||0;return n>=1?"$"+Math.round(n).toLocaleString("en-US"):"<$1";};
+  // Token figures use at most three significant digits from thousands up and never retain a zero decimal.
+  const workNumber=value=>{
+    const n=Math.max(0,finite(value)||0);
+    if(n<1e3){const rounded=Math.round(n);return rounded>=1e3?"1K":String(rounded);}
+    const suffixes=["K","M","B","T"],rank=n>=1e12?3:n>=1e9?2:n>=1e6?1:0,scale=1e3**(rank+1),scaled=n/scale;
+    const precision=10**Math.max(0,2-Math.floor(Math.log10(scaled))),compact=Math.floor(scaled*precision+1e-9)/precision;
+    return `${Number(compact.toFixed(Math.max(0,Math.log10(precision))))}${suffixes[rank]}`;
+  };
+  // Cost figures use cents below $100, whole dollars from $100, and compact thousands from $10,000.
+  const compactMoney=value=>{const n=finite(value)||0;if(n>=10000){const scaled=n/1000,rounded=Math.round(scaled*10)/10;return "$"+String(rounded).replace(/\.0$/,"")+"k";}if(n>=100)return "$"+Math.round(n).toLocaleString("en-US");return n>=1?"$"+n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):"<$1";};
   const lowerMoney=value=>{const n=Math.max(0,finite(value)||0);return n>=1?"$"+Math.floor(n).toLocaleString("en-US"):`${Math.floor(n*100)}¢`;};
   const exactMoney=value=>"$"+(finite(value)||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:6});
   const modelsView=()=>readPref("branchglanceModelsView","models")==="work"?"work":"models";
@@ -365,14 +370,14 @@
   }
   function workCost(cell){
     if(!cell.priced)return "No published price";
-    return `${cell.unpriced?"≥ ":""}${exactMoney(cell.known)} API-equivalent${cell.unpriced?" (some usage has no published price)":""}`;
+    return `${cell.unpriced?"≥$":""}${cell.unpriced?exactMoney(cell.known).slice(1):exactMoney(cell.known)} API-equivalent${cell.unpriced?" (some usage has no published price)":""}`;
   }
   // Coverage stays visible: anything short of complete says so, with its causes.
   function workNote(work){
     const coverage=work.coverage;
     if(work.service.state==="error")return {text:"Ledger paused",title:"The ledger hit an error and is retrying; figures are from its last pass."};
     if(coverage.status==="catching-up")return {text:"Catching up",title:"Still reading older transcripts; totals will grow."};
-    if(coverage.status==="verifying"){const stamp=coverage.lastIngestedAt?new Date(coverage.lastIngestedAt):null,last=stamp&&!Number.isNaN(stamp.getTime())?stamp.toLocaleString():"time unavailable";return {text:`Checking usage records - Last ingestion ${last}`,title:"Some recent usage is waiting for its file to be re-checked. The ledger has not confirmed completion."};}
+    if(coverage.status==="verifying"){const stamp=coverage.lastIngestedAt?new Date(coverage.lastIngestedAt):null,last=stamp&&!Number.isNaN(stamp.getTime())?stamp.toLocaleString():"time unavailable",updated=clockTime(coverage.lastIngestedAt);return {text:`Checking usage records · updated ${updated||"time unavailable"}`,title:`Some recent usage is waiting for its file to be re-checked. The ledger has not confirmed completion. Last ingestion ${last}.`};}
     if(coverage.status!=="partial")return null;
     const causes=[[coverage.gapCount,"gap","gaps"],[coverage.unknownUsageRecords,"turn without usage","turns without usage"],[coverage.readFailures,"read failure","read failures"]]
       .filter(([count])=>finite(count)>0).map(([count,one,many])=>`${number(count)} ${count===1?one:many}`);
@@ -385,13 +390,22 @@
     const note=workNote(work),label=kind=>kind==="other"&&work.folded?`Other (${work.folded})`:kind[0].toUpperCase()+kind.slice(1);
     // Unpriced cost cells are a faint dot, explained once under the grid.
     let sawUnpriced=false;
-    const cellHTML=(cell,title,kindLabel,strong=false)=>!cell||!(cell.tokens>0)?'<span role="cell" class="dash-work-cell is-zero is-none" aria-label="No usage"><span aria-hidden="true">—</span></span>'
-      :work.metric==="cost"?!cell.priced?(sawUnpriced=true,'<span role="cell" class="dash-work-cell is-zero is-none" aria-label="Unpriced" title="No published price">·</span>'):`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${cell.unpriced?"at least ":""}${exactMoney(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${cell.unpriced?"≥":""}${esc(cell.unpriced?lowerMoney(cell.known):compactMoney(cell.known))}</span>`
-      :`<span role="cell" tabindex="0" class="dash-work-cell${strong?" is-total":""}" aria-label="${esc(`${title}, ${kindLabel}: ${number(cell.tokens)} tokens; ${workCost(cell)}`)}" data-tip-html="${esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(number(cell.tokens))} tokens<br>${esc(workCost(cell))}`)}">${esc(workNumber(cell.tokens))}</span>`;
+    const cellHTML=(cell,title,kindLabel,strong=false)=>{
+      if(!cell||!(cell.tokens>0))return '<span role="cell" class="dash-work-cell is-zero is-none" aria-label="No usage"><span aria-hidden="true">—</span></span>';
+      const classes=`dash-work-cell${strong?" is-total":""}`,exactTokens=Math.round(cell.tokens).toLocaleString("en-US"),tooltip=esc(`<b>${esc(title)}</b> · ${esc(kindLabel)}<br>${esc(exactTokens)} tokens<br>${esc(workCost(cell))}`);
+      if(work.metric==="cost"){
+        if(!cell.priced){sawUnpriced=true;return '<span role="cell" class="dash-work-cell is-zero is-none" aria-label="Unpriced" title="No published price">·</span>';}
+        const exact=`${exactMoney(cell.known)} API-equivalent cost${cell.unpriced?"; some usage has no published price":""}`,spoken=`${cell.unpriced?"at least ":""}${exact}`;
+        return `<span role="cell" tabindex="0" class="${classes}" title="${esc(spoken)}" aria-label="${esc(`${title}, ${kindLabel}: ${spoken}`)}" data-tip-html="${tooltip}"><span aria-hidden="true">${cell.unpriced?"≥":""}${esc(cell.unpriced?lowerMoney(cell.known):compactMoney(cell.known))}</span><span class="sr-only">${esc(exact)}</span></span>`;
+      }
+      const exact=`${exactTokens} tokens`;
+      return `<span role="cell" tabindex="0" class="${classes}" title="${esc(exact)}" aria-label="${esc(`${title}, ${kindLabel}: ${exact}; ${workCost(cell)}`)}" data-tip-html="${tooltip}">${esc(workNumber(cell.tokens))}<span class="sr-only">${esc(exact)}</span></span>`;
+    };
     const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span>${breakdownToggle("work")}</span>${work.kinds.map(kind=>`<span role="columnheader">${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
     const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}" title="${esc(row.other?row.name:`${row.provider} · ${row.name}`)}"><i></i>${esc(row.other?`Other (${row.count})`:row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
     const foot=`<div role="row" class="dash-work-row is-foot"><span role="rowheader">Total</span>${work.kinds.map(kind=>cellHTML(work.totals.cells[kind],"All models",label(kind),true)).join("")}${cellHTML(work.totals.all,"All models","all work",true)}</div>`;
-    return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}">${note?`<div class="dash-work-note is-qualified" title="${esc(note.title)}">${esc(note.text)}</div>`:""}<div class="dash-work-grid" role="table" aria-label="${work.metric==="cost"?"API-equivalent cost":"Tokens"} by model and kind of work">${head}${body}${foot}</div>${sawUnpriced?'<p class="dash-work-legend">· = no published price</p>':""}</div>`;
+    const noteText=note?.text.startsWith("Partial")?`<strong>Partial</strong>${esc(note.text.slice("Partial".length))}`:note?esc(note.text):"";
+    return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}">${note?`<div class="dash-work-note is-qualified" title="${esc(note.title)}">${noteText}</div>`:""}<div class="dash-work-grid" role="table" aria-label="${work.metric==="cost"?"API-equivalent cost":"Tokens"} by model and kind of work">${head}${body}${foot}</div>${sawUnpriced?'<p class="dash-work-legend">· = no published price</p>':""}</div>`;
   }
   async function loadLedger(range){
     const token=state.ledgerToken=(state.ledgerToken||0)+1;
@@ -414,7 +428,7 @@
     document.querySelector(`[data-dashboard-models="${value}"]`)?.focus();
   }
   // Plan multiple: 30-calendar-day (incl. today) API-equivalent cost over the plan price, per provider. It reads the 30-day window whatever range is selected, so the multiple means the same on every tab.
-  const PLAN_PROVIDERS=["Claude","Codex"];
+  const PLAN_PROVIDERS=["Codex","Claude"];
   const planPrice=name=>{const raw=Number(readPref(`branchglancePlanPrice.${name}`,""));return Number.isFinite(raw)&&raw>0?raw:null;};
   // A lower bound (unpriced models present) that rounds to zero reads "0.0", never "<0.1", which would claim an upper bound.
   const planMultiple=(value,lowerBound)=>{if(lowerBound){const precision=value>=10?0:1,factor=10**precision;return (Math.floor(value*factor)/factor).toFixed(precision);}return value<.1?"<0.1":value>=10?Math.round(value).toLocaleString("en-US"):value.toFixed(1);};
@@ -438,7 +452,7 @@
     if(!(row.tokens>0))return planCells(`<span class="dash-plan-text">No usage</span>`);
     if(row.cost==null)return planCells(`<span class="dash-plan-text" title="No published price for these models">Unpriced</span>`);
     const price=planPrice(name);if(price==null)return planCells(`<button type="button" class="dash-plan-set" data-dashboard-action="set-plan" data-dashboard-plan-provider="${esc(name)}" aria-label="Set ${esc(name)} monthly plan price">Set plan</button>`);const multiple=row.cost/price,prefix=row.unpriced?"≥":"";
-    return planCells(`<span title="${esc(`${row.unpriced?"At least means some usage has no published price, so the real figure is higher. ":""}Last 30 days (calendar, incl. today) API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
+    return planCells(`<span title="${esc(`${row.unpriced?"≥ indicates some usage has no published price, so the real figure is higher. ":""}Last 30 days (calendar, incl. today) API-equivalent cost ÷ ${money(price)} plan`)}">${prefix}${esc(planMultiple(multiple,row.unpriced))}×</span>`,row.unpriced?`some unpriced`:"");
   }
   async function loadMonth(){
     const token=++state.monthToken;
@@ -476,7 +490,7 @@
     const reset=state.settingsLoaded?`<iframe class="reset-embed" title="After a Codex quota reset" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status" role="status">Loading</p>`;
     const singleMonitor=state.monitors.length<2;
     const widget=`<section class="dash-settings-group"><h2>Widget</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","",`<div class="dash-clock-segment" role="group" aria-label="Clock format">${[["12","12-hour"],["24","24-hour"]].map(([value,label])=>`<button type="button" data-dashboard-clock="${value}" aria-pressed="${clock===value}">${label}</button>`).join("")}</div>`)}${rowHTML(singleMonitor?"Position":"Monitor",state.lock?.locked?"Unlock the widget to move it":singleMonitor?"Back to the centre of this screen":"Choose where the widget opens",`<div class="dash-monitor-controls">${state.monitors.length>1?`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor" ${state.lock?.locked?"disabled":""}>${state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("")}</select>`:""}<button class="dash-action" data-dashboard-action="recenter" ${state.lock?.locked?"disabled":""}>Recenter</button></div>`)}</section>`;
-    const plan=`<section class="dash-settings-group dash-plan-group-section" aria-label="Plan price"><h2>Plan price<span class="dash-h2-note">Monthly, for “30d vs plan”</span></h2>${PLAN_PROVIDERS.map((name,index)=>{const price=planPrice(name);return `<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(name)}</span></div><div class="dash-setting-control"><label class="dash-plan-field"><span aria-hidden="true">$</span><input${index===0?' id="dash-plan-price"':""} type="number" min="1" step="any" inputmode="decimal" value="${price==null?"":esc(price)}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label></div></div>`;}).join("")}</section>`;
+    const plan=`<section class="dash-settings-group dash-plan-group-section" aria-label="Plan price"><h2>Plan price<span class="dash-h2-note">Monthly, for “30d vs plan”</span></h2>${PLAN_PROVIDERS.map(name=>{const price=planPrice(name);return `<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(name)}</span></div><div class="dash-setting-control"><label class="dash-plan-field"><span aria-hidden="true">$</span><input${name==="Codex"?' id="dash-plan-price"':""} type="number" min="1" step="any" inputmode="decimal" value="${price==null?"":esc(price)}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label></div></div>`;}).join("")}</section>`;
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
     const versionNote=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`v${esc(state.identity.version)}+${esc(state.identity.build)}`:state.settingsLoaded?"Version unavailable":"";
     const debug=`<section class="dash-settings-group dash-debug-group" aria-label="About and bug report"><h2>About${versionNote?`<span class="dash-h2-note">${versionNote}</span>`:""}</h2>${rowHTML("Bug report","No chat text, file paths, account details or tokens.",`<button class="dash-action" data-dashboard-action="debug-preview">Create report</button>`)}<div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
