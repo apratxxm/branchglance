@@ -57,6 +57,17 @@
       const range = mode.split("-")[1];
       localStorage.setItem("branchglanceInsightsRange", ["24h", "7d", "30d", "all"].includes(range) ? range : "30d");
       localStorage.setItem("branchglanceChartStyle", mode.includes("-lines") ? "lines" : "stacked");
+      if (mode === "insights-30d-work") {
+        localStorage.setItem("branchglanceInsightsMetric", "tokens");
+        localStorage.setItem("branchglanceModelsView", "work");
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          const url = typeof input === "string" ? input : input.url;
+          if (url === "/api/insights?range=30d") return originalFetch("/api/insights-work-overflow?range=30d", init);
+          if (url === "/api/ledger?range=30d") return originalFetch("/api/ledger-work-overflow?range=30d", init);
+          return originalFetch(input, init);
+        };
+      }
       const waitFor = selector => new Promise(resolve => {
         const started = Date.now();
         const poll = () => {

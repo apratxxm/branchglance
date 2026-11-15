@@ -103,6 +103,30 @@ assert.match(css,/\.dashboard-content\{[^}]*overflow:hidden/);
 assert.doesNotMatch(css,/\.dashboard-content\{[^}]*overflow:auto/);
 assert.doesNotMatch(css,/data-tab="settings"\] \.dashboard-content\{[^}]*overflow:auto/);
 assert.match(css,/\.dashboard-view :not\(\.dashboard-content\)\{scrollbar-width:none;\}/);
+assert.match(css,/#dashboard-view\{[^}]*--d-right:232px/,"Insights and Settings share the fixed right rail");
+assert.match(css,/\.dash-hero\{[^}]*grid-template-columns:minmax\(0,1fr\) var\(--d-right\)/,"hero providers use the shared right rail");
+assert.match(css,/\.dash-hero\.dash-hero-loading\{[^}]*grid-template-columns:minmax\(0,1fr\) var\(--d-right\)/,"loading providers reserve the shared right rail");
+assert.match(css,/\.dash-lower\{[^}]*grid-template-columns:minmax\(0,1fr\) var\(--d-right\)/,"lower Insights sections use the shared right rail");
+assert.match(css,/\.dash-summary\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\) repeat\(2,98px\);column-gap:36px/,"activity aligns two columns left and keeps two narrow stat columns");
+assert.match(css,/\.dash-work-row\{[^}]*minmax\(105px,1fr\) repeat\(var\(--work-cols\),52px\) 56px;column-gap:8px/,"four By work kinds use 52px columns and a 56px Total");
+const gridColumns=css.match(/\.dash-work-row\{[^}]*minmax\((\d+)px,1fr\) repeat\(var\(--work-cols\),(\d+)px\) (\d+)px;column-gap:(\d+)px/);
+assert.ok(gridColumns,"By work grid sizing is explicit in CSS");
+const gridMinimum=Number(gridColumns[1])+4*Number(gridColumns[2])+Number(gridColumns[3])+5*Number(gridColumns[4]);
+const leftColumnWidth=720-20-232-36-20;
+assert.equal(gridMinimum,409,"By work grid minimum includes four kind columns and five gaps");
+assert.ok(gridMinimum<=leftColumnWidth,`By work grid minimum ${gridMinimum}px fits the ${leftColumnWidth}px left column`);
+assert.match(css,/\.dash-work-row\.is-head\{[^}]*color:var\(--d-mute\)[^}]*font-size:11px[^}]*line-height:14px/ ,"By work heads use the 11px by 14px muted style");
+assert.doesNotMatch(css,/\.dash-work-row\.is-head[^}]*8\.5px/,"By work has no 8.5px head style");
+assert.match(css,/\.dash-notice\{[^}]*line-height:18px/,"the failure notice fits the 18px hero meta row");
+assert.match(css,/\.dash-fail\{[^}]*color:var\(--d-ink\);font-weight:600/,"the failure label uses strong neutral error styling");
+assert.match(css,/\.dash-status-line\.error\{[^}]*color:var\(--d-ink\);font-weight:600/,"Insights status errors use strong neutral error styling");
+assert.match(css,/\.dash-setting-error\{[^}]*color:var\(--d-ink\)[^}]*font-weight:600/,"Settings errors use strong neutral error styling");
+assert.match(css,/\.dash-work-cell\.is-none\[aria-label="Unpriced"\]\{color:var\(--d-sub\);font-weight:700;\}/,"unpriced By work markers use the specified stronger muted style");
+assert.match(css,/\.dash-work-row\.is-head>span,\.dash-work-cell\{[^}]*font-variant-numeric:tabular-nums/ ,"By work cells use tabular numerals");
+assert.match(css,/\.dash-work-note\.is-qualified\{color:var\(--d-sub\)/,"partial ledger notes use muted text rather than provider orange");
+assert.match(css,/\.dash-work-note\.is-qualified strong\{font-weight:600;\}/,"Partial is the only bold label in the ledger note");
+assert.match(css,/\.dash-status-line\.is-freshness\{[^}]*position:static;flex:0 0 22px[^}]*color:var\(--d-mute\);font-size:12px[^}]*text-align:right/ ,"freshness has a reserved, right-aligned line below the plot");
+assert.match(css,/\.dash-plot\{[^}]*min-height:140px/ ,"moving freshness below the plot keeps the chart's 140px minimum");
 
 // (5) Plan multiple: rolling 30-day API-equivalent cost over the stored plan price, shown per provider in the legend. An unset price offers "Set plan" instead of assuming a price. Unpriced models give a lower bound, and unpriced providers are named, never a silent dash.
 dashboard.state.month={providers:[
@@ -199,21 +223,75 @@ hourly=dashboard.insightsHTML();
 assert.match(hourly,/Nov 13, 23:00 – Nov 14, 22:00/,"24-hour stamps read 23:00");
 values.set("branchglanceClockFormat","12");
 
-// Work table: one decimal from a million ("2.0M"), whole thousands below ("800K").
+// Work table: three significant digits above 100, no trailing decimal, and exact values stay accessible.
 dashboard.state.range="30d";dashboard.state.metric="tokens";
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:2e6,knownCostUsd:null,costComplete:false,unpricedTokens:2e6},{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"review",totalTokens:8e5,knownCostUsd:null,costComplete:false,unpricedTokens:8e5}],coverage:{},service:{}};
 dashboard.state.ledgerRange="30d";
 const workTable=dashboard.workHTML(dashboard.workData());
-assert.match(workTable,/>2\.0M</,"work table: a million or more has one decimal");
+assert.match(workTable,/>2M/ ,"work table: 2 million has no unnecessary trailing decimal");
 assert.match(workTable,/>800K</,"work table: thousands have no decimal");
+assert.match(workTable,/title="2,000,000 tokens"/ ,"work cells retain their exact token value in the title");
+assert.match(workTable,/<span class="sr-only">2,000,000 tokens<\/span>/ ,"work cells retain their exact token value for screen readers");
 dashboard.state.ledger=null;
+
+dashboard.state.ledger={rows:[
+  {provider:"Claude",modelId:"An unusually long model name that needs truncation",kind:"build",totalTokens:10,knownCostUsd:1,costComplete:true,unpricedTokens:0},
+  {provider:"Claude",modelId:"Another long model name that needs truncation",kind:"review",totalTokens:20,knownCostUsd:1,costComplete:true,unpricedTokens:0},
+  {provider:"Claude",modelId:"Third long model name that needs truncation",kind:"check",totalTokens:30,knownCostUsd:1,costComplete:true,unpricedTokens:0},
+  {provider:"Claude",modelId:"Fourth long model name that needs truncation",kind:"research",totalTokens:40,knownCostUsd:1,costComplete:true,unpricedTokens:0},
+]};dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="tokens";
+const fourKinds=dashboard.workHTML(dashboard.workData());
+assert.match(fourKinds,/An unusually long model name that needs truncation/,"By work preserves a long model name for its title and accessible label");
+assert.match(fourKinds,/class="dash-work-row is-head"[\s\S]*>Review<\/span>[\s\S]*>Check<\/span>[\s\S]*>Research<\/span>[\s\S]*>Other \(1\)<\/span>/,"By work renders four kind headings in the narrow table");
+dashboard.state.ledger=null;
+
+const overflowRows=[
+  ["claude-custom-long-model-name-for-overflow-fixture", "build", 603400000],
+  ["claude-custom-long-model-name-for-overflow-fixture", "review", 87100000],
+  ["claude-custom-long-model-name-for-overflow-fixture", "check", 609500000],
+  ["claude-research-model", "research", 455500000],
+  ["claude-research-model", "design", 317300000],
+  ["claude-research-model", "chore", 179500000],
+  ["claude-research-model", "build", 15600000],
+  ["claude-research-model", "lead", 100000],
+  ["claude-check-model", "build", 680500000],
+  ...Array.from({length:7},(_,i)=>[`claude-overflow-other-${i+1}`,["explore","lead","design","chore","research","check","build"][i],30000000+(i+1)*1000000]),
+];
+dashboard.state.ledger={coverage:{status:"partial",gapCount:3},rows:overflowRows.map(([modelId,kind,totalTokens])=>({provider:"Claude",modelId,kind,totalTokens,knownCostUsd:null,costComplete:true,unpricedTokens:0}))};
+dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="tokens";
+const realScale=dashboard.workHTML(dashboard.workData());
+assert.match(realScale,/style="--work-cols:4"/ ,"real-scale fixture retains four visible kind columns");
+assert.match(realScale,/>Other \(5\)<\/span>/,"five folded work kinds stay under Other (5)");
+assert.match(realScale,/>Other \(7\)<\/span>/,"seven smaller models aggregate into the Other row");
+assert.match(realScale,/title="603,400,000 tokens"[\s\S]*603M/ ,"real-scale values compact while exact tokens stay in each title");
+for(const formatted of ["603M","87.1M","1.3B","968M","15.6M","455M","680M"]){assert.match(realScale,new RegExp(`>${formatted}<`),`real-scale value compacts to ${formatted}`);}
+const visibleWorkCells=[...realScale.matchAll(/<span role="cell"[^>]*>([\s\S]*?)<\/span>/g)].map(([,html])=>html.replace(/<span class="sr-only">[\s\S]*/,"").replace(/<[^>]+>/g,"").trim());
+assert.ok(visibleWorkCells.length>0,"real-scale fixture renders work cells");
+assert.ok(visibleWorkCells.every(value=>value.length<=5),`every visible real-scale work-cell figure fits in five characters: ${visibleWorkCells.filter(value=>value.length>5).join(", ")}`);
+assert.match(realScale,/<div class="dash-work-note is-qualified"[^>]*><strong>Partial<\/strong> · 3 gaps<\/div>/,"partial coverage copy stays intact with only Partial bold");
+dashboard.state.ledger=null;
+
+dashboard.state.metric="cost";dashboard.state.ledgerRange="30d";dashboard.state.ledger={rows:[
+  {provider:"Claude",modelId:"cost-1240",kind:"build",totalTokens:100,knownCostUsd:1240,costComplete:true,unpricedTokens:0},
+  {provider:"Claude",modelId:"cost-15000",kind:"review",totalTokens:100,knownCostUsd:15000,costComplete:true,unpricedTokens:0},
+  {provider:"Claude",modelId:"cost-14",kind:"check",totalTokens:100,knownCostUsd:14.2,costComplete:true,unpricedTokens:0},
+]};
+const costFormats=dashboard.workHTML(dashboard.workData());
+assert.match(costFormats,/>\$1,240</,"costs below $10,000 keep whole-dollar comma formatting");
+assert.match(costFormats,/>\$15k</,"costs at $10,000 and above use compact thousands");
+assert.match(costFormats,/>\$14\.20</,"costs below $100 retain cents");
+assert.match(costFormats,/title="\$1,240\.00 API-equivalent cost"/ ,"cost cells retain the exact amount in their title");
+assert.match(costFormats,/<span class="sr-only">\$1,240\.00 API-equivalent cost<\/span>/ ,"cost cells retain the exact amount for screen readers");
+dashboard.state.ledger=null;dashboard.state.metric="tokens";
 
 // Partial pricing: the unit line names an excluded provider and partial models; partial model amounts carry a ≥ prefix.
 dashboard.state.metric="cost";
 dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true,unpricedModels:["claude-haiku-5-5"]},models:[{name:"claude-opus-5.5",tokens:8e5,apiEquivalentCost:9,unpriced:true},{name:"claude-haiku-5.5",tokens:2e5,apiEquivalentCost:null}]}),provider("Codex",{totals:{tokens:1e6,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null}})]);
 const partialHTML=dashboard.insightsHTML();
 assert.match(partialHTML,/estimated · excl\. Codex · some models unpriced/,"the unit line names the excluded provider and the partial models");
-assert.match(partialHTML,/≥ \$9\.00/,"a partially priced model row shows its amount with a ≥ prefix");
+assert.match(partialHTML,/\u2265\$9\.00/,"a partially priced model row shows a compact lower-bound amount");
+assert.match(partialHTML,/title="\u2265\$9\.00; some usage is unpriced"/,"the partial row title starts with the compact lower-bound amount");
+assert.doesNotMatch(partialHTML,/title="\$[\d.]+ per 1M tokens"|<span class="sr-only">\$[\d.]+ per 1M tokens/,"partial pricing does not show an unqualified per-token rate");
 dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true,unpricedModels:["claude-haiku-5-5"]}})]);
 assert.match(dashboard.insightsHTML(),/<span class="dash-hero-unit">estimated · some models unpriced<\/span>/,"partial models alone give their own unit line");
 dashboard.state.metric="tokens";
@@ -240,7 +318,7 @@ assert.match(countdowns,/data-quota-part="week">5m</,"an m:ss widget countdown r
 
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:5350000,knownCostUsd:null,costComplete:false,unpricedTokens:5350000}]};
 dashboard.state.ledgerRange="30d";dashboard.state.range="30d";
-assert.match(dashboard.workHTML(dashboard.workData()),/>5\.4M</,"5,350,000 rounds to 5.4M on whole increments");
+assert.match(dashboard.workHTML(dashboard.workData()),/>5\.35M</,"5,350,000 rounds to 5.35M with three significant digits");
 dashboard.state.ledger=null;
 
 const manyModels=[1,2,3,4,5,6].map(i=>({name:`claude-zeta-${i}`,tokens:(10-i)*1e5,apiEquivalentCost:2}));
@@ -249,7 +327,7 @@ dashboard.state.insights=payload([provider("Claude",{models:manyModels})]);dashb
 const otherRow=dashboard.insightsHTML();
 assert.match(otherRow,/Other \(4\)/,"the four smallest models fold into Other");
 assert.match(otherRow,/class="dash-model-name other"[^>]*tabindex="0" data-tip-html=/,"Other exposes its details to keyboard focus");
-assert.match(otherRow,/≥ \$5\.00/,"an Other row with an unpriced constituent reads at least");
+assert.match(otherRow,/\u2265\$5\.00/,"an Other row with an unpriced constituent shows a compact lower bound");
 assert.match(otherRow,/At least \$5\.00; some usage is unpriced/,"the lower bound says why, for screen readers and as a title");
 
 dashboard.state.insights={range:"7d",generatedAt:today.toISOString(),providers:[{name:"Claude",totals:{tokens:0,apiEquivalentCost:0,sessions:0,subagentsActive:0,activeHours:0,cacheHitRate:null},previous:null,series:series(0),models:[],limitPeaks:{fiveHour:null,weekly:null}}]};
@@ -288,6 +366,10 @@ assert.match(failed,new RegExp(`<span class="sr-only">\\. data from ${failureTim
 assert.ok(failed.includes(`<span class="dash-fail-time" aria-hidden="true"> \u00b7 data from ${failureTime}</span>`),"the visible notice names the exact time its data is from");
 assert.ok(failed.includes(`<span class="sr-only">. data from ${failureTime}. Use Refresh to retry.</span>`),"screen readers hear where the displayed data is from");
 dashboard.state.loadError=false;
+dashboard.state.insights={range:"7d",generatedAt:new Date(Date.now()-61000).toISOString(),providers:[provider("Claude")]};dashboard.state.range="7d";dashboard.state.metric="tokens";
+const freshness=dashboard.insightsHTML();
+assert.match(freshness,/<p class="dash-status-line is-freshness" role="status">Updated 1m ago<\/p>/,"freshness is rendered on its own reserved line below the chart");
+assert.ok(freshness.indexOf("dash-chart-section")<freshness.indexOf("dash-status-line is-freshness"),"freshness follows the complete chart section in document flow");
 
 dashboard.state.insights=null;dashboard.state.loading=true;dashboard.state.range="7d";dashboard.state.metric="tokens";
 const skeleton=dashboard.insightsHTML();
@@ -320,5 +402,5 @@ dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.me
 const costGrid=dashboard.workHTML(dashboard.workData());
 assert.match(costGrid,/aria-label="Unpriced" title="No published price">·<\/span>/,"an unpriced cost cell is a faint dot labelled Unpriced");
 assert.match(costGrid,/<p class="dash-work-legend">· = no published price<\/p>/,"the unpriced marker is explained once under the grid");
-assert.match(costGrid,/>\$14<\/span>/,"whole dollars from $10 up read without cents");
+assert.match(costGrid,/>\$14\.20<\/span>/,"costs below $100 retain cents");
 dashboard.state.ledger=null;

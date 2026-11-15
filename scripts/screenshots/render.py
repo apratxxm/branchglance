@@ -143,6 +143,7 @@ def main():
                 captures = [(f"tree&routing={kind}", f"routing-{kind}.png", 560, 420, args.output_dir) for kind in args.routing]
             elif args.insights_only:
                 captures = [(f"insights-{item}", f"insights-{item}.png", 720, 608, args.output_dir) for item in ranges]
+                captures.append(("insights-30d-work", "insights-30d-work.png", 720, 608, args.output_dir))
             elif args.settings_only:
                 captures = [("settings", "settings.png", 720, 608, args.output_dir), ("reset-frame", "reset-frame.png", 320, 354, args.output_dir)]
             else:
