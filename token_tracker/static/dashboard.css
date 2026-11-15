@@ -5,6 +5,7 @@ body[data-notch-mode="dashboard"] #dashboard-content.dashboard-transition-hidden
 body.dashboard-closing #dashboard-content.dashboard-transition-hidden{transition:opacity 90ms ease-in;transform:none;}
 @media(prefers-reduced-motion:reduce){body[data-notch-mode="dashboard"] #dashboard-content{transition:none;transform:none!important;}}
 body.dashboard-crossfade #dashboard-view:not([hidden]){position:absolute;top:0;left:50%;transform:translateX(-50%);width:720px;height:var(--dashboard-height,608px);display:flex!important;flex-direction:column;overflow:hidden;background:#05070b;z-index:10;pointer-events:none;animation:dashboard-fade-out 90ms ease both;}
+body.dashboard-crossfade .dashboard-header{visibility:hidden;opacity:0;}
 body.dashboard-crossfade .widget>:not(#dashboard-view){animation:dashboard-fade-in 90ms ease both;}
 body.dashboard-crossfade #dashboard-content{opacity:0;}
 @keyframes dashboard-fade-out{from{opacity:1}to{opacity:0}}
@@ -86,6 +87,9 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dashboard-panel[hidden]{display:none!important;}
 #dashboard-insights{--seam:none;}
 #dashboard-insights:not([hidden]){flex:1 1 auto;min-height:0;display:flex;flex-direction:column;box-sizing:border-box;padding:10px 20px 6px;color:var(--d-ink);font-size:13px;font-variant-numeric:normal;}
+#dashboard-view[data-open-compact="true"] #dashboard-insights:not([hidden]){flex:0 0 auto;height:max-content;max-height:100%;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--d-mute) transparent;}
+#dashboard-view[data-open-compact="true"] #dashboard-insights::-webkit-scrollbar{display:block!important;width:4px!important;height:4px!important;}
+#dashboard-view[data-open-compact="true"] #dashboard-insights::-webkit-scrollbar-thumb{background:var(--d-mute);border-radius:4px;}
 #dashboard-view[data-tab="insights"] :is(b,strong,dd,th,td,.dash-axis-value,.dash-date){font-variant-numeric:tabular-nums;}
 .dash-eyebrow{color:#c3c8d4;font-size:13px;font-weight:500;letter-spacing:0;text-transform:none;}
 
@@ -443,8 +447,9 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-work-cell{white-space:nowrap;}
 .dash-work-legend{margin:4px 0 0;color:var(--d-mute);font-size:11px;line-height:14px;}
 
-.dash-skel-figure,.dash-skel-providers i,.dash-skel-row>i:first-child,.dash-skel-quota i,.dash-skel-chart i{display:block;background:var(--d-track);border-radius:3px;}
+.dash-skel-figure,.dash-skel-providers i,.dash-skel-row>i:first-child,.dash-skel-quota i,.dash-skel-chart i,.dash-skel-period,.dash-skel-head,.dash-skel-summary dt,.dash-skel-summary dd{display:block;background:var(--d-track);border-radius:3px;}
 .dash-skel-figure{width:140px;height:40px;}
+.dash-skel-period{width:120px;height:10px;margin-bottom:8px;}.dash-skel-head{height:20px;margin-bottom:0;}.dash-skel-summary dt{width:50%;height:10px;}.dash-skel-summary dd{width:60%;height:17px;margin:3px 0 0;}
 .dash-skel-providers{display:grid;gap:12px;}.dash-skel-providers i{height:10px;width:100%;}
 .dash-skel-row>i:first-child{width:60%;height:8px;}.dash-skel-quota{gap:12px;}.dash-skel-quota i{height:10px;}
 .dash-skel-chart{min-height:174px;justify-content:flex-end;padding:0 0 20px 32px;}.dash-skel-chart i{height:1px;width:100%;}
@@ -464,4 +469,4 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-lower{grid-template-rows:auto auto minmax(0,1fr);row-gap:0;}
 .dash-lower.is-single{grid-template-rows:auto auto minmax(0,1fr);}.dash-lower.is-day{grid-template-rows:auto auto;}
 .dash-breakdown.dash-segment{display:flex;gap:2px;white-space:nowrap;}.dash-breakdown.dash-segment button{height:26px;border-radius:7px;padding:0 8px;font:500 12px/1 var(--d-font);}
-.dash-work-row.is-head>span:first-child{text-align:left;}.dash-work-row.is-head>span:not(:first-child){white-space:nowrap;font-size:8.5px;}
+.dash-work-row.is-head>span:first-child{text-align:left;}.dash-work-row.is-head>span:not(:first-child){white-space:nowrap;font-size:11px;font-weight:450;color:var(--d-mute);}.dash-model-name.other:focus-visible{outline:2px solid var(--d-codex-text);outline-offset:2px;}

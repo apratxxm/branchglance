@@ -22,7 +22,8 @@ def fixtures(models=2, reset_continue=False, tree_space=False):
     iso = lambda minutes: (now - dt.timedelta(minutes=minutes)).isoformat()
     reset = lambda minutes: (now + dt.timedelta(minutes=minutes)).timestamp()
     policy = {"schemaVersion": 1, "generation": "synthetic", "providers": [
-        {"name": name, "collect": True, "show": True, "send": False, "capabilities": {}}
+        {"name": name, "collect": True, "show": True, "send": False, "sendOrigin": "provider_env",
+         "capabilities": {"greet": False, "continue": False}}
         for name in ("Codex", "Claude")
     ]}
     if reset_continue:

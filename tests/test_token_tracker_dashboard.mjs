@@ -373,7 +373,7 @@ const trusted=dashboard.state.insights;
 context.fetch=async()=>({ok:false});
 await dashboard.loadInsights();
 assert.equal(dashboard.state.insights,trusted);
-assert.match(dashboard.insightsHTML().replace(/<[^>]+>/g,""),/Update failed\. Use Refresh to retry\./,"full render carries the retry hint");assert.match(dashboard.insightsHTML(),/<span class="dash-fail">Update failed<\/span>/,"the failure name is in the claude tone");
+assert.match(dashboard.insightsHTML().replace(/<[^>]+>/g,""),/Update failed\. Use Refresh to retry\./,"full render carries the retry hint when no timestamp is available");assert.match(dashboard.insightsHTML(),/<span class="dash-fail">Update failed<\/span>/,"the failure name is in the claude tone");
 assert.match(dashboard.statusText(),/^Update failed\. Use Refresh to retry\./,"status-line path carries the same retry hint");
 // Initial cached snapshot remains visibly marked as fallback after a failed request.
 dashboard.state.insights=null;dashboard.state.snapshot={providers:[{name:"Cached",tracked31Days:7,activity:[]}]};
@@ -550,6 +550,9 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   assert.match(html,/<div class="dash-split-legend no-share">/);assert.doesNotMatch(html,/<span class="dash-legend-head">Share<\/span>/);
   assert.match(html,/<span class="dash-legend-unpriced">Unpriced<\/span><span class="dash-plan-cell"><\/span><span class="dash-plan-note-cell"><\/span>/);
   assert.match(html,/<td title="\$8\.02 per 1M tokens"><span class="sr-only">\$8\.02 per 1M tokens\. <\/span>\$8\.02<\/td>/);
+  const partialModel=provider("Claude",{cost:1.6,models:[{name:"partial-model",tokens:1000000,apiEquivalentCost:1.6,unpriced:true}]});
+  dashboard.state.insights={range:"7d",providers:[partialModel]};html=dashboard.insightsHTML();
+  assert.match(html,/At least \$1\.60/);assert.doesNotMatch(html,/title="\$1\.60 per 1M tokens"|<span class="sr-only">\$1\.60 per 1M tokens/);
   dashboard.state.insights={range:"7d",providers:[priced,provider("Codex",{cost:5})]};html=dashboard.insightsHTML();assert.match(html,/<span class="dash-legend-head">Share<\/span>/);
   delete window.tokenTrackerQuotaNow;dashboard.state.ledger=null;
 }

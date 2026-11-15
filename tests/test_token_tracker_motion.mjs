@@ -4,6 +4,7 @@ import vm from "node:vm";
 
 const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
 const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
+const dashboardCss=fs.readFileSync(new URL("../token_tracker/static/dashboard.css",import.meta.url),"utf8");
 const refined=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const widgetPage=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
 
@@ -35,6 +36,10 @@ const openingMotion=app.slice(app.indexOf("function beginNotchOpening("),app.ind
 assert.match(openingMotion,/if\(reducedMotion\(\)\)return/,"reduced-motion opening skips the temporary animation state");
 assert.match(css,/@media\(prefers-reduced-motion:reduce\)[\s\S]*?animation:none!important;transition:none!important/);
 assert.match(app,/notchOpeningTimer:null/);
+assert.match(dashboardCss,/body\.dashboard-crossfade \.dashboard-header\{visibility:hidden;opacity:0;\}/,"the dashboard header opacity hides descendants that explicitly restore visibility during the return cross-fade");
+assert.match(dashboardCss,/#dashboard-view\[data-open-compact="true"\] #dashboard-insights:not\(\[hidden\]\)\{[^}]*height:max-content;max-height:100%;overflow-x:hidden;overflow-y:auto/,"a compact-open dashboard keeps taller range content scrollable inside the fixed frame");
+assert.match(dashboardCss,/#dashboard-view\[data-open-compact="true"\] #dashboard-insights::-webkit-scrollbar\{display:block!important;width:4px!important;height:4px!important;\}/);
+assert.match(dashboardCss,/\.dash-plot\{[^}]*min-height:140px/,"compact scrolling preserves the chart minimum height");assert.match(dashboardCss,/\.dash-dates\{[^}]*flex:0 0 20px;height:20px/,"compact scrolling preserves the complete date row");
 assert.match(app,/Date\.now\(\)<state\.startupCalmUntil/,"first-thirty-second row arrivals stay still");
 assert.match(refined,/--motion-info:110ms;--motion-panel:140ms;--motion-reveal:220ms;--motion-source:240ms/,"compact source and panel motion are aligned to the reveal");
 assert.match(refined,/compact-edge-drift 8s var\(--ease-standard\) infinite alternate/,"the approved quota edge drift remains");
@@ -53,8 +58,9 @@ const node=selector=>{
   return nodes.get(selector);
 };
 const root=node("html");root.clientWidth=560;
+const bodyClasses=new Set();
 const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},
-  document:{querySelector:node,querySelectorAll(){return [];},documentElement:root,hidden:false,activeElement:null,addEventListener(){}},
+  document:{querySelector:node,querySelectorAll(){return [];},documentElement:root,body:{dataset:{},classList:{add(name){bodyClasses.add(name);},remove(name){bodyClasses.delete(name);},contains(name){return bodyClasses.has(name);},toggle(name,on){on?bodyClasses.add(name):bodyClasses.delete(name);}}},hidden:false,activeElement:null,addEventListener(){}},
   localStorage:{getItem(){return null;},setItem(){}},fetch:async()=>({ok:true,json:async()=>({ok:true})}),Intl,Date,Math,Number,JSON,AbortController,AbortSignal,
   setTimeout(callback,delay){const id=++timerId;timers.set(id,{callback,delay,due:fakeNow+delay});return id;},clearTimeout(id){timers.delete(id);},setInterval(){return 0;}};
 context.window.devicePixelRatio=1.25;context.window.visualViewport={scale:1};
@@ -151,7 +157,7 @@ assert.equal(root.style["--runway-inspect-layout-width"],"536px");
 {
   const flags=new Set(),content=node('#dashboard-content'),view=node('#dashboard-view'),calls=[],frames=[];
   content.classList={toggle(name,on){on?flags.add(name):flags.delete(name);},add(name){flags.add(name);},remove(name){flags.delete(name);}};
-  let focused=false,reduced=false,requestedHeight=478;
+  let focused=false,reduced=false,requestedHeight=478,selectedTab=null,openedTab=null;
   context.requestAnimationFrame=callback=>{frames.push(callback);return frames.length;};
   context.cancelAnimationFrame=()=>{};
   context.window.matchMedia=()=>({matches:reduced});
@@ -162,7 +168,7 @@ assert.equal(root.style["--runway-inspect-layout-width"],"536px");
   widget.getBoundingClientRect=()=>({left:0,top:0,width:300,height:100});
   context.window.screenX=100;context.window.screenY=200;T.notch.manual=false;T.notch.inspecting=false;T.notch.keyboardInspecting=false;T.setupNotch();
   context.window.pywebview.api.set_notch=async(...args)=>{calls.push(args);};
-  context.window.TokenTrackerDashboard={windowHeight:()=>requestedHeight,open(){view.hidden=false;},close(){view.hidden=true;context.requestAnimationFrame(()=>{focused=true;});}};
+  context.window.TokenTrackerDashboard={windowHeight:()=>requestedHeight,open({tab}={}){view.hidden=false;openedTab=tab;selectedTab=tab;},selectTab(tab){selectedTab=tab;},close(){view.hidden=true;context.requestAnimationFrame(()=>{focused=true;});}};
   T.widgetLock.known=true;T.notch.mode='controls';T.notch.manual=false;T.notch.inspecting=false;
   T.notch.globalPointerX=500;T.notch.globalPointerY=250;T.notch.hover=true;
   assert.equal(T.openDashboard(),true);
@@ -175,14 +181,23 @@ assert.equal(root.style["--runway-inspect-layout-width"],"536px");
   assert.equal(T.closeDashboard(),true);
   assert.equal(T.dashboardState.open,false);assert.equal(T.dashboardState.closing,true);
   assert.equal(T.closeDashboard(),false,"a second close does not restart the transition");
+  assert.ok(!bodyClasses.has('dashboard-crossfade'),"the widget fade waits until native settle");
   advanceFakeTime(90);assert.equal(T.notch.mode,'dashboard');
   context.window.tokenTrackerNotchSettled('controls',false,T.dashboardState.generation);
-  assert.equal(T.notch.mode,'controls');assert.equal(focused,false);assert.equal(leaves,0);advanceFakeTime(90);assert.equal(leaves,1,"an outside pointer follows the existing leave path once after the swap");assert.equal(T.notch.hover,false);assert.ok(T.notch.exitTimer!=null);frames.splice(0).forEach(callback=>callback());assert.equal(focused,true);
+  assert.equal(T.notch.mode,'controls');assert.ok(bodyClasses.has('dashboard-crossfade'),"settle starts the 90ms swap after the CSS hides the dashboard header");assert.equal(focused,false);assert.equal(leaves,0);advanceFakeTime(90);assert.ok(!bodyClasses.has('dashboard-crossfade'));assert.equal(leaves,1,"an outside pointer follows the existing leave path once after the swap");assert.equal(T.notch.hover,false);assert.ok(T.notch.exitTimer!=null);frames.splice(0).forEach(callback=>callback());assert.equal(focused,true);
   for(let i=0;i<6;i++)await Promise.resolve();
   T.notch.globalPointerX=150;T.notch.globalPointerY=250;T.openDashboard();assert.ok(flags.has('dashboard-transition-hidden'));context.window.tokenTrackerNotchSettled('dashboard',true,firstOpen);assert.ok(flags.has('dashboard-transition-hidden'));advanceFakeTime(406);assert.ok(!flags.has('dashboard-transition-hidden'));
   T.closeDashboard();const closeA=T.dashboardState.generation;advanceFakeTime(90);T.openDashboard();context.window.tokenTrackerNotchSettled('controls',false,closeA);
   assert.equal(T.notch.mode,'dashboard');assert.equal(view.hidden,false);
-  T.closeDashboard();advanceFakeTime(90);context.window.tokenTrackerNotchSettled('controls',false,closeA);assert.equal(T.notch.mode,'dashboard');advanceFakeTime(340);assert.equal(T.notch.mode,'controls');advanceFakeTime(90);assert.equal(leaves,1,"an inside pointer does not synthesize a leave");
+  T.closeDashboard();advanceFakeTime(90);context.window.tokenTrackerNotchSettled('controls',false,closeA);assert.equal(T.notch.mode,'dashboard');assert.ok(!bodyClasses.has('dashboard-crossfade'));advanceFakeTime(340);assert.equal(T.notch.mode,'controls');assert.ok(bodyClasses.has('dashboard-crossfade'),"the fallback also hides the header before starting the widget fade");advanceFakeTime(90);assert.ok(!bodyClasses.has('dashboard-crossfade'));assert.equal(leaves,1,"an inside pointer does not synthesize a leave");
+  T.openDashboard();T.closeDashboard();const swapClose=T.dashboardState.generation;advanceFakeTime(90);advanceFakeTime(340);
+  assert.equal(T.dashboardState.swapping,true,"the regression reopens during the 90ms widget swap");
+  const returnMode=T.dashboardState.returnMode,returnHeight=T.dashboardState.returnHeight;
+  assert.equal(T.openDashboard('settings'),true);assert.equal(selectedTab,'settings');assert.equal(openedTab,'insights');
+  assert.equal(T.dashboardState.returnMode,returnMode);assert.equal(T.dashboardState.returnHeight,returnHeight);
+  context.window.tokenTrackerNotchSettled('controls',false,swapClose);advanceFakeTime(90);
+  assert.equal(T.dashboardState.open,true);assert.equal(view.hidden,false);assert.equal(T.dashboardState.returnMode,returnMode,"a stale close cannot hide or reset the reopened dashboard");
+  T.closeDashboard();advanceFakeTime(90);advanceFakeTime(340);advanceFakeTime(90);
   reduced=true;T.openDashboard();assert.ok(!flags.has('dashboard-transition-hidden'));T.closeDashboard();assert.equal(T.notch.mode,'controls');
   assert.ok(calls.some(args=>args[3]==='dashboard'));
 }
@@ -195,8 +210,49 @@ assert.equal(root.style["--runway-inspect-layout-width"],"536px");
   const doc={querySelector:s=>s==='#dashboard-view'?view:s==='#dashboard-content'?content:null,querySelectorAll:()=>[],addEventListener(){}};
   const sandbox={window:win,document:doc,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage:{getItem(){return null;},setItem(){}},location:{origin:'http://localhost'},fetch:async()=>({ok:false}),setTimeout:fn=>{pending.set(++next,fn);return next;},clearTimeout:id=>pending.delete(id),setInterval:()=>1,clearInterval(){},requestAnimationFrame(){}};
   vm.createContext(sandbox);vm.runInContext(dashboard,sandbox);
-  const state=win.__tokenTrackerDashboardTest.state;state.open=true;
+  const api=win.__tokenTrackerDashboardTest,state=api.state;state.open=true;state.range='24h';
   win.TokenTrackerDashboard.selectTab('settings');assert.equal(view.dataset.tab,'settings');assert.equal(state.tab,'insights');
+  api.setRange('24h');assert.equal(view.dataset.tab,'insights');assert.equal(state.tab,'insights');assert.equal(pending.size,0,'an already-selected range cancels the pending tab transition');
+  win.TokenTrackerDashboard.selectTab('settings');api.setRange('7d');assert.equal(view.dataset.tab,'insights');assert.equal(state.tab,'insights','a range change restores controls to the committed Insights tab');
   win.TokenTrackerDashboard.selectTab('insights');assert.equal(view.dataset.tab,'insights');assert.equal(pending.size,0,'cancelling the pending switch restores the controls');
   state.tab='settings';view.dataset.tab='settings';win.TokenTrackerDashboard.selectTab('insights');assert.equal(view.dataset.tab,'insights');assert.equal(state.tab,'settings');
+}
+
+// Metric changes use the same cancellable 90ms fade as range changes.
+{
+  const dashboard=fs.readFileSync(new URL('../token_tracker/static/dashboard.js',import.meta.url),'utf8'),pending=new Map(),values=new Map();let next=0,rendered=0;
+  const classes=new Set(),view={dataset:{},addEventListener(){},setAttribute(){}},content={classList:{add(name){classes.add(name);},remove(name){classes.delete(name);}}},insights={innerHTML:'',querySelectorAll(){return [];}};
+  const metricButtons=['tokens','cost'].map(metric=>({dataset:{dashboardMetric:metric},attributes:{},classList:{toggle(name,on){on?this[name]=true:delete this[name];}},setAttribute(name,value){this.attributes[name]=String(value);}}));
+  const nodes={'#dashboard-view':view,'#dashboard-content':content,'#dashboard-insights':insights};
+  const win={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){},TokenTrackerSetClockFormat(){}};
+  const doc={activeElement:null,querySelector:s=>nodes[s]||null,querySelectorAll:s=>s==='[data-dashboard-metric]'?metricButtons:[],addEventListener(){}};
+  const sandbox={window:win,document:doc,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,Event:class{constructor(type){this.type=type;}},localStorage:{getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))},location:{origin:'http://localhost'},fetch:async()=>({ok:false}),setTimeout:(fn,delay)=>{const id=++next;pending.set(id,{fn,delay});return id;},clearTimeout:id=>pending.delete(id),setInterval:()=>1,clearInterval(){},requestAnimationFrame(fn){rendered++;fn();}};
+  vm.createContext(sandbox);vm.runInContext(dashboard,sandbox);
+  const api=win.__tokenTrackerDashboardTest,state=api.state;state.open=true;state.metric='tokens';
+  api.setMetric('cost');assert.equal(state.metric,'tokens');assert.equal(values.has('branchglanceInsightsMetric'),false,'metric preference waits for the fade-out');assert.ok(classes.has('is-switching'),'metric content waits for the fade-out');
+  api.setMetric('tokens');assert.equal(pending.size,0,'a newer metric selection cancels a stale pending switch');assert.ok(!classes.has('is-switching'));
+  api.setMetric('cost');const timer=[...pending.values()].find(item=>item.delay===90);assert.ok(timer,'metric selection schedules the existing 90ms switch');timer.fn();
+  assert.equal(state.metric,'cost');assert.equal(values.get('branchglanceInsightsMetric'),'cost');assert.equal(metricButtons[0].attributes['aria-pressed'],'false');assert.equal(metricButtons[1].attributes['aria-pressed'],'true');assert.ok(!classes.has('is-switching'),'the new metric is revealed after the fade-out');assert.ok(insights.innerHTML.length>0,'the metric content is rendered with the new selection');assert.ok(rendered>0);
+}
+
+// A compact-open dashboard keeps its chosen native height while ranges switch from populated to empty.
+{
+  const dashboard=fs.readFileSync(new URL('../token_tracker/static/dashboard.js',import.meta.url),'utf8');let rangePref='24h',nativeResizes=0;
+  context.localStorage.getItem=key=>key==='branchglanceInsightsRange'?rangePref:null;
+  context.localStorage.setItem=(key,value)=>{if(key==='branchglanceInsightsRange')rangePref=String(value);};
+  context.window.__TOKEN_TRACKER_DASHBOARD_TEST__=true;context.window.dispatchEvent=()=>{};context.Event=class{constructor(type){this.type=type;}};context.requestAnimationFrame=()=>{};context.clearInterval=()=>{};context.fetch=()=>new Promise(()=>{});
+  node('#dashboard-insights').querySelector=()=>null;node('#dashboard-insights').insertAdjacentHTML=()=>{};
+  context.window.pywebview.api.set_notch=async()=>{nativeResizes++;};
+  vm.runInContext(dashboard,context);
+  const api=context.window.__tokenTrackerDashboardTest,state=api.state;
+  state.insights={providers:[{name:'Codex',totals:{tokens:0,apiEquivalentCost:null,sessions:0,activeHours:0,subagentsActive:0,cacheHitRate:null},series:[],models:[]}]};
+  T.notch.mode='controls';T.notch.manual=false;T.notch.inspecting=false;
+  assert.equal(T.openDashboard(),true);assert.equal(T.dashboardState.height,478);assert.equal(node('#dashboard-view').dataset.openCompact,'true');
+  const openingResizes=nativeResizes;
+  state.insights={providers:[{name:'Codex',totals:{tokens:500,apiEquivalentCost:2,sessions:1,activeHours:1,subagentsActive:0,cacheHitRate:null},series:[],models:[]}]};
+  api.setRange('30d');advanceFakeTime(90);assert.equal(state.range,'30d');assert.equal(T.dashboardState.height,478);
+  state.insights={providers:[{name:'Codex',totals:{tokens:0,apiEquivalentCost:null,sessions:0,activeHours:0,subagentsActive:0,cacheHitRate:null},series:[],models:[]}]};
+  api.setRange('7d');advanceFakeTime(90);assert.equal(state.range,'7d');assert.equal(T.dashboardState.height,478);
+  assert.equal(nativeResizes,openingResizes,'populated and empty range changes do not call set_notch to resize the OS window');
+  T.closeDashboard();advanceFakeTime(90);context.window.tokenTrackerNotchSettled('controls',false,T.dashboardState.generation);advanceFakeTime(90);
 }

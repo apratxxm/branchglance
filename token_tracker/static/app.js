@@ -187,8 +187,10 @@ function openDashboard(tab){
   if(!reopening){dashboardState.returnMode=notch.mode||'controls';dashboardState.returnHeight=notchHeight();}
   dashboardState.restoreMode=null;dashboardState.open=true;
   const content=$('#dashboard-content');content?.classList?.toggle('dashboard-transition-hidden',!reducedMotion());
-  if(!reopening)window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:tab==='settings'?'settings':'insights'});
-  if(!reopening){dashboardState.height=window.TokenTrackerDashboard?.windowHeight?.()||608;$('#dashboard-view')?.style?.setProperty?.('--dashboard-height',dashboardState.height+'px');}
+  const requestedTab=tab==='settings'?'settings':'insights';
+  if(!reopening)window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:requestedTab});
+  else window.TokenTrackerDashboard?.selectTab?.(requestedTab);
+  if(!reopening){dashboardState.height=window.TokenTrackerDashboard?.windowHeight?.()||608;const view=$('#dashboard-view');view?.style?.setProperty?.('--dashboard-height',dashboardState.height+'px');if(view)view.dataset.openCompact=String(dashboardState.height<=478);}
   setNotch(notch.expanded);
   if(!reducedMotion())dashboardState.timer=setTimeout(()=>{if(gen===dashboardState.generation&&dashboardState.open&&!dashboardState.closing)$('#dashboard-content')?.classList?.remove('dashboard-transition-hidden');},406);
   return true;
@@ -201,12 +203,12 @@ function closeDashboard(){
   const finish=()=>{if(gen!==dashboardState.generation||!dashboardState.closing)return;
     clearTimeout(dashboardState.timer);dashboardState.timer=null;dashboardState.closing=false;dashboardState.open=false;
     const reduced=reducedMotion();dashboardState.swapping=!reduced;document.body?.classList?.remove?.('dashboard-closing');
-    if(!reduced)document.body?.classList?.add?.('dashboard-crossfade');
     setNotch(notch.expanded);
-    const complete=()=>{if(gen!==dashboardState.generation)return;dashboardState.swapping=false;dashboardState.returnMode=null;window.TokenTrackerDashboard?.close?.();const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');}document.body?.classList?.remove?.('dashboard-crossfade');
+    const complete=()=>{if(gen!==dashboardState.generation)return;dashboardState.swapping=false;dashboardState.returnMode=null;window.TokenTrackerDashboard?.close?.();const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');delete view.dataset.openCompact;}document.body?.classList?.remove?.('dashboard-crossfade');
       const widget=$('.widget'),rect=widget?.getBoundingClientRect?.(),x=notch.globalPointerX,y=notch.globalPointerY;
       if(rect&&Number.isFinite(x)&&Number.isFinite(y)){const left=(window.screenX||0)+rect.left,top=(window.screenY||0)+rect.top;if(x<left||x>left+rect.width||y<top||y>top+rect.height){notch.hover=false;widget?.dispatchEvent?.(new Event('pointerleave'));}}
     };
+    if(!reduced)document.body?.classList?.add?.('dashboard-crossfade');
     if(reduced)complete();else dashboardState.timer=setTimeout(complete,90);
   };
   const shrink=()=>{if(gen!==dashboardState.generation||!dashboardState.closing)return;

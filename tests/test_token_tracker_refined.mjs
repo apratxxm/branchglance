@@ -5,6 +5,7 @@ import vm from "node:vm";
 const app = fs.readFileSync(new URL("../token_tracker/static/app.js", import.meta.url), "utf8");
 const page = fs.readFileSync(new URL("../token_tracker/static/runway.html", import.meta.url), "utf8");
 const css = fs.readFileSync(new URL("../token_tracker/static/runway_refined.css", import.meta.url), "utf8");
+assert.match(css,/\.compact-toolbar>\.toolbar-group\+\.toolbar-group\{margin-left:8px;\}/,"toolbar groups keep the approved 8px gap");
 assert.match(page, /window\.__TOKEN_TRACKER_REFINED__=true/);
 assert.match(page, /window\.__TOKEN_TRACKER_COMPACT__=true/);
 assert.match(page, /<header class="titlebar compact-toolbar pywebview-drag-region">/,

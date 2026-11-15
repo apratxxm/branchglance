@@ -146,3 +146,53 @@ def test_debug_controls(page):
     page.locator(ui.ACTION.format("debug-copy")).click()
     page.locator(ui.ACTION.format("debug-issue")).click()
     assert page.evaluate("window.__rigCalls.some(call => call[0] === 'open')")
+
+
+def test_folded_model_tooltip_keeps_untrusted_names_as_text(page):
+    hostile_names = [
+        '<img src="/__tooltip_probe__" onerror="window.__tooltipInjected=true">',
+        '<svg onload="window.__tooltipInjected=true">& "quoted"</svg>',
+    ]
+
+    def model_payload(route):
+        data = route.fetch().json()
+        data["providers"][0]["models"] = [
+            {"name": f"safe-model-{i}", "tokens": 1000 - i, "apiEquivalentCost": 1}
+            for i in range(5)
+        ] + [{"name": name, "tokens": 1, "apiEquivalentCost": None}
+             for name in hostile_names]
+        route.fulfill(json=data)
+
+    page.route("**/api/insights?*", model_payload)
+    page.evaluate("window.__tooltipInjected=false")
+    open_insights(page)
+    other = page.locator(".dash-model-name.other")
+    expect(other).to_be_visible()
+    tip = page.locator(".dash-tooltip")
+    for activate in (other.focus, other.hover):
+        activate()
+        expect(tip).to_be_visible()
+        for name in hostile_names:
+            expect(tip).to_contain_text(name)
+        assert tip.locator("img, svg").count() == 0
+        assert page.evaluate("window.__tooltipInjected") is False
+        page.keyboard.press("Escape")
+        expect(tip).to_have_attribute("aria-hidden", "true")
+        expect(tip).to_have_css("opacity", "0")
+        expect(page.locator(ui.DASHBOARD)).to_be_visible()
+        other.blur()
+
+
+@pytest.mark.parametrize("native_settle", [True, False])
+def test_close_crossfade_hides_controls_even_with_explicit_visibility(page, native_settle):
+    page.emulate_media(reduced_motion="no-preference")
+    open_insights(page)
+    page.evaluate("() => window.__tokenTrackerTest.closeDashboard()")
+    page.wait_for_function("window.__tokenTrackerTest.dashboardState.finish !== null")
+    if native_settle:
+        page.evaluate("() => window.tokenTrackerNotchSettled('controls', false, window.__tokenTrackerTest.dashboardState.generation)")
+    page.wait_for_function("document.body.classList.contains('dashboard-crossfade')")
+    header = page.locator(".dashboard-header")
+    expect(header).to_have_css("opacity", "0")
+    page.wait_for_function("!window.__tokenTrackerTest.dashboardState.swapping")
+    expect(page.locator(ui.DASHBOARD)).not_to_be_visible()

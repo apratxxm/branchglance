@@ -24,16 +24,31 @@ All screenshots use synthetic sample data.
 
 > These docs describe `master`. For the latest release, use the docs at its release tag; features in [Unreleased](CHANGELOG.md) require a source build.
 
-## What it shows
+## Features
 
 Items marked **(0.2.0)** are in the development version.
 
-- **A tree of your chats.** Codex and Claude Code chats with their subagents. Codex jobs started from a Claude chat nest under it. A status or parent link appears only when there is evidence for it.
-- **A needs-you count.** Chats waiting for input are marked and counted. Click the count to jump to the next one.
-- **Usage limits.** 5-hour and weekly limits for Codex and Claude side by side, with reset countdowns. Optional live Claude usage (off by default) refreshes about every 180 seconds **(0.2.0)**.
-- **Insights.** Tokens, estimated cost, model breakdown and limit peaks, over 24 hours to all time. Models without a known price are listed, never guessed.
-- **Reset actions (off by default).** A greeting that keeps Claude's 5-hour window rolling **(0.2.0)**, and a one-time `continue` queued for chats you pick.
+<p align="center"><img alt="Branchglance chat tree and usage limits" src="docs/images/widget.png" width="560"></p>
+<p align="center">The chat tree, waiting count and provider limits stay in view.</p>
+
+<p align="center"><img alt="Branchglance Insights dashboard" src="docs/images/insights.png" width="560"></p>
+<p align="center">Insights summarize tokens, estimated cost, models and quota use.</p>
+
+<p align="center"><img alt="Branchglance Settings dashboard" src="docs/images/settings.png" width="560"></p>
+<p align="center">Settings keep widget controls, provider policy and plan prices together.</p>
+
+- **Chat tree.** Codex and Claude Code chats with subagents; Codex jobs started from a Claude chat nest under it. A status or parent link appears only when there is evidence for it.
+- **Needs-you count.** Waiting chats are marked and counted; click the count to jump to the next one.
+- **Usage limits.** 5-hour and weekly limits for both providers include reset countdowns. Optional live Claude usage (off by default) refreshes about every 180 seconds **(0.2.0)**.
+- **Insights.** Compare tokens, estimated cost, models and quota peaks from 24 hours to 30 days. Models without a known price are listed, never guessed.
+- **Reset actions (off by default).** A greeting keeps Claude's 5-hour window rolling **(0.2.0)**; a one-time `continue` can be queued for chats you pick.
 - **Out of the way.** The widget collapses to a thin strip with a clock and limit bands (into the notch on macOS). Hover over it, or press Ctrl+Shift+T, to open the tree.
+
+## How it works
+
+1. Reads local Codex and Claude Code data.
+2. Builds the chat tree and usage-limit readings.
+3. Shows them in an always-on-top widget.
 
 ## Supported tools
 

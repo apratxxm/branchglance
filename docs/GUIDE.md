@@ -48,19 +48,9 @@ Hover over the widget to show its controls; when chats are active, hovering can 
 
 ### Expanded
 
-The toolbar runs left to right:
+The dock runs left to right: **Insights**, **Settings** | **Refresh** | **Lock**, **Keep open**, **Recenter**. Refresh is an icon. Recenter is disabled while locked; its tooltip says “Unlock the widget to move it”.
 
-| Control | What it does |
-|---|---|
-| Clock | Local time |
-| Lock | Pins the widget in place so it can't be dragged |
-| Keep open | Stops the widget from collapsing automatically |
-| Sync age (`Now`) | Shows how fresh the data is. Click it to refresh |
-| Monitor | Moves the widget to the next display. The label shows Laptop or Monitor |
-| Insights | Opens the Insights and Settings panel |
-| Counts | Active chats, running agents and, in yellow, chats waiting on you. Click the waiting count to jump to them |
-| Search | Opens search. You can also press `/` or `Ctrl+K` |
-| Minimize, Fit, Maximize, Close | Window controls. Fit sizes the widget to the screen. Close hides it to the tray |
+The widget also shows the local clock, chat counts and search. Window controls minimize, fit, maximize or hide the widget to the tray. Press `/` or `Ctrl+K` to search.
 
 ### Providers and colours
 
@@ -123,25 +113,28 @@ Each provider has a **5-hour** band and a **weekly** band. Both show percent use
 
 ## Insights
 
-Open **Insights** from the toolbar. It opens as a panel the shape of the widget, between the 5-hour and weekly bands.
+Open **Insights** from the dock. The hero shows the total for the selected range and metric, followed by the provider split. Below it are **Models** (or **By work** when ledger data exists; use the segmented toggle to switch), quota, activity and chart sections.
 
-- **Range:** 24h, 7d, 30d (default) or All.
-- **Metric:** tokens or cost.
-- Usage over time, a model breakdown (up to five models, with a count of the rest), cache hit rate, and the highest 5-hour and weekly percentages seen in the period. Statistics that aren't available are hidden.
-- **Cost** covers only models with a known price, and the models left out are named. A model without a price is never given a guessed one. Cost is an estimate for comparison, not a bill.
+- **Quota used** shows the current percentage and time to reset for each available provider and quota window.
+- The activity strip shows **Sessions**, **Subagents**, **Cache hit rate** and **Active hours** when data is available.
+- The **Daily** or **Hourly** chart has points you can inspect with the keyboard.
+- Choose **24h**, **7d** or **30d**, and switch between **Tokens** and **Cost**. Use the **Refresh** icon to reload Insights.
+- Partial costs are shown as lower bounds (≥); models without a known price are marked **Unpriced**. More than five models fold into **Other (n)**.
+- Cost is an estimate for comparison, not a bill.
 
 Use it to see what is eating your allowance: a model you didn't mean to use, a heavy day, or low cache reuse. It doesn't break usage down by individual chat.
 
 ## Settings
 
-The **Settings** tab sits next to Insights.
+The **Settings** tab sits next to Insights. Its sections appear in this order:
 
-- **General:** lock widget position, keep the widget open, 12- or 24-hour clock.
-- **Providers:** the show, collect and send flags from your policy file. These are read-only here.
-- **Notifications:** reset actions and Claude tracking (see below).
-- **Display:** the monitor the widget opens on, and **Recenter**, which brings the widget back to that display.
-- **Version:** the installed version and build, for example `0.2.0+910b6d3`.
-- **Report a bug:** previews a privacy-filtered debug report to copy into an issue. To write the report to a file instead, see [Attaching a debug report](CONTRIBUTING.md#attaching-a-debug-report).
+1. **Widget:** lock position, keep the widget open, choose 12- or 24-hour time, and use **Position** (or **Monitor** when multiple displays are available) › **Recenter** to return it to the centre of the current screen. Recenter is disabled while locked and says “Unlock the widget to move it”.
+2. **Providers:** shows the show, collect and send flags from the policy file; these are read-only here.
+3. **After a Codex quota reset:** configure reset actions.
+4. **Plan price:** set monthly plan prices used by the “30d vs plan” comparison.
+5. **About:** shows the version and build and provides a privacy-filtered bug report to create, copy or open in a GitHub issue. For a report file, see [Attaching a debug report](CONTRIBUTING.md#attaching-a-debug-report).
+
+Close the panel with **×** or **Escape** to return to the widget. Focus returns to the button that opened it.
 
 ## Reset actions
 

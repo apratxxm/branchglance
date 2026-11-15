@@ -60,10 +60,11 @@ for(const count of [1,2,0]){
 dashboard.state.insights=livePayload();
 assert.match(html,/<span class="dash-section-title">Daily tokens<\/span>/);
 
-// (3) Zero figures next to non-zero tokens are treated as missing, not shown as 0.
-assert.doesNotMatch(html,/dash-summary|sessions|subagents|active|cache hits/);
+// (3) Reported zero figures stay visible beside non-zero tokens; missing fields stay unavailable.
+assert.match(html,/<dt>Sessions<\/dt><dd>0<\/dd>.*<dt>Subagents<\/dt><dd>0<\/dd>.*<dt>Active hours<\/dt><dd>0h<\/dd>/,"reported zero activity stays visible beside positive tokens");
+assert.match(html,/<dt>Cache hit rate<\/dt><dd><span aria-label="Not available">/,"a missing cache rate remains unavailable");
 
-// (4) Model table shows when rows exist; limit panel hidden when peaks are null; no empty lower band.
+// (4) Model table shows when rows exist; limit panel hidden when peaks are null.
 assert.match(html,/>Models</);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);
 assert.match(html,/<th scope="col">Tokens<\/th><th scope="col">Est\. cost<\/th>/,"Models is a semantic table with visible unit headers");
 assert.equal((html.match(/class="dash-none" role="img" aria-label="No published price">&mdash;/g)||[]).length,2,"each unpriced model has a cost placeholder");
@@ -84,7 +85,7 @@ responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().provi
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/>Models</);
-assert.doesNotMatch(html,/dash-lower/,"no lower section when there are no models or peaks");
+assert.match(html,/class="dash-lower is-single"[\s\S]*class="dash-summary"/,"activity remains in the lower section when model rows are absent");
 assert.match(html,/class="dash-chart"/);
 
 // Limit peaks alone render their own panel (only when present).

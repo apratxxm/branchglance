@@ -140,16 +140,18 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="branchglance-screenshots-") as profile:
             if args.routing:
-                captures = [(f"tree&routing={kind}", f"routing-{kind}.png", 560, 420) for kind in args.routing]
+                captures = [(f"tree&routing={kind}", f"routing-{kind}.png", 560, 420, args.output_dir) for kind in args.routing]
             elif args.insights_only:
-                captures = [(f"insights-{item}", f"insights-{item}.png", 720, 608) for item in ranges]
+                captures = [(f"insights-{item}", f"insights-{item}.png", 720, 608, args.output_dir) for item in ranges]
             elif args.settings_only:
-                captures = [("settings", "settings.png", 720, 608), ("reset-frame", "reset-frame.png", 320, 354)]
+                captures = [("settings", "settings.png", 720, 608, args.output_dir), ("reset-frame", "reset-frame.png", 320, 354, args.output_dir)]
             else:
-                captures = [("collapsed", "widget-collapsed.png", 328, 110),
-                            ("tree", "tree-expanded.png", 560, 420),
-                            ("insights-24h", "insights.png", 720, 608)]
-            for mode, filename, width, height in captures:
+                captures = [("collapsed", "widget-collapsed.png", 328, 110, args.output_dir),
+                            ("tree", "tree-expanded.png", 560, 420, args.output_dir),
+                            ("insights-24h", "insights.png", 720, 608, args.output_dir),
+                            ("insights-7d", "insights.png", 720, 608, ROOT / "docs" / "images"),
+                            ("settings", "settings.png", 720, 608, ROOT / "docs" / "images")]
+            for mode, filename, width, height, output_dir in captures:
                 live_tree = bool(live and (mode == "collapsed" or mode.startswith("tree")))
                 capture["payload"] = capture_payload(live) if live_tree else None
                 capture["ready"] = False
@@ -159,7 +161,7 @@ def main():
                                 "--force-device-scale-factor=2", "--force-prefers-reduced-motion",
                                 "--no-first-run", "--no-default-browser-check", f"--user-data-dir={profile}",
                                 f"--window-size={width},{height}", "--virtual-time-budget=4000",
-                                f"--screenshot={args.output_dir / (args.prefix + filename)}", url]
+                                f"--screenshot={output_dir / (args.prefix + filename)}", url]
                 for attempt in range(2):
                     # Headless Edge occasionally hangs on a page that polls the live app; one retry is enough.
                     try:
@@ -171,7 +173,7 @@ def main():
                     except subprocess.TimeoutExpired:
                         if attempt:
                             raise
-                print(args.output_dir / (args.prefix + filename))
+                print(output_dir / (args.prefix + filename))
     finally:
         server.shutdown()
         server.server_close()

@@ -248,6 +248,7 @@ manyModels.push({name:"claude-zeta-7",tokens:3e4,apiEquivalentCost:1},{name:"cla
 dashboard.state.insights=payload([provider("Claude",{models:manyModels})]);dashboard.state.metric="tokens";
 const otherRow=dashboard.insightsHTML();
 assert.match(otherRow,/Other \(4\)/,"the four smallest models fold into Other");
+assert.match(otherRow,/class="dash-model-name other"[^>]*tabindex="0" data-tip-html=/,"Other exposes its details to keyboard focus");
 assert.match(otherRow,/≥ \$5\.00/,"an Other row with an unpriced constituent reads at least");
 assert.match(otherRow,/At least \$5\.00; some usage is unpriced/,"the lower bound says why, for screen readers and as a title");
 
@@ -258,9 +259,20 @@ assert.match(zeroRange,/<section class="dash-lower is-zero"><div class="dash-low
 assert.match(zeroRange,/<\/p><\/div><div class="dash-side">/,"zero state: Quota keeps the right column");
 assert.doesNotMatch(zeroRange,/dash-chart-section/,"zero state: no chart band");
 
+dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:0,subagentsActive:0,activeHours:0,cacheHitRate:0}})]);
+dashboard.state.range="30d";dashboard.state.metric="tokens";
+const zeroStats=dashboard.insightsHTML();
+assert.match(zeroStats,/<dt>Sessions<\/dt><dd>0<\/dd>/,"reported zero sessions render as zero with positive token usage");
+assert.match(zeroStats,/<dt>Cache hit rate<\/dt><dd>0%<\/dd>/,"reported zero cache rate renders as 0%");
+assert.match(zeroStats,/<dt>Active hours<\/dt><dd>0h<\/dd>/,"reported zero hours render as 0h");
+dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:null,subagentsActive:1,activeHours:1,cacheHitRate:null}})]);
+const missingStats=dashboard.insightsHTML();
+assert.match(missingStats,/<dt>Sessions<\/dt><dd><span aria-label="Not available">/,"a null stat stays unavailable beside a reported stat");
+
 dashboard.state.insights=null;dashboard.state.loading=true;dashboard.state.metric="tokens";
 const loading=dashboard.insightsHTML();
-assert.equal((loading.match(/dash-skel-row/g)||[]).length,3,"first load mounts three Models bar rows");
+assert.equal((loading.match(/dash-skel-row/g)||[]).length,4,"first load reserves four Models rows");
+assert.match(loading,/dash-skel-period[\s\S]*dash-skel-head[\s\S]*dash-skel-summary[\s\S]*dash-skel-chart/,"first load reserves period, section head, summary and chart slots");
 assert.match(loading,/Tokens over/,"first load shows the token eyebrow, not Cost");
 dashboard.state.loading=false;
 
@@ -272,8 +284,9 @@ assert.match(failed,/<div class="dash-hero-meta">(?:(?!<\/div>)[\s\S])*class="da
 assert.doesNotMatch(failed,/<p class="dash-status-line[^"]*" role="status">[^<]*Update failed/,"the failure notice is out of the lower flow");
 const failureTime=today.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).replace(/\u202f/g," ");
 assert.ok(failed.includes(`title="Update failed. Data from ${failureTime}. Use Refresh to retry."`),"the notice title contains the full sentence");
-assert.match(failed,/<span class="sr-only">\. Use Refresh to retry\.<\/span>/,"the retry hint is in screen-reader text");
-assert.ok(failed.includes(`<span class="dash-fail-time"> \u00b7 ${failureTime}</span>`),"the notice names the exact time its data is from");
+assert.match(failed,new RegExp(`<span class="sr-only">\\. data from ${failureTime}\\. Use Refresh to retry\\.<\\/span>`),"screen-reader text includes the data time and retry hint");
+assert.ok(failed.includes(`<span class="dash-fail-time" aria-hidden="true"> \u00b7 data from ${failureTime}</span>`),"the visible notice names the exact time its data is from");
+assert.ok(failed.includes(`<span class="sr-only">. data from ${failureTime}. Use Refresh to retry.</span>`),"screen readers hear where the displayed data is from");
 dashboard.state.loadError=false;
 
 dashboard.state.insights=null;dashboard.state.loading=true;dashboard.state.range="7d";dashboard.state.metric="tokens";
