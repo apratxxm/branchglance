@@ -377,7 +377,7 @@
     const coverage=work.coverage;
     if(work.service.state==="error")return {text:"Ledger paused",title:"The ledger hit an error and is retrying; figures are from its last pass."};
     if(coverage.status==="catching-up")return {text:"Catching up",title:"Still reading older transcripts; totals will grow."};
-    if(coverage.status==="verifying"){const stamp=coverage.lastIngestedAt?new Date(coverage.lastIngestedAt):null,last=stamp&&!Number.isNaN(stamp.getTime())?stamp.toLocaleString():"time unavailable";return {text:`Checking usage records - Last ingestion ${last}`,title:"Some recent usage is waiting for its file to be re-checked. The ledger has not confirmed completion."};}
+    if(coverage.status==="verifying"){const stamp=coverage.lastIngestedAt?new Date(coverage.lastIngestedAt):null,last=stamp&&!Number.isNaN(stamp.getTime())?stamp.toLocaleString():"time unavailable",updated=clockTime(coverage.lastIngestedAt);return {text:`Checking usage records · updated ${updated||"time unavailable"}`,title:`Some recent usage is waiting for its file to be re-checked. The ledger has not confirmed completion. Last ingestion ${last}.`};}
     if(coverage.status!=="partial")return null;
     const causes=[[coverage.gapCount,"gap","gaps"],[coverage.unknownUsageRecords,"turn without usage","turns without usage"],[coverage.readFailures,"read failure","read failures"]]
       .filter(([count])=>finite(count)>0).map(([count,one,many])=>`${number(count)} ${count===1?one:many}`);

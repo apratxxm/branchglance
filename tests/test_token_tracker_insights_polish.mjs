@@ -107,6 +107,19 @@ assert.match(css,/#dashboard-view\{[^}]*--d-right:232px/,"Insights and Settings 
 assert.match(css,/\.dash-hero\{[^}]*grid-template-columns:minmax\(0,1fr\) var\(--d-right\)/,"hero providers use the shared right rail");
 assert.match(css,/\.dash-hero\.dash-hero-loading\{[^}]*grid-template-columns:minmax\(0,1fr\) var\(--d-right\)/,"loading providers reserve the shared right rail");
 assert.match(css,/\.dash-lower\{[^}]*grid-template-columns:minmax\(0,1fr\) var\(--d-right\)/,"lower Insights sections use the shared right rail");
+assert.match(css,/\.dash-model-name\{[^}]*color:var\(--d-ink\);text-shadow:none/ ,"Models and By-work names are plain neutral text");
+assert.doesNotMatch(css,/\.dash-model-name\.(claude|codex)\{color:|\.dash-model-name\.(claude|codex)\{[^}]*text-shadow/ ,"provider colours and glow stay off model names");
+assert.match(css,/\.dash-model-name\.claude i\{background:var\(--d-claude\)/,"Claude model dots retain their provider colour");
+assert.match(css,/\.dash-model-name\.codex i\{background:var\(--d-codex\)/,"Codex model dots retain their provider colour");
+assert.match(css,/\.dash-peaks-table tbody th\{[^}]*color:var\(--d-ink\);text-shadow:none/ ,"Quota provider names are plain neutral text");
+assert.doesNotMatch(css,/\.dash-peaks-table tbody th\.(claude|codex)-color\{[^}]*text-shadow/ ,"Quota provider names have no glow");
+assert.match(css,/\.dash-legend-name\{color:var\(--d-ink\)[^}]*text-shadow:none/ ,"hero legend names are plain neutral text");
+assert.doesNotMatch(css,/\.(claude|codex)-color \.dash-legend-name\{/ ,"provider colours and glow stay off hero legend names");
+assert.match(css,/\.dash-legend-item \.dash-legend-name::before\{[^}]*border-top:2px solid var\(--d-codex\)/,"Codex keeps the provider-coloured legend line");
+assert.match(css,/\.dash-legend-item\.claude-color \.dash-legend-name::before\{[^}]*border-top-color:var\(--d-claude\)/,"Claude keeps the provider-coloured dashed legend line");
+assert.match(css,/\.dash-plan-set\{[^}]*color:var\(--d-sub\)/ ,"Set plan is a quiet text button");
+assert.match(css,/\.dash-plan-set:hover,\.dash-plan-set:focus-visible\{text-decoration:underline;\}/ ,"Set plan underlines only on hover or focus");
+assert.match(css,/\.dash-plan-set:focus-visible\{outline:2px solid var\(--d-codex-text\);outline-offset:2px;\}/ ,"Set plan uses the dashboard's Codex focus ring");
 assert.match(css,/\.dash-summary\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\) repeat\(2,98px\);column-gap:36px/,"activity aligns two columns left and keeps two narrow stat columns");
 assert.match(css,/\.dash-work-row\{[^}]*minmax\(105px,1fr\) repeat\(var\(--work-cols\),52px\) 56px;column-gap:8px/,"four By work kinds use 52px columns and a 56px Total");
 const gridColumns=css.match(/\.dash-work-row\{[^}]*minmax\((\d+)px,1fr\) repeat\(var\(--work-cols\),(\d+)px\) (\d+)px;column-gap:(\d+)px/);
@@ -123,7 +136,7 @@ assert.match(css,/\.dash-status-line\.error\{[^}]*color:var\(--d-ink\);font-weig
 assert.match(css,/\.dash-setting-error\{[^}]*color:var\(--d-ink\)[^}]*font-weight:600/,"Settings errors use strong neutral error styling");
 assert.match(css,/\.dash-work-cell\.is-none\[aria-label="Unpriced"\]\{color:var\(--d-sub\);font-weight:700;\}/,"unpriced By work markers use the specified stronger muted style");
 assert.match(css,/\.dash-work-row\.is-head>span,\.dash-work-cell\{[^}]*font-variant-numeric:tabular-nums/ ,"By work cells use tabular numerals");
-assert.match(css,/\.dash-work-note\.is-qualified\{color:var\(--d-sub\)/,"partial ledger notes use muted text rather than provider orange");
+assert.match(css,/\.dash-work-note\.is-qualified\{color:var\(--d-sub\);font-size:12px;line-height:16px/ ,"all ledger status notes use one quiet 12px line");
 assert.match(css,/\.dash-work-note\.is-qualified strong\{font-weight:600;\}/,"Partial is the only bold label in the ledger note");
 assert.match(css,/\.dash-status-line\.is-freshness\{[^}]*position:static;flex:0 0 22px[^}]*color:var\(--d-mute\);font-size:12px[^}]*text-align:right/ ,"freshness has a reserved, right-aligned line below the plot");
 assert.match(css,/\.dash-plot\{[^}]*min-height:140px/ ,"moving freshness below the plot keeps the chart's 140px minimum");

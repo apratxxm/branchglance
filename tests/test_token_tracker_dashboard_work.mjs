@@ -80,11 +80,24 @@ ui.toggleProvider("Codex");ui.state.metric="cost";
 
 // Coverage short of complete is always qualified, with its causes.
 assert.equal(ui.workNote({coverage:{status:"complete"},service:{state:"live"}}),null);
-assert.equal(ui.workNote({coverage:{status:"catching-up"},service:{}}).text,"Catching up");
-assert.match(ui.workNote({coverage:{status:"verifying",lastIngestedAt:"2026-11-14T10:00:00Z"},service:{}}).text,/Checking usage records - Last ingestion/);
-assert.equal(ui.workNote({coverage:{status:"complete"},service:{state:"error"}}).text,"Ledger paused");
+const catchingUp=ui.workNote({coverage:{status:"catching-up"},service:{}});
+assert.equal(catchingUp.text,"Catching up");
+assert.equal(catchingUp.title,"Still reading older transcripts; totals will grow.");
+const verifyingStamp=new Date("2026-11-14T10:00:00Z"),verifyingAt=verifyingStamp.toISOString();
+const verifying=ui.workNote({coverage:{status:"verifying",lastIngestedAt:verifyingAt},service:{}});
+const verifyingTime12=verifyingStamp.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).replace(/\u202f/g," ");
+assert.equal(verifying.text,`Checking usage records · updated ${verifyingTime12}`,"verifying status uses the short failure-notice clock format");
+assert.equal(verifying.title,`Some recent usage is waiting for its file to be re-checked. The ledger has not confirmed completion. Last ingestion ${verifyingStamp.toLocaleString()}.`,"verifying title preserves its meaning and full locale timestamp");
+values.set("branchglanceClockFormat","24");
+const verifyingTime24=verifyingStamp.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:false}).replace(/\u202f/g," ");
+assert.equal(ui.workNote({coverage:{status:"verifying",lastIngestedAt:verifyingAt},service:{}}).text,`Checking usage records · updated ${verifyingTime24}`,"verifying status follows the selected 24-hour clock format");
+values.delete("branchglanceClockFormat");
+const paused=ui.workNote({coverage:{status:"complete"},service:{state:"error"}});
+assert.equal(paused.text,"Ledger paused");
+assert.equal(paused.title,"The ledger hit an error and is retrying; figures are from its last pass.");
 const partial=ui.workNote({coverage:{status:"partial",gapCount:0,unknownUsageRecords:8,readFailures:0,providersNotCollected:[]},service:{}});
 assert.equal(partial.text,"Partial · 8 turns without usage");
+assert.equal(partial.title,"Some usage could not be counted exactly: 8 turns without usage.");
 
 // Another range's ledger is never shown; an empty or failed ledger hides the view.
 ui.state.ledgerRange="24h";assert.equal(ui.workData(),null);
