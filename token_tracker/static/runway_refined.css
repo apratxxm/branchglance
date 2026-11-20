@@ -523,25 +523,31 @@ body.runway-refined.runway-compact:not(.phone) .resets::before,body.runway-refin
 body.runway-refined.runway-compact:not(.phone) .resets::after,body.runway-refined.runway-compact:not(.phone) .weekly-resets::after{content:"resets in";position:absolute;z-index:2;left:12px;bottom:4px;color:var(--muted);font:450 10px/12px var(--sans);pointer-events:none;}
 body.runway-refined.runway-compact:not(.phone) #resets,body.runway-refined.runway-compact:not(.phone) .weekly-resets{box-sizing:border-box;grid-template-columns:68px minmax(0,1fr) minmax(0,1fr);column-gap:14px;padding:0 12px;}
 body.runway-refined.runway-compact:not(.phone) #resets[data-provider-count="1"],body.runway-refined.runway-compact:not(.phone) .weekly-resets[data-provider-count="1"]{grid-template-columns:68px minmax(0,1fr);}
-body.runway-refined.runway-compact:not(.phone) .rr{overflow:visible;display:grid;grid-template-columns:max-content max-content minmax(0,1fr) max-content;grid-template-rows:20px 4px;gap:2px 0;padding:0;height:30px;}
+body.runway-refined.runway-compact:not(.phone) .rr{overflow:visible;display:grid;grid-template-columns:minmax(0,1fr) max-content max-content;grid-template-rows:20px 4px;gap:2px 0;column-gap:8px;padding:0;height:30px;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex:has(.greet){padding-left:0;}
 body.runway-refined.runway-compact:not(.phone) .rr-provider{grid-column:1;grid-row:1;align-self:center;margin-right:5px;font:600 8.4px/20px var(--sans);white-space:nowrap;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-provider{color:#aaa1ff;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-provider{color:#f0a06e;}
-body.runway-refined.runway-compact:not(.phone) .rr-left{grid-column:2;grid-row:1;justify-content:flex-start;gap:4px;color:var(--ink);}
+body.runway-refined.runway-compact:not(.phone) .rr-left{grid-column:1;grid-row:1;justify-content:flex-start;gap:4px;color:var(--ink);}
+body.runway-refined.runway-compact:not(.phone) .rr-left{min-width:0;}
 body.runway-refined.runway-compact:not(.phone) .rr-left::before{content:"\00b7";color:var(--muted);margin-right:1px;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left{color:var(--ink);}
 body.runway-refined.runway-compact:not(.phone) .rr-left b{color:var(--ink);font:600 12px/18px var(--sans);font-variant-numeric:tabular-nums;}
 body.runway-refined.runway-compact:not(.phone) .rr-left i{display:inline;color:var(--muted);font:450 12px/18px var(--sans);font-style:normal;}
 body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{display:inline;font-size:12px;}
+body.runway-refined.runway-compact:not(.phone) .rr-left .rr-value{min-width:0;max-width:100%;}
+body.runway-refined.runway-compact:not(.phone) .rr-left b{flex:0 0 auto;}
+body.runway-refined.runway-compact:not(.phone) .rr-left.last-known i{flex:0 1 auto;min-width:1ch;max-width:100%;overflow:hidden;color:var(--d-mute,var(--muted));text-overflow:ellipsis;white-space:nowrap;}
 body.runway-refined.runway-compact:not(.phone) .rr .rr-left.last-known b{color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) .rr-left.t-attn b{color:var(--orange);}
 body.runway-refined.runway-compact:not(.phone) .rr-left.t-err b{color:var(--red);}
 body.runway-refined.runway-compact:not(.phone) .rr-left:not(.t-attn):not(.t-err):not(.last-known) b{color:var(--green);}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-err,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-err{color:var(--ink);}
-body.runway-refined.runway-compact:not(.phone) .rr-moment{grid-column:4;grid-row:1;justify-content:flex-end;}
+body.runway-refined.runway-compact:not(.phone) .rr-moment{grid-column:3;grid-row:1;justify-content:flex-end;}
+body.runway-refined.runway-compact:not(.phone) .rr:not(:has(.rr-banked:not([hidden]))){grid-template-columns:minmax(0,1fr) max-content;}
+body.runway-refined.runway-compact:not(.phone) .rr:not(:has(.rr-banked:not([hidden]))) .rr-moment{grid-column:2;}
 /* Banked resets sit in the free track between the percentage and the countdown. */
-body.runway-refined.runway-compact:not(.phone) .rr-banked{position:static;grid-column:3;grid-row:1;justify-self:end;margin-right:6px;font:500 10.5px/20px var(--sans);}
+body.runway-refined.runway-compact:not(.phone) .rr-banked{position:static;grid-column:2;grid-row:1;justify-self:end;font:500 10.5px/20px var(--sans);}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-banked{color:#aaa1ff;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-banked{color:#f0a06e;}
 body.runway-refined.runway-compact:not(.phone) .rr-banked[hidden]{display:none;}

@@ -3,7 +3,7 @@
   const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:31};
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
   const RANGE_PREVIOUS={"24h":"previous day","7d":"previous week","30d":"previous 30 days",all:"previous period"};
-  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
+  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,pendingViewChange:null,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
@@ -309,12 +309,13 @@
     const limits=limitsHTML(data);
     const side=limits?`<div class="dash-side">${limits}</div>`:"";
     const work=workData(),workView=work!=null&&modelsView()==="work";
-    if(workView)return hero+`<section class="dash-lower${side?"":" is-single"}${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${side}${statsHTML}${chartHTML}</section>`+statusHTML;
+    if(workView){const middle=`<section class="dash-lower${side?"":" is-single"}${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${side}${statsHTML}</section>`;return hero+`<section class="dash-insights-body">${middle}${chartHTML}</section>`+statusHTML;}
     const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${work?breakdownToggle("models"):"Models"}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.details||row.name)}"${row.other?` tabindex="0" data-tip-html="${esc(esc(row.details))}" aria-label="${esc(`${row.name}: ${row.details}`)}"`:""}><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?` title="${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens"`:""}>${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?`<span class="sr-only">${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens. </span>`:""}${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':(row.partial?`<span class="dash-partial-cost" title="≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}; some usage is unpriced"><span aria-hidden="true">≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}</span><span class="sr-only">At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced</span></span>`:esc(money(row.apiEquivalentCost)))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
     const leftMain=modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:"";
     const twoColumn=Boolean(modelHTML&&side);
-    const lower=modelHTML||side||statsHTML?`<section class="dash-lower${twoColumn?"":" is-single"}${chartHTML?"":" is-day"}">${leftMain}${side}${statsHTML}${chartHTML}</section>`:chartHTML;
-    return hero+lower+statusHTML;
+    const middle=modelHTML||side||statsHTML?`<section class="dash-lower${twoColumn?"":" is-single"}${chartHTML?"":" is-day"}">${leftMain}${side}${statsHTML}</section>`:"";
+    const body=middle||chartHTML?`<section class="dash-insights-body">${middle}${chartHTML}</section>`:"";
+    return hero+body+statusHTML;
   }
   // By work: ledger tokens per model and kind of work. It takes the place of the Models list; the side column stays on the right.
   // Kinds outside the classifier's list fold into Other, so every cell, row and column adds up to the ledger's totals.
@@ -574,6 +575,7 @@
   function bindTooltipsOnce(){if(tooltipBound)return;tooltipBound=true;bindTooltips();}
   function cancelFade(){
     state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;$("#dashboard-content")?.classList.remove("is-switching");
+    state.pendingViewChange=null;
     const root=$("#dashboard-view");if(root)root.dataset.tab=state.tab;
   }
   function crossFade(change,targetTab){
@@ -584,16 +586,22 @@
     state.fadeTimer=setTimeout(()=>{state.fadeTimer=null;if(generation!==state.fadeVersion||!state.open)return;change();requestAnimationFrame(()=>{if(generation===state.fadeVersion&&state.open)content.classList.remove("is-switching");});},90);
   }
   // The 24h view has no hourly chart, so its panel is shorter. The widget window follows (see windowHeight).
+  const cachedEmptyRange=()=>{
+    if(!state.insights)return false;
+    const cachedRange=state.resultRange||(isRange(state.insights.range)?state.insights.range:null);
+    return cachedRange===state.range&&finite(insightsData(false).totals.tokens)===0;
+  };
   const compactPanel=()=>{
     if(state.tab!=="insights"||!state.insights)return false;
     const data=insightsData(false);
-    // A zero total in the shown providers is a one-line panel, so it takes the compact height too.
+    if(cachedEmptyRange())return true;
+    // Retain the existing one-line zero-state behavior when the range marker is absent.
     if(finite(data.totals.tokens)===0)return true;
     if(state.range!=="24h")return false;
     return !(data.fallback||data.hourly);
   };
   const DASHBOARD_HEIGHT=608,COMPACT_DASHBOARD_HEIGHT=478;
-  const windowHeight=()=>compactPanel()?COMPACT_DASHBOARD_HEIGHT:DASHBOARD_HEIGHT;
+  const windowHeight=()=>cachedEmptyRange()||compactPanel()?COMPACT_DASHBOARD_HEIGHT:DASHBOARD_HEIGHT;
   function syncSize(){
     const size=compactPanel()?"compact":"full",root=$("#dashboard-view");
     if(root)root.dataset.size=size;
@@ -615,14 +623,38 @@
   }
   function setRange(range){
     if(!isRange(range))return;
-    cancelFade();if(range===state.range)return;
-    crossFade(()=>{state.range=range;writePref("branchglanceInsightsRange",range);syncSegments();syncSize();state.renderKey="";void loadInsights();render();});
+    queueViewChange("range",range);
   }
   function setMetric(metric){
     if(!["tokens","cost"].includes(metric))return;
-    cancelFade();if(metric===state.metric)return;
     if(metric==="cost"&&state.insights&&!costAvailable())return;
-    crossFade(()=>{state.metricExplicit=true;state.metric=metric;writePref("branchglanceInsightsMetric",metric);syncSegments();state.renderKey="";render();});
+    queueViewChange("metric",metric);
+  }
+  function queueViewChange(key,value){
+    const hadPending=state.pendingViewChange!=null;
+    if(!hadPending)cancelFade();
+    const pending=state.pendingViewChange||{range:state.range,metric:state.metric};pending[key]=value;
+    if(pending.range===state.range&&pending.metric===state.metric){cancelFade();return;}
+    state.pendingViewChange=pending;
+    const content=$("#dashboard-content");
+    if(reducedMotion()||!content){if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;content?.classList.remove("is-switching");commitViewChange(state.fadeVersion,false);return;}
+    if(hadPending&&state.fadeTimer!=null)return;
+    const generation=state.fadeVersion;
+    dismissTooltip();content.classList.add("is-switching");
+    state.fadeTimer=setTimeout(()=>commitViewChange(generation),90);
+  }
+  function commitViewChange(generation,requireOpen=true){
+    if(generation!==state.fadeVersion||(requireOpen&&!state.open))return;
+    state.fadeTimer=null;const pending=state.pendingViewChange;if(!pending)return;state.pendingViewChange=null;
+    const rangeChanged=pending.range!==state.range;
+    // Data may refresh during the fade. Do not persist Cost if the current data no longer prices it.
+    const metric=pending.metric==="cost"&&state.insights&&!costAvailable()?state.metric:pending.metric,metricChanged=metric!==state.metric;
+    if(rangeChanged){state.range=pending.range;writePref("branchglanceInsightsRange",state.range);}
+    if(metricChanged){state.metricExplicit=true;state.metric=metric;writePref("branchglanceInsightsMetric",state.metric);}
+    syncSegments();syncSize();state.renderKey="";
+    if(rangeChanged)void loadInsights();
+    render();
+    requestAnimationFrame(()=>{if(generation===state.fadeVersion&&state.open)$("#dashboard-content")?.classList.remove("is-switching");});
   }
   async function loadSettings(){
     if(state.settingsBusy)return;state.settingsBusy=true;state.settingsError=false;state.settingsStatus="Loading settings…";render();const api=window.pywebview?.api;
@@ -681,7 +713,7 @@
     state.refreshTimer=setInterval(()=>{if(state.open&&!state.loading)void loadInsights();void loadMonth();},120000);
   }
   function close(){
-    state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
+    state.open=false;state.loadToken++;state.loading=false;state.fadeVersion++;if(state.fadeTimer!=null)clearTimeout(state.fadeTimer);state.fadeTimer=null;state.pendingViewChange=null;if(state.refreshTimer!=null)clearInterval(state.refreshTimer);state.refreshTimer=null;dismissTooltip();
     $("#dashboard-content")?.classList.remove("is-switching");const root=$("#dashboard-view");if(root){root.hidden=true;root.inert=true;root.setAttribute("aria-hidden","true");}
     state.frame=null;state.settingsRenderKey="";const opener=state.opener;state.opener=null;requestAnimationFrame(()=>{const valid=opener&&opener.isConnected!==false&&!opener.disabled&&!opener.hidden&&opener.getClientRects?.().length!==0;const target=valid?opener:$("#dashboard-open");target?.focus?.({preventScroll:true,focusVisible:false});});
   }

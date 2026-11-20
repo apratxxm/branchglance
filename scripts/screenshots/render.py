@@ -31,6 +31,7 @@ else:
 ROOT = Path(__file__).resolve().parents[2]
 STATIC = ROOT / "token_tracker" / "static"
 OUTPUT = ROOT / "docs" / "release" / "screenshots"
+DOCS_IMAGES = ROOT / "docs" / "images"
 HERE = Path(__file__).resolve().parent
 DEFAULT_LIVE_PORT = 8765  # token_tracker/widget.py HTTP_PORT, the running app's fixed local server
 LIVE_ENDPOINTS = {"/api/stats", "/api/live", "/api/insights", "/api/provider-policy", "/api/identity", "/api/claude-collection", "/api/reset-action",
@@ -118,10 +119,16 @@ def main():
     parser.add_argument("--tree-space", action="store_true", help="fixture mode: six children under one of two parents")
     parser.add_argument("--live", action="store_true",
                         help="serve the running Branchglance app's real GET payloads instead of fixtures")
+    parser.add_argument("--docs-images", action="store_true",
+                        help="fixture-only: write the canonical Insights and Settings captures to docs/images")
     parser.add_argument("--live-port", type=int, default=DEFAULT_LIVE_PORT)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     parser.add_argument("--prefix", default="")
     args = parser.parse_args()
+    if args.docs_images and (args.live or args.routing or args.insights_only or args.settings_only or args.reset_continue or args.tree_space):
+        raise SystemExit("--docs-images requires the default fixture capture set; drop --live and specialized capture options")
+    if args.live and args.output_dir.resolve() == DOCS_IMAGES.resolve():
+        raise SystemExit("live captures cannot target docs/images; choose a separate --output-dir")
     if os.name == "nt":
         # Headless Edge sometimes crashes on exit; children inherit this error mode,
         # so Windows logs the crash instead of popping an Application Error dialog.
@@ -147,12 +154,15 @@ def main():
             elif args.settings_only:
                 captures = [("settings", "settings.png", 720, 608, args.output_dir), ("reset-frame", "reset-frame.png", 320, 354, args.output_dir)]
             else:
+                docs_images = DOCS_IMAGES if args.docs_images else args.output_dir
+                insights_7d_name = "insights.png" if args.docs_images else "insights-7d.png"
                 captures = [("collapsed", "widget-collapsed.png", 328, 110, args.output_dir),
                             ("tree", "tree-expanded.png", 560, 420, args.output_dir),
                             ("insights-24h", "insights.png", 720, 608, args.output_dir),
-                            ("insights-7d", "insights.png", 720, 608, ROOT / "docs" / "images"),
-                            ("settings", "settings.png", 720, 608, ROOT / "docs" / "images")]
+                            ("insights-7d", insights_7d_name, 720, 608, docs_images),
+                            ("settings", "settings.png", 720, 608, docs_images)]
             for mode, filename, width, height, output_dir in captures:
+                output_dir.mkdir(parents=True, exist_ok=True)
                 live_tree = bool(live and (mode == "collapsed" or mode.startswith("tree")))
                 capture["payload"] = capture_payload(live) if live_tree else None
                 capture["ready"] = False

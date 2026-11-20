@@ -3,13 +3,11 @@ html:has(body[data-notch-mode="dashboard"]),body[data-notch-mode="dashboard"]{ov
 body[data-notch-mode="dashboard"] #dashboard-content{opacity:1;transform:translateY(0);transition:opacity 140ms cubic-bezier(.16,1,.3,1),transform 140ms cubic-bezier(.16,1,.3,1);}
 body[data-notch-mode="dashboard"] #dashboard-content.dashboard-transition-hidden{opacity:0;transform:translateY(4px);}
 body.dashboard-closing #dashboard-content.dashboard-transition-hidden{transition:opacity 90ms ease-in;transform:none;}
-@media(prefers-reduced-motion:reduce){body[data-notch-mode="dashboard"] #dashboard-content{transition:none;transform:none!important;}}
-body.dashboard-crossfade #dashboard-view:not([hidden]){position:absolute;top:0;left:50%;transform:translateX(-50%);width:720px;height:var(--dashboard-height,608px);display:flex!important;flex-direction:column;overflow:hidden;background:#05070b;z-index:10;pointer-events:none;animation:dashboard-fade-out 90ms ease both;}
-body.dashboard-crossfade .dashboard-header{visibility:hidden;opacity:0;}
-body.dashboard-crossfade .widget>:not(#dashboard-view){animation:dashboard-fade-in 90ms ease both;}
-body.dashboard-crossfade #dashboard-content{opacity:0;}
-@keyframes dashboard-fade-out{from{opacity:1}to{opacity:0}}
+body.dashboard-closing .dashboard-header{animation:dashboard-header-close 90ms ease-in 250ms both;}
+@media(prefers-reduced-motion:reduce){body[data-notch-mode="dashboard"] #dashboard-content{transition:none;transform:none!important;}body.dashboard-closing .dashboard-header{animation:none;}}
+body.dashboard-crossfade .widget{animation:dashboard-fade-in 90ms ease both;}
 @keyframes dashboard-fade-in{from{opacity:0}to{opacity:1}}
+@keyframes dashboard-header-close{from{opacity:1}to{opacity:0}}
 body:not([data-notch-mode="dashboard"]) #dashboard-view,body[data-notch-mode="dashboard"] #dashboard-view[hidden]{display:none!important;}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .widget{width:100%;min-width:0;max-width:none;gap:0;padding:8px;background:radial-gradient(ellipse at 5% 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 42%),linear-gradient(150deg,#0b0e15,#07090e 60%,#0a0d14);}
 body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .compact-toolbar{position:relative;z-index:1;inset:auto;order:0;flex:none;width:100%;height:30px;min-height:30px;display:flex;align-items:center;justify-content:flex-start;overflow:visible;clip-path:none;opacity:1;pointer-events:auto;padding:0 4px;gap:1px;background:radial-gradient(ellipse at 0 0,color-mix(in srgb,var(--source-glow-primary) 10%,transparent),transparent 48%),radial-gradient(ellipse at 100% 100%,color-mix(in srgb,var(--source-glow-secondary) 10%,transparent),transparent 52%),#05070b;border-radius:5px 5px 0 0;box-shadow:inset 0 1px var(--source-edge-strong),inset 1px 0 var(--source-edge),inset -1px 0 var(--source-edge),0 4px 0 #05070b,inset 0 0 18px color-mix(in srgb,var(--source-glow-primary) 7%,transparent);}
@@ -81,15 +79,22 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 
 /* The panel body is clipped to the fixed panel and never scrolls. */
 .dashboard-content{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;transition:opacity 90ms ease,transform 90ms ease;}
-.dashboard-content.is-switching{opacity:.12;transform:translateY(2px);}
+#dashboard-view #dashboard-content.is-switching:not(.dashboard-transition-hidden){opacity:.12;transform:translateY(2px);}
 .dashboard-view :not(.dashboard-content)::-webkit-scrollbar{display:none;width:0;height:0;}
 .dashboard-view :not(.dashboard-content){scrollbar-width:none;}
 .dashboard-panel[hidden]{display:none!important;}
 #dashboard-insights{--seam:none;}
-#dashboard-insights:not([hidden]){flex:1 1 auto;min-height:0;display:flex;flex-direction:column;box-sizing:border-box;padding:10px 20px 6px;color:var(--d-ink);font-size:13px;font-variant-numeric:normal;}
+#dashboard-insights:not([hidden]){flex:1 1 auto;min-height:0;display:flex;flex-direction:column;box-sizing:border-box;padding:10px 20px 6px;color:var(--d-ink);font-size:13px;font-variant-numeric:normal;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--d-mute) transparent;}
+#dashboard-insights::-webkit-scrollbar{display:block!important;width:4px!important;height:4px!important;}
+#dashboard-insights::-webkit-scrollbar-thumb{background:var(--d-mute);border-radius:4px;}
 #dashboard-view[data-open-compact="true"] #dashboard-insights:not([hidden]){flex:0 0 auto;height:max-content;max-height:100%;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--d-mute) transparent;}
 #dashboard-view[data-open-compact="true"] #dashboard-insights::-webkit-scrollbar{display:block!important;width:4px!important;height:4px!important;}
 #dashboard-view[data-open-compact="true"] #dashboard-insights::-webkit-scrollbar-thumb{background:var(--d-mute);border-radius:4px;}
+#dashboard-view[data-open-compact="true"] #dashboard-insights .dash-lower{flex:0 0 auto;}
+#dashboard-view[data-open-compact="true"] #dashboard-insights .dash-chart-section{min-height:194px;}
+#dashboard-insights>.dash-hero,#dashboard-insights>.dash-status-line{flex:0 0 auto;}
+.dash-insights-body{display:flex;flex:1 1 auto;flex-direction:column;min-height:0;}
+#dashboard-insights>.dash-insights-body{min-height:0;}
 #dashboard-view[data-tab="insights"] :is(b,strong,dd,th,td,.dash-axis-value,.dash-date){font-variant-numeric:tabular-nums;}
 .dash-eyebrow{color:#c3c8d4;font-size:13px;font-weight:500;letter-spacing:0;text-transform:none;}
 
@@ -135,7 +140,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-chart-empty{margin:0 0 6px;color:var(--d-mute);font-size:12px;line-height:1.3;}.dash-plan-text{color:var(--d-sub);}
 
 /* Middle row: Models and the side column; the chart runs the full width under both. */
-.dash-lower{position:relative;flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) var(--d-right);grid-template-rows:auto minmax(0,1fr);column-gap:var(--d-gutter);row-gap:12px;align-items:start;padding:0;}
+.dash-lower{position:relative;flex:0 0 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) var(--d-right);grid-template-rows:auto minmax(0,1fr);column-gap:var(--d-gutter);row-gap:12px;align-items:start;padding:0;}
 .dash-lower.is-single{grid-template-columns:minmax(0,1fr);grid-template-rows:none;grid-auto-rows:auto;}
 .dash-lower.is-day{grid-template-rows:minmax(0,1fr);align-items:stretch;}
 .dash-lower-main,.dash-side{min-width:0;}
@@ -185,7 +190,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-summary>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;min-height:var(--d-pitch);}
 .dash-summary dt{color:#a9afbb;font-size:13px;}
 .dash-summary dd{margin:0;color:var(--d-ink);font-size:14px;font-weight:600;letter-spacing:-.01em;}/* Chart: full width, its own head with the style switch, labels inside the plot so the line starts on the content edge. */
-.dash-chart-section{grid-column:1 / -1;align-self:stretch;display:flex;flex-direction:column;min-height:0;box-sizing:border-box;padding:0;border:0;}
+.dash-chart-section{flex:1 1 auto;grid-column:1 / -1;align-self:stretch;display:flex;flex-direction:column;min-height:194px;box-sizing:border-box;padding:0;border:0;}
 .dash-section-head{gap:12px;margin-bottom:0;min-height:28px;}
 .dash-section-title{flex:none;color:#e6e8ef;font-size:13px;font-weight:600;}
 .dash-section-note{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--d-mute);font-size:12px;font-weight:450;}
@@ -349,7 +354,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-select:disabled,.dash-action:disabled{opacity:.55;cursor:not-allowed;}
 .dash-monitor-controls{display:flex;align-items:center;gap:8px;}
 .dashboard-controls #dashboard-refresh{position:relative;display:grid;place-items:center;box-sizing:border-box;width:28px;min-width:28px;height:28px;padding:0;border:0;border-radius:7px;color:var(--d-mute);background:transparent;font-size:0;line-height:0;text-indent:-100vw;white-space:nowrap;overflow:hidden;cursor:pointer;}
-.dashboard-controls #dashboard-refresh::before{content:"";display:block;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M10 4.8A4.5 4.5 0 1 0 10 7' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round'/%3E%3Cpath d='M7.7 2.2H10v2.3' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M10 4.8A4.5 4.5 0 1 0 10 7' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round'/%3E%3Cpath d='M7.7 2.2H10v2.3' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;}
+.dashboard-controls #dashboard-refresh::before{content:"";position:absolute;left:6px;top:6px;display:block;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M10 4.8A4.5 4.5 0 1 0 10 7' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round'/%3E%3Cpath d='M7.7 2.2H10v2.3' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M10 4.8A4.5 4.5 0 1 0 10 7' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round'/%3E%3Cpath d='M7.7 2.2H10v2.3' fill='none' stroke='black' stroke-width='.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;}
 .dashboard-controls #dashboard-refresh:hover{color:var(--d-ink);background:#ffffff0a;}
 .dashboard-controls #dashboard-refresh[aria-busy="true"]::before{animation:dashboard-refresh-spin .8s linear infinite;}
 @keyframes dashboard-refresh-spin{to{transform:rotate(360deg);}}

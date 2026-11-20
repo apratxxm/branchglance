@@ -23,6 +23,21 @@ def open_settings(page):
     expect(page.locator(ui.SETTINGS).get_by_role("switch").first).to_be_visible()
 
 
+def exercise_provider_chips(page):
+    chips = page.locator(ui.PROVIDERS)
+    expect(chips).to_have_count(2)
+    chips.first.click()
+    expect(chips.first).to_have_attribute("aria-pressed", "false")
+    expect(chips.last).to_have_attribute("aria-pressed", "true")
+    expect(chips.last).to_have_attribute("aria-disabled", "true")
+    chips.first.click()
+    expect(chips.first).to_have_attribute("aria-pressed", "true")
+    chips.last.click()
+    expect(chips.last).to_have_attribute("aria-pressed", "false")
+    expect(chips.first).to_have_attribute("aria-pressed", "true")
+    expect(chips.first).to_have_attribute("aria-disabled", "true")
+
+
 def test_tree_smoke(page):
     expect(page.locator(ui.OPEN)).to_be_visible()
     open_insights(page)
@@ -44,25 +59,28 @@ def test_ranges_metrics_and_providers(page):
         else:
             expect(page.locator(f"{ui.HERO} .dash-hero-currency")).to_have_text("$")
             expect(page.locator(ui.HERO)).to_contain_text("estimated")
-    chips = page.locator(ui.PROVIDERS)
-    expect(chips).to_have_count(2)
-    chips.first.click()
-    expect(chips.first).to_have_attribute("aria-pressed", "false")
-    chips.last.click()
-    expect(chips.last).to_have_attribute("aria-pressed", "true")
-    chips.first.click()
-    expect(chips.first).to_have_attribute("aria-pressed", "true")
+    exercise_provider_chips(page)
 
 
 def test_insights_buttons_click(page):
     open_insights(page)
     # Iterate current control identities, because clicking redraws the panel.
     buttons = page.locator(f"{ui.INSIGHTS} button:visible")
-    identities = buttons.evaluate_all("els => els.map(e => [e.getAttribute('data-dashboard-provider'), e.getAttribute('data-dashboard-chart-style'), e.getAttribute('data-dashboard-models')])")
+    identities = buttons.evaluate_all("els => els.map(e => [e.getAttribute('data-dashboard-provider'), e.getAttribute('data-dashboard-chart-style'), e.getAttribute('data-dashboard-models'), e.getAttribute('data-dashboard-range'), e.getAttribute('data-dashboard-metric'), e.getAttribute('data-dashboard-action') || e.getAttribute('aria-label') || e.textContent.trim()])")
     assert identities
-    for provider, style, models in identities:
-        attr, value = next((name, val) for name, val in (("provider", provider), ("chart-style", style), ("models", models)) if val is not None)
+    provider_chips = []
+    for provider, style, models, range_value, metric, label in identities:
+        if provider is not None:
+            provider_chips.append(provider)
+            continue
+        if label == "set-plan":
+            # Navigates to Settings; its routing is covered by the Node dashboard tests.
+            continue
+        attr, value = next(((name, val) for name, val in (("chart-style", style), ("models", models), ("range", range_value), ("metric", metric)) if val is not None), (None, None))
+        assert attr is not None, f"Unexpected visible Insights button without a known control identity: {label!r}"
         page.locator(f'[data-dashboard-{attr}="{value}"]').click()
+    assert len(provider_chips) == 2
+    exercise_provider_chips(page)
 
 
 def test_settings_switches_and_clock(page):
@@ -105,6 +123,83 @@ def test_settings_reachable(page):
     assert last.evaluate("el => { const r=el.getBoundingClientRect(), p=document.querySelector('#dashboard-content').getBoundingClientRect(); return r.bottom <= p.bottom && r.top >= p.top; }")
 
 
+def test_tall_by_work_chart_scrolls_at_full_and_compact_heights(page):
+    open_insights(page)
+    page.evaluate("""() => {
+      const panel = document.querySelector('#dashboard-insights');
+      const rows = ['Opus', 'Sonnet', 'Haiku', 'GPT 6 Codex', 'Other (2)'].map(name =>
+        `<div role="row" class="dash-work-row" style="height:26px"><span role="rowheader">${name}</span><span>1.2M</span><span>900K</span><span>2.1M</span></div>`).join('');
+      panel.innerHTML = `<section class="dash-hero"><div class="dash-hero-meta"><span class="dash-eyebrow">Tokens over 30 days</span></div><div class="dash-hero-number-row"><strong class="dash-hero-number">12.4M</strong></div></section>
+        <section class="dash-insights-body"><section class="dash-lower"><div class="dash-lower-main"><div class="dash-work-block"><div class="dash-work-grid" style="--work-cols:2">
+          <div role="row" class="dash-work-row is-head"><span>By work</span><span>Build</span><span>Review</span><span>Total</span></div>${rows}
+          <div role="row" class="dash-work-row is-foot" style="height:26px"><span>Total</span><span>4.8M</span><span>3.6M</span><span>8.4M</span></div>
+        </div></div></div><div class="dash-side"><div class="dash-limits"><div class="dash-section-label">Quota used</div><table class="dash-peaks-table dash-quota-table"><tbody>
+          <tr class="dash-quota-row"><th>Codex</th><td>62%<span class="dash-quota-sub">resets in 2h 10m</span></td><td>41%<span class="dash-quota-sub">resets in 4d 12h</span></td></tr>
+          <tr class="dash-quota-row"><th>Claude</th><td>55%<span class="dash-quota-sub">resets in 1h 20m</span></td><td>73%<span class="dash-quota-sub">resets in 3d 8h</span></td></tr>
+        </tbody></table></div></div><dl class="dash-summary"><div><dt>Sessions</dt><dd>12</dd></div><div><dt>Active hours</dt><dd>34h</dd></div></dl></section>
+        <section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">Daily tokens</span></div><div class="dash-plot"><div class="dash-axis"><span class="dash-axis-value">2M</span></div><svg class="dash-chart" viewBox="0 0 668 100" aria-label="Daily token chart"></svg></div><div class="dash-dates"><span class="dash-date is-first">Oct 17</span><span class="dash-date is-last">Nov 15</span></div></section></section>
+        <p class="dash-status-line">Updated 1m ago</p>`;
+    }""")
+    for height in (608, 478):
+        layout = page.evaluate("""height => {
+          const view = document.querySelector('#dashboard-view');
+          const panel = document.querySelector('#dashboard-insights');
+          view.style.setProperty('--dashboard-height', `${height}px`);
+          view.dataset.openCompact = String(height === 478);
+          view.dataset.size = height === 478 ? 'compact' : 'full';
+          const chart = panel.querySelector('.dash-chart-section'), dates = panel.querySelector('.dash-dates');
+          const c = chart.getBoundingClientRect(), d = dates.getBoundingClientRect();
+          const last=panel.lastElementChild, p=panel.getBoundingClientRect(), lastBox=last.getBoundingClientRect();
+          return {chartHeight:c.height, datesInside:d.top >= c.top && d.bottom <= c.bottom,
+            scrollHeight:panel.scrollHeight, clientHeight:panel.clientHeight,
+            lastChildBottom:lastBox.bottom-p.top+panel.scrollTop,
+            overflow:getComputedStyle(panel).overflowY,
+            headerOutside:!panel.contains(document.querySelector('.dashboard-header'))};
+        }""", height)
+        assert layout["chartHeight"] >= 194, (height, layout)
+        assert layout["datesInside"], (height, layout)
+        assert layout["overflow"] == "auto", (height, layout)
+        assert layout["lastChildBottom"] <= layout["scrollHeight"] + 0.5, (height, layout)
+        assert layout["headerOutside"], (height, layout)
+        if height == 478:
+            assert layout["scrollHeight"] > layout["clientHeight"], (height, layout)
+            page.locator(ui.INSIGHTS).evaluate("el => el.scrollTop = el.scrollHeight")
+            assert page.locator(ui.INSIGHTS).evaluate("el => el.scrollTop > 0"), height
+        else:
+            assert layout["scrollHeight"] == layout["clientHeight"], (height, layout)
+
+
+def test_compact_quota_cells_do_not_overlap_at_328px(page):
+    page.set_viewport_size({"width": 328, "height": 110})
+    page.wait_for_function("window.__tokenTrackerTest && document.querySelector('#resets')")
+    page.evaluate("""() => {
+      const now = Date.now(), age = new Date(now - 12 * 60000).toISOString();
+      window.__tokenTrackerTest.renderResets([
+        {name:'Codex',connected:true,limitsUpdatedAt:age,fiveHour:{percent:42,resetAt:now/1000+3600},weekly:{percent:35,resetAt:now/1000+4*86400}},
+        {name:'Claude',connected:true,limitsUpdatedAt:age,fiveHour:{percent:100,resetAt:now/1000+6*86400+23*3600},weekly:{percent:100,resetAt:now/1000+6*86400+23*3600}}
+      ]);
+    }""")
+    assert page.locator(".widget").evaluate("el => el.offsetWidth") == 328
+    left = page.locator("#r1-weekly-left")
+    expect(left).to_contain_text("100%")
+    expect(left).to_contain_text("12m ago")
+    expect(page.locator("#r1-weekly-cd")).to_contain_text("6d 23h")
+    layout = page.evaluate("""() => {
+      const row=document.querySelector('#r1-weekly-row'), left=document.querySelector('#r1-weekly-left'), age=left.querySelector('i');
+      const reset=document.querySelector('#r1-weekly-row .rr-moment'), l=left.getBoundingClientRect(), r=reset.getBoundingClientRect();
+      const a=getComputedStyle(age), c=getComputedStyle(document.querySelector('#r1-weekly-cd'));
+      return {gap:r.left-l.right, resetRight:r.right<=row.getBoundingClientRect().right+0.5,
+        ageOverflow:age.scrollWidth>age.clientWidth, ageOverflowStyle:a.overflow, ageEllipsis:a.textOverflow,
+        resetAlign:c.textAlign};
+    }""")
+    assert abs(layout["gap"] - 8) < 0.5, layout
+    assert layout["resetRight"], layout
+    assert layout["ageOverflow"], layout
+    assert layout["ageOverflowStyle"] == "hidden", layout
+    assert layout["ageEllipsis"] == "ellipsis", layout
+    assert layout["resetAlign"] == "right", layout
+
+
 def test_horizontal_layout(page):
     open_settings(page)
     bad = page.locator(ui.SETTINGS).locator(ui.INTERACTIVE).evaluate_all("els => els.filter(e => {const r=e.getBoundingClientRect(), p=document.querySelector('#dashboard-view').getBoundingClientRect(); return r.width && (r.left < p.left - 1 || r.right > p.right + 1)}).map(e => e.outerHTML)")
@@ -112,6 +207,17 @@ def test_horizontal_layout(page):
 
 
 def test_settings_keyboard_reaches_controls(page):
+    # The shared fixture denies automatic actions; grant greet only to the embedded test frame.
+    def reset_frame_policy(route):
+        if urlsplit(route.request.frame.url).path == "/reset_actions.html":
+            route.fulfill(json={"schemaVersion": 1, "generation": "ui-rig-reset-frame",
+                                "providers": [{"name": "Codex", "collect": True, "show": True,
+                                               "send": True, "sendOrigin": "provider_env",
+                                               "capabilities": {"greet": True, "continue": False}}]})
+        else:
+            route.continue_()
+
+    page.route("**/api/provider-policy", reset_frame_policy)
     open_settings(page)
     controls = page.locator(ui.SETTINGS).locator(ui.INTERACTIVE).filter(visible=True)
     frame = page.frame_locator(ui.RESET_FRAME)
@@ -187,12 +293,17 @@ def test_folded_model_tooltip_keeps_untrusted_names_as_text(page):
 def test_close_crossfade_hides_controls_even_with_explicit_visibility(page, native_settle):
     page.emulate_media(reduced_motion="no-preference")
     open_insights(page)
+    tab = page.locator(".dashboard-tab").first
+    tab.evaluate("el => el.style.setProperty('visibility', 'visible', 'important')")
     page.evaluate("() => window.__tokenTrackerTest.closeDashboard()")
     page.wait_for_function("window.__tokenTrackerTest.dashboardState.finish !== null")
+    page.wait_for_function("document.body.classList.contains('dashboard-closing') && getComputedStyle(document.querySelector('.dashboard-header')).opacity === '0'")
+    expect(tab).to_have_css("visibility", "visible")
     if native_settle:
         page.evaluate("() => window.tokenTrackerNotchSettled('controls', false, window.__tokenTrackerTest.dashboardState.generation)")
     page.wait_for_function("document.body.classList.contains('dashboard-crossfade')")
-    header = page.locator(".dashboard-header")
-    expect(header).to_have_css("opacity", "0")
+    expect(page.locator(ui.DASHBOARD)).not_to_be_visible()
+    expect(tab).not_to_be_visible()
+    expect(page.locator(".widget")).to_have_css("animation-name", "dashboard-fade-in")
     page.wait_for_function("!window.__tokenTrackerTest.dashboardState.swapping")
     expect(page.locator(ui.DASHBOARD)).not_to_be_visible()

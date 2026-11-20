@@ -188,6 +188,7 @@ function openDashboard(tab){
   dashboardState.restoreMode=null;dashboardState.open=true;
   const content=$('#dashboard-content');content?.classList?.toggle('dashboard-transition-hidden',!reducedMotion());
   const requestedTab=tab==='settings'?'settings':'insights';
+  if(reopening){const view=$('#dashboard-view');if(view){view.hidden=false;view.inert=false;view.setAttribute?.('aria-hidden','false');}}
   if(!reopening)window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:requestedTab});
   else window.TokenTrackerDashboard?.selectTab?.(requestedTab);
   if(!reopening){dashboardState.height=window.TokenTrackerDashboard?.windowHeight?.()||608;const view=$('#dashboard-view');view?.style?.setProperty?.('--dashboard-height',dashboardState.height+'px');if(view)view.dataset.openCompact=String(dashboardState.height<=478);}
@@ -204,7 +205,8 @@ function closeDashboard(){
     clearTimeout(dashboardState.timer);dashboardState.timer=null;dashboardState.closing=false;dashboardState.open=false;
     const reduced=reducedMotion();dashboardState.swapping=!reduced;document.body?.classList?.remove?.('dashboard-closing');
     setNotch(notch.expanded);
-    const complete=()=>{if(gen!==dashboardState.generation)return;dashboardState.swapping=false;dashboardState.returnMode=null;window.TokenTrackerDashboard?.close?.();const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');delete view.dataset.openCompact;}document.body?.classList?.remove?.('dashboard-crossfade');
+    const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');}
+    const complete=()=>{if(gen!==dashboardState.generation)return;dashboardState.swapping=false;dashboardState.returnMode=null;window.TokenTrackerDashboard?.close?.();if(view)delete view.dataset.openCompact;document.body?.classList?.remove?.('dashboard-crossfade');
       const widget=$('.widget'),rect=widget?.getBoundingClientRect?.(),x=notch.globalPointerX,y=notch.globalPointerY;
       if(rect&&Number.isFinite(x)&&Number.isFinite(y)){const left=(window.screenX||0)+rect.left,top=(window.screenY||0)+rect.top;if(x<left||x>left+rect.width||y<top||y>top+rect.height){notch.hover=false;widget?.dispatchEvent?.(new Event('pointerleave'));}}
     };
