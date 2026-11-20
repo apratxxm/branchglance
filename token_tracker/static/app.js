@@ -1376,7 +1376,7 @@ function renderResets(providers) {
     const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");put(row,"title",view.tip);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
     const unavailable=!view.hasValue&&!view.expired,unavailableLabel=unavailable?'No live reading for '+String(p.name||'provider'):'';
-    const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b>—</b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;put(left,"title",unavailable?unavailableLabel:view.tip);if(unavailable)attr(left,'aria-label',unavailableLabel);else left.removeAttribute?.('aria-label');}
+    const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><span class="rr-provider">'+esc(p.name)+'</span><b>—</b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;put(left,"title",unavailable?unavailableLabel:view.tip);if(unavailable)attr(left,'aria-label',unavailableLabel);else left.removeAttribute?.('aria-label');}
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
     put(left,"className","rr-left"+(unavailable?" is-unavailable":"")+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",unavailable?unavailableLabel:view.tip);
     const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}
@@ -1594,7 +1594,7 @@ function runwayTelemetryHTML(chat,agent=false) {
   const messageLane='<span data-runway-slot="message-lane" class="runway-message-slot">'+messageContents+'</span>';
   const activityHTML=runwayActivityHTML(chat);
   const displayTitle=runwayTitle(chat,agent);
-  const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
+  const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times" aria-label="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
   const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
   const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);

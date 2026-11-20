@@ -118,7 +118,7 @@ const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true
 context.window.addEventListener=()=>{};context.document.addEventListener=()=>{};
 vm.createContext(context);vm.runInContext(app,context);
 const T=context.window.__tokenTrackerTest,ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
-assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times">↻2<\/span>/);
+assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times" aria-label="Resumed 2 times">↻2<\/span>/);
 assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread',resumeCount:1},false), /runway-resume-badge/);
 assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread'},false), /runway-resume-badge/);
  assert.equal(T.openDashboard(),true,"the production widget opens the dashboard");
@@ -808,7 +808,7 @@ T.renderResets([provider]);
   T.renderResets([unavailable]);
   for(const window of ["fiveHour","weekly"]){
     const cell=node(`#r0-${window}-left`),label="No live reading for Fixture";
-    assert.equal(cell.innerHTML,'<span class="rr-value"><b>—</b><i></i></span>',`${window} quota keeps its unavailable marker`);
+    assert.equal(cell.innerHTML,'<span class="rr-value"><span class="rr-provider">Fixture</span><b>—</b><i></i></span>',`${window} quota names its provider before the unavailable marker`);
     assert.equal(cell.title,label,`${window} quota explains the unavailable marker on hover`);
     assert.equal(cell.getAttribute("aria-label"),label,`${window} quota exposes the unavailable reason to assistive technology`);
     assert.match(cell.className,/\bis-unavailable\b/);

@@ -8,8 +8,13 @@ const css = fs.readFileSync(new URL("../token_tracker/static/runway_refined.css"
 assert.match(css,/\.compact-toolbar>\.toolbar-group\+\.toolbar-group\{margin-left:8px;\}/,"toolbar groups keep the approved 8px gap");
 assert.match(css,/\.rr-left\.is-unavailable\{color:var\(--muted\);\}/,"missing quota values use muted ink");
 assert.match(css,/\.rr-left\.is-unavailable:not\(\.t-attn\):not\(\.t-err\):not\(\.last-known\) b\{color:var\(--muted\);\}/,"an unavailable dash never inherits healthy green");
-assert.match(css,/\.rr\.is-unavailable \.rr-cd:empty::before\{content:"";\}/,"an unavailable row keeps the empty countdown cell blank");
-assert.doesNotMatch(css,/\.rr-provider\{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset\(50%\)/,"compact quota rows visibly name the provider");
+assert.match(css,/\.rr \.rr-head:has\(\.rr-left\.is-unavailable\)\+\.rr-moment \.rr-cd:empty::before\{content:"";\}/,"an unavailable row keeps the empty countdown cell blank");
+assert.match(css,/\.rr-provider\{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset\(50%\)/,"quota provider labels stay hidden when a reading is present");
+assert.match(css,/\.rr \.rr-left\.is-unavailable \.rr-provider\{position:static;display:inline;flex:none;width:auto;height:auto;overflow:visible;clip-path:none;color:var\(--muted\)/,"only unavailable quota cells show the provider inline in muted ink");
+assert.match(css,/\.rr-left \.rr-value\{[^}]*gap:4px/,"unavailable provider name and dash have a visible gap");
+assert.match(css,/\.rr-left\{grid-column:1;grid-row:1;min-width:0;overflow:hidden;/,"the quota value cell clips its stale-age text within its own column");
+assert.match(css,/\.runway-resume-badge\{flex:none;margin-left:5px;color:var\(--muted\)/,"resume count has a gap and muted styling");
+assert.match(css,/runway-refined-timing\{min-width:58px;\}/,"elapsed column keeps a fixed minimum width");
 assert.match(page, /window\.__TOKEN_TRACKER_REFINED__=true/);
 assert.match(page, /window\.__TOKEN_TRACKER_COMPACT__=true/);
 assert.match(page, /<header class="titlebar compact-toolbar pywebview-drag-region">/,
@@ -565,7 +570,7 @@ assert.equal(rowClasses.has("runway-root-stuck"), false, "nonsticky tall roots c
 delete context.requestAnimationFrame; delete context.cancelAnimationFrame;
 
 // Time, status, activity, workspace, and tokens have shared columns at every depth.
-assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,1fr\) 52px 112px 96px 80px/);
+assert.match(css, /\[data-notch-mode="inspect"\]:not\(\.phone\) \.runway-refined-row\{\s*grid-template-columns:minmax\(0,1fr\) 62px 112px 96px 80px/);
 assert.match(css, /\.ag\.runway-agent \.runway-refined-row\{padding-left:30px/);
 assert.match(css, /\.runway-refined-timing\{grid-column:2/);assert.match(css,/\.runway-refined-status\{grid-column:3/);
 assert.match(css,/\.runway-refined-activity\{grid-column:3;grid-row:2/);assert.match(css,/\.runway-refined-path\{grid-column:4/);assert.match(css,/\.runway-refined-tokens\{grid-column:5/);
@@ -579,7 +584,7 @@ assert.match(css,/\.runway-refined-activity\{grid-column:3;grid-row:2/);assert.m
   assert.doesNotMatch(T.rowHTML(asked), /in Codex/, "Claude rows never point at Codex");
 }
 // Each information column has its own centred track instead of sharing or shifting with content.
-assert.match(css, /grid-template-columns:minmax\(0,1fr\) 52px 112px 96px 80px/);
+assert.match(css, /grid-template-columns:minmax\(0,1fr\) 62px 112px 96px 80px/);
 assert.doesNotMatch(css, /\.runway-refined-(?:activity>\.runway-activity|path>\.runway-workspace|path \.runway-path-leaf|status \.runway-state-word)\{[^}]*white-space:normal/);
 // Timing (58px) holds the longest elapsed text ("12h 59m", "12d 23h"); 44px clipped "1h 06m".
 assert.doesNotMatch(css, /grid-template-columns:minmax\(0,2fr\) (44px 70px|60px 70px)/);
