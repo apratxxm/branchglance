@@ -233,6 +233,17 @@ assert.match(tickScale,/class="dash-axis-value"[^>]*>20M<\/span>/,"O403 midpoint
 assert.match(tickScale,/class="dash-hero-number">35\.0<span class="dash-hero-mag">M<\/span>/,"O403 leaves three-significant-digit values unchanged outside the axis");
 assert.doesNotMatch(tickScale,/dash-axis-value[^>]*>40\.0M|dash-axis-value[^>]*>20\.0M/);
 
+// Cost axis ticks always carry currency and retain cents below $100.
+const costAxis=value=>{
+  const dates=Array.from({length:30},(_,index)=>dateOffset(29-index));
+  dashboard.state.range="30d";dashboard.state.metric="cost";
+  dashboard.state.insights=payload([{name:"Codex",totals:{tokens:1e6,apiEquivalentCost:value*30,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:dates.map(date=>({date,tokens:0,apiEquivalentCost:value})),models:[],limitPeaks:{fiveHour:null,weekly:null}}]);
+  return dashboard.insightsHTML().match(/class="dash-axis-value"[^>]*>([^<]+)<\/span>/g).map(tick=>tick.match(/>([^<]+)<\/span>/)[1]);
+};
+assert.deepEqual(costAxis(.5),["$0.60","$0.30","$0"],"cost axis ticks below $1 keep the dollar sign and cents");
+assert.deepEqual(costAxis(10),["$12.00","$6.00","$0"],"cost axis ticks between $1 and $100 keep cents");
+assert.deepEqual(costAxis(120),["$150","$75.00","$0"],"cost axis ticks at or above $100 use whole dollars");
+
 // Legend headers, provider cells and inline grid tracks come from one column set across all content states.
 function assertLegendColumns(html,expectedRows,label){
   const legend=html.match(/<div class="dash-split-legend(?: no-share)?" style="grid-template-columns:([^"]+)">([\s\S]*?)<\/div>/);
