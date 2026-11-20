@@ -72,6 +72,7 @@ body.runway-refined:not(.phone) .rr-left b{min-width:4ch;text-align:right;font-s
 body.runway-refined:not(.phone) .rr-left i{font-style:normal;font-size:22px;line-height:28px;font-weight:650;}
 body.runway-refined:not(.phone) .rr-left.t-attn{color:var(--orange);}
 body.runway-refined:not(.phone) .rr-left.t-err{color:var(--red);}
+body.runway-refined:not(.phone) .rr-left.is-unavailable{color:var(--muted);}
 body.runway-refined:not(.phone) .meter{grid-column:4;grid-row:1;width:100%;height:11px;align-self:center;border-radius:8px;background:#252a37;overflow:hidden;}
 body.runway-refined:not(.phone) .meter[aria-hidden="true"]{visibility:hidden;}
 body.runway-refined:not(.phone) .meter i{display:block;height:100%;border-radius:inherit;background:var(--blue);transition:width var(--motion-info) var(--ease-standard),background-color var(--motion-source) var(--ease-standard);}
@@ -109,14 +110,14 @@ body.runway-refined:not(.phone) .runway-refined-row .runway-refined-timing>*,
 body.runway-refined:not(.phone) .runway-refined-row .runway-refined-activity>*,
 body.runway-refined:not(.phone) .runway-refined-row .runway-refined-path>*{grid-column:1;min-width:0;max-width:100%;}
 body.runway-refined:not(.phone) .runway-refined-title>.r-title,
-body.runway-refined:not(.phone) .runway-refined-title>.runway-agent-name{grid-row:1;justify-self:stretch;width:100%;min-width:0;padding:0;display:flex;align-items:center;gap:5px;color:var(--ink);font-size:18px;line-height:23px;font-weight:650;letter-spacing:-.35px;}
+body.runway-refined:not(.phone) .runway-refined-title>.runway-agent-name{grid-row:1;justify-self:stretch;width:100%;min-width:0;padding:0;display:flex;align-items:center;gap:5px;color:var(--ink);font-size:18px;line-height:23px;font-weight:650;letter-spacing:-.35px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status.t-attn) .r-title,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status.t-attn) .runway-agent-name,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status.t-attn) .runway-agent-label{color:var(--orange);}
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status[data-child-waiting="true"]) .r-title,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status[data-child-waiting="true"]) .runway-agent-name,
 body.runway-refined:not(.phone) .runway-refined-row:has(.runway-refined-status[data-child-waiting="true"]) .runway-agent-label{color:var(--orange);}
-body.runway-refined:not(.phone) .runway-refined-title .runway-agent-label{flex:0 1 auto;width:auto;}
+body.runway-refined:not(.phone) .runway-refined-title .runway-agent-label{flex:1 1 auto;width:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 body.runway-refined:not(.phone) .runway-refined-title .runway-message-slot:has(.runway-message-indicator){position:static;inset:auto;transform:none;z-index:auto;display:inline-flex;align-items:center;justify-content:flex-start;flex:0 0 auto;width:auto;height:auto;min-width:0;max-width:none;overflow:visible;margin-left:5px;pointer-events:auto;}
 body.runway-refined:not(.phone) .runway-refined-title .runway-message-slot:not(:has(.runway-message-indicator)){display:none;}
 body.runway-refined:not(.phone) .runway-refined-title>.runway-telemetry-model{grid-row:2;justify-self:stretch;width:100%;height:21px;display:flex;align-items:center;overflow:hidden;color:var(--muted);font-size:15px;line-height:21px;font-weight:400;white-space:nowrap;}
@@ -344,7 +345,7 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat.runway-tall-root>.row,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row.runway-tall-root,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row:has(>.runway-refined-row.runway-tall-root){position:relative;top:auto;z-index:auto;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row{position:relative;width:100%;min-width:0;height:auto;min-height:50px;box-sizing:border-box;display:grid;grid-template-columns:calc(var(--runway-inspect-clock-axis,278px) - 80px) 84px minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto;column-gap:8px;row-gap:0;align-items:center;padding:7px 10px 7px 30px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row{position:relative;width:100%;min-width:0;height:auto;min-height:50px;box-sizing:border-box;display:grid;grid-template-columns:minmax(0,2fr) 84px minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto;column-gap:8px;row-gap:0;align-items:center;padding:7px 10px 7px 30px;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-timing,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-activity,
@@ -358,8 +359,8 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row .runway-refined-activity>*,
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row .runway-refined-path>*{grid-column:1;min-width:0;max-width:100%;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.r-title,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{grid-column:1;grid-row:1;justify-self:stretch;align-self:start;width:100%;min-width:0;padding:0;display:flex;flex-wrap:nowrap;align-items:center;align-content:flex-start;gap:2px 4px;overflow:visible;color:var(--ink);font:650 13px/16px var(--sans);letter-spacing:-.2px;white-space:normal;text-overflow:clip;overflow-wrap:normal;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{flex:0 1 auto;min-width:0;width:auto;max-width:100%;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:normal;word-break:normal;line-height:16px;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{grid-column:1;grid-row:1;justify-self:stretch;align-self:center;width:100%;height:18px;min-width:0;padding:0;display:flex;flex-wrap:nowrap;align-items:center;gap:2px 4px;overflow:hidden;color:var(--ink);font:650 13px/18px var(--sans);letter-spacing:-.2px;white-space:nowrap;text-overflow:ellipsis;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;width:auto;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow-wrap:normal;word-break:normal;line-height:18px;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-message-slot:has(.runway-message-indicator){position:static;inset:auto;transform:none;z-index:auto;display:inline-flex;align-items:center;align-self:flex-start;justify-content:flex-start;flex:0 0 auto;width:auto;height:18px;min-width:max-content;max-width:none;overflow:visible;margin:0;white-space:nowrap;pointer-events:auto;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-message-slot:not(:has(.runway-message-indicator)){display:none;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-telemetry-model{grid-column:1;grid-row:2;justify-self:stretch;align-self:center;width:100%;height:16px;display:flex;align-items:center;overflow:hidden;color:var(--muted);font:400 13px/16px var(--sans);white-space:nowrap;}
@@ -509,10 +510,6 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow-wrap:normal;word-break:normal;}
 
-/* Titles and actions determine row height rather than losing text. */
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.r-title,
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{height:auto;overflow:visible;white-space:normal;text-overflow:clip;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title .runway-agent-label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere;text-wrap:balance;text-overflow:ellipsis;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-row:not(:has(.runway-activity)) .runway-refined-status{grid-row:1/3;align-self:center;}
 /* Single quiet line when the visible provider(s) have no chats: centred in the tree area, no icon or button. */
 .chat-list .empty.tree-empty{display:flex;align-items:center;justify-content:center;min-height:160px;padding:0 var(--gutter);margin:0;font-size:13px;font-weight:400;color:#8d93a8;}
@@ -543,6 +540,7 @@ body.runway-refined.runway-compact:not(.phone) .rr .rr-left.last-known b{color:v
 body.runway-refined.runway-compact:not(.phone) .rr-left.t-attn b{color:var(--orange);}
 body.runway-refined.runway-compact:not(.phone) .rr-left.t-err b{color:var(--red);}
 body.runway-refined.runway-compact:not(.phone) .rr-left:not(.t-attn):not(.t-err):not(.last-known) b{color:var(--green);}
+body.runway-refined.runway-compact:not(.phone) .rr-left.is-unavailable:not(.t-attn):not(.t-err):not(.last-known) b{color:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-left.t-err,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-attn,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-err{color:var(--ink);}
 body.runway-refined.runway-compact:not(.phone) .rr-moment{grid-column:3;grid-row:1;justify-content:flex-end;}
 body.runway-refined.runway-compact:not(.phone) .rr:not(:has(.rr-banked:not([hidden]))){grid-template-columns:minmax(0,1fr) max-content;}
@@ -555,6 +553,7 @@ body.runway-refined.runway-compact:not(.phone) .rr-banked[hidden]{display:none;}
 body.runway-refined.runway-compact:not(.phone) .rr-cd,body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-cd,body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .rr-cd{width:auto;max-width:none;color:var(--ink);font:550 12px/20px var(--sans);font-variant-numeric:tabular-nums;text-align:right;}
 body.runway-refined.runway-compact:not(.phone) .rr-cd.t-attn{color:var(--orange);}
 body.runway-refined.runway-compact:not(.phone) .rr-cd:empty::before{content:"\2014";color:var(--muted);}
+body.runway-refined.runway-compact:not(.phone) .rr.is-unavailable .rr-cd:empty::before{content:"";}
 body.runway-refined.runway-compact:not(.phone) .rr .meter{grid-column:1/-1;grid-row:2;height:4px;border-radius:4px;}
 body.runway-refined.runway-compact:not(.phone) .rr .greet{left:-13px;top:1px;}
 
@@ -584,8 +583,7 @@ body.runway-refined.runway-compact.data-stale:not(.phone) #compact-clock{color:v
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title .runway-agent-label{font-size:12px;line-height:16px;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag.runway-agent .runway-refined-title .runway-model-name{font-size:11.5px;}
 /* Subagents keep the same timing and workspace columns as their parent. */
-/* Usage bars carry no provider names: the bar colour says Codex (purple) or Claude (orange). Names stay for screen readers. */
-body.runway-refined.runway-compact:not(.phone) .rr-provider{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;margin:0;}
+/* Provider names remain visible beside each quota value, including unavailable readings. */
 body.runway-refined.runway-compact:not(.phone) .rr-left::before{content:none;}
 
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chats{flex:1 1 auto;min-height:0;}

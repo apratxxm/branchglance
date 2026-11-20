@@ -153,8 +153,8 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const longName='Review a particularly long subagent name to check the single line truncation and full tooltip';
   const longMarkup=T.runwayTelemetryHTML({...T.state.forest.roots[0].descendants[0],agentName:longName},true);
   assert.ok(longMarkup.includes('title="'+longName+'"'),'full agent name is available in the tooltip');
-  // Subagent names wrap like parent names; the user asked for no truncation.
-  assert.doesNotMatch(css,/.ag.runway-agent .runway-refined-title .runway-agent-label{[^}]*text-overflow:ellipsis/);
+  // Parent and child names stay on one line and ellipsize while retaining the full tooltip.
+  assert.match(css,/\.runway-refined-title \.runway-agent-label\{[^}]*text-overflow:ellipsis/);
   assert.match(longMarkup,/data-runway-slot="model"/);
   assert.match(longMarkup,/Cache 98%/);
 
@@ -410,10 +410,10 @@ console.log("unified agent tree contract checks passed");
 {
   const {T}=boot();
   const active={id:'active',key:'Claude:active',title:'Active',status:'running',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),runStartedAt:ago(2)};
-  assert.equal(T.runwayStateElapsed(active),'2:00');
-  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2:00');
-  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+3000).toISOString()}),'0:00');
-  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1:00');
+  assert.equal(T.runwayStateElapsed(active),'2m');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2m');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+3000).toISOString()}),'0s');
+  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1m');
   // The thread's creation time is not a run start: a resumed run without a run start shows a dash.
   assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,createdAt:ago(600)}),'—');
   const row=workspace=>T.runwayTelemetryHTML({...active,workspace},false);

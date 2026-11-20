@@ -648,19 +648,17 @@ const pad2 = n => String(n).padStart(2,"0");
 const localISODate = () => { const date=new Date(); return date.getFullYear()+"-"+pad2(date.getMonth()+1)+"-"+pad2(date.getDate()); };
 const clock = ms => new Date(ms).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).toLowerCase();
 const mmss = seconds => { const s=Math.max(0,Math.floor(seconds)); return Math.floor(s/60)+":"+pad2(s%60); };
-// Reset countdown: "5d 19h", "3h 02m", "42m", then m:ss in the last 10 minutes.
+// Quota and elapsed duration: units stay explicit even below ten minutes.
 function countdown(seconds) {
   const s=Math.max(0,Math.floor(seconds));
   if(s>=86400)return Math.floor(s/86400)+"d "+pad2(Math.floor(s%86400/3600))+"h";
   if(s>=3600)return Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m";
   if(s>=600)return Math.floor(s/60)+"m";
-  return mmss(s);
+  if(s>=60)return Math.floor(s/60)+"m"+(s%60?" "+pad2(s%60)+"s":"");
+  return s+"s";
 }
-// Run time: m:ss under 10 minutes, then 12m, then 1h 04m.
-function runSpan(seconds) {
-  const s=Math.max(0,Math.floor(seconds));
-  return s<600 ? mmss(s) : s<3600 ? Math.floor(s/60)+"m" : s<86400 ? Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m" : Math.floor(s/86400)+"d "+Math.floor(s%86400/3600)+"h";
-}
+// Run time uses the same duration units as quota countdowns.
+const runSpan = countdown;
 function ageShort(ms) {
   if(!ms)return "—";
   const m=Math.max(0,Math.floor((Date.now()-ms)/60000));
@@ -1292,7 +1290,7 @@ function resetView(provider, key) {
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const hasReset=Boolean((measured&&parts.target)||(lastKnown&&parts.target&&parts.seconds>0));
-  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
+  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":countdown(parts.seconds);
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
   return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,resetTarget:hasReset&&parts.target!=null?Number(parts.target):null,
