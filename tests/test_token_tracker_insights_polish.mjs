@@ -313,6 +313,8 @@ assert.match(embeddedPeaks,/<div class="dash-section-label">Peak in this range<\
 assert.doesNotMatch(embeddedPeaks,/<thead>/,"O501 omits a second quota header row");
 assert.match(css,/\.dash-quota-peak \.dash-section-label\{min-height:18px;color:var\(--d-mute\);font-size:12px;font-weight:450;\}/,"O501 uses a smaller muted secondary heading");
 assert.match(css,/\.dash-quota-peak \.dash-peaks-table td\{color:var\(--d-sub\);font-weight:450;\}/,"O501 keeps secondary quota values in the subdued token");
+assert.match(css,/\.dash-quota-table \.dash-quota-note\{text-align:left;\}/,"O603 aligns the missing-reading note to the provider-name column");
+assert.match(css,/\.dash-quota-table :is\(th,td\):nth-child\(n\+2\)\{width:56px;\}/,"O603 keeps live and historical peak metric columns at matching widths");
 
 // Stamped hours (24h) follow the clock preference; the range line has no minutes on 12-hour and keeps hh:mm on 24-hour.
 const hourlyRows=[{date:"2026-11-13T23:00:00",tokens:5e5,apiEquivalentCost:null},{date:"2026-11-14T22:00:00",tokens:5e5,apiEquivalentCost:null}];
