@@ -45,6 +45,9 @@ assert.match(dashboardCss,/#dashboard-view\[data-open-compact="true"\] #dashboar
 assert.match(dashboardCss,/#dashboard-view\[data-open-compact="true"\] #dashboard-insights::-webkit-scrollbar\{display:block!important;width:4px!important;height:4px!important;\}/);
 assert.match(dashboardCss,/#dashboard-view\[data-open-compact="true"\] #dashboard-insights \.dash-lower\{flex:0 0 auto;\}/,"compact-open lower content keeps its full height inside the scroll area");
 assert.match(dashboardCss,/#dashboard-view\[data-open-compact="true"\] #dashboard-insights \.dash-chart-section\{min-height:194px;\}/,"compact-open scrolling preserves the chart section minimum height");
+assert.match(dashboardCss,/#dashboard-insights:not\(\[hidden\]\)\{[^}]*overflow-x:hidden;overflow-y:auto;[^}]*scrollbar-width:thin;scrollbar-color:var\(--d-mute\) transparent/,"Insights scrolls vertically at every panel height");
+assert.match(dashboardCss,/\.dash-insights-body\{display:flex;flex:1 1 auto;flex-direction:column;min-height:0;\}/,"the chart and fixed-height middle section share the available height");
+assert.match(dashboardCss,/\.dash-chart-section\{flex:1 1 auto;[^}]*min-height:194px/,"the chart takes remaining height while retaining the V160 minimum");
 const switchingSelector=dashboardCss.match(/([^{}]+)\{opacity:\.12;transform:translateY\(2px\);\}/)?.[1].trim()||"";
 const hiddenSelector='body[data-notch-mode="dashboard"] #dashboard-content.dashboard-transition-hidden';
 const specificity=selector=>{const normalized=selector.replace(/:not\(([^)]*)\)/g,"$1");return [(normalized.match(/#[\w-]+/g)||[]).length,(normalized.match(/\.[\w-]+|\[[^\]]+\]|:[\w-]+/g)||[]).length,(normalized.match(/(?:^|\s|[>+~])(?:[a-z][\w-]*)/gi)||[]).length];};
