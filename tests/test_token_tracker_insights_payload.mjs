@@ -82,21 +82,21 @@ assert.match(html,/class="dash-chip claude-color" data-dashboard-provider="Claud
 assert.match(html,/30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
 assert.ok(html.indexOf('dash-hero')<html.indexOf('dash-lower')&&html.indexOf('dash-lower')<html.indexOf('dash-chart-section'));
 assert.doesNotMatch(html,/Peak quota used/);
-assert.match(html,/class="dash-lower is-single"/);
+assert.match(html,/class="dash-lower[^"]*"[\s\S]*class="[^"]*dash-quota[\s\S]*dash-quota-row/);
 
 // Models absent: the model table and empty panels are not rendered at all.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,models:[]}))})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/>Models</);
-assert.match(html,/class="dash-lower is-single"[\s\S]*class="dash-summary"/,"activity remains in the lower section when model rows are absent");
+assert.match(html,/class="dash-lower[^"]*"[\s\S]*class="dash-summary"/,"activity remains in the lower section when model rows are absent");
 assert.match(html,/class="dash-chart"/);
 
 // Limit peaks alone render their own panel (only when present).
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>({...p,models:[],limitPeaks:i===0?{fiveHour:76,weekly:58}:{fiveHour:null,weekly:null}}))})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
-assert.match(html,/Peak quota used/);assert.match(html,/dash-lower is-single/);assert.match(html,/>5h</);assert.match(html,/76%/);
+assert.match(html,/Peak in this range/);assert.match(html,/class="dash-lower[^"]*"[\s\S]*class="[^"]*dash-quota[\s\S]*dash-quota-row/);assert.match(html,/>5h</);assert.match(html,/76%/);
 
 // Non-zero sessions are shown.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>i===0?{...p,totals:{...p.totals,sessions:46,subagentsActive:18,activeHours:62}}:p)})}];

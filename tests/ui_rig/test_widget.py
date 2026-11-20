@@ -62,6 +62,66 @@ def test_ranges_metrics_and_providers(page):
     exercise_provider_chips(page)
 
 
+@pytest.mark.parametrize("height", [608, 478])
+@pytest.mark.parametrize("range_name", ["24h", "7d", "30d"])
+@pytest.mark.parametrize("metric", ["tokens", "cost"])
+def test_insights_freshness_stamp_stays_below_chart(page, height, range_name, metric):
+    def fresh_insights(route):
+        data = route.fetch().json()
+        from datetime import datetime, timezone
+        data["generatedAt"] = datetime.now(timezone.utc).isoformat()
+        route.fulfill(json=data)
+
+    page.route("**/api/insights?*", fresh_insights)
+    page.set_viewport_size({"width": 720, "height": height})
+    open_insights(page)
+    providers = page.locator(ui.PROVIDERS)
+    expect(providers).to_have_count(2)
+    for index in range(2):
+        expect(providers.nth(index)).to_have_attribute("aria-pressed", "true")
+    page.locator(f'{ui.RANGE}[data-dashboard-range="{range_name}"]').click()
+    page.locator(f'{ui.METRIC}[data-dashboard-metric="{metric}"]').click()
+    stamp = page.locator(".dash-chart-section .dash-status-line.is-freshness")
+    expect(stamp).to_be_visible()
+    layout = page.evaluate("""() => {
+      const stamp=document.querySelector('.dash-chart-section .dash-status-line.is-freshness');
+      const rect=el=>{const r=el.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+      const overlaps=(a,b)=>a.left<b.right-.5&&a.right>b.left+.5&&a.top<b.bottom-.5&&a.bottom>b.top+.5;
+      const box=rect(stamp), plot=rect(document.querySelector('.dash-chart-section .dash-plot'));
+      const labels=[...document.querySelectorAll('.dash-chart-section .dash-axis-value,.dash-chart-section .dash-date')].map(rect);
+      return {plot:overlaps(box,plot),labels:labels.map(label=>overlaps(box,label)),text:stamp.textContent};
+    }""")
+    assert not layout["plot"], layout
+    assert not any(layout["labels"]), layout
+    assert "Updated" in layout["text"], layout
+
+
+@pytest.mark.parametrize("height", [608, 478])
+def test_by_work_folded_name_fits_at_compact_width(page, height):
+    def six_model_ledger(route):
+        route.fulfill(json={"rows": [
+            {"provider": "Claude", "modelId": f"M{index}", "displayName": f"M{index}",
+             "kind": "build", "totalTokens": 1000000 - index * 1000, "knownCostUsd": 1.0,
+             "costComplete": True, "unpricedTokens": 0}
+            for index in range(10)
+        ], "coverage": {}, "service": {}})
+
+    page.route("**/api/ledger?*", six_model_ledger)
+    page.set_viewport_size({"width": 720, "height": height})
+    open_insights(page)
+    page.locator(f'{ui.METRIC}[data-dashboard-metric="tokens"]').click()
+    page.locator('[data-dashboard-models="work"]').click()
+    folded = page.locator(".dash-work-row.other .dash-model-name")
+    expect(folded).to_be_visible()
+    metrics = folded.evaluate("el => ({text:el.textContent.trim(),title:el.title,scrollWidth:el.scrollWidth,clientWidth:el.clientWidth})")
+    assert metrics["text"] == "Other (6)", metrics
+    assert metrics["title"] == "6 models folded", metrics
+    assert metrics["scrollWidth"] <= metrics["clientWidth"], metrics
+    names = page.locator(".dash-work-row:not(.is-head):not(.is-foot) .dash-model-name").evaluate_all(
+        "els => els.map(el => ({name:el.textContent.trim(),scrollWidth:el.scrollWidth,clientWidth:el.clientWidth}))")
+    assert names and all(row["scrollWidth"] <= row["clientWidth"] for row in names), names
+
+
 def test_provider_legend_values_share_one_line_box_at_compact_and_default_sizes(page):
     open_insights(page)
 
