@@ -187,7 +187,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const rowRule=cssRule(inspect+'.runway-refined-row');
   assert.match(rowRule,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
   const cellRules=['runway-refined-timing','runway-refined-status','runway-refined-path','runway-refined-tokens'];
-  for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
+  for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,name==='runway-refined-timing'?/min-width:58px/:/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
   assert.doesNotMatch(cssRule(inspect+'.runway-refined-activity'),/overflow:visible/);
   assert.doesNotMatch(cssRule(inspect+'.runway-refined-activity>.runway-activity'),/white-space:normal/,'activity stays on one line');
   for(const name of ['runway-refined-timing','runway-refined-path'])

@@ -372,6 +372,50 @@ def test_compact_quota_cells_do_not_overlap_at_328px(page):
     assert layout["resetAlign"] == "right", layout
 
 
+@pytest.mark.parametrize("width", [328, 720])
+@pytest.mark.parametrize("mode", ["controls", "inspect"])
+def test_widget_quota_rows_and_elapsed_values_do_not_overlap(page, width, mode):
+    page.set_viewport_size({"width": width, "height": 478})
+    page.wait_for_function("window.__tokenTrackerTest && document.querySelector('#resets')")
+    page.evaluate("""({mode}) => {
+      document.body.classList.add('runway-compact');
+      document.body.dataset.notchMode = mode;
+      const now=Date.now();
+      window.__tokenTrackerTest.renderResets([
+        {name:'Codex',connected:true,limitsUpdatedAt:new Date(now).toISOString(),fiveHour:{percent:42,resetAt:now/1000+3600},weekly:{percent:35,resetAt:now/1000+4*86400}},
+        {name:'Claude',connected:true,limitsUpdatedAt:new Date(now).toISOString(),fiveHour:{percent:67,resetAt:now/1000+7200},weekly:{percent:58,resetAt:now/1000+5*86400}}
+      ]);
+      const list=document.querySelector('#chat-list');
+      const job='<div class="runway-refined-row"><span class="runway-refined-title"><span class="r-title"><span class="runway-agent-label">A job</span></span></span><span class="runway-refined-timing"><span class="runway-refined-elapsed">12m 37s</span></span><span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span><span class="runway-refined-path"></span></div>';
+      list.innerHTML='<div class="chat"><div class="row">'+job+'</div></div><div class="ag runway-agent"><div class="runway-agent-glance">'+job+'</div></div>';
+    }""", {"mode": mode})
+    for state in ("readings", "missing"):
+        if state == "missing":
+            page.evaluate("""() => window.__tokenTrackerTest.renderResets([
+              {name:'Claude',connected:true}
+            ])""")
+        layout = page.evaluate("""() => {
+          const intersects=(a,b)=>a.left<b.right-.5&&a.right>b.left+.5&&a.top<b.bottom-.5&&a.bottom>b.top+.5;
+          const boxes=[], percentages=[];
+          for(const row of document.querySelectorAll('.rr')) {
+            const walker=document.createTreeWalker(row,NodeFilter.SHOW_TEXT);
+            for(let node;(node=walker.nextNode());) if(node.textContent.trim()) {
+              const range=document.createRange();range.selectNodeContents(node);
+              for(const rect of range.getClientRects()) if(rect.width&&rect.height) boxes.push({row,text:node.textContent.trim(),rect:{left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom}});
+            }
+            const value=row.querySelector('.rr-left b');
+            if(value&&value.textContent.includes('%')) {const r=value.getBoundingClientRect(); percentages.push({el:value,x:r.left+r.width/2,y:r.top+r.height/2,text:value.textContent});}
+          }
+          const overlaps=[];for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++)if(boxes[i].row===boxes[j].row&&intersects(boxes[i].rect,boxes[j].rect))overlaps.push([boxes[i].text,boxes[j].text]);
+          const covered=percentages.filter(p=>document.elementFromPoint(p.x,p.y)!==p.el&&!p.el.contains(document.elementFromPoint(p.x,p.y))).map(p=>p.text);
+          const elapsed=[...document.querySelectorAll('.runway-refined-elapsed')].map(el=>({text:el.textContent,scrollWidth:el.scrollWidth,clientWidth:el.clientWidth}));
+          return {overlaps,covered,elapsed};
+        }""")
+        assert not layout["overlaps"], (width, mode, state, layout)
+        assert not layout["covered"], (width, mode, state, layout)
+        assert all(item["scrollWidth"] <= item["clientWidth"] for item in layout["elapsed"]), (width, mode, state, layout)
+
+
 def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
     for width in (720, 328):
         page.set_viewport_size({"width": width, "height": 478})
