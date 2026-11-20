@@ -356,7 +356,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-clock-segment button:focus-visible{outline:2px solid var(--source-accent);outline-offset:-2px;}
 .dash-clock-segment button[aria-pressed="true"]{color:#f5f6f8;background:color-mix(in srgb,var(--source-accent) 18%,transparent);box-shadow:0 0 12px color-mix(in srgb,var(--source-glow-primary) 16%,transparent);}
 .dash-select,.dash-plan-field{border-color:var(--d-edge);background:#10131b;}
-.dash-select:disabled,.dash-action:disabled{opacity:1;cursor:not-allowed;}
+.dash-select:disabled{opacity:.55;cursor:not-allowed;}.dash-action:disabled{opacity:1;cursor:not-allowed;}
 .dash-action:disabled,.dash-action:disabled:hover{color:var(--d-mute);background:transparent;}
 .dash-monitor-controls{display:flex;align-items:center;gap:8px;}
 .dashboard-controls #dashboard-refresh{position:relative;display:grid;place-items:center;box-sizing:border-box;width:28px;min-width:28px;height:28px;padding:0;border:0;border-radius:7px;color:var(--d-mute);background:transparent;font-size:0;line-height:0;text-indent:-100vw;white-space:nowrap;overflow:hidden;cursor:pointer;}

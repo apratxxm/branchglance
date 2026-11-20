@@ -349,7 +349,7 @@ assert.equal(T.state.threads.length,0);
   for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(node("footer").hidden,true,"saved mode hides footer");
   assert.equal(node("#save").textContent,"Save");
-  assert.equal(node("#oneshot-note").textContent,"Runs once at the next genuine quota reset. Saving arms this action; it sends then.");
+  assert.equal(node("#oneshot-note").textContent,"Runs once, at the next quota reset. Nothing is sent before then.");
   radios[0].checked=false;radios[1].checked=true;
   listeners.change({target:{matches:selector=>selector==='input[name="mode"]'}});
   assert.equal(node("footer").hidden,false,"changed mode shows footer");
