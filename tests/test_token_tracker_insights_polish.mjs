@@ -223,6 +223,54 @@ assert.match(dashboard.insightsHTML(),/<em class="claude" style="width:50\.0%"/,
 
 // (9) Round 3: quota follows the provider chips and shows the weekly column; stamped hours follow the clock; work figures; partial pricing; one point in the tab order.
 const provider=(name,extra={})=>({name,totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(1e6),models:[],limitPeaks:{fiveHour:null,weekly:null},...extra});
+
+// Legend headers, provider cells and inline grid tracks come from one column set across all content states.
+function assertLegendColumns(html,expectedRows,label){
+  const legend=html.match(/<div class="dash-split-legend(?: no-share)?" style="grid-template-columns:([^"]+)">([\s\S]*?)<\/div>/);
+  assert.ok(legend,`${label}: split legend exists`);
+  const tracks=legend[1].trim().split(/\s+/).length,markup=legend[2];
+  const heads=(markup.match(/class="dash-legend-head(?: [^"]*)?"/g)||[]).length;
+  const rows=(markup.match(/<span class="dash-legend-item [^"]+">/g)||[]).length;
+  const cells=(markup.match(/<span class="dash-legend-cell /g)||[]).length;
+  assert.equal(rows,expectedRows,`${label}: provider row count`);
+  assert.equal(heads,tracks,`${label}: header cells equal grid tracks`);
+  assert.equal(cells,rows*tracks,`${label}: provider cells equal row count times grid tracks`);
+  assert.match(legend[1],/^minmax\(0,max-content\)/,`${label}: provider name has its own leading track`);
+}
+const legendProviders=[provider("Claude"),provider("Codex")],legendMonth={providers:[
+  {name:"Claude",series:[{tokens:1e6,apiEquivalentCost:10}]},
+  {name:"Codex",series:[{tokens:1e6,apiEquivalentCost:10}]}
+]};
+dashboard.state.range="30d";dashboard.state.resultValue=null;dashboard.state.month=legendMonth;dashboard.state.monthError=false;
+for(const layoutSize of ["default","compact"]){
+  for(const range of ["24h","7d","30d"]){
+    dashboard.state.range=range;
+    for(const metric of ["tokens","cost"]){
+      dashboard.state.metric=metric;
+      for(const hasPlanPrice of [false,true]){
+        for(const name of ["Claude","Codex"])values[hasPlanPrice?"set":"delete"](`branchglancePlanPrice.${name}`,"20");
+        dashboard.state.insights=payload(legendProviders);
+        const legendHTML=dashboard.insightsHTML();
+        assertLegendColumns(legendHTML,2,`${layoutSize} ${range} ${metric} ${hasPlanPrice?"priced":"unpriced plan"}`);
+        if(hasPlanPrice)assert.match(legendHTML,/class="dash-plan-cell"><span title="[^"]+">0\.5/);
+        else assert.match(legendHTML,/data-dashboard-action="set-plan"/);
+
+        dashboard.toggleProvider("Codex");
+        assert.doesNotMatch(dashboard.insightsHTML(),/class="dash-split-legend/,`${layoutSize} ${range} ${metric}: one visible provider uses the single-provider plan layout`);
+        dashboard.toggleProvider("Codex");
+        dashboard.toggleProvider("Claude");
+        assert.doesNotMatch(dashboard.insightsHTML(),/class="dash-split-legend/,`${layoutSize} ${range} ${metric}: the other provider filter also uses the single-provider layout`);
+        dashboard.toggleProvider("Claude");
+      }
+    }
+    dashboard.state.metric="cost";
+    dashboard.state.insights=payload([legendProviders[0],provider("Codex",{totals:{tokens:1e6,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null}})]);
+    assertLegendColumns(dashboard.insightsHTML(),2,`${layoutSize} ${range} Cost with one unpriced provider`);
+  }
+}
+values.delete("branchglancePlanPrice.Claude");values.delete("branchglancePlanPrice.Codex");
+dashboard.state.month=null;dashboard.state.range="30d";dashboard.state.metric="tokens";
+
 // Compact token precision is shared by the hero, summary, chart tooltip and model table.
 dashboard.state.range="30d";dashboard.state.metric="tokens";
 dashboard.state.insights=payload([provider("Claude",{totals:{tokens:3.89e9,apiEquivalentCost:10,sessions:571e6,subagentsActive:0,activeHours:1.1e9,cacheHitRate:null},series:[{date:today.toISOString().slice(0,10),tokens:6.95e6,apiEquivalentCost:null}],models:[{name:"claude-opus-5.5",tokens:1.1e9,apiEquivalentCost:1}]})]);

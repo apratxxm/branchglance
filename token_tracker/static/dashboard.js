@@ -185,7 +185,7 @@
     }).join("");
     return `<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="${data.hourly?"Hourly":"Daily"} ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg><div class="dash-markers" aria-hidden="true">${dotList.join("")}</div></div>${dates}`;
   }
-  // The split bar sits under the figure it divides; the legend is a four-column table (provider, value, share, plan multiple) so every column aligns.
+  // The split bar sits under the figure it divides; one column list builds the legend tracks, headings and provider cells.
   function splitParts(data){
     const key=data.heroKey;if(!key)return null;
     const all=data.providers.map(p=>({name:p.name,value:finite(p.scoped[key])}));
@@ -193,16 +193,21 @@
     if(!sum)return null;
     const bar=data.providers.length>1?`<div class="dash-split" aria-hidden="true">${all.filter(row=>row.value>0).map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div>`:"";
     const showShare=key!=="apiEquivalentCost"||all.filter(row=>row.value!=null).length>=2;
-    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span>${showShare?'<span class="dash-legend-head">Share</span>':""}<span class="dash-legend-head dash-plan-head">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>`;
+    const columns=[
+      {track:"minmax(0,max-content)",head:'<span class="dash-legend-head"></span>',cell:row=>`<span class="dash-legend-cell dash-legend-name">${esc(row.name)}</span>`},
+      {track:"max-content",head:`<span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span>`,cell:row=>`<span class="dash-legend-cell dash-legend-value">${row.value==null?(key==="apiEquivalentCost"?'<span class="dash-legend-unpriced">Unpriced</span>':'<b aria-label="Unavailable">—</b>'):`<b>${esc(key==="apiEquivalentCost"?compactMoney(row.value):number(row.value))}</b>`}</span>`},
+      ...(showShare?[{track:"max-content",head:'<span class="dash-legend-head">Share</span>',cell:row=>`<span class="dash-legend-cell dash-legend-share">${row.value==null?"":`${Math.round(100*row.value/sum)}%`}</span>`}]:[]),
+      {track:"max-content",head:'<span class="dash-legend-head dash-plan-head">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>',cell:row=>`<span class="dash-legend-cell dash-legend-plan">${key==="apiEquivalentCost"&&row.value==null?planCells(""):planCellsHTML(row.name)}</span>`}
+    ];
+    const head=columns.map(column=>column.head).join(""),gridTemplate=columns.map(column=>column.track).join(" ");
     let unpriced=false;
     const items=all.map(row=>{
       const cls=`${providerKey(row.name)}-color`;
-      const value=row.value==null?(key==="apiEquivalentCost"?'<span class="dash-legend-unpriced">Unpriced</span>':'<b aria-label="Unavailable">—</b>')+(showShare?'<span class="dash-legend-share"></span>':""):`<b>${esc(key==="apiEquivalentCost"?compactMoney(row.value):number(row.value))}</b>${showShare?`<span class="dash-legend-share">${Math.round(100*row.value/sum)}%</span>`:""}`;
-      const plan=key==="apiEquivalentCost"&&row.value==null?planCells(""):planCellsHTML(row.name);
+      const plan=key==="apiEquivalentCost"&&row.value==null?"":planCellsHTML(row.name);
       if(plan.includes("some unpriced"))unpriced=true;
-      return `<span class="dash-legend-item ${cls}"><span class="dash-legend-name">${esc(row.name)}</span>${value}${plan}</span>`;
+      return `<span class="dash-legend-item ${cls}">${columns.map(column=>column.cell(row)).join("")}</span>`;
     }).join("");
-    return {bar,legend:`<div class="dash-split-legend${showShare?"":" no-share"}">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">At least means some usage has no published price, so the real figure is higher.</p>':""}`};
+    return {bar,legend:`<div class="dash-split-legend${showShare?"":" no-share"}" style="grid-template-columns:${gridTemplate}">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">At least means some usage has no published price, so the real figure is higher.</p>':""}`};
   }
   // One provider has no split to compare against, so its plan multiple gets one line of its own.
   function singlePlanHTML(data){const p=data.providers[0];if(!p)return "";return `<div class="dash-plan-single ${providerKey(p.name)}-color"><span class="dash-plan-figure"><span class="dash-plan-label">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>${planCellsHTML(p.name)}</span></div>`;}

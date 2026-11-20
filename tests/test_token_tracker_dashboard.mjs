@@ -549,8 +549,8 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   assert.ok(html.indexOf('dash-model-block')<html.indexOf('dash-summary')&&html.indexOf('dash-summary')<html.indexOf('dash-chart-section'));
   for(const label of ["Sessions","Subagents","Cache hit rate","Active hours"])assert.match(html,new RegExp(`<dt>${label}<\\/dt>`));
   assert.match(html,/<span class="dash-breakdown dash-segment" role="group" aria-label="Breakdown"><button type="button" data-dashboard-models="models"[^>]*>Models<\/button><button type="button" data-dashboard-models="work"[^>]*>By work<\/button><\/span>/,"both breakdown choices remain visible when work data is available");
-  assert.match(html,/<div class="dash-split-legend no-share">/);assert.doesNotMatch(html,/<span class="dash-legend-head">Share<\/span>/);
-  assert.match(html,/<span class="dash-legend-unpriced">Unpriced<\/span><span class="dash-plan-cell"><\/span><span class="dash-plan-note-cell"><\/span>/);
+  assert.match(html,/<div class="dash-split-legend no-share" style="grid-template-columns:minmax\(0,max-content\) max-content max-content">/);assert.doesNotMatch(html,/<span class="dash-legend-head">Share<\/span>/);
+  assert.match(html,/class="dash-legend-cell dash-legend-value"><span class="dash-legend-unpriced">Unpriced<\/span><\/span><span class="dash-legend-cell dash-legend-plan"><span class="dash-plan-cell"><\/span><span class="dash-plan-note-cell"><\/span><\/span>/,"unpriced value and plan remain in separate legend columns");
   assert.match(html,/<td title="\$8\.02 per 1M tokens"><span class="sr-only">\$8\.02 per 1M tokens\. <\/span>\$8\.02<\/td>/);
   const partialModel=provider("Claude",{cost:1.6,models:[{name:"partial-model",tokens:1000000,apiEquivalentCost:1.6,unpriced:true}]});
   dashboard.state.insights={range:"7d",providers:[partialModel]};html=dashboard.insightsHTML();
