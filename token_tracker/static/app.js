@@ -648,7 +648,7 @@ const pad2 = n => String(n).padStart(2,"0");
 const localISODate = () => { const date=new Date(); return date.getFullYear()+"-"+pad2(date.getMonth()+1)+"-"+pad2(date.getDate()); };
 const clock = ms => new Date(ms).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).toLowerCase();
 const mmss = seconds => { const s=Math.max(0,Math.floor(seconds)); return Math.floor(s/60)+":"+pad2(s%60); };
-// Reset countdown: "5d 19h", "3h 02m", "42m", then m:ss in the last 10 minutes.
+// Dashboard reset countdown: "5d 19h", "3h 02m", "42m", then m:ss in the last 10 minutes.
 function countdown(seconds) {
   const s=Math.max(0,Math.floor(seconds));
   if(s>=86400)return Math.floor(s/86400)+"d "+pad2(Math.floor(s%86400/3600))+"h";
@@ -656,11 +656,15 @@ function countdown(seconds) {
   if(s>=600)return Math.floor(s/60)+"m";
   return mmss(s);
 }
-// Run time: m:ss under 10 minutes, then 12m, then 1h 04m.
-function runSpan(seconds) {
+// Widget quota countdown and elapsed duration use identical window-specific units.
+function quotaCountdown(seconds,key) {
   const s=Math.max(0,Math.floor(seconds));
-  return s<600 ? mmss(s) : s<3600 ? Math.floor(s/60)+"m" : s<86400 ? Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m" : Math.floor(s/86400)+"d "+Math.floor(s%86400/3600)+"h";
+  const window=key||(s>=86400?"weekly":"fiveHour");
+  if(window==="weekly")return s>=86400?Math.floor(s/86400)+"d "+Math.floor(s%86400/3600)+"h":Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m";
+  return s>=3600?Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m":s>=60?Math.floor(s/60)+"m "+pad2(s%60)+"s":s+"s";
 }
+const elapsedDuration=seconds=>quotaCountdown(seconds);
+const runSpan = elapsedDuration;
 function ageShort(ms) {
   if(!ms)return "—";
   const m=Math.max(0,Math.floor((Date.now()-ms)/60000));
@@ -1292,7 +1296,7 @@ function resetView(provider, key) {
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const hasReset=Boolean((measured&&parts.target)||(lastKnown&&parts.target&&parts.seconds>0));
-  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
+  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":quotaCountdown(parts.seconds,key);
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
   return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,resetTarget:hasReset&&parts.target!=null?Number(parts.target):null,
@@ -2578,7 +2582,7 @@ function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTi
 window.tokenTrackerRefresh=refresh;
 window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
   renderLoading,
-  nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
+  nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,quotaCountdown,elapsedDuration,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,isAsking,runwayVisibleActive,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;

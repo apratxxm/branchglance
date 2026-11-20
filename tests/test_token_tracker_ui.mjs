@@ -178,9 +178,13 @@ assert.equal(T.countdown(42*60+10),"42m");
 assert.equal(T.countdown(9*60+41),"9:41");
 assert.equal(T.countdown(5*86400+19*3600),"5d 19h");
 assert.equal(T.countdown(2*86400+6*3600),"2d 06h");
-assert.equal(T.runSpan(247),"4:07");
-assert.equal(T.runSpan(12*60+30),"12m");
+assert.equal(T.runSpan(247),"4m 07s");
+assert.equal(T.runSpan(12*60+30),"12m 30s");
 assert.equal(T.runSpan(3600+4*60),"1h 04m");
+for(const seconds of [5,59,61,247,600,3599,3600,3661,90000,266400]) {
+  const elapsed=T.runwayStateElapsed({status:"running",stateSince:new Date(fixedNow-seconds*1000).toISOString()});
+  assert.equal(elapsed,T.quotaCountdown(seconds),`elapsed and widget quota countdowns match at ${seconds}s`);
+}
 assert.equal(T.ageShort(fixedNow-20000),"now");
 assert.equal(T.ageShort(fixedNow-3*60000),"3m");
 assert.equal(T.ageShort(fixedNow-2*86400000),"2d");

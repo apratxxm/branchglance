@@ -372,6 +372,37 @@ def test_compact_quota_cells_do_not_overlap_at_328px(page):
     assert layout["resetAlign"] == "right", layout
 
 
+def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
+    for width in (720, 328):
+        page.set_viewport_size({"width": width, "height": 478})
+        page.evaluate("""() => {
+          document.body.classList.add('runway-compact');
+          document.body.dataset.notchMode = 'inspect';
+          const title = 'A long parent or child job title that must stay on one line and ellipsize';
+          const row = (kind, titleText) => `<div class="runway-refined-row">
+            <span class="runway-refined-tree-anchor"></span>
+            <span class="runway-refined-title"><span class="${kind}" title="${titleText}"><span class="runway-agent-label">${titleText}</span></span></span>
+            <span class="runway-refined-timing"><span class="runway-refined-elapsed">1h 05m</span></span>
+            <span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span>
+            <span class="runway-refined-path"></span><span class="runway-refined-tokens"></span>
+          </div>`;
+          document.querySelector('#chat-list').innerHTML = `<div class="chat"><div class="row">${row('r-title', title)}</div></div>
+            <div class="ag runway-agent"><div class="runway-agent-glance">${row('runway-agent-name', title)}</div></div>`;
+        }""")
+        metrics = page.locator("#chat-list .runway-refined-title > span").evaluate_all("""els => els.map(el => {
+          const label=el.querySelector('.runway-agent-label'), style=getComputedStyle(label), titleStyle=getComputedStyle(el), box=el.getBoundingClientRect();
+          return {title:el.title, label:label.textContent, height:box.height, lineHeight:parseFloat(titleStyle.lineHeight), whiteSpace:style.whiteSpace,
+            overflow:style.overflow, textOverflow:style.textOverflow, scrollWidth:label.scrollWidth, clientWidth:label.clientWidth};
+        })""")
+        assert len(metrics) == 2, (width, metrics)
+        for item in metrics:
+            assert item["title"].startswith("A long parent or child"), (width, item)
+            assert item["height"] <= item["lineHeight"] + 1, (width, item)
+            assert item["whiteSpace"] == "nowrap", (width, item)
+            if item["scrollWidth"] > item["clientWidth"]:
+                assert item["overflow"] == "hidden" and item["textOverflow"] == "ellipsis", (width, item)
+
+
 def test_horizontal_layout(page):
     open_settings(page)
     bad = page.locator(ui.SETTINGS).locator(ui.INTERACTIVE).evaluate_all("els => els.filter(e => {const r=e.getBoundingClientRect(), p=document.querySelector('#dashboard-view').getBoundingClientRect(); return r.width && (r.left < p.left - 1 || r.right > p.right + 1)}).map(e => e.outerHTML)")

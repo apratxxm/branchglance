@@ -6,6 +6,10 @@ const app = fs.readFileSync(new URL("../token_tracker/static/app.js", import.met
 const page = fs.readFileSync(new URL("../token_tracker/static/runway.html", import.meta.url), "utf8");
 const css = fs.readFileSync(new URL("../token_tracker/static/runway_refined.css", import.meta.url), "utf8");
 assert.match(css,/\.compact-toolbar>\.toolbar-group\+\.toolbar-group\{margin-left:8px;\}/,"toolbar groups keep the approved 8px gap");
+assert.match(css,/\.rr-left\.is-unavailable\{color:var\(--muted\);\}/,"missing quota values use muted ink");
+assert.match(css,/\.rr-left\.is-unavailable:not\(\.t-attn\):not\(\.t-err\):not\(\.last-known\) b\{color:var\(--muted\);\}/,"an unavailable dash never inherits healthy green");
+assert.match(css,/\.rr\.is-unavailable \.rr-cd:empty::before\{content:"";\}/,"an unavailable row keeps the empty countdown cell blank");
+assert.doesNotMatch(css,/\.rr-provider\{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset\(50%\)/,"compact quota rows visibly name the provider");
 assert.match(page, /window\.__TOKEN_TRACKER_REFINED__=true/);
 assert.match(page, /window\.__TOKEN_TRACKER_COMPACT__=true/);
 assert.match(page, /<header class="titlebar compact-toolbar pywebview-drag-region">/,
@@ -64,7 +68,7 @@ const childHTML = T.rowHTML(T.state.forest.rows.find(chat => chat.id === child.i
 for (const slot of ["title", "timing", "status", "activity-column", "path-column", "tokens"]) assert.ok(parentHTML.includes(`data-runway-slot="${slot}"`), `parent has ${slot} slot`);
 assert.match(parentHTML, /title="Context occupancy: 160000 \/ 258400 tokens"/);
 assert.match(parentHTML, /Cache 80%/);
-assert.match(parentHTML, /runway-refined-elapsed">2:00/);
+assert.match(parentHTML, /runway-refined-elapsed">2m 00s/);
 assert.match(parentHTML, /runway-state-word runway-waiting-link[^>]*>Waiting/);
 assert.match(parentHTML, /data-runway-slot="status"[^>]*data-own-waiting="true" data-child-waiting="false"/);
 assert.match(parentHTML, /data-runway-slot="tree-anchor"/);
