@@ -187,6 +187,28 @@ values.delete("branchglanceChartStyle");
 let styled=dashboard.insightsHTML();
 assert.doesNotMatch(styled,/class="dash-chart-style"/,"Lines/Stacked is hidden when one provider is visible");
 assert.match(styled,/class="dash-chart(?: is-lines)?"/,"the single-provider chart remains rendered");
+
+// With two visible providers, chart-style choice remains available and remembered.
+const soloProvider=dashboard.state.insights.providers[0];
+dashboard.state.insights=payload([soloProvider,{...soloProvider,name:"Codex"}]);
+values.delete("branchglanceChartStyle");
+styled=dashboard.insightsHTML();
+assert.match(styled,/data-dashboard-chart-style="stacked" aria-pressed="true"/,"stacked remains the default with multiple providers");
+assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="false"/);
+dashboard.setChartStyle("lines");
+assert.equal(values.get("branchglanceChartStyle"),"lines","Lines is remembered with multiple providers");
+styled=dashboard.insightsHTML();
+assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="true"/);
+assert.match(styled,/class="dash-chart is-lines"/,"Lines renders the line-chart class");
+dashboard.setChartStyle("area");
+assert.equal(values.get("branchglanceChartStyle"),"lines","unknown chart styles are ignored");
+dashboard.setChartStyle("stacked");
+styled=dashboard.insightsHTML();
+assert.match(styled,/data-dashboard-chart-style="stacked" aria-pressed="true"/);
+assert.doesNotMatch(styled,/class="dash-chart is-lines"/);
+values.delete("branchglanceChartStyle");
+dashboard.state.insights=payload([soloProvider]);
+
 // (7) Review round: "30d / plan" header, bars that follow the metric, provider chips, collapsed Highest usage.
 styled=dashboard.insightsHTML();
 assert.match(styled,/<i class="dash-model-bar[^"]*" aria-hidden="true"><em class="[a-z]+" style="width:100\.0%"/,"the largest row fills its bar; others follow a linear scale");

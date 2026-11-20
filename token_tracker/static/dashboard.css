@@ -119,7 +119,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-split .claude-fill{background:var(--d-claude);box-shadow:0 0 8px #e8813f88;}
 .dash-hero-providers{grid-area:providers;min-width:0;}
 .dash-split-legend{display:grid;grid-template-columns:max-content max-content max-content max-content;justify-content:end;column-gap:8px;align-items:baseline;margin:0;}
-.dash-legend-item{display:contents;}
+.dash-legend-item{display:grid;grid-column:1/-1;grid-template-columns:subgrid;align-items:baseline;}
 .dash-legend-head{min-height:18px;color:var(--d-faint);font-size:11px;font-weight:450;line-height:18px;text-align:right;white-space:nowrap;}
 .dash-legend-item>*{line-height:28px;}
 .dash-legend-name{color:var(--d-ink);font-size:13px;font-weight:500;text-shadow:none;white-space:nowrap;}

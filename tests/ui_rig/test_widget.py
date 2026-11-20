@@ -68,7 +68,7 @@ def test_provider_legend_values_share_one_line_box_at_compact_and_default_sizes(
     def assert_provider_rows_share_line():
         rows = page.locator(f"{ui.HERO} .dash-split-legend")
         expect(rows).to_be_visible()
-        boxes = rows.evaluate("el => { const names=[...el.querySelectorAll('.dash-legend-name')], values=[...el.querySelectorAll('.dash-legend-item b')]; return names.map((name,i) => { const n=name.getBoundingClientRect(), v=values[i]?.getBoundingClientRect(); return {name:name.textContent.trim(), nameY:n.y, valueY:v?.y, nameH:n.height, valueH:v?.height}; }); }")
+        boxes = rows.evaluate("el => { const grid=getComputedStyle(el), names=[...el.querySelectorAll('.dash-legend-name')], values=[...el.querySelectorAll('.dash-legend-item b')]; return names.map((name,i) => { const item=name.closest('.dash-legend-item'), value=values[i], n=name.getBoundingClientRect(), v=value?.getBoundingClientRect(), itemStyle=getComputedStyle(item); return {name:name.textContent.trim(), nameY:n.y, valueY:v?.y, nameH:n.height, valueH:v?.height, legendWidth:el.getBoundingClientRect().width, gridColumns:grid.gridTemplateColumns, itemDisplay:itemStyle.display, itemColumns:itemStyle.gridTemplateColumns, nameRow:getComputedStyle(name).gridRow, valueRow:value?getComputedStyle(value).gridRow:null}; }); }")
         assert len(boxes) >= 2, f"expected provider name/value rows, got {boxes!r}"
         for row in boxes:
             assert row["valueY"] is not None and abs(row["nameY"] - row["valueY"]) < 1, f"provider name and value must share one line box: {row!r}"
@@ -106,7 +106,19 @@ def test_insights_buttons_click(page):
             continue
         attr, value = next(((name, val) for name, val in (("chart-style", style), ("models", models), ("range", range_value), ("metric", metric)) if val is not None), (None, None))
         assert attr is not None, f"Unexpected visible Insights button without a known control identity: {label!r}"
-        page.locator(f'[data-dashboard-{attr}="{value}"]').click()
+        button = page.locator(f'[data-dashboard-{attr}="{value}"]')
+        if button.get_attribute("aria-disabled") == "true":
+            expect(button).to_have_attribute("aria-disabled", "true")
+            assert button.get_attribute("title"), f"disabled {label!r} control explains why it is unavailable"
+            assert button.get_attribute("disabled") is None, "aria-disabled preserves keyboard focus so its reason can be discovered"
+            expect(page.get_by_role("button", name=label)).to_have_attribute("aria-disabled", "true")
+            button.focus()
+            assert button.evaluate("el => document.activeElement === el"), "aria-disabled button remains keyboard focusable"
+            for key in ("Enter", "Space"):
+                button.press(key)
+                expect(button).to_have_attribute("aria-pressed", "false")
+            continue
+        button.click()
     assert len(provider_chips) == 2
     exercise_provider_chips(page)
 
