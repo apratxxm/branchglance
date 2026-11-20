@@ -166,6 +166,7 @@ def main():
                 insights_7d_name = "insights.png" if args.docs_images else "insights-7d.png"
                 captures = [("collapsed", "widget-collapsed.png", 328, 110, args.output_dir),
                             ("tree", "tree-expanded.png", 560, 420, args.output_dir),
+                            ("tree-dock-row", "widget-dock-row.png", 560, 420, args.output_dir),
                             ("insights-24h", "insights.png", 720, 608, args.output_dir),
                             ("insights-7d", insights_7d_name, 720, 608, docs_images),
                             ("settings", "settings.png", 720, 608, docs_images)]

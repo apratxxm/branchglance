@@ -7,7 +7,7 @@
     get_monitors: () => Promise.resolve([])
   }};
   window.addEventListener("load", async () => {
-    const liveCapture = (mode === "tree" || mode === "collapsed") && new URLSearchParams(location.search).get("live") === "1";
+    const liveCapture = (mode?.startsWith("tree") || mode === "collapsed") && new URLSearchParams(location.search).get("live") === "1";
     const prefetched = window.__captureLive;
     if (liveCapture && !prefetched) throw new Error("Missing prefetched live snapshot");
     const snapshot = liveCapture ? prefetched.stats : await (await fetch("/api/stats")).json();
@@ -39,7 +39,7 @@
       }
       tracker.render(low);
     }
-    if (mode === "tree") {
+    if (mode === "tree" || mode === "tree-dock-row") {
       tracker.notch.manual = true;
       tracker.notch.inspecting = true;
       tracker.setNotch(true);
@@ -49,6 +49,12 @@
       const surface = document.querySelector('.layout');
       surface.style.setProperty('width', '100%', 'important');
       surface.style.setProperty('min-width', '100%', 'important');
+      if (mode === "tree-dock-row") {
+        tracker.notch.manual = false;
+        tracker.notch.inspecting = false;
+        tracker.notch.keyboardInspecting = false;
+        tracker.setNotch(false);
+      }
     } else if (mode === "settings") {
       tracker.openDashboard();
       window.TokenTrackerDashboard.selectTab("settings");
