@@ -153,7 +153,7 @@
       };
       rows.forEach((row,i)=>{if(complete(row))segment.push(i);else flush();});flush();
     }
-    const fractions=cost?[1,.75,.5,.25,0]:[1,.5,0];
+    const fractions=[1,.5,0];
     const ticks=fractions.map(fraction=>`<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${yAt(max*fraction).toFixed(1)}" y2="${yAt(max*fraction).toFixed(1)}"/>`).join("");
     const wholeCostAxis=cost&&fractions.every(fraction=>fraction===0||Number.isInteger(max*fraction));
     const axisFormat=value=>cost?(wholeCostAxis?"$"+Math.round(value).toLocaleString("en-US"):"$"+value.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})):Math.abs(value)>=1000?new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3}).format(value):number(value);
