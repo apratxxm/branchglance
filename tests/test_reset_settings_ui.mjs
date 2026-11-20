@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+const resetCss=fs.readFileSync(new URL("../token_tracker/static/reset_actions.css",import.meta.url),"utf8");
 
 const source=fs.readFileSync(new URL("../token_tracker/static/reset_actions.js",import.meta.url),"utf8");
 const html=fs.readFileSync(new URL("../token_tracker/static/reset_actions.html",import.meta.url),"utf8");
@@ -301,7 +302,7 @@ assert.equal(T.state.threads.length,0);
   await win.__resetActionsTest.load();
   assert.equal(radios[0].disabled,false,"greet stays selectable when only continue is blocked");
   assert.equal(radios[1].disabled,true,"continue is blocked for a legacy send origin");
-  assert.equal(node("#greet-help").textContent,"Show the greeting in the widget.");
+  assert.equal(node("#greet-help").textContent,"","no repeated description accompanies the greeting label");
   assert.equal(node("#continue-help").textContent,"Unavailable: Codex startup settings do not allow this.","continue-only help names no permission that is on");
   assert.equal(node("#permission").textContent,"","no other denial text appears when only continue is blocked");
   assert.equal(node("#embedded-policy-state").hidden,true,"the permitted state shows no policy line");
@@ -348,7 +349,7 @@ assert.equal(T.state.threads.length,0);
   for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(node("footer").hidden,true,"saved mode hides footer");
   assert.equal(node("#save").textContent,"Save");
-  assert.equal(node("#oneshot-note").textContent,"Runs once, at the next reset. Saving sends nothing.");
+  assert.equal(node("#oneshot-note").textContent,"Runs once, at the next quota reset. Nothing is sent before then.");
   radios[0].checked=false;radios[1].checked=true;
   listeners.change({target:{matches:selector=>selector==='input[name="mode"]'}});
   assert.equal(node("footer").hidden,false,"changed mode shows footer");
@@ -357,6 +358,8 @@ assert.equal(T.state.threads.length,0);
   assert.equal(node("footer").hidden,true);assert.equal(posts.length,0,"cancel sends no parent message");
   let closed=false;plainWindow.close=()=>{closed=true;};element("#cancel").onclick();assert.equal(closed,true,"standalone cancel closes its window");
 }
+
+assert.match(resetCss,/\.mode:has\(input:disabled\) b,\.mode:has\(input:disabled\) small\{color:#8d929c;\}/,"disabled option label and description share disabled ink");
 
 // Purge results are per provider and per ticket: Deleted needs an explicit matching done result. Polls are shortened here.
 {
