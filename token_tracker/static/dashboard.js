@@ -156,7 +156,8 @@
     const fractions=[1,.5,0];
     const ticks=fractions.map(fraction=>`<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${yAt(max*fraction).toFixed(1)}" y2="${yAt(max*fraction).toFixed(1)}"/>`).join("");
     const wholeCostAxis=cost&&fractions.every(fraction=>fraction===0||Number.isInteger(max*fraction));
-    const axisFormat=value=>cost?(wholeCostAxis?"$"+Math.round(value).toLocaleString("en-US"):"$"+value.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})):Math.abs(value)>=1000?new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3}).format(value):number(value);
+    const subCentAxisDigits=cost&&max<=0.01?Math.max(4,Math.ceil(-Math.log10(max/2))):0;
+    const axisFormat=value=>cost?(wholeCostAxis?"$"+Math.round(value).toLocaleString("en-US"):"$"+value.toLocaleString("en-US",{minimumFractionDigits:subCentAxisDigits||2,maximumFractionDigits:subCentAxisDigits||2})):Math.abs(value)>=1000?new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3}).format(value):number(value);
     const axis=fractions.map(fraction=>`<span class="dash-axis-value" style="top:${(yAt(max*fraction)/H*100).toFixed(2)}%">${esc(fraction===0?(cost?"$0":"0"):axisFormat(max*fraction))}</span>`).join("");
     // Date ticks: the first and last day, plus two evenly spaced days between them once the range is long enough to read them.
     // Hourly (24h): a tick at every sixth local hour and "now" at the end. Daily ranges: first, last and two evenly spaced days.
@@ -294,7 +295,7 @@
     const unpricedShown=data.providers.filter(p=>finite(p.scoped.apiEquivalentCost)==null).map(p=>p.name);
     // The unit line names a shown provider with no published price, and says when some priced models are partial.
     const unitLine=["estimated",...(unpricedShown.length?[`excl. ${joinNames(unpricedShown)}`]:[]),...(data.partialModels?["partly unpriced"]:[])].join(" · ");
-    const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">${esc(unitLine)}</span>`:tokenHero(value);
+    const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(headlineMoney(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">${esc(unitLine)}</span>`:tokenHero(value);
     const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartProviders=data.providers.filter(p=>!hiddenProviders.has(p.name)&&(data.chartKey!=="apiEquivalentCost"||data.seriesByKey.apiEquivalentCost.some(row=>finite(row[p.name])!=null))),chartStamp=statusHTML.includes("is-freshness")?statusHTML:"",chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">${data.hourly?"Hourly":"Daily"} ${data.chartKey==="apiEquivalentCost"?"cost":"tokens"}</span>${chartProviders.length>1?chartStyleHTML():""}</div>${chart}${chartStamp}</section>`:"";
     if(chart&&chartStamp)statusHTML="";
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
@@ -332,7 +333,8 @@
   const workNumber=value=>number(Math.max(0,finite(value)||0));
   // Cost figures use cents below $100, whole dollars from $100, and compact thousands from $10,000.
   const compactMoney=value=>{const n=finite(value)||0;if(n>=10000){const scaled=n/1000,rounded=Math.round(scaled*10)/10;return "$"+String(rounded).replace(/\.0$/ ,"")+"k";}if(n>=100)return "$"+Math.round(n).toLocaleString("en-US");return "$"+n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});};
-  const lowerMoney=value=>{const n=Math.max(0,finite(value)||0),floor=n>=100?Math.floor(n):Math.floor(n*100)/100;return compactMoney(floor);};
+  const lowerMoney=value=>{const n=Math.max(0,finite(value)||0),floor=n>=10000?Math.floor(n/100)*100:n>=100?Math.floor(n):Math.floor(n*100)/100;return compactMoney(floor);};
+  const headlineMoney=value=>finite(value)!=null&&value>=1000?"$"+Math.round(value).toLocaleString("en-US"):money(value);
   const exactMoney=value=>"$"+(finite(value)||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:6});
   const modelsView=()=>readPref("branchglanceModelsView","models")==="work"?"work":"models";
   const workCell=()=>({tokens:0,known:0,priced:false,unpriced:false});

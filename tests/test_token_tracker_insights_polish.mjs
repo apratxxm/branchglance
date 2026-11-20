@@ -410,6 +410,17 @@ assert.match(lowerBoundFormats,/>\$55\.54</,"exact costs below $100 keep cents")
 assert.match(lowerBoundFormats,/\u2265\$4\.12/,"a lower bound from four dollars keeps cents");
 assert.match(lowerBoundFormats,/\u2265\$0\.23/,"a lower bound below one dollar uses dollars and cents");
 assert.doesNotMatch(lowerBoundFormats,/\u00a2/,"cost columns never switch to cents notation");
+dashboard.state.ledger={rows:[
+  {provider:"Claude",modelId:"lower-19990",kind:"build",totalTokens:100,knownCostUsd:19990,costComplete:false,unpricedTokens:10},
+  {provider:"Claude",modelId:"lower-10060",kind:"review",totalTokens:100,knownCostUsd:10060,costComplete:false,unpricedTokens:10},
+  {provider:"Claude",modelId:"lower-999999",kind:"check",totalTokens:100,knownCostUsd:9999.99,costComplete:false,unpricedTokens:10},
+  {provider:"Claude",modelId:"lower-10040",kind:"research",totalTokens:100,knownCostUsd:100.40,costComplete:false,unpricedTokens:10},
+]};
+const conservativeLowerBounds=dashboard.workHTML(dashboard.workData());
+assert.match(conservativeLowerBounds,/\u2265\$19\.9k/,"a $19,990 lower bound floors to the displayed hundred");
+assert.match(conservativeLowerBounds,/\u2265\$10k/,"a $10,060 lower bound cannot round above $10,000");
+assert.match(conservativeLowerBounds,/\u2265\$9,999/,"a $9,999.99 lower bound rounds down to whole dollars");
+assert.match(conservativeLowerBounds,/\u2265\$100/,"a $100.40 lower bound rounds down to whole dollars");
 dashboard.state.ledger=null;
 dashboard.state.ledger=null;dashboard.state.metric="tokens";
 
@@ -423,6 +434,12 @@ assert.match(partialHTML,/title="\u2265\$9\.00; some usage is unpriced"/,"the pa
 assert.doesNotMatch(partialHTML,/title="\$[\d.]+ per 1M tokens"|<span class="sr-only">\$[\d.]+ per 1M tokens/,"partial pricing does not show an unqualified per-token rate");
 dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true,unpricedModels:["claude-haiku-5-5"]}})]);
 assert.match(dashboard.insightsHTML(),/<span class="dash-hero-unit">estimated · partly unpriced<\/span>/,"partial models alone keep the same meaning in a shorter note");
+dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:1001.54,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true},models:[{name:"claude-opus-5.5",tokens:1e6,apiEquivalentCost:1001.54,unpriced:true}]})]);
+const largePartialHeadline=dashboard.insightsHTML();
+assert.match(largePartialHeadline,/dash-hero-number">1,002<\/strong><span class="dash-hero-unit">estimated/,"a four digit estimated headline drops cents to keep the qualification clear");
+assert.doesNotMatch(largePartialHeadline,/dash-hero-number">1,001\.54/);
+dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:999.54,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true},models:[{name:"claude-opus-5.5",tokens:1e6,apiEquivalentCost:999.54,unpriced:true}]})]);
+assert.match(dashboard.insightsHTML(),/dash-hero-number">999\.54<\/strong>/,"headline cents remain below $1,000");
 dashboard.state.metric="tokens";
 
 // Chart: exactly one point sits in the tab order (the roving tabindex).

@@ -110,7 +110,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(verified.fiveHour,undefined,"a different account's sample remains unrendered");
   assert.equal(early.T.applyQuotaSamples(samples,1,[verified],{requireDated:true}),true);
   assert.equal(verified.fiveHour.percent,43);
-  assert.equal(early.node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>55%</b><i>used</i></span>');
+  assert.match(early.node("#r0-fiveHour-left").innerHTML,/^<span class="rr-value"><b>55%<\/b><i>used<\/i><\/span><span class="sr-only">Codex 5-hour: 55% used[^<]*<\/span>$/);
 }
 
 // Startup's first active snapshot chooses the provider with work before painting and ignores a stale saved manual window.

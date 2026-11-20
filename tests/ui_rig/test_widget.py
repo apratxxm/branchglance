@@ -458,7 +458,7 @@ def test_widget_quota_rows_and_elapsed_values_do_not_overlap(page, width, mode):
           const rendered=node=>{
             for(let el=node.parentElement;el;el=el.parentElement){
               const style=getComputedStyle(el);
-              if(el.hidden||el.getAttribute('aria-hidden')==='true'||style.display==='none'||style.visibility!=='visible'||Number(style.opacity)<=0)return false;
+              if(el.hidden||el.classList.contains('sr-only')||el.getAttribute('aria-hidden')==='true'||style.display==='none'||style.visibility!=='visible'||Number(style.opacity)<=0)return false;
             }
             return textRect(node).length>0;
           };

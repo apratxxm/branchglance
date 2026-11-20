@@ -776,8 +776,8 @@ const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
 assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);assert.equal(staleQuota.usedLabel,"92%");assert.equal(staleQuota.lastKnownAge,"11m ago");assert.equal(staleQuota.countdown,"25m 00s");assert.equal(staleQuota.tone,"");assert.equal(staleQuota.stale,"");
 assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"22h 13m");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);
-assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>11m ago</i></span>');
-assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');assert.match(node('#r0-fiveHour-left').title,/Last reported 11m ago/);assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');
+assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>11m ago</i></span><span class="sr-only">Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.</span>');
+assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');assert.match(node('#r0-fiveHour-left').title,/Last reported 11m ago/);assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),null,"screen-reader wording is nested text rather than a name on the generic span");
 assert.equal(node('#r0-fiveHour-row').title,'Last reported by Codex 11m ago');
 assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuetext'),'Last known: 92% used');assert.equal(node('#r0-fiveHour-bar').className,'last-known');
 assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.notEqual(node('#r0-fiveHour-cd').textContent,'');
@@ -808,16 +808,17 @@ T.renderResets([provider]);
   T.renderResets([unavailable]);
   for(const window of ["fiveHour","weekly"]){
     const cell=node(`#r0-${window}-left`),label="No live reading for Fixture";
-    assert.equal(cell.innerHTML,'<span class="rr-value"><span class="rr-provider">Fixture</span><b>—</b><i></i></span>',`${window} quota names its provider before the unavailable marker`);
+    assert.equal(cell.innerHTML,'<span class="rr-value"><span class="rr-provider">Fixture</span><b>—</b><i></i></span><span class="sr-only">No live reading for Fixture</span>',`${window} quota names its provider before the unavailable marker and exposes the hidden explanation`);
     assert.equal(cell.title,label,`${window} quota explains the unavailable marker on hover`);
-    assert.equal(cell.getAttribute("aria-label"),label,`${window} quota exposes the unavailable reason to assistive technology`);
+    assert.equal(cell.getAttribute("aria-label"),null,`${window} quota keeps the accessible explanation as text rather than naming the generic span`);
     assert.match(cell.className,/\bis-unavailable\b/);
     assert.equal(node(`#r0-${window}-cd`).textContent,"",`${window} countdown slot stays empty rather than duplicating the unavailable dash`);
     assert.equal(node(`#r0-${window}-cd`).getAttribute("aria-hidden"),"true");
   }
   T.renderResets([provider]);
   assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s.','a quota reading names its provider and window on hover');
-  assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),'Codex 5-hour: 92% used, resets in 25m 00s.','a quota reading names its provider and window for assistive technology');
+  assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),null,'a quota reading uses nested text rather than naming the generic span');
+  assert.match(node('#r0-fiveHour-left').innerHTML,/<span class="sr-only">Codex 5-hour: 92% used, resets in 25m 00s\.<\/span>/,'a quota reading exposes the provider and window to assistive technology');
 }
 {
   const countdown=node('#r0-fiveHour-cd');let writes=0,value=countdown.textContent;
@@ -1179,3 +1180,4 @@ console.log("Token Tracker Runway telemetry contracts passed");
   assert.deepEqual(keys([live('lead'),live('kid','lead'),stopped('done','lead')]),['Claude:kid'],'stopped child under a running parent is hidden');
   assert.deepEqual(keys([live('lead'),stopped('mid','lead'),live('leaf','mid')]).sort(),['Claude:leaf','Claude:mid'],'a stopped middle agent stays while its descendant runs');
 }
+{const runwayCss=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");assert.match(runwayCss,/(?:^|[\s}])\.sr-only\{position:absolute;width:1px;height:1px;[^}]*clip-path:inset\(50%\)/,"widget screen-reader text is visually hidden outside the dashboard too");}
