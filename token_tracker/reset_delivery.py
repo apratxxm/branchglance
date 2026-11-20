@@ -123,18 +123,6 @@ def list_candidates(limit: int = MAX_CANDIDATES, *, client: CodexAppServer | Non
 def inspect_target(thread_id: str, *, client: CodexAppServer | None = None,
                    policies: Mapping[str, ProviderPolicy] | None = None) -> dict[str, Any]:
     """Inspect one selected thread and mark it idle only with positive evidence."""
-    if client is not None:
-        return _inspect_target(thread_id, client=client, policies=policies)
-    # A throwaway app-server must be closed, or its codex child outlives the call.
-    owned = CodexAppServer(timeout=5)
-    try:
-        return _inspect_target(thread_id, client=owned, policies=policies)
-    finally:
-        owned.close(timeout=2.0)
-
-
-def _inspect_target(thread_id: str, *, client: CodexAppServer,
-                    policies: Mapping[str, ProviderPolicy] | None) -> dict[str, Any]:
     policy_for("Codex", POLICIES if policies is None else policies).require("collect")
     if not isinstance(thread_id, str) or not THREAD_ID.fullmatch(thread_id):
         return _failure("invalid_thread_id", exists=False)
@@ -154,8 +142,17 @@ def _inspect_target(thread_id: str, *, client: CodexAppServer,
     if not Path(rollout_path).is_file():
         return _failure("rollout_unavailable", exists=True)
 
+    if client is not None:
+        return _inspect_thread(thread_id, rollout_path, client)
+    owned = CodexAppServer(timeout=5)
+    try:
+        return _inspect_thread(thread_id, rollout_path, owned)
+    finally:
+        owned.close(timeout=2.0)
+
+
+def _inspect_thread(thread_id: str, rollout_path: str, app_client: CodexAppServer) -> dict[str, Any]:
     observed_at = time.time()
-    app_client = client
     try:
         thread = app_client.read_thread(thread_id, include_turns=False)
     except (CodexUnavailable, OSError, TimeoutError):

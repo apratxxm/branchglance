@@ -461,9 +461,10 @@ def test_throwaway_app_server_is_closed_on_every_path(tmp_path, monkeypatch):
     with pytest.raises(reset_delivery.CodexUnavailable):
         reset_delivery.list_candidates()
     assert reset_delivery.inspect_target("not a thread id")["reason"] == "invalid_thread_id"
+    assert len(_ClosingClient.instances) == 1, "validation runs before executable discovery"
     reset_delivery.inspect_target(THREAD)
 
-    assert len(_ClosingClient.instances) == 3
+    assert len(_ClosingClient.instances) == 2
     assert all(client.closed for client in _ClosingClient.instances)
 
 
