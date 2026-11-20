@@ -76,6 +76,14 @@ def capture_payload(base, attempts=6):
             time.sleep(0.5)
 
 
+def prepare_capture(capture, mode, live):
+    """Load the prefetched API pair required by live widget captures."""
+    live_widget = bool(live and (mode == "collapsed" or mode.startswith("tree")))
+    capture["payload"] = capture_payload(live) if live_widget else None
+    capture["ready"] = False
+    return live_widget
+
+
 def _capture_payload_once(base):
     data = []
     for path in ("/api/stats", "/api/live"):
@@ -163,9 +171,7 @@ def main():
                             ("settings", "settings.png", 720, 608, docs_images)]
             for mode, filename, width, height, output_dir in captures:
                 output_dir.mkdir(parents=True, exist_ok=True)
-                live_tree = bool(live and (mode == "collapsed" or mode.startswith("tree")))
-                capture["payload"] = capture_payload(live) if live_tree else None
-                capture["ready"] = False
+                live_tree = prepare_capture(capture, mode, live)
                 page = {"collapsed": "capture.html", "reset-frame": "reset-frame.html"}.get(mode, f"runway.html?review=1&capture={mode}" + ("&live=1" if live else ""))
                 url = f"http://127.0.0.1:{server.server_port}/{page}"
                 command = [str(edge_path()), "--headless", "--disable-gpu", "--hide-scrollbars",
