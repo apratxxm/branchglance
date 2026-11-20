@@ -91,7 +91,7 @@ dashboard.state.insights=payload([{name:"Claude",totals:{tokens:2.8e9,apiEquival
 dashboard.state.metric="cost";
 let html=dashboard.insightsHTML();
 assert.equal((html.match(/class="dash-model-row"/g)||[]).length,5,"top four models plus one Other row");
-assert.match(html,/Other \(4\)/,"the models beyond the top four sum into one Other row");
+assert.match(html,/Other \(4 models\)/,"the models beyond the top four sum into one Other row");
 const few=many.slice(0,5);
 dashboard.state.insights=payload([{name:"Claude",totals:{tokens:2.8e9,apiEquivalentCost:28,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(2.8e9),models:few,limitPeaks:{fiveHour:null,weekly:null}}]);
 html=dashboard.insightsHTML();
@@ -182,18 +182,32 @@ assert.match(dashboard.planCellsHTML("Claude"),/data-dashboard-action="set-plan"
 dashboard.state.monthError=true;
 assert.match(dashboard.planCellsHTML("Claude"),/Unavailable/,"a failed rolling-30-day load says so");
 dashboard.state.monthError=false;
-
-// (6) Chart style switch: stacked by default, lines on request, remembered, and rendered as a two-button group in the chart header.
+// (6) A single provider has one rendered series, so the chart-style switch is omitted.
 values.delete("branchglanceChartStyle");
 let styled=dashboard.insightsHTML();
-assert.match(styled,/data-dashboard-chart-style="stacked" aria-pressed="true"/);assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="false"/);
-assert.doesNotMatch(styled,/class="dash-chart is-lines"/);
-dashboard.setChartStyle("lines");
-assert.equal(values.get("branchglanceChartStyle"),"lines","the chart style is remembered");
+assert.doesNotMatch(styled,/class="dash-chart-style"/,"Lines/Stacked is hidden when one provider is visible");
+assert.match(styled,/class="dash-chart(?: is-lines)?"/,"the single-provider chart remains rendered");
+
+// With two visible providers, chart-style choice remains available and remembered.
+const soloProvider=dashboard.state.insights.providers[0];
+dashboard.state.insights=payload([soloProvider,{...soloProvider,name:"Codex"}]);
+values.delete("branchglanceChartStyle");
 styled=dashboard.insightsHTML();
-assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="true"/);assert.match(styled,/class="dash-chart is-lines"/);
-dashboard.setChartStyle("area");assert.equal(values.get("branchglanceChartStyle"),"lines","unknown styles are ignored");
+assert.match(styled,/data-dashboard-chart-style="stacked" aria-pressed="true"/,"stacked remains the default with multiple providers");
+assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="false"/);
+dashboard.setChartStyle("lines");
+assert.equal(values.get("branchglanceChartStyle"),"lines","Lines is remembered with multiple providers");
+styled=dashboard.insightsHTML();
+assert.match(styled,/data-dashboard-chart-style="lines" aria-pressed="true"/);
+assert.match(styled,/class="dash-chart is-lines"/,"Lines renders the line-chart class");
+dashboard.setChartStyle("area");
+assert.equal(values.get("branchglanceChartStyle"),"lines","unknown chart styles are ignored");
 dashboard.setChartStyle("stacked");
+styled=dashboard.insightsHTML();
+assert.match(styled,/data-dashboard-chart-style="stacked" aria-pressed="true"/);
+assert.doesNotMatch(styled,/class="dash-chart is-lines"/);
+values.delete("branchglanceChartStyle");
+dashboard.state.insights=payload([soloProvider]);
 
 // (7) Review round: "30d / plan" header, bars that follow the metric, provider chips, collapsed Highest usage.
 styled=dashboard.insightsHTML();
@@ -209,6 +223,62 @@ assert.match(dashboard.insightsHTML(),/<em class="claude" style="width:50\.0%"/,
 
 // (9) Round 3: quota follows the provider chips and shows the weekly column; stamped hours follow the clock; work figures; partial pricing; one point in the tab order.
 const provider=(name,extra={})=>({name,totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(1e6),models:[],limitPeaks:{fiveHour:null,weekly:null},...extra});
+
+// Legend headers, provider cells and inline grid tracks come from one column set across all content states.
+function assertLegendColumns(html,expectedRows,label){
+  const legend=html.match(/<div class="dash-split-legend(?: no-share)?" style="grid-template-columns:([^"]+)">([\s\S]*?)<\/div>/);
+  assert.ok(legend,`${label}: split legend exists`);
+  const tracks=legend[1].trim().split(/\s+/).length,markup=legend[2];
+  const heads=(markup.match(/class="dash-legend-head(?: [^"]*)?"/g)||[]).length;
+  const rows=(markup.match(/<span class="dash-legend-item [^"]+">/g)||[]).length;
+  const cells=(markup.match(/<span class="dash-legend-cell /g)||[]).length;
+  assert.equal(rows,expectedRows,`${label}: provider row count`);
+  assert.equal(heads,tracks,`${label}: header cells equal grid tracks`);
+  assert.equal(cells,rows*tracks,`${label}: provider cells equal row count times grid tracks`);
+  assert.match(legend[1],/^minmax\(0,max-content\)/,`${label}: provider name has its own leading track`);
+}
+const legendProviders=[provider("Claude"),provider("Codex")],legendMonth={providers:[
+  {name:"Claude",series:[{tokens:1e6,apiEquivalentCost:10}]},
+  {name:"Codex",series:[{tokens:1e6,apiEquivalentCost:10}]}
+]};
+dashboard.state.range="30d";dashboard.state.resultValue=null;dashboard.state.month=legendMonth;dashboard.state.monthError=false;
+for(const layoutSize of ["default","compact"]){
+  for(const range of ["24h","7d","30d"]){
+    dashboard.state.range=range;
+    for(const metric of ["tokens","cost"]){
+      dashboard.state.metric=metric;
+      for(const hasPlanPrice of [false,true]){
+        for(const name of ["Claude","Codex"])values[hasPlanPrice?"set":"delete"](`branchglancePlanPrice.${name}`,"20");
+        dashboard.state.insights=payload(legendProviders);
+        const legendHTML=dashboard.insightsHTML();
+        assertLegendColumns(legendHTML,2,`${layoutSize} ${range} ${metric} ${hasPlanPrice?"priced":"unpriced plan"}`);
+        if(hasPlanPrice)assert.match(legendHTML,/class="dash-plan-cell"><span title="[^"]+">0\.5/);
+        else assert.match(legendHTML,/data-dashboard-action="set-plan"/);
+
+        dashboard.toggleProvider("Codex");
+        assert.doesNotMatch(dashboard.insightsHTML(),/class="dash-split-legend/,`${layoutSize} ${range} ${metric}: one visible provider uses the single-provider plan layout`);
+        dashboard.toggleProvider("Codex");
+        dashboard.toggleProvider("Claude");
+        assert.doesNotMatch(dashboard.insightsHTML(),/class="dash-split-legend/,`${layoutSize} ${range} ${metric}: the other provider filter also uses the single-provider layout`);
+        dashboard.toggleProvider("Claude");
+      }
+    }
+    dashboard.state.metric="cost";
+    dashboard.state.insights=payload([legendProviders[0],provider("Codex",{totals:{tokens:1e6,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null}})]);
+    assertLegendColumns(dashboard.insightsHTML(),2,`${layoutSize} ${range} Cost with one unpriced provider`);
+  }
+}
+values.delete("branchglancePlanPrice.Claude");values.delete("branchglancePlanPrice.Codex");
+dashboard.state.month=null;dashboard.state.range="30d";dashboard.state.metric="tokens";
+
+// Compact token precision is shared by the hero, summary, chart tooltip and model table.
+dashboard.state.range="30d";dashboard.state.metric="tokens";
+dashboard.state.insights=payload([provider("Claude",{totals:{tokens:3.89e9,apiEquivalentCost:10,sessions:571e6,subagentsActive:0,activeHours:1.1e9,cacheHitRate:null},series:[{date:today.toISOString().slice(0,10),tokens:6.95e6,apiEquivalentCost:null}],models:[{name:"claude-opus-5.5",tokens:1.1e9,apiEquivalentCost:1}]})]);
+const precisionHTML=dashboard.insightsHTML();
+assert.match(precisionHTML,/>3\.89<span class="dash-hero-mag">B<\/span>/,"hero uses three significant digits");
+assert.match(precisionHTML,/<dd>571M<\/dd>/,"summary numbers use three significant digits");
+assert.match(precisionHTML,/6\.95M/,"chart tooltip uses the same three-digit format as its series");
+assert.match(precisionHTML,/>1\.10B</,"model table retains trailing zeroes at three significant digits");
 window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",resetTarget:1,weekly:{usedPercent:20,countdown:"3d 2h",resetTarget:2}},{name:"Codex",usedPercent:62,countdown:"1h 5m",resetTarget:3,weekly:{usedPercent:null,countdown:"",resetTarget:null}}];
 dashboard.state.insights=payload([provider("Claude"),provider("Codex")]);
 dashboard.state.range="30d";dashboard.state.metric="tokens";
@@ -241,7 +311,7 @@ dashboard.state.range="30d";dashboard.state.metric="tokens";
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:2e6,knownCostUsd:null,costComplete:false,unpricedTokens:2e6},{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"review",totalTokens:8e5,knownCostUsd:null,costComplete:false,unpricedTokens:8e5}],coverage:{},service:{}};
 dashboard.state.ledgerRange="30d";
 const workTable=dashboard.workHTML(dashboard.workData());
-assert.match(workTable,/>2M/ ,"work table: 2 million has no unnecessary trailing decimal");
+assert.match(workTable,/>2\.00M</ ,"work table uses three significant digits, including trailing zeroes");
 assert.match(workTable,/>800K</,"work table: thousands have no decimal");
 assert.match(workTable,/title="2,000,000 tokens"/ ,"work cells retain their exact token value in the title");
 assert.match(workTable,/<span class="sr-only">2,000,000 tokens<\/span>/ ,"work cells retain their exact token value for screen readers");
@@ -255,7 +325,7 @@ dashboard.state.ledger={rows:[
 ]};dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="tokens";
 const fourKinds=dashboard.workHTML(dashboard.workData());
 assert.match(fourKinds,/An unusually long model name that needs truncation/,"By work preserves a long model name for its title and accessible label");
-assert.match(fourKinds,/class="dash-work-row is-head"[\s\S]*>Review<\/span>[\s\S]*>Check<\/span>[\s\S]*>Research<\/span>[\s\S]*>Other \(1\)<\/span>/,"By work renders four kind headings in the narrow table");
+assert.match(fourKinds,/class="dash-work-row is-head"[\s\S]*>Review<\/span>[\s\S]*>Check<\/span>[\s\S]*>Other<\/span>/,"By work names the folded kind column without a model count");
 dashboard.state.ledger=null;
 
 const overflowRows=[
@@ -274,10 +344,10 @@ dashboard.state.ledger={coverage:{status:"partial",gapCount:3},rows:overflowRows
 dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.metric="tokens";
 const realScale=dashboard.workHTML(dashboard.workData());
 assert.match(realScale,/style="--work-cols:4"/ ,"real-scale fixture retains four visible kind columns");
-assert.match(realScale,/>Other \(5\)<\/span>/,"five folded work kinds stay under Other (5)");
-assert.match(realScale,/>Other \(7\)<\/span>/,"seven smaller models aggregate into the Other row");
-assert.match(realScale,/title="603,400,000 tokens"[\s\S]*603M/ ,"real-scale values compact while exact tokens stay in each title");
-for(const formatted of ["603M","87.1M","1.3B","968M","15.6M","455M","680M"]){assert.match(realScale,new RegExp(`>${formatted}<`),`real-scale value compacts to ${formatted}`);}
+assert.match(realScale,/columnheader" title="[^"]+">Other<\/span>/,"the Other kind column has no model-count label and names folded kinds in its title");
+assert.match(realScale,/>Other \(6 models\)<\/span>/,"the same four named rows are kept as Models, with six folded models in Other");
+assert.match(realScale,/title="603,400,000 tokens"[\s\S]*603M/ ,"real-scale values use three significant digits while exact tokens stay in each title");
+for(const formatted of ["603M","87.1M","1.30B","968M","15.6M","456M","681M"]){assert.match(realScale,new RegExp(`>${formatted}<`),`real-scale value compacts to ${formatted}`);}
 const visibleWorkCells=[...realScale.matchAll(/<span role="cell"[^>]*>([\s\S]*?)<\/span>/g)].map(([,html])=>html.replace(/<span class="sr-only">[\s\S]*/,"").replace(/<[^>]+>/g,"").trim());
 assert.ok(visibleWorkCells.length>0,"real-scale fixture renders work cells");
 assert.ok(visibleWorkCells.every(value=>value.length<=5),`every visible real-scale work-cell figure fits in five characters: ${visibleWorkCells.filter(value=>value.length>5).join(", ")}`);
@@ -295,18 +365,29 @@ assert.match(costFormats,/>\$15k</,"costs at $10,000 and above use compact thous
 assert.match(costFormats,/>\$14\.20</,"costs below $100 retain cents");
 assert.match(costFormats,/title="\$1,240\.00 API-equivalent cost"/ ,"cost cells retain the exact amount in their title");
 assert.match(costFormats,/<span class="sr-only">\$1,240\.00 API-equivalent cost<\/span>/ ,"cost cells retain the exact amount for screen readers");
+dashboard.state.ledger={rows:[
+  {provider:"Claude",modelId:"cost-55",kind:"build",totalTokens:100,knownCostUsd:55.54,costComplete:true,unpricedTokens:0},
+  {provider:"Claude",modelId:"cost-4",kind:"review",totalTokens:100,knownCostUsd:4.12,costComplete:false,unpricedTokens:10},
+  {provider:"Claude",modelId:"cost-023",kind:"check",totalTokens:100,knownCostUsd:0.23,costComplete:false,unpricedTokens:10},
+]};
+const lowerBoundFormats=dashboard.workHTML(dashboard.workData());
+assert.match(lowerBoundFormats,/>\$55\.54</,"exact costs below $100 keep cents");
+assert.match(lowerBoundFormats,/\u2265\$4\.12/,"a lower bound from four dollars keeps cents");
+assert.match(lowerBoundFormats,/\u2265\$0\.23/,"a lower bound below one dollar uses dollars and cents");
+assert.doesNotMatch(lowerBoundFormats,/\u00a2/,"cost columns never switch to cents notation");
+dashboard.state.ledger=null;
 dashboard.state.ledger=null;dashboard.state.metric="tokens";
 
 // Partial pricing: the unit line names an excluded provider and partial models; partial model amounts carry a ≥ prefix.
 dashboard.state.metric="cost";
 dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true,unpricedModels:["claude-haiku-5-5"]},models:[{name:"claude-opus-5.5",tokens:8e5,apiEquivalentCost:9,unpriced:true},{name:"claude-haiku-5.5",tokens:2e5,apiEquivalentCost:null}]}),provider("Codex",{totals:{tokens:1e6,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null}})]);
 const partialHTML=dashboard.insightsHTML();
-assert.match(partialHTML,/estimated · excl\. Codex · some models unpriced/,"the unit line names the excluded provider and the partial models");
+assert.match(partialHTML,/estimated · excl\. Codex · partly unpriced/,"the single-line unit note names the excluded provider and partially priced models");
 assert.match(partialHTML,/\u2265\$9\.00/,"a partially priced model row shows a compact lower-bound amount");
 assert.match(partialHTML,/title="\u2265\$9\.00; some usage is unpriced"/,"the partial row title starts with the compact lower-bound amount");
 assert.doesNotMatch(partialHTML,/title="\$[\d.]+ per 1M tokens"|<span class="sr-only">\$[\d.]+ per 1M tokens/,"partial pricing does not show an unqualified per-token rate");
 dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null,costPartial:true,unpricedModels:["claude-haiku-5-5"]}})]);
-assert.match(dashboard.insightsHTML(),/<span class="dash-hero-unit">estimated · some models unpriced<\/span>/,"partial models alone give their own unit line");
+assert.match(dashboard.insightsHTML(),/<span class="dash-hero-unit">estimated · partly unpriced<\/span>/,"partial models alone keep the same meaning in a shorter note");
 dashboard.state.metric="tokens";
 
 // Chart: exactly one point sits in the tab order (the roving tabindex).
@@ -331,15 +412,17 @@ assert.match(countdowns,/data-quota-part="week">5m</,"an m:ss widget countdown r
 
 dashboard.state.ledger={rows:[{provider:"Claude",modelId:"claude-opus-5.5",displayName:"Opus 5.5",kind:"build",totalTokens:5350000,knownCostUsd:null,costComplete:false,unpricedTokens:5350000}]};
 dashboard.state.ledgerRange="30d";dashboard.state.range="30d";
-assert.match(dashboard.workHTML(dashboard.workData()),/>5\.35M</,"5,350,000 rounds to 5.35M with three significant digits");
+assert.match(dashboard.workHTML(dashboard.workData()),/>5\.35M</,"5,350,000 uses three significant digits");
 dashboard.state.ledger=null;
 
 const manyModels=[1,2,3,4,5,6].map(i=>({name:`claude-zeta-${i}`,tokens:(10-i)*1e5,apiEquivalentCost:2}));
 manyModels.push({name:"claude-zeta-7",tokens:3e4,apiEquivalentCost:1},{name:"claude-zeta-8",tokens:1e4,apiEquivalentCost:null});
 dashboard.state.insights=payload([provider("Claude",{models:manyModels})]);dashboard.state.metric="tokens";
 const otherRow=dashboard.insightsHTML();
-assert.match(otherRow,/Other \(4\)/,"the four smallest models fold into Other");
+assert.match(otherRow,/Other \(4 models\)/,"the four folded model rows are counted as models");
 assert.match(otherRow,/class="dash-model-name other"[^>]*tabindex="0" data-tip-html=/,"Other exposes its details to keyboard focus");
+assert.match(otherRow,/data-tip-html="[^"]*tip-row/,"Other tooltip uses structured chart-style rows");
+const foldedTip=otherRow.match(/data-tip-html="([^"]*tip-total[^"]*)"/)?.[1]||"";assert.equal((foldedTip.match(/&lt;span class=&quot;tip-row&quot;&gt;/g)||[]).length,4,"each folded model has its own name and value row in the tooltip");
 assert.match(otherRow,/\u2265\$5\.00/,"an Other row with an unpriced constituent shows a compact lower bound");
 assert.match(otherRow,/At least \$5\.00; some usage is unpriced/,"the lower bound says why, for screen readers and as a title");
 

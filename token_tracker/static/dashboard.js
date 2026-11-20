@@ -12,9 +12,9 @@
   const clearPref=key=>{try{localStorage.removeItem(key);}catch{}};
   const storedRange=()=>{let value=readPref("branchglanceInsightsRange","30d");if(value==="all"){value="30d";writePref("branchglanceInsightsRange",value);}return isRange(value)?value:"30d";};
   const reducedMotion=()=>window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches===true;
-  const nfmt=new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3});
+  const nfmt=new Intl.NumberFormat("en",{notation:"compact",minimumSignificantDigits:3,maximumSignificantDigits:3});
   const usd=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2});
-  const number=value=>finite(value)==null?"":nfmt.format(value);
+  const number=value=>finite(value)==null?"":Math.abs(value)>=1000?nfmt.format(value):new Intl.NumberFormat("en",{maximumFractionDigits:3}).format(value);
   const money=value=>finite(value)==null?"":usd.format(value);
   const localDate=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;
   const dayLabel=value=>{const text=String(value||""),stamp=text.includes("T"),date=new Date(stamp?text:`${text}T12:00:00`);if(Number.isNaN(date.getTime()))return text;const clock=stamp?(clockPref()==="24"?{hour:"2-digit",minute:"2-digit",hourCycle:"h23"}:{hour:"numeric",hourCycle:"h12"}):{};return new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",...clock}).format(date);};
@@ -91,7 +91,7 @@
     const partialModels=allProviders.some(p=>p.totals?.costPartial===true&&finite(p.totals?.apiEquivalentCost)!=null);return {partialModels,fallback,range,hourly,providers,totals,previous,seriesByKey,series:seriesByKey[chartKey],chartKey,heroKey,costHero,costPartial,unpricedModels,mostlyUnpriced,models,peaks,dates};
   }
   const joinNames=names=>names.length<=2?names.join(" and "):`${names.slice(0,-1).join(", ")} and ${names.at(-1)}`;
-  const tokenHero=value=>{const [figure,suffix]=value>=1e9?[(value/1e9).toFixed(2),"B"]:value>=1e6?[(value/1e6).toFixed(1),"M"]:value>=1e3?[(value/1e3).toFixed(1),"K"]:[String(Math.round(value)),""];return `<strong class="dash-hero-number">${esc(figure)}${suffix?`<span class="dash-hero-mag">${suffix}</span>`:""}</strong><span class="sr-only"> tokens</span>`;};
+  const tokenHero=value=>{const formatted=number(value),match=formatted.match(/^(.*?)([KMBT])$/);return `<strong class="dash-hero-number">${esc(match?match[1]:formatted)}${match?`<span class="dash-hero-mag">${match[2]}</span>`:""}</strong><span class="sr-only"> tokens</span>`;};
   // Provider chips scope all Insights sections wherever provider identity is available.
   const hiddenProviders=new Set((()=>{try{const value=JSON.parse(localStorage.getItem("branchglanceHiddenProviders")||"[]");return Array.isArray(value)?value:[];}catch{return [];}})());
   // At least one provider stays on; the last one cannot be hidden.
@@ -119,14 +119,14 @@
     return `<div class="dash-chips" role="group" aria-label="Providers included in all available Insights sections">${providers.map(p=>{const on=!hiddenProviders.has(p.name),locked=on&&providers.filter(q=>!hiddenProviders.has(q.name)).length===1;return `<button type="button" class="dash-chip ${providerKey(p.name)}-color" data-dashboard-provider="${esc(p.name)}" aria-pressed="${on}"${locked?' aria-disabled="true"':""} title="${locked?"At least one provider stays shown":`${on?"Hide":"Show"} ${esc(p.name)} across Insights`}"><i class="dash-dot ${providerKey(p.name)}" aria-hidden="true"></i>${esc(p.name)}<span class="dash-chip-check" aria-hidden="true">${on?"\u2713":""}</span></button>`;}).join("")}</div>`;
   };
   function seriesChart(data){
-    const key=data.chartKey,cost=key==="apiEquivalentCost",format=value=>cost?money(value):number(value);
+    const key=data.chartKey,cost=key==="apiEquivalentCost",format=value=>cost?compactMoney(value):number(value);
     // Keep all selected buckets, including leading zeroes and missing values.
     const rows=data.seriesByKey[key];
     const candidates=cost?data.providers.filter(p=>rows.some(row=>finite(row[p.name])!=null)):data.providers;
     const excluded=cost?data.providers.filter(p=>!candidates.includes(p)):[];
     if(!rows.length||!candidates.length||!rows.some(row=>candidates.some(p=>finite(row[p.name])!=null)))return "";
     const providers=candidates.filter(p=>!hiddenProviders.has(p.name));
-    const lines=chartStyle()==="lines";
+    const lines=providers.length>1&&chartStyle()==="lines";
     if(!providers.length)return `<p class="dash-chart-empty">Every provider is hidden. Click a provider in the split to show it.</p>`;
     const W=668,H=100,L=0,R=0,T=1,B=1,PW=W-L-R,PH=H-T-B,step=PW/Math.max(rows.length-1,1);
     const complete=row=>providers.every(p=>finite(row[p.name])!=null);
@@ -185,7 +185,7 @@
     }).join("");
     return `<div class="dash-plot"><div class="dash-axis" aria-hidden="true">${axis}</div><svg class="dash-chart${lines?" is-lines":""}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-label="${data.hourly?"Hourly":"Daily"} ${cost?"API-equivalent cost":"tokens"} by provider">${ticks}${paths}${hover}</svg><div class="dash-markers" aria-hidden="true">${dotList.join("")}</div></div>${dates}`;
   }
-  // The split bar sits under the figure it divides; the legend is a four-column table (provider, value, share, plan multiple) so every column aligns.
+  // The split bar sits under the figure it divides; one column list builds the legend tracks, headings and provider cells.
   function splitParts(data){
     const key=data.heroKey;if(!key)return null;
     const all=data.providers.map(p=>({name:p.name,value:finite(p.scoped[key])}));
@@ -193,16 +193,21 @@
     if(!sum)return null;
     const bar=data.providers.length>1?`<div class="dash-split" aria-hidden="true">${all.filter(row=>row.value>0).map(row=>`<span class="${providerKey(row.name)}-fill" style="flex:${row.value}"></span>`).join("")}</div>`:"";
     const showShare=key!=="apiEquivalentCost"||all.filter(row=>row.value!=null).length>=2;
-    const head=`<span class="dash-legend-head"></span><span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span>${showShare?'<span class="dash-legend-head">Share</span>':""}<span class="dash-legend-head dash-plan-head">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>`;
+    const columns=[
+      {track:"minmax(0,max-content)",head:'<span class="dash-legend-head"></span>',cell:row=>`<span class="dash-legend-cell dash-legend-name">${esc(row.name)}</span>`},
+      {track:"max-content",head:`<span class="dash-legend-head dash-legend-head-value">${key==="apiEquivalentCost"?"Cost":"Tokens"}</span>`,cell:row=>`<span class="dash-legend-cell dash-legend-value">${row.value==null?(key==="apiEquivalentCost"?'<span class="dash-legend-unpriced">Unpriced</span>':'<b aria-label="Unavailable">—</b>'):`<b>${esc(key==="apiEquivalentCost"?compactMoney(row.value):number(row.value))}</b>`}</span>`},
+      ...(showShare?[{track:"max-content",head:'<span class="dash-legend-head">Share</span>',cell:row=>`<span class="dash-legend-cell dash-legend-share">${row.value==null?"":`${Math.round(100*row.value/sum)}%`}</span>`}]:[]),
+      {track:"max-content",head:'<span class="dash-legend-head dash-plan-head">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>',cell:row=>`<span class="dash-legend-cell dash-legend-plan">${key==="apiEquivalentCost"&&row.value==null?planCells(""):planCellsHTML(row.name)}</span>`}
+    ];
+    const head=columns.map(column=>column.head).join(""),gridTemplate=columns.map(column=>column.track).join(" ");
     let unpriced=false;
     const items=all.map(row=>{
       const cls=`${providerKey(row.name)}-color`;
-      const value=row.value==null?(key==="apiEquivalentCost"?'<span class="dash-legend-unpriced">Unpriced</span>':'<b aria-label="Unavailable">—</b>')+(showShare?'<span class="dash-legend-share"></span>':""):`<b>${esc(key==="apiEquivalentCost"?money(row.value):number(row.value))}</b>${showShare?`<span class="dash-legend-share">${Math.round(100*row.value/sum)}%</span>`:""}`;
-      const plan=key==="apiEquivalentCost"&&row.value==null?planCells(""):planCellsHTML(row.name);
+      const plan=key==="apiEquivalentCost"&&row.value==null?"":planCellsHTML(row.name);
       if(plan.includes("some unpriced"))unpriced=true;
-      return `<span class="dash-legend-item ${cls}"><span class="dash-legend-name">${esc(row.name)}</span>${value}${plan}</span>`;
+      return `<span class="dash-legend-item ${cls}">${columns.map(column=>column.cell(row)).join("")}</span>`;
     }).join("");
-    return {bar,legend:`<div class="dash-split-legend${showShare?"":" no-share"}">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">At least means some usage has no published price, so the real figure is higher.</p>':""}`};
+    return {bar,legend:`<div class="dash-split-legend${showShare?"":" no-share"}" style="grid-template-columns:${gridTemplate}">${head}${items}</div>${unpriced?'<p class="dash-plan-footnote">At least means some usage has no published price, so the real figure is higher.</p>':""}`};
   }
   // One provider has no split to compare against, so its plan multiple gets one line of its own.
   function singlePlanHTML(data){const p=data.providers[0];if(!p)return "";return `<div class="dash-plan-single ${providerKey(p.name)}-color"><span class="dash-plan-figure"><span class="dash-plan-label">30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price; independent of the selected range.</span></span>${planCellsHTML(p.name)}</span></div>`;}
@@ -286,9 +291,9 @@
     // The unit line names any shown provider that has no published price, so the total is read as a partial figure.
     const unpricedShown=data.providers.filter(p=>finite(p.scoped.apiEquivalentCost)==null).map(p=>p.name);
     // The unit line names a shown provider with no published price, and says when some priced models are partial.
-    const unitLine=["estimated",...(unpricedShown.length?[`excl. ${joinNames(unpricedShown)}`]:[]),...(data.partialModels?["some models unpriced"]:[])].join(" · ");
+    const unitLine=["estimated",...(unpricedShown.length?[`excl. ${joinNames(unpricedShown)}`]:[]),...(data.partialModels?["partly unpriced"]:[])].join(" · ");
     const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">${esc(unitLine)}</span>`:tokenHero(value);
-    const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">${data.hourly?"Hourly":"Daily"} ${data.chartKey==="apiEquivalentCost"?"cost":"tokens"}</span>${chartStyleHTML()}</div>${chart}</section>`:"";
+    const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartProviders=data.providers.filter(p=>!hiddenProviders.has(p.name)&&(data.chartKey!=="apiEquivalentCost"||data.seriesByKey.apiEquivalentCost.some(row=>finite(row[p.name])!=null))),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">${data.hourly?"Hourly":"Daily"} ${data.chartKey==="apiEquivalentCost"?"cost":"tokens"}</span>${chartProviders.length>1?chartStyleHTML():""}</div>${chart}</section>`:"";
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
     const missing=v=>finite(v)==null;
     const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hit rate"],[data.totals.activeHours,v=>`${number(v)}h`,"Active hours"]];
@@ -300,8 +305,8 @@
     // Zero usage across the shown providers: the hero stays; the left column holds one line where Models would start, Quota keeps the right column, and no chart band is drawn.
     if(finite(data.totals.tokens)===0){const label=data.dates.length?rangeLabel(data.dates):RANGE_NAME[data.range],more=data.range==="30d"||data.range==="all"?"":' <button type="button" class="dash-link" data-dashboard-range="30d">Show 30 days</button>',quota=limitsHTML(data);return hero.replace('<section class="dash-hero">','<section class="dash-hero is-zero-hero">')+`<section class="dash-lower is-zero"><div class="dash-lower-main"><p class="dash-zero-line">No usage ${esc(label)}.${more}</p></div>${quota?`<div class="dash-side">${quota}</div>`:""}</section>`+statusHTML;}
     const models=data.models.filter(row=>row.tokens!==0);
-    // One row per model (long-context variants are merged into it). Seven rows fit beside the chart; beyond that the top six show and the rest sum into one Other row.
-    const modelRows=(()=>{if(models.length<=5)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,4).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(4);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};return [...top,{name:`Other (${rest.length})`,details:rest.map(row=>`${row.name}: ${state.metric==="cost"?(finite(row.apiEquivalentCost)==null?"Unpriced":money(row.apiEquivalentCost)):`${number(row.tokens)} tokens`}`).join("; "),tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true,partial:rest.some(row=>row.partial||(finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null))}];})();
+    // Long-context variants share one model row; both breakdowns keep four named rows and fold the rest into Other.
+    const modelRows=(()=>{if(models.length<=5)return models.map(row=>({...row,family:modelKey(row.raw)}));const top=models.slice(0,4).map(row=>({...row,family:modelKey(row.raw)})),rest=models.slice(4);const sumOf=key=>{const present=rest.map(row=>finite(row[key])).filter(value=>value!=null);return present.length?present.reduce((total,value)=>total+value,0):null;};const details=rest.map(row=>`${row.name}: ${state.metric==="cost"?(finite(row.apiEquivalentCost)==null?"Unpriced":money(row.apiEquivalentCost)):`${number(row.tokens)} tokens`}`).join("; "),tipRows=rest.map(row=>`<span class="tip-row"><span>${esc(row.name)}</span><strong>${esc(state.metric==="cost"?(finite(row.apiEquivalentCost)==null?"Unpriced":money(row.apiEquivalentCost)):number(row.tokens))}</strong></span>`).join("");return [...top,{name:`Other (${rest.length} models)`,details,tipRows,count:rest.length,tokens:sumOf("tokens"),apiEquivalentCost:sumOf("apiEquivalentCost"),family:"other",other:true,partial:rest.some(row=>row.partial||(finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null))}];})();
     // Bars follow the active metric on a linear scale relative to the largest row; a visible row keeps a 2% minimum width.
     // In Cost view a model with no published price gets an empty bar, not a zero-length one that reads as "free".
     const barKey=data.heroKey==="apiEquivalentCost"?"apiEquivalentCost":"tokens";
@@ -310,7 +315,7 @@
     const side=limits?`<div class="dash-side">${limits}</div>`:"";
     const work=workData(),workView=work!=null&&modelsView()==="work";
     if(workView){const middle=`<section class="dash-lower${side?"":" is-single"}${chartHTML?"":" is-day"}"><div class="dash-lower-main">${workHTML(work)}</div>${side}${statsHTML}</section>`;return hero+`<section class="dash-insights-body">${middle}${chartHTML}</section>`+statusHTML;}
-    const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${work?breakdownToggle("models"):"Models"}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.details||row.name)}"${row.other?` tabindex="0" data-tip-html="${esc(esc(row.details))}" aria-label="${esc(`${row.name}: ${row.details}`)}"`:""}><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?` title="${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens"`:""}>${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?`<span class="sr-only">${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens. </span>`:""}${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':(row.partial?`<span class="dash-partial-cost" title="≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}; some usage is unpriced"><span aria-hidden="true">≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}</span><span class="sr-only">At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced</span></span>`:esc(money(row.apiEquivalentCost)))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
+    const modelHTML=models.length?`<div class="dash-model-block"><table class="dash-model-table"><caption class="sr-only">Model breakdown. Token and estimated API-equivalent cost values. ${data.costPartial||models.some(row=>finite(row.tokens)>0&&finite(row.apiEquivalentCost)==null)?"Some model costs have no published price or the payload reports partial coverage.":"Cost pricing coverage is complete for recorded usage."}</caption><thead><tr><th scope="col">${breakdownToggle("models",work!=null)}</th><th scope="col"><span class="sr-only">Usage</span></th><th scope="col">Tokens</th><th scope="col">Est. cost</th></tr></thead><tbody>${modelRows.map(row=>{const value=finite(row[barKey]),width=barMax>0&&value!=null&&value>0?Math.max(2,Math.min(100,100*value/barMax)):0,empty=barKey==="apiEquivalentCost"&&value==null;return `<tr class="dash-model-row"><th scope="row"><span class="dash-model-name ${row.family}" title="${esc(row.details||row.name)}"${row.other?` tabindex="0" data-tip-html="${esc(`<b class="tip-total">${esc(row.name)}</b>${row.tipRows}`)}" aria-label="${esc(`${row.name}: ${row.details}`)}"`:""}><i></i>${esc(row.name)}</span>${row.longContext?'<small class="dash-model-tag">long context</small>':""}</th><td><i class="dash-model-bar${empty?" is-empty":""}" aria-hidden="true">${empty?"":`<em class="${row.family}" style="width:${width.toFixed(1)}%"></em>`}</i></td><td>${esc(number(row.tokens))}</td><td${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?` title="${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens"`:""}>${!row.partial&&finite(row.apiEquivalentCost)!=null&&finite(row.tokens)>0?`<span class="sr-only">${esc(exactMoney(Number((row.apiEquivalentCost/row.tokens*1e6).toFixed(2))))} per 1M tokens. </span>`:""}${finite(row.apiEquivalentCost)==null?'<span class="dash-none" role="img" aria-label="No published price">&mdash;</span>':(row.partial?`<span class="dash-partial-cost" title="≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}; some usage is unpriced"><span aria-hidden="true">≥$${esc(money(row.apiEquivalentCost).replace(/^\$/, ""))}</span><span class="sr-only">At least ${esc(money(row.apiEquivalentCost))}; some usage is unpriced</span></span>`:esc(money(row.apiEquivalentCost)))}</td></tr>`;}).join("")}</tbody></table></div>`:"";
     const leftMain=modelHTML?`<div class="dash-lower-main">${modelHTML}</div>`:"";
     const twoColumn=Boolean(modelHTML&&side);
     const middle=modelHTML||side||statsHTML?`<section class="dash-lower${twoColumn?"":" is-single"}${chartHTML?"":" is-day"}">${leftMain}${side}${statsHTML}</section>`:"";
@@ -320,17 +325,11 @@
   // By work: ledger tokens per model and kind of work. It takes the place of the Models list; the side column stays on the right.
   // Kinds outside the classifier's list fold into Other, so every cell, row and column adds up to the ledger's totals.
   const WORK_KINDS=["build","review","check","research","chore","design","explore","lead","other"];
-  // Token figures use at most three significant digits from thousands up and never retain a zero decimal.
-  const workNumber=value=>{
-    const n=Math.max(0,finite(value)||0);
-    if(n<1e3){const rounded=Math.round(n);return rounded>=1e3?"1K":String(rounded);}
-    const suffixes=["K","M","B","T"],rank=n>=1e12?3:n>=1e9?2:n>=1e6?1:0,scale=1e3**(rank+1),scaled=n/scale;
-    const precision=10**Math.max(0,2-Math.floor(Math.log10(scaled))),compact=Math.floor(scaled*precision+1e-9)/precision;
-    return `${Number(compact.toFixed(Math.max(0,Math.log10(precision))))}${suffixes[rank]}`;
-  };
+  // By-work token cells use the same three-significant-digit formatter as every other compact number.
+  const workNumber=value=>number(Math.max(0,finite(value)||0));
   // Cost figures use cents below $100, whole dollars from $100, and compact thousands from $10,000.
-  const compactMoney=value=>{const n=finite(value)||0;if(n>=10000){const scaled=n/1000,rounded=Math.round(scaled*10)/10;return "$"+String(rounded).replace(/\.0$/,"")+"k";}if(n>=100)return "$"+Math.round(n).toLocaleString("en-US");return n>=1?"$"+n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}):"<$1";};
-  const lowerMoney=value=>{const n=Math.max(0,finite(value)||0);return n>=1?"$"+Math.floor(n).toLocaleString("en-US"):`${Math.floor(n*100)}¢`;};
+  const compactMoney=value=>{const n=finite(value)||0;if(n>=10000){const scaled=n/1000,rounded=Math.round(scaled*10)/10;return "$"+String(rounded).replace(/\.0$/ ,"")+"k";}if(n>=100)return "$"+Math.round(n).toLocaleString("en-US");return "$"+n.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});};
+  const lowerMoney=value=>{const n=Math.max(0,finite(value)||0),floor=n>=100?Math.floor(n):Math.floor(n*100)/100;return compactMoney(floor);};
   const exactMoney=value=>"$"+(finite(value)||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:6});
   const modelsView=()=>readPref("branchglanceModelsView","models")==="work"?"work":"models";
   const workCell=()=>({tokens:0,known:0,priced:false,unpriced:false});
@@ -352,22 +351,22 @@
     const metric=state.metric==="cost"?"cost":"tokens",measure=row=>metric==="cost"?Object.values(row.cells).reduce((sum,cell)=>sum+cell.known,0):row.total;
     const ranked=[...byModel.values()].sort((a,b)=>measure(b)-measure(a));
     if(!ranked.length)return null;
-    // Four rows fit in the Models list's height; past that the top three show and the rest sum into one Other row.
+    // Models and By work keep four named rows and fold the rest into one Other row.
     let rows=ranked;
-    if(ranked.length>4){
-      const rest=ranked.slice(3),other={provider:"",name:`Other · ${rest.length} models`,other:true,count:rest.length,total:0,cells:{}};
+    if(ranked.length>5){
+      const rest=ranked.slice(4),other={provider:"",name:`Other (${rest.length} models)`,other:true,count:rest.length,total:0,cells:{}};
       for(const model of rest){other.total+=model.total;for(const [kind,cell] of Object.entries(model.cells))addCell(other.cells[kind]||(other.cells[kind]=workCell()),cell);}
-      rows=[...ranked.slice(0,3),other];
+      rows=[...ranked.slice(0,4),other];
     }
     // The same model name under two providers (unknown, say) gets its provider appended.
     const names=rows.map(row=>row.name);
     rows.forEach(row=>{if(!row.other&&names.filter(name=>name===row.name).length>1)row.name+=` · ${row.provider}`;});
-    let kinds=WORK_KINDS.filter(kind=>rows.some(row=>row.cells[kind]?.tokens>0));
+    let kinds=WORK_KINDS.filter(kind=>rows.some(row=>row.cells[kind]?.tokens>0)),foldedKindNames=[];
     // More than three named kinds: the three largest keep their columns and the rest fold into Other ("Other (n)"), so the table has at most four kind columns.
-    const namedKinds=kinds.filter(kind=>kind!=="other"),folded=namedKinds.length>3?namedKinds.length-3:0;if(folded){const kindTokens=kind=>rows.reduce((sum,row)=>sum+(row.cells[kind]?.tokens||0),0);const keep=kinds.filter(kind=>kind!=="other").sort((a,b)=>kindTokens(b)-kindTokens(a)).slice(0,3);for(const row of rows)for(const kind of kinds){if(keep.includes(kind)||kind==="other")continue;const cell=row.cells[kind];if(cell){addCell(row.cells.other||(row.cells.other=workCell()),cell);delete row.cells[kind];}}kinds=WORK_KINDS.filter(kind=>keep.includes(kind)||(kind==="other"&&rows.some(row=>row.cells.other?.tokens>0)));}
+    const namedKinds=kinds.filter(kind=>kind!=="other"),folded=namedKinds.length>3?namedKinds.length-3:0;if(folded){const kindTokens=kind=>rows.reduce((sum,row)=>sum+(row.cells[kind]?.tokens||0),0);const keep=kinds.filter(kind=>kind!=="other").sort((a,b)=>kindTokens(b)-kindTokens(a)).slice(0,3);foldedKindNames=kinds.filter(kind=>kind!=="other"&&!keep.includes(kind));for(const row of rows)for(const kind of kinds){if(keep.includes(kind)||kind==="other")continue;const cell=row.cells[kind];if(cell){addCell(row.cells.other||(row.cells.other=workCell()),cell);delete row.cells[kind];}}kinds=WORK_KINDS.filter(kind=>keep.includes(kind)||(kind==="other"&&rows.some(row=>row.cells.other?.tokens>0)));}
     const totals={cells:{},all:workCell()};
     for(const row of rows){row.sum=workCell();for(const kind of kinds){const cell=row.cells[kind];if(cell){addCell(totals.cells[kind]||(totals.cells[kind]=workCell()),cell);addCell(row.sum,cell);addCell(totals.all,cell);}}}
-    return {rows,kinds,totals,coverage:ledger.coverage||{},service:ledger.service||{},metric,folded};
+    return {rows,kinds,totals,coverage:ledger.coverage||{},service:ledger.service||{},metric,folded,foldedKindNames};
   }
   function workCost(cell){
     if(!cell.priced)return "No published price";
@@ -386,9 +385,9 @@
     const all=[...causes,...missing];
     return {text:`Partial${all.length?` · ${all[0]}`:""}`,title:`Some usage could not be counted exactly: ${all.join(", ")||"see coverage"}.`};
   }
-  const breakdownToggle=active=>`<span class="dash-breakdown dash-segment" role="group" aria-label="Breakdown">${[["models","Models"],["work","By work"]].map(([value,label])=>`<button type="button" data-dashboard-models="${value}" aria-pressed="${active===value}" class="${active===value?"is-active":""}"${value==="work"?' title="Tokens by kind of work. Kind is inferred from job titles and kind: tags."':""}>${label}</button>`).join("")}</span>`;
+  const breakdownToggle=(active,workAvailable=true)=>`<span class="dash-breakdown dash-segment" role="group" aria-label="Breakdown">${[["models","Models"],["work","By work"]].map(([value,label])=>{const unavailable=value==="work"&&!workAvailable;return `<button type="button" data-dashboard-models="${value}" aria-pressed="${active===value}" aria-disabled="${unavailable}" class="${active===value?"is-active":""}${unavailable?" is-unavailable":""}" title="${unavailable?"No work records for this provider in this range":value==="work"?"Tokens by kind of work. Kind is inferred from job titles and kind: tags.":""}">${label}</button>`;}).join("")}</span>`;
   function workHTML(work){
-    const note=workNote(work),label=kind=>kind==="other"&&work.folded?`Other (${work.folded})`:kind[0].toUpperCase()+kind.slice(1);
+    const note=workNote(work),label=kind=>kind[0].toUpperCase()+kind.slice(1);
     // Unpriced cost cells are a faint dot, explained once under the grid.
     let sawUnpriced=false;
     const cellHTML=(cell,title,kindLabel,strong=false)=>{
@@ -402,8 +401,8 @@
       const exact=`${exactTokens} tokens`;
       return `<span role="cell" tabindex="0" class="${classes}" title="${esc(exact)}" aria-label="${esc(`${title}, ${kindLabel}: ${exact}; ${workCost(cell)}`)}" data-tip-html="${tooltip}">${esc(workNumber(cell.tokens))}<span class="sr-only">${esc(exact)}</span></span>`;
     };
-    const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span>${breakdownToggle("work")}</span>${work.kinds.map(kind=>`<span role="columnheader">${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
-    const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}" title="${esc(row.other?row.name:`${row.provider} · ${row.name}`)}"><i></i>${esc(row.other?`Other (${row.count})`:row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
+    const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span>${breakdownToggle("work")}</span>${work.kinds.map(kind=>`<span role="columnheader"${kind==="other"&&work.foldedKindNames.length?` title="${esc(work.foldedKindNames.map(name=>name[0].toUpperCase()+name.slice(1)).join(", "))}"`:""}>${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
+    const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}" title="${esc(row.other?row.name:`${row.provider} · ${row.name}`)}"><i></i>${esc(row.other?`Other (${row.count} models)`:row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
     const foot=`<div role="row" class="dash-work-row is-foot"><span role="rowheader">Total</span>${work.kinds.map(kind=>cellHTML(work.totals.cells[kind],"All models",label(kind),true)).join("")}${cellHTML(work.totals.all,"All models","all work",true)}</div>`;
     const noteText=note?.text.startsWith("Partial")?`<strong>Partial</strong>${esc(note.text.slice("Partial".length))}`:note?esc(note.text):"";
     return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}">${note?`<div class="dash-work-note is-qualified" title="${esc(note.title)}">${noteText}</div>`:""}<div class="dash-work-grid" role="table" aria-label="${work.metric==="cost"?"API-equivalent cost":"Tokens"} by model and kind of work">${head}${body}${foot}</div>${sawUnpriced?'<p class="dash-work-legend">· = no published price</p>':""}</div>`;
@@ -425,6 +424,7 @@
   }
   function setModelsView(value){
     if(value!=="models"&&value!=="work")return;
+    if(value==="work"&&!workData())return;
     dismissTooltip();writePref("branchglanceModelsView",value);state.renderKey="";render();
     document.querySelector(`[data-dashboard-models="${value}"]`)?.focus();
   }
