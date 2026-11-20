@@ -153,9 +153,11 @@
       };
       rows.forEach((row,i)=>{if(complete(row))segment.push(i);else flush();});flush();
     }
-    const ticks=[1,.5,0].map(fraction=>`<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${yAt(max*fraction).toFixed(1)}" y2="${yAt(max*fraction).toFixed(1)}"/>`).join("");
-    const axisFormat=value=>cost&&max>=10?"$"+Math.round(value).toLocaleString("en-US"):Math.abs(value)>=1000?new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3}).format(value):number(value);
-    const axis=[1,.5,0].map(fraction=>`<span class="dash-axis-value" style="top:${(yAt(max*fraction)/H*100).toFixed(2)}%">${esc(fraction===0?(cost?"$0":"0"):axisFormat(max*fraction))}</span>`).join("");
+    const fractions=cost?[1,.75,.5,.25,0]:[1,.5,0];
+    const ticks=fractions.map(fraction=>`<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${yAt(max*fraction).toFixed(1)}" y2="${yAt(max*fraction).toFixed(1)}"/>`).join("");
+    const wholeCostAxis=cost&&fractions.every(fraction=>fraction===0||Number.isInteger(max*fraction));
+    const axisFormat=value=>cost?(wholeCostAxis?"$"+Math.round(value).toLocaleString("en-US"):"$"+value.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})):Math.abs(value)>=1000?new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3}).format(value):number(value);
+    const axis=fractions.map(fraction=>`<span class="dash-axis-value" style="top:${(yAt(max*fraction)/H*100).toFixed(2)}%">${esc(fraction===0?(cost?"$0":"0"):axisFormat(max*fraction))}</span>`).join("");
     // Date ticks: the first and last day, plus two evenly spaced days between them once the range is long enough to read them.
     // Hourly (24h): a tick at every sixth local hour and "now" at the end. Daily ranges: first, last and two evenly spaced days.
     const hourOf=value=>Number(String(value).slice(11,13));
