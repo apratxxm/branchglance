@@ -204,6 +204,12 @@ assert.match(dashboard.insightsHTML(),/data-dashboard-chart-style="lines" aria-p
 const lineChart=dashboard.seriesChart(dashboard.insightsData());
 assert.equal((lineChart.match(/class="dash-marker /g)||[]).length,6);
 assert.match(lineChart,/Total:/);
+dashboard.state.metric="cost";
+dashboard.state.insights={providers:[provider("Claude",{cost:0.0027})]};
+const subCentAxis=dashboard.seriesChart(dashboard.insightsData());
+const subCentLabels=[...subCentAxis.matchAll(/class="dash-axis-value"[^>]*>([^<]+)</g)].map(match=>match[1]);
+assert.deepEqual(subCentLabels,["$0.0030","$0.0015","$0"],"sub-cent cost ticks use one precise format and keep nonzero ticks distinct");
+dashboard.state.metric="tokens";
 assert.equal(dashboard.planMultiple(1.29,true),"1.2");
 assert.equal(dashboard.planMultiple(10.9,true),"10");
 assert.doesNotMatch(dashboard.insightsHTML(),/excludes unpriced usage/);

@@ -247,6 +247,10 @@ assert.equal(T.ageShort(fixedNow-2*86400000),"2d");
   assert.equal(T.resetView({fiveHour:{percent:12},limitsUpdatedAt:ago(120)},"fiveHour").tone,"");
   assert.equal(T.resetView({fiveHour:{percent:40},limitsUpdatedAt:ago(0)},"fiveHour").tone,"");
   T.renderResets([{name:"Codex",fiveHour:{percent:94,resetAt:at(0,3,8)},weekly:{percent:12,resetAt:at(5,22,6)},limitsUpdatedAt:new Date(fixedNow).toISOString()}]);
+  const labelledQuota=node("#r0-fiveHour-left");
+  assert.match(labelledQuota.title,/Codex 5-hour: 94% used/);
+  assert.match(labelledQuota.innerHTML,/<span class="sr-only">Codex 5-hour: 94% used, resets in [^<]+<\/span>/,"quota wording appears as visually hidden text inside the generic span");
+  assert.equal(labelledQuota.getAttribute("aria-label"),null,"quota labels do not name a generic span with aria-label");
   assert.equal(node("#r0-fiveHour-time").textContent,"3:08 am");
   assert.equal(node("#r0-fiveHour-left").className,"rr-left t-err");
   assert.equal(node("#r0-weekly-day").textContent,"Mon 28 Sep");
@@ -256,6 +260,10 @@ assert.equal(T.ageShort(fixedNow-2*86400000),"2d");
   assert.equal(node("#r0-fiveHour-meter").getAttribute("aria-valuenow"),"94");
   assert.equal(node("#r0-fiveHour-meter").getAttribute("aria-valuetext"),"94% used");
   assert.match(node("#resets").innerHTML,/5-hour limit used/);
+  T.renderResets([{name:"Codex",fiveHour:{percent:87,resetAt:at(0,1,0)},weekly:{percent:12,resetAt:at(5,22,6)},limitsUpdatedAt:new Date(fixedNow).toISOString()}]);
+  const dueQuota=node("#r0-fiveHour-left");
+  assert.match(dueQuota.title,/Codex 5-hour: 87% used, reset due\./,"the quota title uses correct wording when countdown is due");
+  assert.match(dueQuota.innerHTML,/<span class="sr-only">Codex 5-hour: 87% used, reset due\.<\/span>/);
 }
 
 // ---------- forest, parent roll-up, agent tray ----------

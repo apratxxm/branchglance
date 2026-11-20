@@ -32,6 +32,9 @@ assert.equal(label("claude-opus-6-1"), "Opus 6.1", "unknown future versions use 
 assert.equal(label("claude-mythos-5-2-20261120"), "Mythos 5.2", "dated Claude ids omit the snapshot date");
 assert.equal(label("claude-opus-5"), "Opus 5", "major-only ids retain their version");
 assert.equal(label("claude-opus"), "Opus (no version)", "versionless aliases are explicit and remain distinguishable");
+assert.equal(label("claude-3-5-sonnet-latest"), "Sonnet 3.5", "legacy family-last ids allow a trailing letter suffix");
+assert.equal(label("claude-3-7-sonnet-latest"), "Sonnet 3.7", "newer legacy family-last ids allow a trailing letter suffix");
+assert.equal(label("claude-opus-4-5-thinking"), "Opus 4.5", "family-first ids allow a trailing letter suffix");
 assert.equal(label("codex"), "");
 assert.equal(label(""), "");
 assert.equal(label("some-unknown-model"), "some-unknown-model");
