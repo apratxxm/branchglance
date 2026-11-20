@@ -333,15 +333,178 @@ def test_claude_cache_breakdown_does_not_double_count_or_overstate_savings():
     assert cost["cacheSavings"] < 0
 
 
-def test_claude_transcript_file_cache_reuses_and_invalidates(tmp_path):
+def test_claude_transcript_usage_parses_only_appended_records(tmp_path, monkeypatch):
     path = tmp_path / "sample.jsonl"
     first = {"message": {"id": "one", "usage": {"input_tokens": 1}}}
     second = {"message": {"id": "two", "usage": {"input_tokens": 1}}}
     path.write_text(json.dumps(first) + "\n", encoding="utf-8")
+    original_loads = providers.json.loads
+    parsed = []
+    def count_loads(*args, **kwargs):
+        parsed.append(args[0])
+        return original_loads(*args, **kwargs)
+    monkeypatch.setattr(providers.json, "loads", count_loads)
     original = ClaudeDesktopProvider._file_usage(path)
+    assert len(original) == 1
     assert ClaudeDesktopProvider._file_usage(path) is original
-    path.write_text(json.dumps(first) + "\n" + json.dumps(second) + "\n", encoding="utf-8")
+    assert len(parsed) == 1
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(second) + "\n")
     assert len(ClaudeDesktopProvider._file_usage(path)) == 2
+    assert len(parsed) == 2  # The prefix was verified, but not decoded again.
+
+
+def test_claude_incremental_transcript_aggregates_match_fresh_reductions(tmp_path):
+    project = tmp_path / "projects" / "p"; project.mkdir(parents=True)
+    path = project / "session.jsonl"
+    provider = ClaudeDesktopProvider(str(tmp_path)); provider.transcript_root = tmp_path / "projects"
+    key = providers._resolve_memoized(path)
+    now = datetime.now(timezone.utc)
+    rows = [
+        {"timestamp": (now - timedelta(days=2)).isoformat(), "message": {"id": "r1", "model": "claude-sonnet-5", "usage": {"input_tokens": 3, "cache_creation": {"ephemeral_5m_input_tokens": 2}}}},
+        {"timestamp": (now - timedelta(days=1)).isoformat(), "message": {"id": "r2", "model": "claude-haiku-5-5", "usage": {"input_tokens": 4, "output_tokens": 2, "cache_read_input_tokens": 1}}},
+        {"timestamp": now.isoformat(), "message": {"id": "r3", "model": "claude-sonnet-5", "usage": {"input_tokens": 2, "cache_creation_input_tokens": 5}}},
+    ]
+    for count, row in enumerate(rows, 1):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row) + "\n")
+        incremental = provider._transcript_usage()
+        with provider._usage_cache_lock:
+            provider._usage_cache_remove(key)
+        fresh = provider._transcript_usage()
+        assert incremental == fresh
+        assert len(ClaudeDesktopProvider._file_usage(path)) == count
+
+
+def test_claude_incremental_transcript_handles_partial_line_and_rewrite(tmp_path):
+    path = tmp_path / "partial.jsonl"
+    first = {"message": {"id": "one", "usage": {"input_tokens": 1}}}
+    second = {"message": {"id": "two", "usage": {"input_tokens": 2}}}
+    path.write_text(json.dumps(first) + "\n" + json.dumps(second)[:20], encoding="utf-8")
+    assert [row["id"] for row in ClaudeDesktopProvider._file_usage(path)] == ["one"]
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(second)[20:] + "\n")
+    assert [row["id"] for row in ClaudeDesktopProvider._file_usage(path)] == ["one", "two"]
+    path.write_text(json.dumps({"message": {"id": "rewritten", "usage": {"input_tokens": 9}}}) + "\n", encoding="utf-8")
+    assert [row["id"] for row in ClaudeDesktopProvider._file_usage(path)] == ["rewritten"]
+
+
+def test_claude_usage_rechecks_middle_when_same_inode_is_rewritten_and_grows(tmp_path):
+    path = tmp_path / "sample.jsonl"
+    padding = b'{"padding":"' + b'x' * 160 + b'"}\n'
+    record = b'{"message":{"id":"middle","usage":{"input_tokens":1}}}\n'
+    path.write_bytes(padding + record + padding)
+    inode = path.stat().st_ino
+    assert ClaudeDesktopProvider._file_usage(path)[0]["usage"]["input_tokens"] == 1
+
+    path.write_bytes(padding + record.replace(b':1', b':9') + padding + b'{}\n')
+    assert path.stat().st_ino == inode
+    assert ClaudeDesktopProvider._file_usage(path)[0]["usage"]["input_tokens"] == 9
+
+
+def test_claude_usage_warm_hit_checks_stat_after_other_snapshot_readers(tmp_path, monkeypatch):
+    path = tmp_path / "shared.jsonl"
+    first = b'{"message":{"id":"one","usage":{"input_tokens":1}}}\n'
+    second = b'{"message":{"id":"two","usage":{"input_tokens":2}}}\n'
+    path.write_bytes(first)
+    provider = ClaudeDesktopProvider(str(tmp_path))
+    provider.transcript_root = tmp_path
+    assert provider._transcript_usage()["totals"]["total_tokens"] == 1
+
+    def append_after_stat(transcript):
+        providers._stat_memoized(transcript)
+        with transcript.open("ab") as handle:
+            handle.write(second)
+        return {}
+
+    monkeypatch.setattr(providers, "_session_insights", append_after_stat)
+    with providers._build_scope():
+        assert provider._transcript_usage()["totals"]["total_tokens"] == 3
+
+
+def test_claude_usage_keeps_physical_order_and_universal_newlines(tmp_path):
+    root = tmp_path / "projects"
+    first = root / "one" / "same.jsonl"
+    second = root / "two" / "same.jsonl"
+    for path in (first, second):
+        path.parent.mkdir(parents=True)
+    now = datetime.now(timezone.utc).isoformat()
+    shared = {"timestamp": now, "usage": {"input_tokens": 1}}
+    one = json.dumps({**shared, "model": "claude-sonnet-5"})
+    two = json.dumps({**shared, "model": "claude-haiku-5-5"})
+    first.write_bytes(f"malformed\rbroken\r{one}\r".encode())
+    second.write_bytes(f"{{}}\n{two}\n".encode())
+
+    row = ClaudeDesktopProvider._file_usage(first)[0]
+    assert row["order"] == 2
+    assert row["id"].endswith(":2")
+    provider = ClaudeDesktopProvider(str(tmp_path))
+    provider.transcript_root = root
+    assert provider._transcript_usage()["sessions"]["same"]["model"] == "claude-sonnet-5"
+
+
+def test_claude_usage_preserves_unknown_cache_creation_semantics(tmp_path):
+    path = tmp_path / "sample.jsonl"
+    raw_usage = {"input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 0,
+                 "cache_creation_input_tokens": 10, "cache_creation": {"other": ["unused"]}}
+    path.write_text(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(),
+                                "message": {"id": "one", "model": "claude-opus-4-6",
+                                            "usage": raw_usage}}) + "\n", encoding="utf-8")
+    usage = ClaudeDesktopProvider._file_usage(path)[0]["usage"]
+    assert "other" not in usage["cache_creation"]
+    assert usage["cache_creation"]
+    assert not providers._claude_request_size_known(usage)
+    assert providers._usage_size(usage) == providers._usage_size(raw_usage)
+    provider = ClaudeDesktopProvider(str(tmp_path))
+    provider.transcript_root = tmp_path
+    assert provider._transcript_usage()["totals"]["total_tokens"] == 2
+
+
+def test_claude_usage_read_failure_invalidates_file_cache(tmp_path, monkeypatch):
+    path = tmp_path / "sample.jsonl"
+    path.write_bytes(b'{"message":{"id":"one","usage":{"input_tokens":1}}}\n')
+    assert ClaudeDesktopProvider._file_usage(path)
+    with path.open("ab") as handle:
+        handle.write(b'{}\n')
+
+    def cannot_read(self, buffer):
+        raise OSError("simulated read failure")
+
+    monkeypatch.setattr(providers._ClaudeUsageReader, "readinto", cannot_read)
+    assert ClaudeDesktopProvider._file_usage(path) == []
+    assert providers._resolve_memoized(path) not in ClaudeDesktopProvider._usage_cache
+
+
+def test_claude_usage_budget_evicts_independently_of_shared_checkpoints(tmp_path, monkeypatch):
+    cls = ClaudeDesktopProvider
+    monkeypatch.setattr(cls, "_usage_cache", providers.OrderedDict())
+    monkeypatch.setattr(cls, "_usage_cache_bytes", 0)
+    monkeypatch.setattr(providers, "_JSONL_CHECKPOINTS", providers.OrderedDict())
+    monkeypatch.setattr(providers, "_JSONL_CHECKPOINT_BYTES", 0)
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "other.jsonl"
+    for path in (first, second):
+        path.write_bytes(b'{"message":{"id":"one","usage":{"input_tokens":1}}}\n')
+    first_key, second_key = (providers._resolve_memoized(path) for path in (first, second))
+    cls._file_usage(first)
+    monkeypatch.setattr(cls, "_usage_cache_max_bytes", cls._usage_cache_bytes)
+
+    generic_state = {"values": ["g" * 500]}
+    generic_key = ("budget-generic", first_key)
+    generic_next = ("budget-generic", second_key)
+    generic_cost = providers._jsonl_state_cost(generic_state, generic_key)
+    monkeypatch.setattr(providers, "_JSONL_CHECKPOINT_MAX_BYTES", generic_cost)
+    providers._jsonl_cache_checkpoint(generic_key, generic_state, 0, (0, 0, 0, 0, 0), (b"", b""))
+
+    cls._file_usage(second)
+    assert list(cls._usage_cache) == [second_key]
+    assert list(providers._JSONL_CHECKPOINTS) == [generic_key]
+    assert 0 < cls._usage_cache_bytes <= cls._usage_cache_max_bytes
+
+    providers._jsonl_cache_checkpoint(generic_next, generic_state, 0, (0, 0, 0, 0, 0), (b"", b""))
+    assert list(providers._JSONL_CHECKPOINTS) == [generic_next]
+    assert list(cls._usage_cache) == [second_key]
 
 
 def test_reset_label_without_value():
