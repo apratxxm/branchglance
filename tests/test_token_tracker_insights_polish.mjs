@@ -295,12 +295,24 @@ let quota=dashboard.insightsHTML();
 assert.match(quota,/data-quota-part="percent">40%/,"the 5-hour figure is shown");
 assert.match(quota,/<th scope="col">5h<\/th><th scope="col">Week<\/th>/,"the quota head row names both windows");
 assert.match(quota,/data-quota-part="five">2h 40m</,"the 5-hour column shows its countdown with no seconds");assert.match(quota,/data-quota-part="week">3d 2h</,"the week column shows its countdown");
+assert.match(quota,/<th scope="row" class="codex-color">Codex<small class="dash-quota-sub dash-quota-note" data-quota-key="Codex" data-quota-part="missing">No live reading<\/small><\/th>/,"O401 places a single missing-reading note beneath the provider name");
+assert.match(quota,/<td title="No live reading" aria-label="No live reading"><span class="dash-quota-empty" aria-hidden="true">—<\/span><\/td>/,"O401 uses a muted dash with accessible missing-reading text in the empty cell");
+assert.doesNotMatch(quota,/data-quota-part="week">No live reading<\/small>/,"O401 does not repeat the missing-reading message in a quota cell");
 assert.match(quota,/Not available/,"a provider without a weekly reading shows Not available");
 dashboard.toggleProvider("Claude");
 quota=dashboard.insightsHTML();
 assert.doesNotMatch(quota,/data-quota-key="Claude"/,"quota rows exclude a hidden provider");
 assert.match(quota,/data-quota-key="Codex"/,"the shown provider keeps its quota row");
 dashboard.toggleProvider("Claude");
+
+window.tokenTrackerQuotaNow=()=>[];
+dashboard.state.insights=payload([provider("Claude",{limitPeaks:{fiveHour:80,weekly:70}}),provider("Codex",{limitPeaks:{fiveHour:60,weekly:50}})]);
+const peakQuota=dashboard.insightsHTML();
+const embeddedPeaks=peakQuota.match(/<div class="dash-quota-peak">[\s\S]*?<\/div><\/div>/)?.[0]||"";
+assert.match(embeddedPeaks,/<div class="dash-section-label">Peak in this range<\/div><table class="dash-peaks-table dash-quota-table">[\s\S]*?<tbody>/,"O501 reuses the live quota columns without repeating a 5h/Week header row");
+assert.doesNotMatch(embeddedPeaks,/<thead>/,"O501 omits a second quota header row");
+assert.match(css,/\.dash-quota-peak \.dash-section-label\{min-height:18px;color:var\(--d-mute\);font-size:12px;font-weight:450;\}/,"O501 uses a smaller muted secondary heading");
+assert.match(css,/\.dash-quota-peak \.dash-peaks-table td\{color:var\(--d-sub\);font-weight:450;\}/,"O501 keeps secondary quota values in the subdued token");
 
 // Stamped hours (24h) follow the clock preference; the range line has no minutes on 12-hour and keeps hh:mm on 24-hour.
 const hourlyRows=[{date:"2026-11-13T23:00:00",tokens:5e5,apiEquivalentCost:null},{date:"2026-11-14T22:00:00",tokens:5e5,apiEquivalentCost:null}];

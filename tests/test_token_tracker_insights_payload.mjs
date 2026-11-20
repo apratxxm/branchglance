@@ -98,6 +98,10 @@ await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.match(html,/Peak in this range/);assert.match(html,/class="dash-lower[^"]*"[\s\S]*class="[^"]*dash-quota[\s\S]*dash-quota-row/);assert.match(html,/>5h</);assert.match(html,/76%/);
 
+const peakBlock=html.match(/<div class="dash-quota-peak">([\s\S]*?)<\/div>/)?.[1]||"";
+assert.ok(peakBlock,"historical peaks stay grouped under the live quota block");
+assert.doesNotMatch(peakBlock,/<thead>/,"O501 reuses the live block's window headings");
+
 // Non-zero sessions are shown.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>i===0?{...p,totals:{...p.totals,sessions:46,subagentsActive:18,activeHours:62}}:p)})}];
 await dashboard.loadInsights();

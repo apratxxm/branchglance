@@ -97,6 +97,78 @@ def test_insights_freshness_stamp_stays_below_chart(page, height, range_name, me
 
 
 @pytest.mark.parametrize("height", [608, 478])
+def test_insights_quota_text_fits_all_filters_ranges_and_metrics(page, height):
+    def priced_insights(route):
+        data = route.fetch().json()
+        for provider in data.get("providers", []):
+            total = provider.get("totals", {}).get("tokens", 0)
+            provider["totals"]["apiEquivalentCost"] = round(total / 1_000_000 * 0.02, 2)
+            for point in provider.get("series", []):
+                point["apiEquivalentCost"] = round(point.get("tokens", 0) / 1_000_000 * 0.02, 2)
+        route.fulfill(json=data)
+
+    page.route("**/api/insights?*", priced_insights)
+    page.set_viewport_size({"width": 720, "height": height})
+    page.evaluate("""() => {
+      window.tokenTrackerQuotaNow = () => [
+        {name: 'Codex', usedPercent: 62, countdown: '1h 5m', weekly: {usedPercent: 41, countdown: '4d 12h'}},
+        {name: 'Claude'}
+      ];
+    }""")
+    open_insights(page)
+
+    for filter_name in ("all", "Codex", "Claude"):
+        for chip in page.locator(ui.PROVIDERS).all():
+            if chip.get_attribute("aria-pressed") == "false":
+                chip.click()
+        if filter_name != "all":
+            other = "Claude" if filter_name == "Codex" else "Codex"
+            page.locator(f'{ui.PROVIDERS}[data-dashboard-provider="{other}"]').click()
+        for range_name in ("24h", "7d", "30d"):
+            range_button = page.locator(f'{ui.RANGE}[data-dashboard-range="{range_name}"]')
+            range_button.click()
+            expect(range_button).to_have_attribute("aria-pressed", "true")
+            for metric in ("tokens", "cost"):
+                metric_button = page.locator(f'{ui.METRIC}[data-dashboard-metric="{metric}"]')
+                metric_button.click()
+                expect(metric_button).to_have_attribute("aria-pressed", "true")
+                expect(page.locator(".dash-quota")).to_be_visible()
+                missing_note = page.locator(".dash-quota-note")
+                if filter_name in ("all", "Claude"):
+                    expect(missing_note).to_have_count(1)
+                    expect(missing_note).to_have_text("No live reading")
+                else:
+                    expect(missing_note).to_have_count(0)
+                layout = page.evaluate("""() => {
+                  const panel = document.querySelector('#dashboard-insights');
+                  const quota = panel.querySelector('.dash-quota');
+                  const bounds = panel.getBoundingClientRect();
+                  const walker = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT);
+                  const boxes = [], quotaBoxes = [];
+                  for (let node; (node = walker.nextNode());) {
+                    if (!node.textContent.trim() || node.parentElement.closest('.sr-only')) continue;
+                    const style = getComputedStyle(node.parentElement);
+                    if (style.display === 'none' || style.visibility === 'hidden') continue;
+                    const range = document.createRange();
+                    range.selectNodeContents(node);
+                    for (const rect of range.getClientRects()) {
+                      if (!rect.width || !rect.height) continue;
+                      const item = {text: node.textContent.trim(), left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom};
+                      boxes.push(item);
+                      if (quota.contains(node.parentElement)) quotaBoxes.push(item);
+                    }
+                  }
+                  const overlap = (a, b) => a.left < b.right - .5 && a.right > b.left + .5 && a.top < b.bottom - .5 && a.bottom > b.top + .5;
+                  const intersections = [];
+                  for (let i = 0; i < quotaBoxes.length; i++) for (let j = i + 1; j < quotaBoxes.length; j++)
+                    if (overlap(quotaBoxes[i], quotaBoxes[j])) intersections.push([quotaBoxes[i].text, quotaBoxes[j].text]);
+                  return {right: bounds.right, overflow: boxes.filter(box => box.right > bounds.right + .5), intersections};
+                }""")
+                assert not layout["overflow"], (height, filter_name, range_name, metric, layout)
+                assert not layout["intersections"], (height, filter_name, range_name, metric, layout)
+
+
+@pytest.mark.parametrize("height", [608, 478])
 def test_by_work_folded_name_fits_at_compact_width(page, height):
     def six_model_ledger(route):
         route.fulfill(json={"rows": [
