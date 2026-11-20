@@ -213,6 +213,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-axis-value{position:absolute;right:0;transform:translateY(-50%);color:#7b818d;font-size:11px;line-height:1;white-space:nowrap;}
 
 .dash-chart{display:block;flex:1;width:100%;height:auto;min-height:140px;overflow:visible;}
+.dash-chart-section .dash-plot,.dash-chart-section .dash-chart{min-height:118px;}
 .dash-chart .dash-grid,.dash-chart path{vector-effect:non-scaling-stroke;}
 .dash-grid{stroke:var(--d-track);stroke-width:1;}
 .area-fill{opacity:1;}
@@ -412,6 +413,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-quota-table .dash-quota-row td{vertical-align:top;}
 .dash-quota-sub-row td{padding:0 0 4px;}
 .dash-quota-sub{display:block;color:var(--d-mute);font-size:11px;font-weight:400;line-height:14px;text-align:right;white-space:nowrap;}
+.dash-quota-peak{margin-top:8px;}
 .dash-work-row .dash-model-name{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;line-height:14px;}
 .dash-work-row .dash-model-name i{display:inline-block;margin-right:8px;vertical-align:middle;}
 /* Round 4 (Insights). Chart: the focus outline is removed on points and their parts; markers are round HTML dots over the plot. */

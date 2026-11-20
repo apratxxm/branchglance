@@ -154,7 +154,7 @@
       rows.forEach((row,i)=>{if(complete(row))segment.push(i);else flush();});flush();
     }
     const ticks=[1,.5,0].map(fraction=>`<line class="dash-grid" x1="${L}" x2="${W-R}" y1="${yAt(max*fraction).toFixed(1)}" y2="${yAt(max*fraction).toFixed(1)}"/>`).join("");
-    const axisFormat=value=>cost&&max>=10?"$"+Math.round(value).toLocaleString("en-US"):format(value);
+    const axisFormat=value=>cost&&max>=10?"$"+Math.round(value).toLocaleString("en-US"):Math.abs(value)>=1000?new Intl.NumberFormat("en",{notation:"compact",maximumSignificantDigits:3}).format(value):number(value);
     const axis=[1,.5,0].map(fraction=>`<span class="dash-axis-value" style="top:${(yAt(max*fraction)/H*100).toFixed(2)}%">${esc(fraction===0?(cost?"$0":"0"):axisFormat(max*fraction))}</span>`).join("");
     // Date ticks: the first and last day, plus two evenly spaced days between them once the range is long enough to read them.
     // Hourly (24h): a tick at every sixth local hour and "now" at the end. Daily ranges: first, last and two evenly spaced days.
@@ -243,8 +243,8 @@
     if(!text){el.remove();return;}
     el.textContent=text;el.classList.toggle("error",!state.insights&&state.loadError===true);el.classList.toggle("is-notice",isNotice());el.classList.toggle("is-freshness",Boolean(state.insights&&!isNotice()&&text.includes("Updated")));
   }
-  // Quota: the widget's current 5-hour and weekly figures per provider (window.tokenTrackerQuotaNow), for the providers the chips show. Recorded peaks stand in when no live reading is usable.
-  const quotaRows=()=>{let rows=null;try{rows=window.tokenTrackerQuotaNow?.();}catch{rows=null;}if(!Array.isArray(rows))return null;const usable=rows.filter(row=>row&&typeof row.name==="string"&&!hiddenProviders.has(row.name)&&finite(row.usedPercent)!=null);return usable.length?usable:null;};
+  // Quota keeps one row for every visible Insights provider; missing widget readings stay explicit.
+  const quotaRows=data=>{let readings=[];try{readings=window.tokenTrackerQuotaNow?.();}catch{readings=[];}const byName=new Map(Array.isArray(readings)?readings.filter(row=>row&&typeof row.name==="string").map(row=>[row.name,row]):[]);return (data?.providers||[]).filter(row=>row&&typeof row.name==="string"&&!hiddenProviders.has(row.name)).map(row=>({name:row.name,...(byName.get(row.name)||{})}));};
   const peakFor=(data,name)=>finite(data.peaks.find(p=>p.name===name)?.fiveHour);
   const quotaValue=(row,key)=>key==="weekly"?finite(row.weekly?.usedPercent):finite(row.usedPercent);
   const pad2=n=>String(n).padStart(2,"0");
@@ -254,29 +254,29 @@
   const peakText=(data,row)=>{const peak=peakFor(data,row.name);return peak!=null?`Peak ${Math.round(peak)}% in this range`:"";};
   const subCell=(row,part,text)=>`<small class="dash-quota-sub" data-quota-key="${esc(row.name)}" data-quota-part="${part}">${esc(text)}</small>`;
   // The shape names the providers and marks a provider with no weekly reading; a change in either re-renders the block.
-  const quotaShape=rows=>rows.map(row=>`${row.name}${quotaValue(row,"weekly")==null?"!":""}`).join("|");
+  const quotaShape=rows=>rows.map(row=>`${row.name}${quotaValue(row,"fiveHour")==null?"!":""}${quotaValue(row,"weekly")==null?"!":""}`).join("|");
   function limitsHTML(data){
-    const rows=quotaRows();
-    if(rows){
-      const cell=(row,key)=>{const value=quotaValue(row,key),peak=key==="fiveHour"?peakText(data,row):"",part=key==="fiveHour"?"five":"week";return `<td${peak?` title="${esc(peak)}"`:""}>${value==null?'<span aria-hidden="true">—</span><span class="sr-only">Not available</span>':`<span class="dash-quota-main" data-quota-key="${esc(row.name)}" data-quota-window="${key}" data-quota-part="percent">${Math.round(value)}%</span>${subCell(row,part,resetText(row,key))}`}${peak?`<span class="sr-only">${esc(peak)}</span>`:""}</td>`;};
-      return `<div class="dash-limits dash-quota" data-quota-shape="${esc(quotaShape(rows))}"><div class="dash-quota-head"><span>Quota used</span><small>% used · resets in</small></div><table class="dash-peaks-table dash-quota-table"><caption class="sr-only">Current quota used per provider, 5-hour and week</caption><thead><tr><th scope="col"><span class="sr-only">Provider</span></th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${rows.map(row=>`<tr class="dash-quota-row"><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th>${cell(row,"fiveHour")}${cell(row,"weekly")}</tr>`).join("")}</tbody></table></div>`;
+    const rows=quotaRows(data);
+    const peakCell=value=>value==null?'<span aria-hidden="true">—</span><span class="sr-only">Not recorded</span>':`${Math.round(value)}%`;
+    if(rows.length){
+      const cell=(row,key)=>{const value=quotaValue(row,key),peak=key==="fiveHour"?peakText(data,row):"",part=key==="fiveHour"?"five":"week",missing=value==null;const title=[missing?"No live reading":"",peak].filter(Boolean).join(" · ");return `<td${title?` title="${esc(title)}"`:""}${missing?' aria-label="No live reading"':""}>${missing?`<span aria-hidden="true">—</span>${subCell(row,part,"No live reading")}`:`<span class="dash-quota-main" data-quota-key="${esc(row.name)}" data-quota-window="${key}" data-quota-part="percent">${Math.round(value)}%</span>${subCell(row,part,resetText(row,key))}`}${peak?`<span class="sr-only">${esc(peak)}</span>`:""}</td>`;};
+      const table=`<table class="dash-peaks-table dash-quota-table"><caption class="sr-only">Current quota used per provider, 5-hour and week</caption><thead><tr><th scope="col"><span class="sr-only">Provider</span></th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${rows.map(row=>`<tr class="dash-quota-row"><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th>${cell(row,"fiveHour")}${cell(row,"weekly")}</tr>`).join("")}</tbody></table>`;
+      const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
+      const peakTable=rows.every(row=>quotaValue(row,"fiveHour")==null&&quotaValue(row,"weekly")==null)&&peaks.some(row=>row.fiveHour!=null||row.weekly!=null)?`<div class="dash-quota-peak"><div class="dash-section-label">Peak in this range</div><table class="dash-peaks-table"><caption class="sr-only">Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col"><span class="sr-only">Provider</span></th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(row=>`<tr><th scope="row" class="${providerKey(row.name)}-color">${esc(row.name)}</th><td>${peakCell(row.fiveHour)}</td><td>${peakCell(row.weekly)}</td></tr>`).join("")}</tbody></table></div>`:"";
+      return `<div class="dash-limits dash-quota" data-quota-shape="${esc(quotaShape(rows))}"><div class="dash-quota-head"><span>Quota used</span><small>% used · resets in</small></div>${table}${peakTable}</div>`;
     }
     const peaks=[...data.peaks].sort((a,b)=>(providerKey(a.name)==="codex"?0:1)-(providerKey(b.name)==="codex"?0:1));
-    const peakCell=value=>value==null?'<span aria-hidden="true">—</span><span class="sr-only">Not recorded</span>':`${Math.round(value)}%`;
-    const allMaxed=peaks.length>0&&peaks.every(p=>[p.fiveHour,p.weekly].every(value=>value!=null&&value>=99.5));
-    if(allMaxed)return `<div class="dash-limits is-collapsed"><div class="dash-section-label"><span>Peak quota used</span><small title="Highest recorded quota usage in this period, not current allowance">Every window reached 100%</small></div></div>`;
     if(!peaks.length)return "";
-    return `<div class="dash-limits"><table class="dash-peaks-table"><caption>Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col" title="Recorded in this period, not the current allowance">Peak quota used</th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(p=>`<tr><th scope="row" class="${providerKey(p.name)}-color">${esc(p.name)}</th><td>${peakCell(p.fiveHour)}</td><td>${peakCell(p.weekly)}</td></tr>`).join("")}</tbody></table><p class="dash-peaks-note">In selected range</p></div>`;
+    return `<div class="dash-limits"><div class="dash-section-label">Peak in this range</div><table class="dash-peaks-table"><caption>Highest recorded quota usage in this period, not current allowance</caption><thead><tr><th scope="col"><span class="sr-only">Provider</span></th><th scope="col">5h</th><th scope="col">Week</th></tr></thead><tbody>${peaks.map(p=>`<tr><th scope="row" class="${providerKey(p.name)}-color">${esc(p.name)}</th><td>${peakCell(p.fiveHour)}</td><td>${peakCell(p.weekly)}</td></tr>`).join("")}</tbody></table></div>`;
   }
   // Updates the Quota figures in place as the widget reading moves. Only a change in which providers have a live reading re-renders Insights.
   function syncQuota(){
     if(!state.open||state.tab!=="insights"||!state.insights)return;
     const panel=$("#dashboard-insights");if(!panel)return;
-    const rows=quotaRows(),shown=panel.querySelector(".dash-quota");
-    if(!rows&&!shown)return;
-    if(!rows||!shown||shown.dataset.quotaShape!==quotaShape(rows)){state.renderKey="";render();return;}
-    const data=insightsData(false);
-    shown.querySelectorAll("[data-quota-part]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaKey);if(!row)return;const part=node.dataset.quotaPart,text=part==="percent"?`${Math.round(quotaValue(row,node.dataset.quotaWindow))}%`:part==="five"?resetText(row,"fiveHour"):part==="week"?resetText(row,"weekly"):peakText(data,row);if(node.textContent!==text)node.textContent=text;});
+    const data=insightsData(false),rows=quotaRows(data),shown=panel.querySelector(".dash-quota");
+    if(!rows.length&&!shown)return;
+    if(!rows.length||!shown||shown.dataset.quotaShape!==quotaShape(rows)){state.renderKey="";render();return;}
+    shown.querySelectorAll("[data-quota-part]").forEach(node=>{const row=rows.find(item=>item.name===node.dataset.quotaKey);if(!row)return;const part=node.dataset.quotaPart,key=part==="five"?"fiveHour":"weekly",text=part==="percent"?`${Math.round(quotaValue(row,node.dataset.quotaWindow))}%`:quotaValue(row,key)==null?"No live reading":resetText(row,key);if(node.textContent!==text)node.textContent=text;});
   }
   // First load: the same hero and lower grid as the loaded view, empty. The eyebrow carries the final template; the split bar sits in the left column; three Models rows carry bars in the bar column only.
   function loadingHTML(){const cost=state.metric==="cost",range=esc(RANGE_NAME[state.range]||"");const eyebrow=cost?`API-equivalent cost · ${range}`:`Tokens over ${range}`;return `<section class="dash-hero dash-hero-loading" aria-busy="true"><div class="dash-period dash-skel-period"></div><div class="dash-hero-providers dash-skel-providers" aria-hidden="true"><i></i><i></i></div><div class="dash-hero-meta"><span class="dash-eyebrow">${eyebrow}</span></div><div class="dash-hero-number-row"><span class="dash-skel-figure" aria-hidden="true"></span></div><div class="dash-hero-bar"><div class="dash-split dash-split-empty" aria-hidden="true"></div></div></section><section class="dash-lower is-loading" aria-hidden="true"><div class="dash-lower-main"><div class="dash-section-head dash-skel-head"></div><div class="dash-skel-models">${[0,1,2,3].map(()=>'<div class="dash-skel-row"><i></i><i class="dash-model-bar"></i></div>').join("")}</div></div><div class="dash-side dash-skel-quota"><i></i><i></i><i></i></div><dl class="dash-summary dash-skel-summary"><div><dt></dt><dd></dd></div><div><dt></dt><dd></dd></div><div><dt></dt><dd></dd></div><div><dt></dt><dd></dd></div></dl><div class="dash-chart-section dash-skel-chart"><i></i></div></section><p class="dash-status-line dash-loading-status" role="status">Loading usage…</p>`;}
@@ -285,7 +285,7 @@
     const data=insightsData(),key=data.heroKey;
     const stamp=state.insights.generatedAt?new Date(state.insights.generatedAt):null;
     const status=statusLineText(),notice=failing()?failureNotice(data):"";
-    const statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}${!isNotice()&&status.includes("Updated")?" is-freshness":""}" role="status">${esc(status)}</p>`:"";
+    let statusHTML=status?`<p class="dash-status-line${isNotice()?" is-notice":""}${!isNotice()&&status.includes("Updated")?" is-freshness":""}" role="status">${esc(status)}</p>`:"";
     if(key==null)return statusHTML+(data.providers.length?'<section class="dash-empty-state"><span class="dash-eyebrow">Usage</span><p>No recorded measurement available</p></section>':emptyHTML());
     const cost=key==="apiEquivalentCost",value=data.totals[key],prev=finite(data.previous[key]),delta=prev!=null&&prev!==0?(value-prev)/prev*100:null;
     // The unit line names any shown provider that has no published price, so the total is read as a partial figure.
@@ -293,7 +293,8 @@
     // The unit line names a shown provider with no published price, and says when some priced models are partial.
     const unitLine=["estimated",...(unpricedShown.length?[`excl. ${joinNames(unpricedShown)}`]:[]),...(data.partialModels?["partly unpriced"]:[])].join(" · ");
     const figure=cost?`<span class="dash-hero-currency">$</span><strong class="dash-hero-number">${esc(money(value).replace(/^\$/,""))}</strong><span class="dash-hero-unit">${esc(unitLine)}</span>`:tokenHero(value);
-    const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartProviders=data.providers.filter(p=>!hiddenProviders.has(p.name)&&(data.chartKey!=="apiEquivalentCost"||data.seriesByKey.apiEquivalentCost.some(row=>finite(row[p.name])!=null))),chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">${data.hourly?"Hourly":"Daily"} ${data.chartKey==="apiEquivalentCost"?"cost":"tokens"}</span>${chartProviders.length>1?chartStyleHTML():""}</div>${chart}</section>`:"";
+    const chart=data.range==="24h"&&!data.fallback&&!data.hourly?"":seriesChart(data),chartProviders=data.providers.filter(p=>!hiddenProviders.has(p.name)&&(data.chartKey!=="apiEquivalentCost"||data.seriesByKey.apiEquivalentCost.some(row=>finite(row[p.name])!=null))),chartStamp=statusHTML.includes("is-freshness")?statusHTML:"",chartHTML=chart?`<section class="dash-chart-section"><div class="dash-section-head"><span class="dash-section-title">${data.hourly?"Hourly":"Daily"} ${data.chartKey==="apiEquivalentCost"?"cost":"tokens"}</span>${chartProviders.length>1?chartStyleHTML():""}</div>${chart}${chartStamp}</section>`:"";
+    if(chart&&chartStamp)statusHTML="";
     // A zero stat next to non-zero tokens means the source did not report that figure, so it is hidden rather than shown as 0.
     const missing=v=>finite(v)==null;
     const stats=[[data.totals.sessions,v=>number(v),"Sessions"],[data.totals.subagentsActive,v=>number(v),"Subagents"],[data.totals.cacheHitRate,v=>`${Math.round(v)}%`,"Cache hit rate"],[data.totals.activeHours,v=>`${number(v)}h`,"Active hours"]];
@@ -402,7 +403,7 @@
       return `<span role="cell" tabindex="0" class="${classes}" title="${esc(exact)}" aria-label="${esc(`${title}, ${kindLabel}: ${exact}; ${workCost(cell)}`)}" data-tip-html="${tooltip}">${esc(workNumber(cell.tokens))}<span class="sr-only">${esc(exact)}</span></span>`;
     };
     const head=`<div role="row" class="dash-work-row is-head"><span role="columnheader"><span class="sr-only">Model</span>${breakdownToggle("work")}</span>${work.kinds.map(kind=>`<span role="columnheader"${kind==="other"&&work.foldedKindNames.length?` title="${esc(work.foldedKindNames.map(name=>name[0].toUpperCase()+name.slice(1)).join(", "))}"`:""}>${label(kind)}</span>`).join("")}<span role="columnheader">Total</span></div>`;
-    const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}" title="${esc(row.other?row.name:`${row.provider} · ${row.name}`)}"><i></i>${esc(row.other?`Other (${row.count} models)`:row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
+    const body=work.rows.map(row=>`<div role="row" class="dash-work-row${row.other?" other":""}"><span role="rowheader" class="dash-model-name ${row.other?"other":modelKey(row.raw)}" title="${esc(row.other?`${row.count} models folded`:`${row.provider} · ${row.name}`)}"><i></i>${esc(row.other?`Other (${row.count})`:row.name)}</span>${work.kinds.map(kind=>cellHTML(row.cells[kind],row.name,label(kind))).join("")}${cellHTML(row.sum,row.name,"all work",true)}</div>`).join("");
     const foot=`<div role="row" class="dash-work-row is-foot"><span role="rowheader">Total</span>${work.kinds.map(kind=>cellHTML(work.totals.cells[kind],"All models",label(kind),true)).join("")}${cellHTML(work.totals.all,"All models","all work",true)}</div>`;
     const noteText=note?.text.startsWith("Partial")?`<strong>Partial</strong>${esc(note.text.slice("Partial".length))}`:note?esc(note.text):"";
     return `<div class="dash-work-block" style="--work-cols:${work.kinds.length}">${note?`<div class="dash-work-note is-qualified" title="${esc(note.title)}">${noteText}</div>`:""}<div class="dash-work-grid" role="table" aria-label="${work.metric==="cost"?"API-equivalent cost":"Tokens"} by model and kind of work">${head}${body}${foot}</div>${sawUnpriced?'<p class="dash-work-legend">· = no published price</p>':""}</div>`;

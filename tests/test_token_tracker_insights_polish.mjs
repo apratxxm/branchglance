@@ -214,7 +214,9 @@ styled=dashboard.insightsHTML();
 assert.match(styled,/<i class="dash-model-bar[^"]*" aria-hidden="true"><em class="[a-z]+" style="width:100\.0%"/,"the largest row fills its bar; others follow a linear scale");
 for(const p of dashboard.state.insights.providers)p.limitPeaks={fiveHour:100,weekly:100};
 styled=dashboard.insightsHTML();
-assert.match(styled,/dash-limits is-collapsed/);assert.doesNotMatch(styled,/dash-peaks-table/,"everything at 100% collapses Highest usage to one line");
+assert.match(styled,/class="dash-limits dash-quota"[\s\S]*>Quota used<\/span>[\s\S]*>No live reading<\/small>/,"O401 keeps current quota rows explicit when only historical peaks exist");
+assert.match(styled,/dash-quota-peak[\s\S]*Peak in this range[\s\S]*dash-peaks-table/,"O401 labels historical peaks as secondary range data");
+assert.doesNotMatch(styled,/dash-limits is-collapsed/);
 
 // (8) Bars scale linearly: half the largest row's tokens draws half the width.
 dashboard.state.insights=payload([{name:"Claude",totals:{tokens:3e8,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(3e8),models:[{name:"claude-opus-5.5",tokens:2e8,apiEquivalentCost:null},{name:"claude-haiku-5.5",tokens:1e8,apiEquivalentCost:null}],limitPeaks:{fiveHour:null,weekly:null}}]);
@@ -223,6 +225,13 @@ assert.match(dashboard.insightsHTML(),/<em class="claude" style="width:50\.0%"/,
 
 // (9) Round 3: quota follows the provider chips and shows the weekly column; stamped hours follow the clock; work figures; partial pricing; one point in the tab order.
 const provider=(name,extra={})=>({name,totals:{tokens:1e6,apiEquivalentCost:10,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:series(1e6),models:[],limitPeaks:{fiveHour:null,weekly:null},...extra});
+dashboard.state.range="30d";dashboard.state.metric="tokens";dashboard.state.resultValue=null;
+dashboard.state.insights={range:"30d",providers:[provider("Claude",{totals:{tokens:35e6,apiEquivalentCost:null,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},series:Array.from({length:30},(_,index)=>({date:dateOffset(29-index),tokens:36e6,apiEquivalentCost:null}))})]};
+const tickScale=dashboard.insightsHTML();
+assert.match(tickScale,/class="dash-axis-value"[^>]*>40M<\/span>/,"O403 axis ticks trim compact-format padding zeroes");
+assert.match(tickScale,/class="dash-axis-value"[^>]*>20M<\/span>/,"O403 midpoint tick stays compact without padding zeroes");
+assert.match(tickScale,/class="dash-hero-number">35\.0<span class="dash-hero-mag">M<\/span>/,"O403 leaves three-significant-digit values unchanged outside the axis");
+assert.doesNotMatch(tickScale,/dash-axis-value[^>]*>40\.0M|dash-axis-value[^>]*>20\.0M/);
 
 // Legend headers, provider cells and inline grid tracks come from one column set across all content states.
 function assertLegendColumns(html,expectedRows,label){
@@ -345,7 +354,7 @@ dashboard.state.ledgerRange="30d";dashboard.state.range="30d";dashboard.state.me
 const realScale=dashboard.workHTML(dashboard.workData());
 assert.match(realScale,/style="--work-cols:4"/ ,"real-scale fixture retains four visible kind columns");
 assert.match(realScale,/columnheader" title="[^"]+">Other<\/span>/,"the Other kind column has no model-count label and names folded kinds in its title");
-assert.match(realScale,/>Other \(6 models\)<\/span>/,"the same four named rows are kept as Models, with six folded models in Other");
+assert.match(realScale,/<span role="rowheader" class="dash-model-name other" title="6 models folded"><i><\/i>Other \(6\)<\/span>/,"O402 keeps the folded By work label short and exposes the folded count in its title");
 assert.match(realScale,/title="603,400,000 tokens"[\s\S]*603M/ ,"real-scale values use three significant digits while exact tokens stay in each title");
 for(const formatted of ["603M","87.1M","1.30B","968M","15.6M","456M","681M"]){assert.match(realScale,new RegExp(`>${formatted}<`),`real-scale value compacts to ${formatted}`);}
 const visibleWorkCells=[...realScale.matchAll(/<span role="cell"[^>]*>([\s\S]*?)<\/span>/g)].map(([,html])=>html.replace(/<span class="sr-only">[\s\S]*/,"").replace(/<[^>]+>/g,"").trim());
