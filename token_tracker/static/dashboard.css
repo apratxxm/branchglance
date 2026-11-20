@@ -172,7 +172,6 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) .das
 .dash-side .dash-section-label,.dash-side .dash-peaks-table thead th:first-child{font-size:14px;font-weight:650;color:var(--d-ink);}
 .dash-peaks-note{margin:4px 0 0;color:var(--d-mute);font-size:11px;line-height:14px;}
 .dash-quota-table :is(th,td):nth-child(n+2){width:56px;}
-.dash-quota-table tbody th{width:40%;}
 .dash-quota-main{color:var(--d-ink);font-size:13px;font-weight:550;}
 .dash-lower.is-day{--d-pitch:26px;align-items:start;grid-template-rows:auto minmax(0,1fr);}
 .dash-lower.is-day .dash-side{gap:18px;align-self:start;}
