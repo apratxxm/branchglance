@@ -777,7 +777,7 @@ assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);
 assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"22h 13m");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);
 assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>11m ago</i></span>');
-assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Last reported by Codex 11m ago');
+assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');assert.match(node('#r0-fiveHour-left').title,/Last reported 11m ago/);assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');
 assert.equal(node('#r0-fiveHour-row').title,'Last reported by Codex 11m ago');
 assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuetext'),'Last known: 92% used');assert.equal(node('#r0-fiveHour-bar').className,'last-known');
 assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.notEqual(node('#r0-fiveHour-cd').textContent,'');
@@ -816,7 +816,8 @@ T.renderResets([provider]);
     assert.equal(node(`#r0-${window}-cd`).getAttribute("aria-hidden"),"true");
   }
   T.renderResets([provider]);
-  assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),null,'a live quota removes the unavailable label');
+  assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s.','a quota reading names its provider and window on hover');
+  assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),'Codex 5-hour: 92% used, resets in 25m 00s.','a quota reading names its provider and window for assistive technology');
 }
 {
   const countdown=node('#r0-fiveHour-cd');let writes=0,value=countdown.textContent;

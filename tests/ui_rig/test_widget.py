@@ -494,19 +494,25 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
           document.body.classList.add('runway-compact');
           document.body.dataset.notchMode = 'inspect';
           const title = 'A long parent or child job title that must stay on one line and ellipsize';
-          const row = (kind, titleText) => `<div class="runway-refined-row">
+          const row = (kind, titleText, branch = '') => `<div class="runway-refined-row">
             <span class="runway-refined-tree-anchor"></span>
             <span class="runway-refined-title"><span class="${kind}" title="${titleText}"><span class="runway-agent-label">${titleText}</span></span></span>
             <span class="runway-refined-timing"><span class="runway-refined-elapsed">1h 05m</span></span>
             <span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span>
-            <span class="runway-refined-path"></span><span class="runway-refined-tokens"></span>
+            <span class="runway-refined-path">${branch}</span><span class="runway-refined-tokens"></span>
           </div>`;
-          document.querySelector('#chat-list').innerHTML = `<div class="chat"><div class="row">${row('r-title', title)}</div></div>
+          document.querySelector('#chat-list').innerHTML = `<div class="chat"><div class="row">${row('r-title', title, 'feature/branch')}</div></div>
             <div class="ag runway-agent"><div class="runway-agent-glance">${row('runway-agent-name', title)}</div></div>`;
         }""")
         metrics = page.locator("#chat-list .runway-refined-title > span").evaluate_all("""els => els.map(el => {
           const label=el.querySelector('.runway-agent-label'), style=getComputedStyle(label), titleStyle=getComputedStyle(el), box=el.getBoundingClientRect();
-          return {title:el.title, label:label.textContent, height:box.height, lineHeight:parseFloat(titleStyle.lineHeight), whiteSpace:style.whiteSpace,
+          const row=el.closest('.runway-refined-row'), titleCell=el.parentElement.getBoundingClientRect(), branch=row.querySelector('.runway-refined-path').getBoundingClientRect();
+          let oldTitleWidth=null;
+          if(el.classList.contains('runway-agent-name')){
+            const baseline=row.cloneNode(true);baseline.style.gridTemplateColumns='minmax(0,1fr) 62px 112px 96px 80px';baseline.style.position='absolute';baseline.style.left='-10000px';baseline.style.top='0';baseline.style.visibility='hidden';row.parentElement.append(baseline);
+            oldTitleWidth=baseline.querySelector('.runway-refined-title').getBoundingClientRect().width;baseline.remove();
+          }
+          return {title:el.title, label:label.textContent, height:box.height, lineHeight:parseFloat(titleStyle.lineHeight), whiteSpace:style.whiteSpace, titleWidth:titleCell.width, branchWidth:branch.width, oldTitleWidth,
             overflow:style.overflow, textOverflow:style.textOverflow, scrollWidth:label.scrollWidth, clientWidth:label.clientWidth};
         })""")
         assert len(metrics) == 2, (width, metrics)
@@ -516,6 +522,8 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
             assert item["whiteSpace"] == "nowrap", (width, item)
             if item["scrollWidth"] > item["clientWidth"]:
                 assert item["overflow"] == "hidden" and item["textOverflow"] == "ellipsis", (width, item)
+        assert metrics[1]["oldTitleWidth"] > 0, (width, metrics)
+        assert metrics[1]["titleWidth"] >= metrics[1]["oldTitleWidth"] + metrics[0]["branchWidth"] - 1, (width, metrics)
 
 
 def test_horizontal_layout(page):
