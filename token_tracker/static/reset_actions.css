@@ -137,6 +137,7 @@ html.settings-embedded,body.settings-embedded{height:auto;min-height:0;overflow:
 
 .settings-embedded #modes[hidden],.settings-embedded #oneshot-note[hidden],.settings-embedded #message[hidden],.settings-embedded #picker[hidden],.settings-embedded .settings>footer[hidden]{display:none;}
 .settings-embedded .embedded-policy-state .quiet{margin-right:-6px;}
+.settings-embedded .settings>footer{border-top:1px solid var(--d-edge);padding-top:8px;}
 
 /* Round 4 (embedded frame): the Codex accent, link-coloured quiet actions, a tinted primary, 24px pager buttons, accent checkboxes. */
 html.settings-embedded[data-source],body.settings-embedded[data-source]{--accent:#6c72ff;}

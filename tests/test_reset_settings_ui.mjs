@@ -20,6 +20,7 @@ assert.match(source,/PAGE_SIZE = 3/);assert.match(source,/embedded\?available\.s
 const frameCss=fs.readFileSync(new URL("../token_tracker/static/reset_actions.css",import.meta.url),"utf8");
 assert.match(frameCss,/\.settings-embedded #threads\{[^}]*overflow:visible/);assert.doesNotMatch(frameCss.slice(frameCss.indexOf("Round 3")),/overflow:auto/);
 assert.match(frameCss,/\.settings-embedded \.mode\+\.mode\{border-top:1px solid var\(--d-edge\);padding-top:8px;\}/,"embedded reset choices use the Settings separator token");
+assert.match(frameCss,/\.settings-embedded \.settings>footer\{border-top:1px solid var\(--d-edge\);padding-top:8px;\}/,"the embedded reset footer has the Settings group separator");
 assert.match(frameCss,/\.settings-embedded #oneshot-note\{color:var\(--d-sub\);font-size:12px;\}/,"embedded footer note matches Settings footer size and muted text");
 assert.match(app,/data-action="reset-settings"/);
 assert.match(app,/api\?\.open_reset_actions/);

@@ -432,7 +432,7 @@ dashboard.state.insights={range:"30d",providers:[
   {...provider("Codex"),limitPeaks:{fiveHour:null,weekly:80}}
 ]};
 const summary=dashboard.insightsHTML();
-assert.match(summary,/<table class="dash-peaks-table">/);
+assert.match(summary,/<table class="dash-peaks-table dash-quota-table">/,"historical peaks reuse the live quota column widths");
 assert.match(summary,/Highest recorded quota usage in this period, not current allowance/);
 assert.match(summary,/<th scope="row" class="codex-color">Codex<\/th><td><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded<\/span><\/td><td>80%/);
 assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\/td><td><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded/);
@@ -543,15 +543,19 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   dashboard.state.insights={range:"7d",providers:[priced,unpriced]};
   if(/data-dashboard-provider="Codex" aria-pressed="false"/.test(dashboard.insightsHTML()))dashboard.toggleProvider("Codex");
   dashboard.state.ledgerRange="7d";dashboard.state.ledger={rows:[{provider:"Claude",modelId:"rate-model",kind:"build",totalTokens:100,knownCostUsd:1,costComplete:true}],coverage:{},service:{}};
-  window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",weekly:{usedPercent:20,countdown:"3d 2h"}}];
+  window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",weekly:{usedPercent:20,countdown:"3d 2h"}},{name:"Codex",usedPercent:62,countdown:"1h 5m",weekly:{usedPercent:null,countdown:""}}];
   let html=dashboard.insightsHTML();
   assert.match(html,/<span>Quota used<\/span><small>% used \u00b7 resets in<\/small>/);
   assert.match(html,/<td title="Peak 55% in this range"><span class="dash-quota-main"[^>]*>40%<\/span><small[^>]*>2h 40m<\/small><span class="sr-only">Peak 55% in this range<\/span><\/td>/);
   assert.match(html,/class="codex-color">Codex/,"O401 keeps a row for the visible provider with no current reading");
   assert.match(html,/aria-label="No live reading"/,"O401 exposes the missing live reading to assistive technology");
-  assert.match(html,/data-quota-key="Codex" data-quota-part="five">No live reading<\/small>/,"O401 shows the missing live reading under the dash");
+  assert.match(html,/<th scope="row" class="codex-color">Codex<small class="dash-quota-sub dash-quota-note" data-quota-key="Codex" data-quota-part="missing">No live reading<\/small><\/th><td title="Peak 55% in this range"><span class="dash-quota-main"[^>]*>62%<\/span><small[^>]*>1h 5m<\/small><span class="sr-only">Peak 55% in this range<\/span><\/td><td title="No live reading" aria-label="No live reading"><span class="dash-quota-empty" aria-hidden="true">[^<]*<\/span><\/td>/,"O401 places one visible note under the provider and labels its missing weekly cell");
   assert.match(html,/<tr class="dash-quota-row"><th scope="row" class="claude-color">Claude<\/th><td title="Peak 55% in this range">/,"O401 preserves live quota rows alongside missing providers");
   assert.doesNotMatch(html,/data-quota-part="peak"/);
+  window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",weekly:{usedPercent:20,countdown:"3d 2h"}}];
+  html=dashboard.insightsHTML();
+  assert.match(html,/<th scope="row" class="codex-color">Codex<small class="dash-quota-sub dash-quota-note" data-quota-key="Codex" data-quota-part="missing">No live reading<\/small><\/th>/,"O401 shows one provider note when neither window has a live reading");
+  assert.equal((html.match(/<td title="No live reading[^"]*" aria-label="No live reading"><span class="dash-quota-empty"/g)||[]).length,2,"O401 gives both empty quota cells a muted dash and accessible label");
   assert.match(html,/<dl class="dash-summary">/);assert.doesNotMatch(html,/class="dash-activity/);
   assert.ok(html.indexOf('dash-model-block')<html.indexOf('dash-summary')&&html.indexOf('dash-summary')<html.indexOf('dash-chart-section'));
   for(const label of ["Sessions","Subagents","Cache hit rate","Active hours"])assert.match(html,new RegExp(`<dt>${label}<\\/dt>`));
