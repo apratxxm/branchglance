@@ -851,8 +851,9 @@ function runwayModelLabel(chat) {
   if(tier){const base=runwayModelLabel({model:tier[1]});return base?base+" · long context":"";}
   let match=model.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
   if(match){const family=(match[2]||"").split("-").filter(Boolean).at(-1)||"";return "GPT-"+match[1]+(family?" "+family[0].toUpperCase()+family.slice(1).toLowerCase():"");}
-  match=model.match(/^claude-([a-z][a-z0-9]*)-(\d+)(?:-(\d+))?$/i);
-  if(match){const family=match[1][0].toUpperCase()+match[1].slice(1).toLowerCase();return family+(match[3]?" "+match[2]+"."+match[3]:" "+match[2]);}
+  // Current ids put the family first (claude-opus-5-5); legacy ids put it last (claude-3-5-sonnet).
+  match=model.match(/^claude-(?:([a-z][a-z0-9]*)-(\d+)(?:[.-](\d+))?|(\d+)(?:[.-](\d+))?-([a-z][a-z0-9]*))$/i);
+  if(match){const name=match[1]||match[6],major=match[2]||match[4],minor=match[3]||match[5],family=name[0].toUpperCase()+name.slice(1).toLowerCase();return family+" "+major+(minor?"."+minor:"");}
   match=model.match(/^claude-([a-z][a-z0-9]*)$/i);
   if(match)return match[1][0].toUpperCase()+match[1].slice(1).toLowerCase()+" (no version)";
   return model;
