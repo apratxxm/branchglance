@@ -207,8 +207,9 @@ def test_insights_quota_columns_align_in_missing_and_peak_states(page, height, q
         alignment = page.locator(".dash-quota").evaluate("""quota => {
           const live = [...quota.querySelectorAll(':scope > table.dash-quota-table tbody tr:first-child td')];
           const peak = [...quota.querySelectorAll('.dash-quota-peak tbody tr:first-child td')];
-          const peakRight = peak.map(cell => { const range = document.createRange(); range.selectNodeContents(cell.firstChild); return range.getBoundingClientRect().right; });
-          return {liveRight: live.map(cell => cell.getBoundingClientRect().right), peakRight};
+          // Compare rendered text edges on both sides; cell boxes include padding that text does not.
+          const textRight = cell => { const range = document.createRange(); range.selectNodeContents(cell.firstChild); return range.getBoundingClientRect().right; };
+          return {liveRight: live.map(textRight), peakRight: peak.map(textRight)};
         }""")
         assert len(alignment["liveRight"]) == 2 and len(alignment["peakRight"]) == 2, (height, quota_state, alignment)
         assert all(abs(live - peak) <= 1 for live, peak in zip(alignment["liveRight"], alignment["peakRight"])), (height, quota_state, alignment)

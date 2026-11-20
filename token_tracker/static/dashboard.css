@@ -416,7 +416,7 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-quota-empty{color:var(--d-mute);font-weight:400;}
 .dash-quota-peak{margin-top:8px;}
 .dash-quota-peak .dash-section-label{min-height:18px;color:var(--d-mute);font-size:12px;font-weight:450;}
-.dash-quota-peak .dash-peaks-table td{color:var(--d-sub);font-weight:450;}
+.dash-quota-peak .dash-peaks-table{table-layout:auto;}.dash-quota-peak .dash-peaks-table td{color:var(--d-sub);font-weight:450;}
 .dash-work-row .dash-model-name{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;line-height:14px;}
 .dash-work-row .dash-model-name i{display:inline-block;margin-right:8px;vertical-align:middle;}
 /* Round 4 (Insights). Chart: the focus outline is removed on points and their parts; markers are round HTML dots over the plot. */
