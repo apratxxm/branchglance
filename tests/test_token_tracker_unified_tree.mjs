@@ -410,10 +410,10 @@ console.log("unified agent tree contract checks passed");
 {
   const {T}=boot();
   const active={id:'active',key:'Claude:active',title:'Active',status:'running',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),runStartedAt:ago(2)};
-  assert.equal(T.runwayStateElapsed(active),'2m');
-  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2m');
+  assert.equal(T.runwayStateElapsed(active),'2m 00s');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2m 00s');
   assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+3000).toISOString()}),'0s');
-  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1m');
+  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1m 00s');
   // The thread's creation time is not a run start: a resumed run without a run start shows a dash.
   assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,createdAt:ago(600)}),'—');
   const row=workspace=>T.runwayTelemetryHTML({...active,workspace},false);

@@ -308,10 +308,10 @@ assert.doesNotMatch(invalidDeclaredFallback,/Reviewing safe cleanup targets/);
 assert.doesNotMatch(childRowHTML({objective:"AGENTS.md instructions\\n# Must not show policy text",latestRequest:"Useful raw prompt fallback"}),/runway-agent-objective|Useful raw prompt fallback|Must not show policy text/,"policy instructions and raw request text do not become an assignment fallback");
 assert.doesNotMatch(childRowHTML({agentName:"agent-worker",title:"Generic worker",objective:"",assignment:"",latestRequest:""}),/runway-agent-objective/,"unknown assignment stays absent rather than falling back to a title");
 const timedRoot=T.rowHTML({...root,stateSince:ago(2),runStartedAt:ago(10),activeRunStartedAt:ago(4)});
-assert.match(timedRoot,/class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">2m/,"the refined root row shows its measured state duration");
+assert.match(timedRoot,/class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">2m 00s/,"the refined root row shows its measured state duration");
 assert.equal((timedRoot.match(/data-runway-slot="elapsed"/g)||[]).length,1,"a root has one elapsed-time value");
 const timedChild=childRowHTML({...child,stateSince:ago(1),runStartedAt:ago(7),activeRunStartedAt:ago(3)});
-assert.match(timedChild,/class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">1m/,"the refined child row shows its measured state duration");
+assert.match(timedChild,/class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">1m 00s/,"the refined child row shows its measured state duration");
 assert.equal((timedChild.match(/data-runway-slot="elapsed"/g)||[]).length,1,"a child has one elapsed-time value");
 const activityOnlyRow=childRowHTML({activity:{kind:"reading",files:["A:\\src\\app.js"],observedAt:activityStamp}});
 assert.doesNotMatch(activityOnlyRow,/class="ctx-tokens"/,"action rendering alone does not invent a context measurement");
@@ -370,16 +370,16 @@ assert.match(node("#chat-list").innerHTML,/data-key="Codex:grandchild"/); // old
 assert.equal(T.runwayStateElapsed({...root,status:"quiet",provider:"Codex"}),"—"); // session age is not quiet-state duration
 assert.equal(T.runwayStateElapsed({...root,status:"compacting",provider:"Codex"}),"—"); // compaction needs its own start
 assert.equal(T.runwayStateElapsed({...root,status:"needs-input",attentionSince:ago(2)}),"—");
-assert.equal(T.runwayStateElapsed({...root,status:"running",pendingQuestion:"Reply?",pendingQuestionAt:ago(2)}),"2m");
+assert.equal(T.runwayStateElapsed({...root,status:"running",pendingQuestion:"Reply?",pendingQuestionAt:ago(2)}),"2m 00s");
 assert.equal(T.runwayStateElapsed({...root,status:"running",pendingQuestion:"Reply?",stateSince:ago(5),pendingQuestionAt:null}),"—");
-assert.equal(T.runwayStateElapsed({...root,pendingQuestion:"Expired?",pendingQuestionExpired:true,pendingQuestionAt:ago(3)}),"3m");
+assert.equal(T.runwayStateElapsed({...root,pendingQuestion:"Expired?",pendingQuestionExpired:true,pendingQuestionAt:ago(3)}),"3m 00s");
 assert.equal(T.runwayStateElapsed({...root,status:"running",activeRunStartedAt:new Date(fixedNow+60000).toISOString()}),"—");
-assert.equal(T.runwayStateElapsed({...root,status:"running",stateSince:ago(1),activeRunStartedAt:ago(50)}),"1m");
-assert.equal(T.runwayStateElapsed({...root,status:"compacting",stateSince:ago(8),compactionStartedAt:ago(2)}),"2m");
+assert.equal(T.runwayStateElapsed({...root,status:"running",stateSince:ago(1),activeRunStartedAt:ago(50)}),"1m 00s");
+assert.equal(T.runwayStateElapsed({...root,status:"compacting",stateSince:ago(8),compactionStartedAt:ago(2)}),"2m 00s");
 const soloExecution={...root,descendants:[],status:"needs-input",pendingQuestion:"Old question",pendingQuestionExpired:true,pendingQuestionAt:ago(25*60*60),executionStatus:"running",executionSource:"transcript",executionObservedAt:ago(1),executionSince:ago(4),executionActivity:{kind:"testing"}};
 assert.equal(T.runwayWaiting(soloExecution),false);
 assert.equal(T.runwayRunning(soloExecution),true,"a fresh solo execution survives expired attention without children");
-assert.equal(T.runwayStateElapsed(soloExecution),"4m");
+assert.equal(T.runwayStateElapsed(soloExecution),"4m 00s");
 assert.equal(T.runInfo(soloExecution).seconds,240,"run time uses the proven current run start");
 assert.equal(T.runwayCounts({roots:[soloExecution]}).total,1);
 assert.match(T.rowHTML(soloExecution),/Running checks/);
@@ -407,7 +407,7 @@ assert.equal(T.runInfo(blockingQuestion),null);
 assert.doesNotMatch(T.rowHTML(blockingQuestion),/Running checks/);
 assert.match(T.rowHTML(blockingQuestion),/runway-activity[^>]*>Waiting for input/);
 const compactExecution={...soloExecution,executionStatus:"compacting",executionCompactionStartedAt:ago(2),executionActivity:null};
-assert.equal(T.runwayStateElapsed(compactExecution),"2m");
+assert.equal(T.runwayStateElapsed(compactExecution),"2m 00s");
 assert.equal(T.runwayEffectiveStatus(compactExecution),"compacting");
 assert.match(T.rowHTML(compactExecution),/>Compacting<\/span>/);
 const compactWithoutStart={...compactExecution,executionCompactionStartedAt:null,executionSince:ago(4)};
@@ -726,12 +726,12 @@ assert.equal(T.notch.autoTimer,burstTimer,"a burst of new children shares the fi
 }
 T.setNotch(false);T.notch.manual=false;T.notch.inspecting=false;T.notch.keyboardInspecting=false;T.notch.autoExpanded=false;T.notch.activeKeys=null;T.notch.workStates.clear();
 const quotas=T.resetView(provider,"fiveHour");
-assert.equal(quotas.usedText,"92% used");assert.equal(quotas.countdown,"25m");assert.equal(quotas.tone,"err");
-for(const [seconds,expected] of [[4659,"1h 17m"],[3600,"1h 00m"],[3599,"59m"],[59,"59s"]]){
+assert.equal(quotas.usedText,"92% used");assert.equal(quotas.countdown,"25m 00s");assert.equal(quotas.tone,"err");
+for(const [seconds,expected] of [[4659,"1h 17m"],[3600,"1h 00m"],[3599,"59m 59s"],[59,"59s"]]){
   assert.equal(T.resetView({...provider,fiveHour:{percent:92,resetAt:fixedNow/1000+seconds}},"fiveHour").countdown,expected);
 }
 assert.equal(T.resetView(provider,"weekly").countdown,"22h 13m","weekly countdowns show hours/minutes while the target is within a day");
-assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000+3*86400+7260}},"weekly").countdown,"3d 02h","weekly countdowns show day/hour remaining for distant targets");
+assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000+3*86400+7260}},"weekly").countdown,"3d 2h","weekly countdowns show day/hour remaining for distant targets");
 assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000-1}},"weekly").countdown,"due");
 assert.equal(T.resetView({...provider,weekly:{percent:78},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").countdown,"");
 assert.equal(T.watcherPopoverHTML('Codex'),'<p class="policy-notice" data-policy-warning hidden></p><button class="ghost" data-action="reset-settings">Reset action settings</button>');
@@ -773,7 +773,7 @@ const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
   assert.equal(partial._quotaWindowObservedAt.fiveHour,ago(1));
   assert.equal(partial.weekly.percent,47);assert.equal(partial._quotaWindowObservedAt.weekly,new Date(fixedNow).toISOString());
 }
-assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);assert.equal(staleQuota.usedLabel,"92%");assert.equal(staleQuota.lastKnownAge,"11m ago");assert.equal(staleQuota.countdown,"25m");assert.equal(staleQuota.tone,"");assert.equal(staleQuota.stale,"");
+assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);assert.equal(staleQuota.usedLabel,"92%");assert.equal(staleQuota.lastKnownAge,"11m ago");assert.equal(staleQuota.countdown,"25m 00s");assert.equal(staleQuota.tone,"");assert.equal(staleQuota.stale,"");
 assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"22h 13m");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);
 assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>11m ago</i></span>');
