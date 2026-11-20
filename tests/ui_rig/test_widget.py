@@ -396,20 +396,44 @@ def test_widget_quota_rows_and_elapsed_values_do_not_overlap(page, width, mode):
             ])""")
         layout = page.evaluate("""() => {
           const intersects=(a,b)=>a.left<b.right-.5&&a.right>b.left+.5&&a.top<b.bottom-.5&&a.bottom>b.top+.5;
-          const boxes=[], percentages=[];
+          const textRect=node=>{
+            const range=document.createRange();range.selectNodeContents(node);
+            const viewport={left:0,top:0,right:document.documentElement.clientWidth,bottom:document.documentElement.clientHeight};
+            return [...range.getClientRects()].map(r=>{
+              let box={left:Math.max(r.left,viewport.left),top:Math.max(r.top,viewport.top),right:Math.min(r.right,viewport.right),bottom:Math.min(r.bottom,viewport.bottom)};
+              for(let el=node.parentElement;el;el=el.parentElement){
+                const s=getComputedStyle(el),clipsX=s.overflowX!=='visible',clipsY=s.overflowY!=='visible';
+                if(clipsX||clipsY){const clip=el.getBoundingClientRect();box={left:clipsX?Math.max(box.left,clip.left):box.left,top:clipsY?Math.max(box.top,clip.top):box.top,right:clipsX?Math.min(box.right,clip.right):box.right,bottom:clipsY?Math.min(box.bottom,clip.bottom):box.bottom};break;}
+              }
+              return box;
+            }).filter(r=>r.right>r.left&&r.bottom>r.top);
+          };
+          const rendered=node=>{
+            for(let el=node.parentElement;el;el=el.parentElement){
+              const style=getComputedStyle(el);
+              if(el.hidden||el.getAttribute('aria-hidden')==='true'||style.display==='none'||style.visibility!=='visible'||Number(style.opacity)<=0)return false;
+            }
+            return textRect(node).length>0;
+          };
+          const boxes=[], percentages=[], elapsed=[], hiddenText=[];
+          const styleEvidence=node=>{const chain=[];for(let el=node.parentElement;el;el=el.parentElement){const s=getComputedStyle(el),r=el.getBoundingClientRect();chain.push({tag:el.tagName,className:String(el.className||''),display:s.display,visibility:s.visibility,opacity:s.opacity,hidden:el.hidden,ariaHidden:el.getAttribute('aria-hidden'),width:r.width,height:r.height});}return chain;};
           for(const row of document.querySelectorAll('.rr')) {
             const walker=document.createTreeWalker(row,NodeFilter.SHOW_TEXT);
             for(let node;(node=walker.nextNode());) if(node.textContent.trim()) {
-              const range=document.createRange();range.selectNodeContents(node);
-              for(const rect of range.getClientRects()) if(rect.width&&rect.height) boxes.push({row,text:node.textContent.trim(),rect:{left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom}});
+              const rects=textRect(node);
+              if(rendered(node)) for(const rect of rects) boxes.push({row,node,text:node.textContent.trim(),rect:{left:rect.left,right:rect.right,top:rect.top,bottom:rect.bottom},styles:styleEvidence(node)});
+              else hiddenText.push({text:node.textContent.trim(),rects:rects.map(r=>({left:r.left,right:r.right,top:r.top,bottom:r.bottom})),styles:styleEvidence(node)});
             }
             const value=row.querySelector('.rr-left b');
             if(value&&value.textContent.includes('%')) {const r=value.getBoundingClientRect(); percentages.push({el:value,x:r.left+r.width/2,y:r.top+r.height/2,text:value.textContent});}
           }
-          const overlaps=[];for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++)if(boxes[i].row===boxes[j].row&&intersects(boxes[i].rect,boxes[j].rect))overlaps.push([boxes[i].text,boxes[j].text]);
+          const overlaps=[];for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++)if(boxes[i].row===boxes[j].row&&boxes[i].node!==boxes[j].node&&intersects(boxes[i].rect,boxes[j].rect))overlaps.push({texts:[boxes[i].text,boxes[j].text],boxes:[boxes[i],boxes[j]]});
           const covered=percentages.filter(p=>document.elementFromPoint(p.x,p.y)!==p.el&&!p.el.contains(document.elementFromPoint(p.x,p.y))).map(p=>p.text);
-          const elapsed=[...document.querySelectorAll('.runway-refined-elapsed')].map(el=>({text:el.textContent,scrollWidth:el.scrollWidth,clientWidth:el.clientWidth}));
-          return {overlaps,covered,elapsed};
+          for(const el of document.querySelectorAll('.runway-refined-elapsed')) {
+            const text=[...el.childNodes].find(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim());
+            if(text&&rendered(text)){const r=textRect(text)[0];elapsed.push({text:text.textContent.trim(),scrollWidth:el.scrollWidth,clientWidth:el.clientWidth,rect:{left:r.left,right:r.right,top:r.top,bottom:r.bottom}});}
+          }
+          return {overlaps,covered,elapsed,hiddenText};
         }""")
         assert not layout["overlaps"], (width, mode, state, layout)
         assert not layout["covered"], (width, mode, state, layout)

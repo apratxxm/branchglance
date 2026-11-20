@@ -8,9 +8,11 @@ const css = fs.readFileSync(new URL("../token_tracker/static/runway_refined.css"
 assert.match(css,/\.compact-toolbar>\.toolbar-group\+\.toolbar-group\{margin-left:8px;\}/,"toolbar groups keep the approved 8px gap");
 assert.match(css,/\.rr-left\.is-unavailable\{color:var\(--muted\);\}/,"missing quota values use muted ink");
 assert.match(css,/\.rr-left\.is-unavailable:not\(\.t-attn\):not\(\.t-err\):not\(\.last-known\) b\{color:var\(--muted\);\}/,"an unavailable dash never inherits healthy green");
-assert.match(css,/\.rr\.is-unavailable \.rr-cd:empty::before\{content:"";\}/,"an unavailable row keeps the empty countdown cell blank");
+assert.match(css,/\.rr \.rr-head:has\(\.rr-left\.is-unavailable\)\+\.rr-moment \.rr-cd:empty::before\{content:"";\}/,"an unavailable row keeps the empty countdown cell blank");
 assert.match(css,/\.rr-provider\{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset\(50%\)/,"quota provider labels stay hidden when a reading is present");
-assert.match(css,/\.rr\.is-unavailable \.rr-left \.rr-provider\{position:static;display:inline;flex:none;width:auto;height:auto;overflow:visible;clip-path:none;color:var\(--muted\)/,"only unavailable quota cells show the provider inline in muted ink");
+assert.match(css,/\.rr \.rr-left\.is-unavailable \.rr-provider\{position:static;display:inline;flex:none;width:auto;height:auto;overflow:visible;clip-path:none;color:var\(--muted\)/,"only unavailable quota cells show the provider inline in muted ink");
+assert.match(css,/\.rr-left \.rr-value\{[^}]*gap:4px/,"unavailable provider name and dash have a visible gap");
+assert.match(css,/\.rr-left\{grid-column:1;grid-row:1;min-width:0;overflow:hidden;/,"the quota value cell clips its stale-age text within its own column");
 assert.match(css,/\.runway-resume-badge\{flex:none;margin-left:5px;color:var\(--muted\)/,"resume count has a gap and muted styling");
 assert.match(css,/runway-refined-timing\{min-width:58px;\}/,"elapsed column keeps a fixed minimum width");
 assert.match(page, /window\.__TOKEN_TRACKER_REFINED__=true/);
