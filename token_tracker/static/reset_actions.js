@@ -2,7 +2,7 @@
   const $ = (s) => document.querySelector(s);
   const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
   let policyFailed=false;
-  if(embedded){document.querySelectorAll("#ledger-history .ledger-row").forEach(row=>row.remove());const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Manage this in the provider settings window.";const ledgerNote=document.getElementById("ledger-note");if(ledgerNote)ledgerNote.textContent="Delete saved usage history in the Manage providers, automation and history window.";const manage=document.getElementById("manage-settings");if(manage)manage.hidden=false;const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="Runs once, at the next reset. Saving sends nothing.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
+  if(embedded){document.querySelectorAll("#ledger-history .ledger-row").forEach(row=>row.remove());const note=document.getElementById("claude-readonly-note");if(note)note.textContent="Manage this in the provider settings window.";const ledgerNote=document.getElementById("ledger-note");if(ledgerNote)ledgerNote.textContent="Delete saved usage history in the Manage providers, automation and history window.";const manage=document.getElementById("manage-settings");if(manage)manage.hidden=false;const oneShot=document.getElementById("oneshot-note");if(oneShot){oneShot.title=oneShot.textContent;oneShot.textContent="Runs once at the next genuine quota reset. Saving arms this action; it sends then.";}document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source=new URLSearchParams(window.location.search).get("source")==="Claude"?"Claude":"Codex";}
   let settingsToken="";
   try {
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
@@ -131,7 +131,7 @@
   function updatePermissionCopy() {
     const greet=$("#greet-help"),continuation=$("#continue-help"),note=$("#permission"),denied=embedded&&reactionsDenied();
     const pending=!state.policyReady?(embedded?"":policyFailed?"Unavailable until permission status loads.":"Checking permission status."):null;
-    if(greet)greet.textContent=pending??(denied?"":state.canGreet?"Show the greeting in the widget.":"Unavailable: Codex greeting permission is off in startup settings.");
+      if(greet)greet.textContent=pending??(denied?"":state.canGreet?"":"Unavailable: Codex greeting permission is off in startup settings.");
     if(continuation)continuation.textContent=pending??(denied?"":state.canContinue?"Send “continue” to the chats you pick.":embedded?continueBlockedCopy():"Unavailable: enable Codex collection, display, and explicit send permission in startup settings.");
     if(note){note.hidden=embedded;note.textContent=embedded?"":!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue?"Chat continuation requires explicit Codex send permission.":"";}
   }

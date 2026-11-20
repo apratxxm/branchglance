@@ -64,7 +64,7 @@ html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scroll
 .settings-embedded .mode input{margin:2px 0 0;}
 .settings-embedded .mode b{color:#f3f4f6;font-size:13px;font-weight:550;}
 .settings-embedded .mode small{color:#a9afbb;font-size:12px;line-height:1.35;}
-.settings-embedded .mode:has(input:disabled) b{color:#8d929c;}
+.mode:has(input:disabled) b,.mode:has(input:disabled) small{color:#8d929c;}
 .settings-embedded .claude-collection{display:block;padding:2px 0;border:0;border-radius:0;background:transparent;}
 .settings-embedded .claude-collection>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
 .settings-embedded .claude-collection h2{flex:none;font-size:13px;font-weight:550;color:#f3f4f6;margin:0;}
