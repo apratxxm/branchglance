@@ -99,7 +99,15 @@ def list_candidates(limit: int = MAX_CANDIDATES, *, client: CodexAppServer | Non
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_CANDIDATES:
         raise ValueError(f"candidate limit must be between 1 and {MAX_CANDIDATES}")
     metadata = {row["id"]: row for row in _metadata(limit=limit) if not row.get("archived")}
-    threads = (client or CodexAppServer(timeout=5)).list_threads(limit=limit)
+    if client is None:
+        # A throwaway app-server must be closed, or its codex child outlives the call.
+        owned = CodexAppServer(timeout=5)
+        try:
+            threads = owned.list_threads(limit=limit)
+        finally:
+            owned.close(timeout=2.0)
+    else:
+        threads = client.list_threads(limit=limit)
     candidates = []
     for thread in threads:
         ident = thread.get("id")
@@ -115,6 +123,18 @@ def list_candidates(limit: int = MAX_CANDIDATES, *, client: CodexAppServer | Non
 def inspect_target(thread_id: str, *, client: CodexAppServer | None = None,
                    policies: Mapping[str, ProviderPolicy] | None = None) -> dict[str, Any]:
     """Inspect one selected thread and mark it idle only with positive evidence."""
+    if client is not None:
+        return _inspect_target(thread_id, client=client, policies=policies)
+    # A throwaway app-server must be closed, or its codex child outlives the call.
+    owned = CodexAppServer(timeout=5)
+    try:
+        return _inspect_target(thread_id, client=owned, policies=policies)
+    finally:
+        owned.close(timeout=2.0)
+
+
+def _inspect_target(thread_id: str, *, client: CodexAppServer,
+                    policies: Mapping[str, ProviderPolicy] | None) -> dict[str, Any]:
     policy_for("Codex", POLICIES if policies is None else policies).require("collect")
     if not isinstance(thread_id, str) or not THREAD_ID.fullmatch(thread_id):
         return _failure("invalid_thread_id", exists=False)
@@ -135,7 +155,7 @@ def inspect_target(thread_id: str, *, client: CodexAppServer | None = None,
         return _failure("rollout_unavailable", exists=True)
 
     observed_at = time.time()
-    app_client = client or CodexAppServer(timeout=5)
+    app_client = client
     try:
         thread = app_client.read_thread(thread_id, include_turns=False)
     except (CodexUnavailable, OSError, TimeoutError):
