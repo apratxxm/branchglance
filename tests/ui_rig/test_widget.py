@@ -169,6 +169,53 @@ def test_insights_quota_text_fits_all_filters_ranges_and_metrics(page, height):
 
 
 @pytest.mark.parametrize("height", [608, 478])
+@pytest.mark.parametrize("quota_state", ["one-provider-missing", "two-provider-peaks"])
+def test_insights_quota_columns_align_in_missing_and_peak_states(page, height, quota_state):
+    def peaks_insights(route):
+        data = route.fetch().json()
+        data["peaks"] = [
+            {"name": "Codex", "fiveHour": 100, "weekly": 90},
+            {"name": "Claude", "fiveHour": 80, "weekly": 70},
+        ]
+        route.fulfill(json=data)
+
+    page.route("**/api/insights?*", peaks_insights)
+    page.set_viewport_size({"width": 720, "height": height})
+    if quota_state == "one-provider-missing":
+        quota_rows = """[
+          {name: 'Codex', usedPercent: 62, countdown: '1h 5m', weekly: {usedPercent: 41, countdown: '4d 12h'}},
+          {name: 'Claude'}
+        ]"""
+    else:
+        quota_rows = """[{name: 'Codex'}, {name: 'Claude'}]"""
+    page.evaluate(f"window.tokenTrackerQuotaNow = () => {quota_rows};")
+    open_insights(page)
+
+    if quota_state == "one-provider-missing":
+        expect(page.locator(".dash-quota-note")).to_have_count(1)
+        note_alignment = page.locator('.dash-quota-note[data-quota-key="Claude"]').evaluate("""note => {
+          const name = note.parentElement.firstChild;
+          const range = document.createRange();
+          range.selectNodeContents(name);
+          return {nameLeft: range.getBoundingClientRect().left, noteLeft: (() => {
+            const text = document.createRange(); text.selectNodeContents(note); return text.getBoundingClientRect().left;
+          })()};
+        }""")
+        assert abs(note_alignment["nameLeft"] - note_alignment["noteLeft"]) <= 1, (height, quota_state, note_alignment)
+    else:
+        expect(page.locator(".dash-quota-peak")).to_be_visible()
+        alignment = page.locator(".dash-quota").evaluate("""quota => {
+          const live = [...quota.querySelectorAll(':scope > table.dash-quota-table tbody tr:first-child td')];
+          const peak = [...quota.querySelectorAll('.dash-quota-peak tbody tr:first-child td')];
+          // Compare rendered text edges on both sides; cell boxes include padding that text does not.
+          const textRight = cell => { const range = document.createRange(); range.selectNodeContents(cell.firstChild); return range.getBoundingClientRect().right; };
+          return {liveRight: live.map(textRight), peakRight: peak.map(textRight)};
+        }""")
+        assert len(alignment["liveRight"]) == 2 and len(alignment["peakRight"]) == 2, (height, quota_state, alignment)
+        assert all(abs(live - peak) <= 1 for live, peak in zip(alignment["liveRight"], alignment["peakRight"])), (height, quota_state, alignment)
+
+
+@pytest.mark.parametrize("height", [608, 478])
 def test_by_work_folded_name_fits_at_compact_width(page, height):
     def six_model_ledger(route):
         route.fulfill(json={"rows": [
