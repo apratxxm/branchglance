@@ -33,7 +33,7 @@ assert.match(insights,/API-equivalent cost/);
 assert.match(insights,/dash-hero-currency/);
 assert.match(insights,/estimated/);
 assert.match(insights,/Claude/);assert.match(insights,/Codex/);
-assert.match(insights,/<th scope="col">Models<\/th>/);assert.match(insights,/Peak quota used/);
+assert.match(insights,/<button type="button" data-dashboard-models="models"[^>]*>Models<\/button>/,"Models stays available as the first segment of the breakdown toggle");assert.match(insights,/Peak quota used/);
 assert.doesNotMatch(insights,/local time/,"range lines no longer carry a local-time suffix");assert.match(insights,/Nov 12 – 14/,"same-month daily range reads Nov 12 – 14");
 assert.match(insights,/<dt>Subagents<\/dt><dd>6<\/dd>/);
 assert.doesNotMatch(insights,/vs previous/,"no period delta at 30 days");
@@ -198,6 +198,7 @@ dashboard.toggleProvider("Codex");
 
 // Lines mode places one marker at each visible provider value; its tooltip still contains the total.
 dashboard.setChartStyle("lines");
+assert.match(dashboard.insightsHTML(),/data-dashboard-chart-style="lines" aria-pressed="true"/,"multiple visible providers keep the Lines/Stacked control");
 const lineChart=dashboard.seriesChart(dashboard.insightsData());
 assert.equal((lineChart.match(/class="dash-marker /g)||[]).length,6);
 assert.match(lineChart,/Total:/);
@@ -509,7 +510,7 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   const row=(modelId,kind,knownCostUsd,costComplete=true)=>({provider:"Claude",modelId,kind,totalTokens:100,knownCostUsd,costComplete});
   dashboard.state.ledger={rows:[row("long model name for truncation","build",1.6,false),row("long model name for truncation","review",0.49,false),row("long model name for truncation","research",0.009,false),row("another model","build",null,false)],coverage:{},service:{}};
   let html=dashboard.workHTML(dashboard.workData());
-  for(const value of ["\u2265$1","\u226549\u00a2","\u22650\u00a2"])assert.ok(html.includes(value),value);
+  for(const value of ["\u2265$1.60","\u2265$0.49","\u2265$0.00"])assert.ok(html.includes(value),value);
   assert.match(html,/\$0\.009 API-equivalent cost/);
   assert.doesNotMatch(html,/\u2265&lt;/);
   assert.match(html,/aria-label="No usage"><span aria-hidden="true">\u2014<\/span>/);
@@ -521,7 +522,7 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   const chartProvider=provider("Claude",{models:many});chartProvider.series=[{date:dateOffset(2),tokens:0,apiEquivalentCost:0},{date:dateOffset(1),tokens:null,apiEquivalentCost:null},{date:dateOffset(0),tokens:5,apiEquivalentCost:1}];
   dashboard.state.insights={range:"7d",providers:[chartProvider]};dashboard.state.metric="tokens";
   html=dashboard.insightsHTML();assert.equal((html.match(/class="dash-model-row"/g)||[]).length,5);
-  assert.match(html,/aria-label="Other \(2\): model-4: 200 tokens; model-5: 100 tokens"/);
+  assert.match(html,/aria-label="Other \(2 models\): model-4: 200 tokens; model-5: 100 tokens"/);
   assert.match(html,/role="group" aria-label="Daily tokens by provider"/);
   assert.match(html,new RegExp(`aria-label="${dateOffset(2)}\\. Total: 0`));
   assert.match(html,/Missing provider data/);
@@ -547,7 +548,7 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   assert.match(html,/<dl class="dash-summary">/);assert.doesNotMatch(html,/class="dash-activity/);
   assert.ok(html.indexOf('dash-model-block')<html.indexOf('dash-summary')&&html.indexOf('dash-summary')<html.indexOf('dash-chart-section'));
   for(const label of ["Sessions","Subagents","Cache hit rate","Active hours"])assert.match(html,new RegExp(`<dt>${label}<\\/dt>`));
-  assert.match(html,/<span class="dash-breakdown dash-segment" role="group" aria-label="Breakdown"><button type="button" data-dashboard-models="models" aria-pressed="true" class="is-active">Models<\/button><button type="button" data-dashboard-models="work" aria-pressed="false"/);
+  assert.match(html,/<span class="dash-breakdown dash-segment" role="group" aria-label="Breakdown"><button type="button" data-dashboard-models="models"[^>]*>Models<\/button><button type="button" data-dashboard-models="work"[^>]*>By work<\/button><\/span>/,"both breakdown choices remain visible when work data is available");
   assert.match(html,/<div class="dash-split-legend no-share">/);assert.doesNotMatch(html,/<span class="dash-legend-head">Share<\/span>/);
   assert.match(html,/<span class="dash-legend-unpriced">Unpriced<\/span><span class="dash-plan-cell"><\/span><span class="dash-plan-note-cell"><\/span>/);
   assert.match(html,/<td title="\$8\.02 per 1M tokens"><span class="sr-only">\$8\.02 per 1M tokens\. <\/span>\$8\.02<\/td>/);

@@ -24,10 +24,11 @@ ui.state.ledger=ledger([
 ]);
 const work=ui.workData();
 assert.equal(work.metric,"cost","the selected Cost metric is carried into By work");
-assert.equal(work.rows.length,4,"top three plus Other");
+assert.equal(work.rows.length,5,"top four plus Other at the same fold point as Models");
 assert.equal(work.rows[0].name,"Opus 5.5");
-assert.equal(work.rows[3].other,true);
-assert.match(work.rows[3].name,/Other · 3 models/);
+assert.equal(work.rows[4].other,true);
+assert.equal(work.rows[4].count,2,"the Other row count matches the two folded models");
+assert.match(work.rows[4].name,/Other \(2 models\)/);
 assert.doesNotMatch(ui.workHTML(work),/>\?</,"empty work cells never show a literal question mark");
 assert.match(ui.workHTML(work),/aria-label="No usage"><span aria-hidden="true">—<\/span>/,"empty work cells show an em dash labelled No usage");
 assert.ok(!work.kinds.includes("debug"),"unknown kinds fold into Other");
@@ -38,7 +39,7 @@ for(const r of work.rows)assert.equal(r.sum.tokens,work.kinds.reduce((t,k)=>t+(r
 assert.equal(work.kinds.reduce((t,k)=>t+work.totals.cells[k].tokens,0),grand,"columns add up");
 assert.equal(work.rows.reduce((t,r)=>t+r.sum.tokens,0),grand,"rows add up");
 // The Other row mixes priced and unpriced usage: its cost is a lower bound, never complete.
-const otherCell=work.rows[3].cells.other;
+const otherCell=work.rows[4].cells.other;
 assert.equal(otherCell.unpriced,true);
 const html=ui.workHTML(work);
 assert.match(html,/API-equivalent cost by model and kind of work/);

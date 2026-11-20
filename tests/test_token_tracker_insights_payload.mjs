@@ -75,7 +75,7 @@ assert.equal((html.match(/class="dash-none" role="img" aria-label="No published 
 assert.doesNotMatch(html,/dash-share/);
 assert.equal((html.match(/class="dash-axis-value"/g)||[]).length,3);
 assert.doesNotMatch(html,/<text class="dash-(axis-value|date)"/,"chart labels remain undistorted HTML");
-assert.match(html,/class="dash-legend-name">Claude<\/span><b>3\.2B<\/b>/);
+assert.match(html,/class="dash-legend-name">Claude<\/span><b>3\.20B<\/b>/);
 assert.match(html,/class="dash-legend-name">Codex<\/span><b>370M<\/b>/);
 // Provider filtering lives in explicit chips beside the chart heading, not in the split table.
 assert.match(html,/class="dash-chip claude-color" data-dashboard-provider="Claude" aria-pressed="true"/);assert.doesNotMatch(html,/dash-legend-toggle/);
@@ -118,7 +118,7 @@ dashboard.state.metric="cost";dashboard.state.range="24h";dashboard.state.insigh
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/dash-hero-currency/);
-assert.match(html,/dash-hero-number">1\.2<span class="dash-hero-mag">K<\/span><\/strong><span class="sr-only"> tokens/);
+assert.match(html,/dash-hero-number">1\.20<span class="dash-hero-mag">K<\/span><\/strong><span class="sr-only"> tokens/);
 assert.match(html,/latest recorded date/,"fallback describes daily coverage rather than rolling 24 hours");
 assert.match(html,/Insights unavailable · Daily fallback/,"stats fallback reports Insights unavailable, not a failed refresh");
 assert.doesNotMatch(html,/Update failed/);

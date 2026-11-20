@@ -62,6 +62,34 @@ def test_ranges_metrics_and_providers(page):
     exercise_provider_chips(page)
 
 
+def test_provider_legend_values_share_one_line_box_at_compact_and_default_sizes(page):
+    open_insights(page)
+
+    def assert_provider_rows_share_line():
+        rows = page.locator(f"{ui.HERO} .dash-split-legend")
+        expect(rows).to_be_visible()
+        boxes = rows.evaluate("el => { const names=[...el.querySelectorAll('.dash-legend-name')], values=[...el.querySelectorAll('.dash-legend-item b')]; return names.map((name,i) => { const n=name.getBoundingClientRect(), v=values[i]?.getBoundingClientRect(); return {name:name.textContent.trim(), nameY:n.y, valueY:v?.y, nameH:n.height, valueH:v?.height}; }); }")
+        assert len(boxes) >= 2, f"expected provider name/value rows, got {boxes!r}"
+        for row in boxes:
+            assert row["valueY"] is not None and abs(row["nameY"] - row["valueY"]) < 1, f"provider name and value must share one line box: {row!r}"
+            assert row["nameH"] <= row["valueH"] + 1, f"provider name wrapped to multiple line boxes: {row!r}"
+
+    for height in (608, 478):
+        page.set_viewport_size({"width": 720, "height": height})
+        for value in ("24h", "7d", "30d"):
+            button = page.locator(f'{ui.RANGE}[data-dashboard-range="{value}"]')
+            with page.expect_response(lambda response: urlsplit(response.url).path == "/api/insights" and parse_qs(urlsplit(response.url).query).get("range") == [value]):
+                button.click()
+            expect(button).to_have_attribute("aria-pressed", "true")
+            page.locator(f'{ui.METRIC}[data-dashboard-metric="cost"]').click()
+            expect(page.locator(f'{ui.METRIC}[data-dashboard-metric="cost"]')).to_have_attribute("aria-pressed", "true")
+            assert_provider_rows_share_line()
+        page.locator(f'{ui.METRIC}[data-dashboard-metric="tokens"]').click()
+        with page.expect_response(lambda response: urlsplit(response.url).path == "/api/insights" and parse_qs(urlsplit(response.url).query).get("range") == ["24h"]):
+            page.locator(f'{ui.RANGE}[data-dashboard-range="24h"]').click()
+        assert_provider_rows_share_line()
+
+
 def test_insights_buttons_click(page):
     open_insights(page)
     # Iterate current control identities, because clicking redraws the panel.
