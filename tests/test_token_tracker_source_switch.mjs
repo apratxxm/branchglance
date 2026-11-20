@@ -85,6 +85,19 @@ const quota={fiveHour:{percent:80,resetAt:fixedNow/1000+1500},weekly:{percent:60
 const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>({generatedAt:ago(0),enabledProviders:["Codex","Claude"],providerPolicies:policy,
   providers:[{name:"Codex",connected:true,chats:codex,...quota,fiveHour:{percent:92,resetAt:fixedNow/1000+1500}},{name:"Claude",connected:true,chats:claude,...claudeQuota}]});
 
+// A visibility policy and the availability of a quota reading are separate facts.
+{
+  const widget=boot();
+  const snapshot=snapshotOf();
+  snapshot.providers=snapshot.providers.filter(provider=>provider.name==="Codex");
+  widget.T.render(snapshot);
+  assert.equal(widget.node("#resets").dataset.providerCount,"2");
+  assert.match(widget.node("#r1-fiveHour-left").innerHTML,/Claude<\/span><b>—<\/b>/);
+  assert.equal(widget.node("#r1-weekly-left").title,"No live reading for Claude");
+  widget.T.render({...snapshot,providerPolicies:policies(true,false)});
+  assert.equal(widget.node("#resets").dataset.providerCount,"1","a policy-hidden provider gets no placeholder");
+}
+
 // Provider selection remains available to the dashboard, but never filters the compact tree.
 {
   const both=boot(),snapshot=snapshotOf({codex:[codexChat("c1",running())],claude:[claudeChat("s1",running())]});
@@ -137,6 +150,12 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   empty.T.render(snapshotOf({codex:idle,claude:[]}));
   assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty tree-empty">No active chats</div>',"idle-only roster paints its empty state, never a blank panel");
   assert.doesNotMatch(empty.node("#chat-list").innerHTML,/Nothing in|data-action="window"/);
+  empty.T.render({...snapshotOf(),generatedAt:ago(1)});
+  assert.match(empty.node("#chat-list").innerHTML,/>Live job status unavailable</);
+  assert.match(empty.node("#compact-counts").innerHTML,/>Jobs stale</);
+  empty.T.render(snapshotOf());
+  assert.doesNotMatch(empty.node("#compact-counts").innerHTML,/Jobs stale/);
+  assert.match(empty.node("#chat-list").innerHTML,/>No active chats</);
   empty.T.state.searchOpen=true;empty.T.state.query="not-found";
   empty.T.render(snapshotOf({codex:idle,claude:[]}));
   assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty">No matches</div>');

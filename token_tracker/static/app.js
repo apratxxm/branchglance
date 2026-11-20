@@ -805,10 +805,11 @@ function jumpToWaiting() {
 function renderRunwayCounts(counts) {
   const nodes=[$('#notch-counts'),...[$('#compact-counts')]].filter(Boolean);if(!nodes.length)return;
   if(!counts){for(const node of nodes){if(node._runwayCountHTML!==''){node.innerHTML='';node._runwayCountHTML='';}if(node.title)node.title='';if(node.getAttribute?.('aria-label'))node.removeAttribute?.('aria-label');}return;}
+  const stale=state.runwaySnapshotPainted&&!runwayCurrentEvidenceFresh();
   const chatsWord=counts.roots===1?'chat':'chats';
-  const label=counts.roots+' chat group'+(counts.roots===1?'':'s')+', '+counts.total+' active, '+counts.waiting+' waiting';
+  const label=stale?'Live job status unavailable':counts.roots+' chat group'+(counts.roots===1?'':'s')+', '+counts.total+' active, '+counts.waiting+' waiting';
   const badge=(slot,value,unit,tone,path,meaning,visible=true)=>{if(unit==='chat'||unit==='chats')meaning='visible chat groups';const hidden=visible?'':' aria-hidden="true"';const jump=slot==='waiting'&&visible?' data-action="jump-waiting" role="button" tabindex="0"':'';return '<span data-count-slot="'+slot+'" class="runway-count runway-count-'+slot+' t-'+tone+(visible?'':' is-empty')+'"'+hidden+jump+' aria-label="'+value+' '+meaning+(jump?', show the first':'')+'" title="'+value+' '+meaning+(jump?' · click to show':'')+'"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="'+path+'"/></svg><span class="count-value">'+(visible?value:'')+'</span><span class="count-unit">'+(visible?unit:'')+'</span></span>';};
-  const html=badge('groups',counts.roots,chatsWord,'live','M2 2h8v6H5l-3 2Z',chatsWord,counts.roots>0)+badge('active',counts.total,'active','live','M3 1v8h6M3 4h6M9 2v4M9 7v4','active',counts.total>0)+badge('waiting',counts.waiting,'waiting','attn','M6 2v5M6 9h.01','waiting',Boolean(counts.waiting));
+  const html=stale?'<span class="runway-jobs-stale">Jobs stale</span>':badge('groups',counts.roots,chatsWord,'live','M2 2h8v6H5l-3 2Z',chatsWord,counts.roots>0)+badge('active',counts.total,'active','live','M3 1v8h6M3 4h6M9 2v4M9 7v4','active',counts.total>0)+badge('waiting',counts.waiting,'waiting','attn','M6 2v5M6 9h.01','waiting',Boolean(counts.waiting));
   for(const node of nodes){
     if(node._runwayCountHTML!==html){node.innerHTML=html;node._runwayCountHTML=html;}
     if(node.title!==label)node.title=label;
@@ -972,18 +973,18 @@ function providersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=(snapshot?.providers||[]);
   return runwaySource(snapshot).filter(name=>visible.has(name)).map(name=>available.find(p=>p.name===name)||{name,connected:false,chats:[]});
 }
-// Chat providers plus providers shown only as quota meters (reset block and alerts).
-function limitProvidersFor(snapshot) {
-  const visible=visibleProviderNames(snapshot),available=snapshot?.providers||[];
-  const names=sourceNames(snapshot).filter(name=>visible.has(name));
-  return names.flatMap(name=>{
+// Rendering keeps a cell for each policy-visible provider before its first reading.
+function limitProvidersFor(snapshot, {includeUnavailable=false}={}) {
+  const available=snapshot?.providers||[];
+  return sourceNames(snapshot).map(name=>{
     const provider=available.find(item=>item.name===name),bootstrap=quotaBootstrap.providers[name];
     const hasQuota=item=>Boolean(item&&["fiveHour","weekly"].some(key=>{
       const value=item[key];return value&&typeof value==="object"&&(safeNumber(value.percent)!=null||resetAt(value,item.limitsUpdatedAt)!=null);
     }));
-    const selected=hasQuota(provider)?provider:hasQuota(bootstrap)?bootstrap:null;
-    return selected?[selected]:[];
-  });
+    if(hasQuota(provider))return provider;
+    if(hasQuota(bootstrap))return bootstrap;
+    return includeUnavailable?provider||bootstrap:null;
+  }).filter(Boolean);
 }
 function snapshotParentKey(provider, raw, edges=null) {
   const key=keyOf({...raw,provider:provider.name});
@@ -1706,6 +1707,7 @@ function chatBlockHTML(chat, query) {
 }
 function emptyHTML(forest, providers) {
   if(parseQuery(state.query).active)return '<div class="empty">No matches</div>';
+  if(!runwayCurrentEvidenceFresh())return '<div class="empty tree-empty">Live job status unavailable</div>';
   const down=providers.filter(p=>p.connected===false);
   return down.length?'<div class="empty">No data</div>':'<div class="empty tree-empty">No active chats</div>';
 }
@@ -2080,7 +2082,7 @@ function render(snapshot) {
   if(firstRunwayPaint){const activeSource=initialActiveSource(snapshot);if(activeSource)state.source=activeSource;}
   if(!state.lastOkAt)state.lastOkAt=Date.now();
   state.runwaySnapshotPainted=true;
-  const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot);
+  const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot,{includeUnavailable:true});
   const chatProviders=graphlessFallback?providers.map(provider=>({...provider,chats:(provider.chats||[]).map(chat=>({...chat,
     parentKey:null,parentId:null,status:'unknown',statusSource:'unavailable',telemetryUnavailable:true,
     executionStatus:'unknown',executionSource:'unavailable',executionActivity:null,activity:null,activityUnavailable:true,
@@ -2106,7 +2108,7 @@ function renderLoading() {
 function tick() {
   syncCompactClock();
   if(!state.snapshot){renderTitle([]);renderQuotaState();return;}
-  const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
+  const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot,{includeUnavailable:true});
   renderTitle(providers);renderResets(limits);renderChats(providers);renderAnalytics(state.snapshot);
   window.TokenTrackerDashboard?.setSnapshot?.(state.snapshot);
   syncLastKnownFollowup();
@@ -2236,7 +2238,7 @@ function validQuotaMetadata(payload,now=Date.now()){
 function renderQuotaState(){
   renderTitle(state.snapshot?providersFor(state.snapshot):[]);
   const bootstrapSnapshot={providers:Object.values(quotaBootstrap.providers),providerPolicies:state.providerPolicy};
-  renderResets(state.snapshot?limitProvidersFor(state.snapshot):limitProvidersFor(bootstrapSnapshot));
+  renderResets(limitProvidersFor(state.snapshot||bootstrapSnapshot,{includeUnavailable:true}));
 }
 function quotaBootstrapTargets(){
   const providers=state.snapshot?.providers||[],present=new Set(providers.map(provider=>provider.name));

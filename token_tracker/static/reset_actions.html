@@ -12,7 +12,7 @@
     <p class="intro">Choose what happens when a genuine quota reset is detected.</p>
     <fieldset id="modes">
       <legend>After a reset</legend>
-      <label class="mode"><input type="radio" name="mode" value="greet"><span><b>Show greeting</b><small id="greet-help"></small></span></label>
+      <label class="mode"><input type="radio" name="mode" value="greet"><span><b>Send a greeting</b><small id="greet-help"></small></span></label>
       <label class="mode"><input type="radio" name="mode" value="continue"><span><b>Continue selected chats once</b><small id="continue-help">Send “continue” to the chats you pick.</small></span></label>
     </fieldset>
     <section id="claude-collection" class="claude-collection" aria-labelledby="claude-heading">
@@ -46,7 +46,7 @@
       <div id="pager" class="pager" hidden><button id="page-prev" class="quiet" type="button" aria-label="Previous chats">‹</button><span id="page-info" aria-live="polite"></span><button id="page-next" class="quiet" type="button" aria-label="Next chats">›</button></div>
     </section>
     <section id="last-run" class="last-run" hidden></section>
-    <p id="oneshot-note" class="note">This is a one-shot action for the next genuine quota reset. Saving only arms it; it never sends immediately. A queued chat has not necessarily started.</p>
+    <p id="oneshot-note" class="note">Saving applies the selected action at a quota reset. Continuing selected chats is a one-shot action for the next genuine quota reset. A queued chat has not necessarily started.</p>
     <p id="message" class="message" role="status" aria-live="polite"></p>
     <footer><button id="cancel" class="quiet" type="button">Cancel</button><button id="save" class="primary" type="button">Save action</button></footer>
   </main>

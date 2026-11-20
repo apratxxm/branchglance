@@ -35,6 +35,8 @@ body.runway-refined:not(.phone) .titlebar .ic{width:20px;height:20px;}
 body.runway-refined:not(.phone) .titlebar .sync-age{font-size:16px;}
 body.runway-refined:not(.phone) #sync-age{min-width:34px;height:28px;}
 body.runway-refined:not(.phone) .notch-counts{width:auto;min-width:0;gap:7px;font-size:15px;}
+.runway-jobs-stale{color:var(--muted);font-size:11px;white-space:nowrap;}
+body.runway-refined #notch-counts:has(.runway-jobs-stale)::after{display:none;}
 body.runway-refined:not(.phone) .runway-count{width:52px;min-width:52px;max-width:52px;flex:0 0 52px;gap:4px;font-size:15px;}
 body.runway-refined:not(.phone) .runway-count .ic{width:19px;height:19px;}
 body.runway-refined:not(.phone) .count-value{width:auto;min-width:0;font:16px var(--sans);text-align:left;font-variant-numeric:tabular-nums;}

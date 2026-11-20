@@ -18,8 +18,8 @@ assert.doesNotMatch(css, /data-provider-count="[2-9]"/, "no count override for t
 // The band reports how many providers it renders (both single and multi-provider paths).
 assert.match(app, /node\.dataset\.providerCount=String\(providers\.length\);if\(weeklyNode\)weeklyNode\.dataset\.providerCount=String\(providers\.length\);/,
   "both bands record the rendered provider count");
-// Each band row is rendered only for a provider in the snapshot (no placeholder row for a missing provider).
-assert.match(app, /providers\.map\(\(p,i\)=>\{/, "band rows come from the providers actually present");
+// The renderer draws one row per provider supplied by the quota selector.
+assert.match(app, /providers\.map\(\(p,i\)=>\{/, "band rows come from the quota provider list");
 
 // Source switch: no switch markup in the page, and it is hidden unless two or more sources are visible.
 assert.doesNotMatch(html, /id="source-switch"/, "runway page has no source switch markup");
@@ -39,7 +39,8 @@ assert.ok(emptyBranch.includes("if(parseQuery(state.query).active)return '<div c
 assert.ok(emptyBranch.includes("'<div class=\"empty tree-empty\">No active chats</div>'"), "quiet line text, no icon or button");
 assert.ok(emptyBranch.includes("'<div class=\"empty\">No data</div>'"), "disconnected provider keeps its No data text");
 assert.ok(!emptyBranch.includes("<button"), "compact empty states have no window expansion button");
-assert.equal(app.split("tree-empty").length - 1, 1, "single quiet-line branch");
+assert.ok(emptyBranch.includes("'<div class=\"empty tree-empty\">Live job status unavailable</div>'"), "a stale roster has its own quiet line");
+assert.equal(app.split("tree-empty").length - 1, 2, "only fresh-empty and stale rosters use the quiet-line layout");
 const rule = css.slice(css.indexOf(".chat-list .empty.tree-empty{"));
 const ruleBody = rule.slice(0, rule.indexOf("}") + 1);
 assert.ok(ruleBody.includes("color:#8d93a8"), "muted colour");
