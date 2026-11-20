@@ -240,9 +240,9 @@ const costAxis=value=>{
   dashboard.state.insights=payload([{name:"Codex",totals:{tokens:1e6,apiEquivalentCost:value*30,sessions:1,subagentsActive:0,activeHours:1,cacheHitRate:null},previous:null,series:dates.map(date=>({date,tokens:0,apiEquivalentCost:value})),models:[],limitPeaks:{fiveHour:null,weekly:null}}]);
   return dashboard.insightsHTML().match(/class="dash-axis-value"[^>]*>([^<]+)<\/span>/g).map(tick=>tick.match(/>([^<]+)<\/span>/)[1]);
 };
-assert.deepEqual(costAxis(.5),["$0.60","$0.30","$0"],"cost axis ticks below $1 keep the dollar sign and cents");
-assert.deepEqual(costAxis(10),["$12.00","$6.00","$0"],"cost axis ticks between $1 and $100 keep cents");
-assert.deepEqual(costAxis(120),["$150","$75.00","$0"],"cost axis ticks at or above $100 use whole dollars");
+assert.deepEqual(costAxis(.5),["$0.60","$0.45","$0.30","$0.15","$0"],"a sub-dollar cost axis uses cents consistently");
+assert.deepEqual(costAxis(10),["$12","$9","$6","$3","$0"],"a whole-dollar cost axis between $1 and $100 uses whole dollars consistently");
+assert.deepEqual(costAxis(120),["$150.00","$112.50","$75.00","$37.50","$0"],"a cost axis with a fractional tick at or above $100 uses cents consistently");
 
 // Legend headers, provider cells and inline grid tracks come from one column set across all content states.
 function assertLegendColumns(html,expectedRows,label){
