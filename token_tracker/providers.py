@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import json
 import hashlib
+import io
 import math
 import os
 import re
@@ -2961,9 +2962,53 @@ def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], tabl
             "unpricedModels": [{"model": name, "tokens": value} for name, value in sorted(unpriced.items(), key=lambda item: -item[1]) if value]}
 
 
+class _ClaudeUsageReader(io.RawIOBase):
+    """Hash the exact bytes consumed by the universal-newline text reader."""
+
+    def __init__(self, handle: Any, digest: Any) -> None:
+        self.handle = handle
+        self.digest = digest
+        self.last_byte = None
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        count = self.handle.readinto(buffer)
+        if count:
+            chunk = memoryview(buffer)[:count]
+            self.digest.update(chunk)
+            self.last_byte = chunk[-1]
+        return count
+
+
+def _compact_claude_usage(usage: Any) -> Any:
+    if not isinstance(usage, dict):
+        return usage
+    compact = {key: usage[key] for key in (
+        "input_tokens", "output_tokens", "cache_read_input_tokens",
+        "cache_creation_input_tokens") if key in usage}
+    creation = usage.get("cache_creation")
+    if isinstance(creation, dict):
+        counts = {key: creation[key] for key in ("ephemeral_5m_input_tokens",
+                                                "ephemeral_1h_input_tokens") if key in creation}
+        if creation and not counts:
+            # An unknown-only breakdown suppresses the top-level fallback and
+            # leaves the pricing tier unknown. Retain truthiness, not metadata.
+            counts["_present"] = True
+        compact["cache_creation"] = counts
+    elif "cache_creation" in usage:
+        compact["cache_creation"] = creation
+    return compact
+
+
 class ClaudeDesktopProvider:
-    _file_cache: dict[tuple[str, int, int], list[dict[str, Any]]] = {}
-    _cache_lock = threading.Lock()
+    _usage_cache: OrderedDict[str, tuple[int, dict[str, Any]]] = OrderedDict()
+    _usage_cache_lock = threading.Lock()
+    _usage_cache_bytes = 0
+    _usage_cache_max_bytes = 48 * 1024 * 1024
+    _usage_cache_max_entries = 1024
+
     def __init__(self, local_app_data: str | None = None) -> None:
         local = Path(local_app_data or os.environ.get("LOCALAPPDATA", ""))
         # Claude Desktop moved its user data out of the MSIX package into
@@ -2999,44 +3044,112 @@ class ClaudeDesktopProvider:
         return own, latest
 
     @classmethod
+    def _usage_cache_remove(cls, resolved: str) -> None:
+        # Caller holds _usage_cache_lock.
+        previous = cls._usage_cache.pop(resolved, None)
+        if previous is not None:
+            cls._usage_cache_bytes -= previous[0]
+
+    @classmethod
     def _file_usage(cls, path: Path) -> list[dict[str, Any]]:
         try:
-            stat = path.stat(); key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
-        except OSError: return []
-        with cls._cache_lock:
-            if key in cls._file_cache: return cls._file_cache[key]
+            resolved = _resolve_memoized(path)
+        except OSError:
+            return []
+        with _JSONL_PATH_LOCKS[hash(resolved) % len(_JSONL_PATH_LOCKS)]:
+            try:
+                # Other transcript readers in this build may have memoized a
+                # stat before the writer appended. Check again before reuse.
+                stamp = _stat_fingerprint(path)
+                with cls._usage_cache_lock:
+                    entry = cls._usage_cache.get(resolved)
+                    cached = entry[1] if entry is not None else None
+                    if cached is not None and cached["stamp"] == stamp:
+                        cls._usage_cache.move_to_end(resolved)
+                        # Private read-only projection; aggregation never mutates rows.
+                        return cached["rows"]
+                    cls._usage_cache_remove(resolved)
+
+                with path.open("rb", buffering=0) as handle:
+                    opened = _jsonl_stat(handle)
+                    result = cls._scan_usage(handle, path, resolved, opened, cached)
+                    stable = (opened == _jsonl_stat(handle) == _stat_fingerprint(path))
+            except OSError:
+                with cls._usage_cache_lock:
+                    cls._usage_cache_remove(resolved)
+                return []
+
+            if stable:
+                cost = _jsonl_state_cost(result, ("claude-usage", resolved))
+                if cost <= cls._usage_cache_max_bytes and cls._usage_cache_max_entries:
+                    with cls._usage_cache_lock:
+                        cls._usage_cache[resolved] = (cost, result)
+                        cls._usage_cache_bytes += cost
+                        while (cls._usage_cache_bytes > cls._usage_cache_max_bytes
+                               or len(cls._usage_cache) > cls._usage_cache_max_entries):
+                            _old_path, old = cls._usage_cache.popitem(last=False)
+                            cls._usage_cache_bytes -= old[0]
+            return result["rows"]
+
+    @staticmethod
+    def _scan_usage(handle: Any, path: Path, resolved: str, stamp: tuple[int, int, int, int, int],
+                    cached: dict[str, Any] | None) -> dict[str, Any]:
+        digest = hashlib.sha256()
         by_id: dict[str, dict[str, Any]] = {}
-        try:
-            with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                for line_no, line in enumerate(handle):
-                    try: item = json.loads(line)
-                    except json.JSONDecodeError: continue
-                    message = item.get("message") or ((item.get("payload") or {}).get("message")) or {}
-                    usage = message.get("usage") or item.get("usage") or {}
-                    if not usage: continue
-                    model = message.get("model") or item.get("model") or "unknown"
-                    identity = str(message.get("id") or item.get("requestId") or item.get("request_id") or f"{key[0]}:{line_no}")
-                    timestamp = item.get("timestamp") or message.get("timestamp")
-                    # One response is written once per content block; early
-                    # blocks can carry partial output counts, so keep the most
-                    # complete report instead of the first line.
-                    previous = by_id.get(identity)
-                    if previous and _usage_size(previous["usage"]) > _usage_size(usage): continue
-                    by_id[identity] = {"id": identity, "model": model, "timestamp": timestamp, "order": line_no, "usage": usage, "session": path.stem}
-        except OSError: return []
-        rows = list(by_id.values())
-        with cls._cache_lock:
-            cls._file_cache[key] = rows
-            # Old versions of a changed file cannot be reused.
-            for old in list(cls._file_cache):
-                if old[0] == key[0] and old != key: cls._file_cache.pop(old, None)
-        return rows
+        records = 0
+        if (cached is not None and cached["ends_in_lf"]
+                and cached["stamp"][2:4] == stamp[2:4] and cached["stamp"][0] < stamp[0]):
+            # Compaction can rewrite the middle of a transcript on the same
+            # inode. Only reuse the prefix projection if every old byte matches.
+            remaining = cached["stamp"][0]
+            while remaining:
+                _raise_if_snapshot_shutdown()
+                block = handle.read(min(remaining, 256 * 1024))
+                if not block:
+                    break
+                digest.update(block)
+                remaining -= len(block)
+            if remaining == 0 and digest.digest() == cached["digest"]:
+                by_id = {row["id"]: row for row in cached["rows"]}
+                records = cached["records"]
+            else:
+                handle.seek(0)
+                digest = hashlib.sha256()
+
+        reader = _ClaudeUsageReader(handle, digest)
+        with io.TextIOWrapper(io.BufferedReader(reader), encoding="utf-8",
+                              errors="ignore", newline=None) as lines:
+            for line in lines:
+                _raise_if_snapshot_shutdown()
+                order = records
+                records += 1
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                message = item.get("message") or ((item.get("payload") or {}).get("message")) or {}
+                usage = message.get("usage") or item.get("usage") or {}
+                if not usage:
+                    continue
+                model = message.get("model") or item.get("model") or "unknown"
+                identity = str(message.get("id") or item.get("requestId") or item.get("request_id")
+                               or f"{resolved}:{order}")
+                previous = by_id.get(identity)
+                if previous and _usage_size(previous["usage"]) > _usage_size(usage):
+                    continue
+                by_id[identity] = {"id": identity, "model": model,
+                                   "timestamp": item.get("timestamp") or message.get("timestamp"),
+                                   "order": order, "usage": _compact_claude_usage(usage),
+                                   "session": path.stem}
+
+        return {"rows": list(by_id.values()), "stamp": stamp, "records": records,
+                "digest": digest.digest(), "ends_in_lf": reader.last_byte == 10}
 
     def _transcript_usage(self, days: int = 31) -> dict[str, Any]:
         window_dates = _last_calendar_dates(days)
         totals: dict[str, int] = defaultdict(int); daily: dict[str, int] = defaultdict(int)
         models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int)); sessions: dict[str, dict[str, Any]] = defaultdict(lambda: {"tokens": 0, "turns": 0, "model": None, "contextTokens": 0, "last": ("", -1), "dailyTokens": defaultdict(int)})
-        seen = set(); live_keys = set()
+        seen = set()
         try: paths = list(self.transcript_root.glob("**/*.jsonl"))
         except OSError: paths = []
         entries = []
@@ -3048,7 +3161,6 @@ class ClaudeDesktopProvider:
         # created transcript so chat totals do not depend on directory order.
         entries.sort(key=lambda entry: (_created_at(entry[1]), str(entry[0])))
         for path, stat in entries:
-            live_keys.add((str(path.resolve()), stat.st_size, stat.st_mtime_ns))
             sessions[path.stem].update(_session_insights(path))
             state = _claude_transcript_state(path)
             sessions[path.stem].update(status=state["status"], question=state["question"], stateDetail=state["detail"], path=str(path))
@@ -3078,9 +3190,6 @@ class ClaudeDesktopProvider:
                 marker = (str(timestamp), int(row.get("order") or 0))
                 if marker >= session["last"] and not _is_placeholder_model(model):
                     session["last"] = marker; session["model"] = model; session["contextTokens"] = input_tokens + read + write_5m + write_1h
-        with self._cache_lock:
-            for key in list(self._file_cache):
-                if key not in live_keys: self._file_cache.pop(key, None)
         return {"totals": totals, "daily": daily, "models": models, "sessions": sessions}
 
     @staticmethod
