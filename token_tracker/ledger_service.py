@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from . import product, features
+from . import product, features, insights
 from .claude_hook_install import claude_config_dir
 from .ledger import Ledger, LedgerUnavailable, read_summary
 from .ledger_model import PROVIDERS
@@ -36,14 +36,14 @@ MIN_BACKFILL_PAUSE_SECONDS = 0.2
 BACKFILL_DUTY_MULTIPLIER = 4  # wait 4 x pass duration: the writer takes about 20% of one core while backfilling
 BACKOFF_START_SECONDS = 5.0
 BACKOFF_MAX_SECONDS = 300.0
-RANGE_SECONDS: dict[str, int | None] = {"24h": 24 * 3600, "7d": 7 * 24 * 3600, "30d": 30 * 24 * 3600, "all": None}
+RANGES = frozenset({"24h", "7d", "30d", "all"})
 EXPORT_FORMATS = ("csv", "json")
 EXPORT_PATH = "/api/ledger/export"
 CSV_COLUMNS = ("provider", "modelId", "displayName", "kind", "inputTotal", "cachedRead", "cacheWrite5m",
                "cacheWrite1h", "cacheWriteUnknown", "outputTotal", "reasoningOutput", "totalTokens",
                "knownCostUsd", "costComplete", "unpricedTokens", "coverageStatus", "gapCount", "rangeStart",
                "rangeEnd")
-# Stored hourly rollups: a rolling window starts at the hour that contains its nominal start.
+# Stored hourly rollups; local window starts are floored to this grain before reading.
 HOUR_SECONDS = 3600
 FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
@@ -351,12 +351,21 @@ def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(int(epoch), timezone.utc).isoformat()
 
 
+def _range_start(range_name: str, now: float) -> float:
+    if range_name == "all":
+        return 0.0
+    local_now = insights._local_now(datetime.fromtimestamp(now, timezone.utc))
+    # In half-hour zones, local midnight falls midway through a stored UTC hour;
+    # include that whole hour by flooring to the hourly rollup grain.
+    return int(insights._range_window(range_name, local_now)["start"] // HOUR_SECONDS) * HOUR_SECONDS
+
+
 # ---------------------------------------------------------------------- HTTP views
 
 def http_response(path: str, query: Mapping[str, list[str]], *, now: float | None = None) -> tuple[int, dict[str, str], bytes]:
     """(status, headers, body) for GET /api/ledger and GET /api/ledger/export. Read-only: never creates or writes storage."""
     range_name = _single(query, "range")
-    if range_name not in RANGE_SECONDS:
+    if range_name not in RANGES:
         return _error(400, "Unknown ledger range.")
     export_format = None
     if path == EXPORT_PATH:
@@ -367,9 +376,8 @@ def http_response(path: str, query: Mapping[str, list[str]], *, now: float | Non
     if service is None or service.health()["state"] == "disabled":
         return _error(503, "Ledger is off.")
     now = time.time() if now is None else now
-    span = RANGE_SECONDS[range_name]
-    # Windows are hour-aligned to the stored grain, so the reported start is the usage actually included.
-    start, end = (0.0, now) if span is None else (int((now - span) // HOUR_SECONDS) * HOUR_SECONDS, now)
+    start = _range_start(range_name, now)
+    end = now
     try:
         payload = read_summary(service.data_dir, start, end, show=service.show, time_zone=_time_zone(),
                                plan_fee_usd=None)
