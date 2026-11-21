@@ -3,6 +3,7 @@
 import ctypes
 import os
 import uuid
+from collections import Counter
 from datetime import date
 
 import pytest
@@ -47,6 +48,7 @@ class _FunctionProxy:
     @argtypes.setter
     def argtypes(self, value):
         self._recorder.signature_writes += 1
+        self._recorder.signature_writes_by_function[self._name] += 1
         self._function.argtypes = value
 
     @property
@@ -56,6 +58,7 @@ class _FunctionProxy:
     @restype.setter
     def restype(self, value):
         self._recorder.signature_writes += 1
+        self._recorder.signature_writes_by_function[self._name] += 1
         self._function.restype = value
 
     def __call__(self, *args):
@@ -80,27 +83,35 @@ class _DllProxy:
 
 
 class _CountingWinDLL:
-    def __init__(self, overrides=None):
+    def __init__(self, overrides=None, libraries=None):
         self._real = ctypes.WinDLL
         self._overrides = overrides or {}
+        self._libraries = libraries
         self.constructions = []
+        self.constructions_by_library = Counter()
         self.signature_writes = 0
+        self.signature_writes_by_function = Counter()
         self.calls = {}
 
     def __call__(self, name, **kwargs):
         self.constructions.append(name)
-        library = self._real(name, **kwargs)
+        self.constructions_by_library[name] += 1
+        library = self._libraries[name] if self._libraries is not None else self._real(name, **kwargs)
         return _DllProxy(library, self, self._overrides.get(name, {}))
+
+    def snapshot(self):
+        return (tuple(sorted(self.constructions_by_library.items())),
+                tuple(sorted(self.signature_writes_by_function.items())))
 
 
 def _assert_bindings_cached(monkeypatch, factory, call):
     with monkeypatch.context() as context:
         context.setattr(ctypes, "WinDLL", factory)
         call()
-        warm_counts = (len(factory.constructions), factory.signature_writes)
+        warm_counts = factory.snapshot()
         assert all(warm_counts), "the first call must construct and bind the native API"
         _assert_pointer_cache_stable(call)
-        assert (len(factory.constructions), factory.signature_writes) == warm_counts
+        assert factory.snapshot() == warm_counts
 
 
 def test_agent_links_windows_receipt_types_do_not_accumulate(tmp_path, monkeypatch):
@@ -147,39 +158,45 @@ def test_agent_links_windows_receipt_types_do_not_accumulate(tmp_path, monkeypat
         "SetFileSecurityW": StubFunction(lambda *_: 1),
     })()
 
-    class Factory:
-        def __init__(self):
-            self.loaded = []
-
-        def __call__(self, name, **_kwargs):
-            self.loaded.append(name)
-            return {"shell32": shell, "ole32": ole, "kernel32": kernel, "advapi32": advapi}[name]
-
-    factory = Factory()
+    factory = _CountingWinDLL(libraries={
+        "shell32": shell, "ole32": ole, "kernel32": kernel, "advapi32": advapi})
     try:
         monkeypatch.setattr(agent_links, "_plain_chain", lambda _path: True)
         monkeypatch.setattr(product, "current_user_sid", lambda: "S-1-5-21-1-2-3-1000")
         monkeypatch.setattr(type(inbox), "is_dir", lambda _path: True)
         monkeypatch.setattr(type(receipt), "is_file", lambda _path: True)
-        with monkeypatch.context() as context:
-            context.setattr(ctypes, "WinDLL", factory)
+        def call():
+            assert str(agent_links._known_local_app_data()) == r"C:\Users\stub\AppData\Local"
+            assert agent_links._file_identity(fd)
+            agent_links._create_private_inbox(inbox, receipt)
 
-            def call():
-                assert str(agent_links._known_local_app_data()) == r"C:\Users\stub\AppData\Local"
-                assert agent_links._file_identity(fd)
-                agent_links._create_private_inbox(inbox, receipt)
-
-            _assert_pointer_cache_stable(call)
-            assert set(factory.loaded) == {"shell32", "ole32", "kernel32", "advapi32"}
+        _assert_bindings_cached(monkeypatch, factory, call)
+        assert factory.constructions_by_library == {
+            "shell32": 1, "ole32": 1, "kernel32": 2, "advapi32": 1}
+        assert {
+            "SHGetKnownFolderPath", "CoTaskMemFree", "GetFileInformationByHandle",
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW", "CreateDirectoryW",
+            "CreateFileW", "CloseHandle", "LocalFree", "SetFileSecurityW",
+        } <= factory.signature_writes_by_function.keys()
     finally:
         os.close(fd)
 
     assert str(agent_links._known_local_app_data()) != r"C:\Users\stub\AppData\Local"
 
 
-def test_claude_hook_windows_types_and_bindings_do_not_accumulate(tmp_path):
+def test_claude_hook_windows_types_and_bindings_do_not_accumulate(tmp_path, monkeypatch):
     from token_tracker import claude_hook
 
+    snapshot_types = []
+
+    def first_process(_snapshot, entry_ptr):
+        snapshot_types.append(type(entry_ptr._obj))
+        return False
+
+    factory = _CountingWinDLL({"kernel32": {
+        "CreateToolhelp32Snapshot": lambda *_: 1,
+        "Process32First": first_process,
+    }})
     append_path = str(tmp_path / "events.jsonl")
     empty_retention_dir = tmp_path / "retention"
     empty_retention_dir.mkdir()
@@ -190,7 +207,15 @@ def test_claude_hook_windows_types_and_bindings_do_not_accumulate(tmp_path):
         assert claude_hook._append_windows(append_path, b"{}\n", 1024) == "ok"
         claude_hook._retention_windows(str(empty_retention_dir), date.today())
 
-    _assert_pointer_cache_stable(call)
+    _assert_bindings_cached(monkeypatch, factory, call)
+    assert snapshot_types == [claude_hook._windows_hook_types()[0]] * 5
+    assert factory.constructions_by_library == {"kernel32": 4, "ntdll": 1}
+    assert {
+        "CreateToolhelp32Snapshot", "Process32First", "Process32Next", "OpenProcess",
+        "GetProcessTimes", "GetExitCodeProcess", "CreateFileW", "GetFileSizeEx", "WriteFile",
+        "CreateMutexW", "WaitForSingleObject", "GetFileInformationByHandleEx",
+        "SetFileInformationByHandle", "GetFileType", "NtCreateFile", "CloseHandle",
+    } <= factory.signature_writes_by_function.keys()
 
 
 def test_claude_hook_append_bindings_are_built_once(tmp_path, monkeypatch):
@@ -206,13 +231,34 @@ def test_codex_windows_job_types_do_not_accumulate(monkeypatch):
     from token_tracker import codex_client
 
     startup_types = []
+    startup_ex_types = []
+    process_info_types = []
 
     def refuse_process(*args):
         startup_types.append(type(args[8]._obj))
+        process_info_types.append(type(args[9]._obj))
         return False
 
     factory = _CountingWinDLL({"kernel32": {"CreateProcessW": refuse_process}})
     resolved = codex_client.CodexExecutable("codex.exe")
+    cached_types = codex_client._windows_codex_types()
+
+    class RecordingType:
+        def __init__(self, structure_type, observed):
+            self.structure_type = structure_type
+            self.observed = observed
+
+        def __call__(self):
+            instance = self.structure_type()
+            self.observed.append(type(instance))
+            return instance
+
+    def recorded_types():
+        types = list(cached_types)
+        types[4] = RecordingType(cached_types[4], startup_ex_types)
+        return tuple(types)
+
+    monkeypatch.setattr(codex_client, "_windows_codex_types", recorded_types)
 
     def call():
         with pytest.raises(OSError, match="could not create contained process"):
@@ -220,7 +266,9 @@ def test_codex_windows_job_types_do_not_accumulate(monkeypatch):
                 resolved, ["--version"], timeout=1, cwd=None, env=None, mark_started=lambda: None)
 
     _assert_bindings_cached(monkeypatch, factory, call)
-    assert startup_types == [codex_client._windows_codex_types()[3]] * 5
+    assert startup_types == [cached_types[3]] * 5
+    assert startup_ex_types == [cached_types[4]] * 5
+    assert process_info_types == [cached_types[5]] * 5
 
 
 def test_product_windows_mutex_security_attributes_do_not_accumulate():
