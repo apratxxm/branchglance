@@ -40,6 +40,8 @@ VERIFY_RETRY_MAX_SECONDS = 600
 _GAP_COUNTERS = {"truncation": "truncations", "replacement": "replacements", "oversize": "oversizeRecords", "ambiguous-reset": "ambiguousResets",
                  "source-missing-unverified": "missingUnverified"}
 FaultHook = Callable[[str], None]
+# Thread hint for a first-seen rollout whose leading metadata record is still being written.
+_PENDING_THREAD = object()
 
 
 class _VerificationReadError(OSError):
@@ -274,8 +276,12 @@ class Ingestor:
         for key in [key for key in self._thread_hint_cache if key[0] == provider]:
             del self._thread_hint_cache[key]
 
-    def _codex_thread_hint(self, path: Path) -> str | None:
-        """Read only the bounded leading metadata needed to order a first-seen rollout."""
+    def _codex_thread_hint(self, path: Path) -> Any:
+        """Read only the bounded leading metadata needed to order a first-seen rollout.
+
+        Returns the thread id, None when the leading records name no thread, or
+        _PENDING_THREAD when a leading record is incomplete or unreadable, so the
+        caller orders the rollout conservatively until its metadata can be read."""
         key = (model_mod.CODEX, path_key(path))
         try:
             stamp = tuple(_file_stamp(path.stat()))
@@ -284,24 +290,32 @@ class Ingestor:
         cached = self._thread_hint_cache.get(key)
         if cached and cached[0] == stamp:
             return cached[1]
-        thread = None
+        thread: Any = None
         try:
             with path.open("rb") as handle:
-                header = handle.read(_READ_CHUNK)
+                scanned = 0
+                # The first record may be a large session_meta (long base instructions); later records
+                # are scanned only within the leading chunk, matching where session_meta appears.
+                while scanned < _READ_CHUNK:
+                    line = handle.readline(MAX_RECORD_BYTES + 1)
+                    if not line:
+                        break
+                    scanned += len(line)
+                    if not line.endswith(b"\n"):
+                        # Still being written (or oversize, which ingestion skips): do not guess.
+                        thread = _PENDING_THREAD if len(line) <= MAX_RECORD_BYTES else None
+                        break
+                    try:
+                        item = json.loads(line.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    payload = item.get("payload") if isinstance(item, dict) else None
+                    if isinstance(item, dict) and item.get("type") == "session_meta":
+                        if isinstance(payload, dict) and isinstance(payload.get("id"), str) and payload["id"]:
+                            thread = payload["id"][:128]
+                        break  # only the first session_meta names the thread, as in _codex_pass
         except OSError:
-            self._thread_hint_cache[key] = (stamp, None)
-            return None
-        for line in header.splitlines():
-            try:
-                item = json.loads(line.decode("utf-8", "replace"))
-            except ValueError:
-                continue
-            payload = item.get("payload") if isinstance(item, dict) else None
-            if (isinstance(item, dict) and item.get("type") == "session_meta"
-                    and isinstance(payload, dict) and isinstance(payload.get("id"), str)
-                    and payload["id"]):
-                thread = payload["id"][:128]
-                break
+            return _PENDING_THREAD  # not cached: the next pass retries the read
         self._thread_hint_cache[key] = (stamp, thread)
         return thread
 
@@ -316,6 +330,7 @@ class Ingestor:
         source_threads: dict[tuple[str, str], str | None] = {}
         source_positions: dict[tuple[str, str], int] = {}
         unresolved_positions: dict[str, list[int]] = {}
+        pending_hints: set[tuple[str, str]] = set()
         for position, (provider, path) in enumerate(discovered):
             identity = (provider, path_key(path))
             source_positions[identity] = position
@@ -325,6 +340,9 @@ class Ingestor:
             thread = state.get("thread")
             if provider == model_mod.CODEX and not thread:
                 thread = self._codex_thread_hint(path)
+                if thread is _PENDING_THREAD:
+                    pending_hints.add(identity)
+                    thread = None
             source_threads[identity] = thread
             unresolved = bool(state.get("verification_debt") or state.get("verify")
                               or state.get("provisional") or state.get("ordered_tail_pending"))
@@ -390,6 +408,10 @@ class Ingestor:
             thread = source_threads.get(identity)
             prior = unresolved_positions.get(thread, []) if provider == model_mod.CODEX and thread else []
             blocked = bool(prior and bisect.bisect_left(prior, source_position) > 0)
+            if identity in pending_hints and source_cursors.get(identity) is None:
+                # Unknown thread: wait behind any earlier unresolved Codex source.
+                blocked = any(positions and positions[0] < source_position
+                              for positions in unresolved_positions.values())
             if blocked:
                 blocked_order.add((provider, path))
             if budget is not None and read_total >= budget:
@@ -613,6 +635,10 @@ class Ingestor:
                         changed_stamp = None
                     now = self.clock()
                     if changed_stamp is not None:
+                        if (not debt.get("replacement_observed")
+                                and _file_identity_changed(debt.get("last_stamp") or state.get("file_stamp"),
+                                                           changed_stamp)):
+                            debt.update(replacement_observed=True, replacement_boundary=changed_stamp[0])
                         debt.update(last_stamp=changed_stamp, last_size=changed_stamp[0],
                                     last_change_epoch=now)
                     debt.update(open=True, generation=cursor["generation"])
@@ -678,12 +704,13 @@ class Ingestor:
         debt = state.get("verification_debt")
         changed = False
         if debt:
-            if debt.get("last_stamp") != stamp:
+            previous_stamp = debt.get("last_stamp")
+            if previous_stamp != stamp:
                 debt.update(last_stamp=stamp, last_size=info.st_size, last_change_epoch=self.clock(),
                             tail_boundary=info.st_size)
                 debt.pop("verified_stamp", None)
                 if (not debt.get("replacement_observed") and
-                        (_file_identity_changed(debt.get("last_stamp"), stamp)
+                        (_file_identity_changed(previous_stamp, stamp)
                          or (cursor["head_key"] and not _head_matches(path, cursor["head_key"])) )):
                     debt.update(replacement_observed=True, replacement_boundary=info.st_size)
                 changed = True
@@ -750,13 +777,14 @@ class Ingestor:
                         state["verification_debt"] = debt
                         state_changed = True
                     elif debt.get("last_stamp") != stamp:
+                        previous_stamp = debt.get("last_stamp")
                         debt["last_change_epoch"] = now
                         debt["last_stamp"] = stamp
                         debt["last_size"] = info.st_size
                         debt["tail_boundary"] = info.st_size
                         debt.pop("verified_stamp", None)
                         if (not debt.get("replacement_observed")
-                                and (_file_identity_changed(debt.get("last_stamp"), stamp)
+                                and (_file_identity_changed(previous_stamp, stamp)
                                      or (head_key and not _head_matches(path, head_key)))):
                             debt["replacement_observed"] = True
                             debt["replacement_boundary"] = info.st_size
@@ -905,8 +933,10 @@ class Ingestor:
                             promote = bool(state.get("provisional"))
                             if budget is not None and work:
                                 # The tail reader receives only the allowance left by this verified plan.
-                                budget = (max(1, budget - work) if not capped
-                                          else min(_READ_CHUNK, max(1, budget // 4)))
+                                # A capped scan ignored the budget for the prefix; its tail still gets the
+                                # normal pass budget, so constant appends cannot hold confirmation to one
+                                # small allowance per deadline.
+                                budget = max(1, budget - work) if not capped else max(1, budget)
                                 tail_read = True
             if reset:
                 self._partial_verification.pop((provider, path_key(path)), None)
@@ -987,12 +1017,22 @@ class Ingestor:
             if order_boundary is not None:
                 state["ordered_tail_pending"] = {"boundary": order_boundary,
                                                   "tail_boundary": verified_tail_boundary}
+            elif offset + cut + probe_work < verified_tail_boundary:
+                # An oversize record hides the next boundary: hold the gate until it is skipped.
+                state["ordered_tail_pending"] = {"boundary": offset + cut + probe_work,
+                                                  "tail_boundary": verified_tail_boundary}
         elif ordered is not None and offset + cut >= int(ordered.get("boundary", 0)):
             order_boundary, probe_work = self._next_complete_line(
                 path, offset + cut, int(ordered.get("tail_boundary", info.st_size)))
             work += probe_work
-            if order_boundary is None:
+            tail_boundary = int(ordered.get("tail_boundary", info.st_size))
+            if order_boundary is None and offset + cut + probe_work >= tail_boundary:
                 state.pop("ordered_tail_pending", None)
+            elif order_boundary is None:
+                # No complete record before the verified boundary yet (an oversize record is being
+                # skipped): keep the gate until the boundary is passed.
+                state["ordered_tail_pending"] = {"boundary": offset + cut + probe_work,
+                                                  "tail_boundary": tail_boundary}
             else:
                 state["ordered_tail_pending"] = {"boundary": order_boundary,
                                                   "tail_boundary": int(ordered.get("tail_boundary", info.st_size))}

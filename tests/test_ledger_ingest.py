@@ -2040,3 +2040,108 @@ def test_locked_integrity_check_leaves_a_healthy_ledger_in_place(tmp_path, monke
     reopened = Ledger(data, claude_root=claude, codex_root=codex, clock=clock_at(3600))
     assert reopened.conn.execute("SELECT COUNT(*) FROM facts WHERE provider='Claude'").fetchone()[0] == 1
     reopened.close()
+
+
+def _codex_with_earlier_debt(tmp_path):
+    data, claude, codex = make_roots(tmp_path)
+    now = [float(HOUR_START + 3600)]
+    ledger = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    earlier = codex_file(codex, 'a-known')
+    first_seen = codex_file(codex, 'b-first-discovery')
+    write_jsonl(earlier, codex_meta('T1', 1) + [codex_count(2, input_tokens=100, output_tokens=0)])
+    _drain_ledger(ledger)
+    append_jsonl(earlier, [codex_count(3600, input_tokens=120, output_tokens=0)])
+    ledger.ingest(ALL)  # the earlier same-thread source now holds exact-verification debt
+    return ledger, now, first_seen
+
+
+def _assert_ordered_after_drain(ledger, now):
+    now[0] += ledger_ingest.IDLE_VERIFY_SECONDS
+    _drain_ledger(ledger)
+    by_hour = dict(ledger.conn.execute(
+        "SELECT hour, SUM(total) FROM facts WHERE provider='Codex' GROUP BY hour"))
+    assert by_hour[HOUR_START] == 100
+    assert by_hour[HOUR_START + 3600] == 20
+    assert by_hour[HOUR_START + 7200] == 30
+
+
+def test_first_discovered_rollout_with_large_session_meta_is_queued(tmp_path):
+    ledger, now, first_seen = _codex_with_earlier_debt(tmp_path)
+    meta = codex_meta('T1', 7200)
+    meta[0]['payload']['base_instructions'] = {'text': 'x' * (ledger_ingest._READ_CHUNK + 4096)}
+    write_jsonl(first_seen, meta + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    ledger.ingest(ALL)
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(first_seen)) is None
+    assert summary(ledger)['totals']['totalTokens'] == 100
+    _assert_ordered_after_drain(ledger, now)
+
+
+def test_first_discovered_rollout_with_incomplete_metadata_waits_behind_earlier_debt(tmp_path):
+    ledger, now, first_seen = _codex_with_earlier_debt(tmp_path)
+    first_seen.write_bytes(b'{"type":"session_meta","payload":{"id":"T1"')  # still being written
+    ledger.ingest(ALL)
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(first_seen)) is None
+    write_jsonl(first_seen, codex_meta('T1', 7200) + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    ledger.ingest(ALL)
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(first_seen)) is None
+    assert summary(ledger)['totals']['totalTokens'] == 100
+    _assert_ordered_after_drain(ledger, now)
+
+
+def test_identity_change_while_debt_is_open_marks_the_replacement(tmp_path):
+    data, claude, codex = make_roots(tmp_path)
+    now = [float(HOUR_START + 3600)]
+    ledger = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    path = claude_file(claude, 'swap')
+    write_jsonl(path, claude_lines((10, 'msg_a', 5), (20, 'msg_b', 7)))
+    _drain_ledger(ledger)
+    if not path.stat().st_ino:
+        pytest.skip('file identity is not reported on this platform')
+    append_jsonl(path, claude_lines((30, 'msg_c', 9)))
+    ledger.ingest(ALL)  # a clean append opens debt
+    key = ledger_ingest.path_key(path)
+    assert not store.load_source(ledger.conn, 'Claude', key)['state']['verification_debt']['replacement_observed']
+    replacement = path.with_name('swap.next')
+    replacement.write_bytes(path.read_bytes() + (json.dumps(claude_response(40, 'msg_d', output=4)) + '\n').encode())
+    os.replace(replacement, path)  # atomic replacement keeping the same head
+    ledger.ingest(ALL)
+    debt = store.load_source(ledger.conn, 'Claude', key)['state']['verification_debt']
+    assert debt['replacement_observed'] is True
+    assert debt['replacement_boundary'] == path.stat().st_size
+
+
+def test_capped_deadline_scan_gives_the_tail_the_normal_pass_budget(tmp_path):
+    data, claude, codex = make_roots(tmp_path)
+    now = [float(HOUR_START + 3600)]
+    ledger = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    path = claude_file(claude, 'capped-tail')
+    filler = {'type': 'user', 'message': {'content': 'x' * 1000}}
+    write_jsonl(path, [claude_response(1, 'first', output=5)] + [filler] * 200)
+    _drain_ledger(ledger, budget=1024 * 1024)
+    append_jsonl(path, [claude_response(2, 'tail-0', output=1)])
+    ledger.ingest(ALL, budget_bytes=8192)  # opens debt
+    for index in range(1, 20):
+        append_jsonl(path, [filler, claude_response(2 + index, f'tail-{index}', output=1)])
+        now[0] += 60  # appends keep arriving, so the idle trigger never fires
+        ledger.ingest(ALL, budget_bytes=8192)
+    key = ledger_ingest.path_key(path)
+    before = store.load_source(ledger.conn, 'Claude', key)['byte_offset']
+    now[0] += ledger_ingest.DEADLINE_VERIFY_SECONDS
+    ledger.ingest(ALL, budget_bytes=8192)
+    after = store.load_source(ledger.conn, 'Claude', key)
+    assert 'verification_debt' not in after['state']
+    # Previously the tail received min(64 KiB, budget // 4) = 2048 bytes plus one record.
+    assert after['byte_offset'] - before > 4096
+
+
+def test_oversize_record_in_verified_tail_keeps_the_same_thread_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(ledger_ingest, 'MAX_RECORD_BYTES', 2048)
+    ledger, now, later = _codex_with_earlier_debt(tmp_path)
+    earlier = later.with_name('rollout-a-known.jsonl')
+    # Before the 120 report, the earlier source gets a record too long for one probe.
+    content = earlier.read_bytes().splitlines(keepends=True)
+    oversize = (json.dumps({'type': 'unknown', 'payload': {'padding': 'y' * 6000}}) + '\n').encode()
+    earlier.write_bytes(b''.join(content[:-1]) + oversize + content[-1])
+    write_jsonl(later, codex_meta('T1', 7200) + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    ledger.ingest(ALL)
+    _assert_ordered_after_drain(ledger, now)
