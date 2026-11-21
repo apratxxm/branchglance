@@ -217,12 +217,12 @@ def test_rejection_bounded_read_and_restore(chunks, expected):
 
 def test_rejection_zero_and_deadline(monkeypatch):
     handler = _rejection_handler([("Content-Length", "0")], [])
-    handler._reject_post("/api/queue", {}, 403)
+    handler._reject_post("/api/reset-action", {}, 403)
     assert handler.rfile.calls == [] and handler.connection.timeout == 7
     handler = _rejection_handler([("Content-Length", "3")], [b"a", b"b"])
     times = iter([0, 0.05, 0.15, 0.26])
     monkeypatch.setattr(server.time, "monotonic", lambda: next(times))
-    handler._reject_post("/api/queue", {}, 403)
+    handler._reject_post("/api/reset-action", {}, 403)
     assert handler.rfile.calls == [3, 2]
     assert handler.connection.calls == pytest.approx([0.20, 0.10, 7])
     assert handler.connection.timeout == 7
@@ -236,9 +236,9 @@ def test_denied_guards_and_no_mutation(api, monkeypatch):
     cases = [
         ("/api/claude-collection", {"Host": "evil", "Origin": "http://evil"}, 403, server._SETTINGS_AUTH_MESSAGE),
         ("/missing", {"Origin": "http://evil"}, 404, "not found"),
-        ("/api/queue", {"Origin": "http://evil", "Content-Type": "text/plain"}, 403, "same-origin request required"),
+        ("/api/reset-action", {"Origin": "http://evil", "Content-Type": "text/plain"}, 403, server._SETTINGS_AUTH_MESSAGE),
         ("/api/claude-collection", {"X-Branchglance-Settings-Token": "wrong"}, 403, server._SETTINGS_AUTH_MESSAGE),
-        ("/api/queue", {"Content-Type": "text/plain"}, 415, "application/json required"),
+        ("/api/reset-action", {"Content-Type": "text/plain", "X-Branchglance-Settings-Token": "valid"}, 415, "application/json required"),
     ]
     for path, headers, status, error in cases:
         actual, body = request(api, "POST", {"action": "enable"}, headers, path=path)

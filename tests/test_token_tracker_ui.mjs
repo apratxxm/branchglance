@@ -3,6 +3,9 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
+const runwayCss=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
+assert.match(app,/queue-capable/);
+assert.match(runwayCss,/\.q-queue\{display:none\}html\.queue-capable \.q-queue\{display:inline-flex\}/,"queue controls require the host bridge capability");
 // ---------- VM with DOM stubs ----------
 const nodes=new Map();
 function node(selector){
@@ -440,16 +443,18 @@ console.log("Token Tracker UI tests passed");
 }
 {
   // A selected choice is copied and the exact Codex chat is opened; the widget never claims it sent a reply.
-  const calls=[],clipboard=[];
+  const calls=[],bridgeCalls=[],clipboard=[];
   context.AbortSignal={timeout:ms=>({ms})};
   context.navigator={clipboard:{writeText:async text=>clipboard.push(text)}};
   context.fetch=async (url,options={})=>{calls.push([url,options]);return {ok:true,json:async()=>({ok:true})};};
+  context.window.pywebview={api:{open_thread:async(thread)=>{bridgeCalls.push(["open",thread]);return {ok:true};}}};
   const choiceButton={disabled:false,title:"",classList:{add(name){this[name]=true}}};
   await T.copyAndOpenAnswer("01a0cad8-0000-7000-8000-000000000001","Yes, both worked",choiceButton);
   assert.deepEqual(clipboard,["Yes, both worked"]);
   assert.match(choiceButton.title,/Select this choice in its question prompt/);
   assert.doesNotMatch(choiceButton.title,/paste and send/i);
-  assert.deepEqual(calls.map(call=>call[0]),["/api/open?thread=01a0cad8-0000-7000-8000-000000000001"]);
+  assert.deepEqual(bridgeCalls,[["open","01a0cad8-0000-7000-8000-000000000001"]]);
+  assert.deepEqual(calls,[],"Open in Codex never uses an HTTP route on the Windows bridge host");
   assert.doesNotMatch(app,/fetch\("\/api\/answer"/);
   assert.match(T.optionsHTML(["Yes, both worked"],"q"),/Open Codex to answer[\s\S]*select the choice in its question prompt/);
   assert.match(T.optionsHTML(["Yes, both worked"],"q"),/data-action="queue-answer"[\s\S]*Queue to chat/);
@@ -460,15 +465,27 @@ console.log("Token Tracker UI tests passed");
   const calls=[];let label="Queue to chat";
   context.AbortSignal={timeout:ms=>({ms})};
   context.fetch=async (url,options={})=>{calls.push([url,options]);return {ok:true,json:async()=>({ok:true,status:"queued",detail:"Queued for the next turn. This does not answer the pending question."})};};
+  const bridgeCalls=[];
+  context.window.pywebview.api.queue_message=async(thread,message)=>{bridgeCalls.push([thread,message]);return {ok:true,status:"queued",detail:"Queued for the next turn. This does not answer the pending question."};};
   const button={disabled:false,title:"",classList:{add(name){this[name]=true},contains(name){return Boolean(this[name])}},querySelector(){return {set textContent(value){label=value}}}};
   const result=await T.queueAnswer("01a0cad8-0000-7000-8000-000000000001","Yes, both worked",button);
   assert.equal(result.status,"queued");
   assert.equal(label,"Queued");
   assert.equal(button.disabled,true);
-  assert.equal(calls[0][0],"/api/queue");
-  assert.equal(calls[0][1].method,"POST");
-  assert.deepEqual(JSON.parse(calls[0][1].body),{thread:"01a0cad8-0000-7000-8000-000000000001",message:"Yes, both worked"});
+  assert.deepEqual(bridgeCalls,[["01a0cad8-0000-7000-8000-000000000001","Yes, both worked"]]);
+  assert.deepEqual(calls,[],"queue never sends a message through the HTTP API");
   assert.match(button.title,/does not answer/);
+  context.window.pywebview.api.queue_message=async()=>({ok:false,status:"retryable",error:"The widget is busy. Try again."});
+  const retryButton={disabled:false,title:"",classList:{add(name){this[name]=true},contains(name){return Boolean(this[name])}},querySelector(){return null}};
+  const retryable=await T.queueAnswer("01a0cad8-0000-7000-8000-000000000001","Yes, both worked",retryButton);
+  assert.equal(retryable.status,"retryable","a refused receipt is reported as retryable, not as unknown delivery");
+  context.window.pywebview.api.queue_message=()=>new Promise(()=>{});
+  const timeoutButton={disabled:false,title:"",classList:{add(name){this[name]=true},contains(name){return Boolean(this[name])}},querySelector(){return null}};
+  const previousSetTimeout=context.setTimeout,previousClearTimeout=context.clearTimeout;
+  context.setTimeout=(callback)=>globalThis.setTimeout(callback,1);context.clearTimeout=timer=>globalThis.clearTimeout(timer);
+  const timedOut=await T.queueAnswer("01a0cad8-0000-7000-8000-000000000001","Yes, both worked",timeoutButton);
+  context.setTimeout=previousSetTimeout;context.clearTimeout=previousClearTimeout;
+  assert.equal(timedOut.status,"unknown","a timed out Queue keeps the unknown-outcome state");
   console.log("Token Tracker next-turn queue UI tests passed");
 }
 {

@@ -16,6 +16,13 @@ const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatc
 const context={window,document,Intl,Date:TestDate,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},requestAnimationFrame:fn=>{animationFrames.push(fn);},setInterval:()=>1,clearInterval(){},setTimeout:()=>1,clearTimeout(){},location:{origin:"http://127.0.0.1:8765"},fetch:async url=>{if(String(url).startsWith("/api/ledger"))return {ok:false,status:503,json:async()=>({})};requests.push(String(url));return responseQueue.shift()||{ok:false,status:404,json:async()=>({})};}};
 vm.createContext(context);vm.runInContext(source,context);
 const dashboard=window.__tokenTrackerDashboardTest;
+{
+  const priorSet=context.setTimeout,priorClear=context.clearTimeout;
+  context.setTimeout=(callback,delay)=>globalThis.setTimeout(callback,delay);
+  context.clearTimeout=timer=>globalThis.clearTimeout(timer);
+  await assert.rejects(dashboard.waitForBridge(new Promise(()=>{}),5,"Dashboard bridge timed out."),/Dashboard bridge timed out/);
+  context.setTimeout=priorSet;context.clearTimeout=priorClear;
+}
 const today=new Date(fixedNow);
 const dateOffset=days=>{const date=new Date(today.getTime()-days*86400000);return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;};
 const provider=(name,values={})=>({name,totals:{tokens:values.tokens??1000000,apiEquivalentCost:"cost" in values?values.cost:20,sessions:values.sessions??10,subagentsActive:values.subagentsActive??3,activeHours:values.activeHours??12,cacheHitRate:values.cacheHitRate??65},previous:"previous" in values?values.previous:{tokens:900000,apiEquivalentCost:18},series:[0,1,2].map((n)=>({date:dateOffset(n),tokens:(values.tokens??1000000)/(n+1),apiEquivalentCost:"cost" in values?values.cost:(20/(n+1))})),models:values.models??[{name:name==="Claude"?"claude-opus-5.5":"gpt-6-luna",tokens:500000,apiEquivalentCost:12}],limitPeaks:{fiveHour:55,weekly:70}});
@@ -104,8 +111,10 @@ assert.match(dashboard.settingsHTML(),/24-hour/);
 
 dashboard.state.policy={origin:"policy_file",policyFile:"ok",providers:[{name:"Codex",show:true,collect:true,send:false,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},{name:"Claude",show:true,collect:false,send:false,sendOrigin:"default",capabilities:{greet:true,continue:false}}]};
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];dashboard.state.settingsLoaded=true;
+dashboard.state.resetAction={schemaVersion:2,mode:"continue",threadIds:["thread-1"],armed:true,lastRun:{at:"2026-11-21T09:00:00Z"}};dashboard.state.resetActionThreads=[{id:"thread-1",title:"<selected chat>"}];
 dashboard.state.identity={version:"1.0.0",build:"abc123"};
 const settings=dashboard.settingsHTML();
+assert.match(settings,/Saved choice: Continue/);assert.match(settings,/&lt;selected chat&gt;/,"saved reset target is escaped");assert.match(settings,/Last run: 2026-11-21T09:00:00Z/);
 assert.match(settings,/<span class="dash-h2-note">v1\.0\.0<\/span>/);
 dashboard.state.identity={version:"<script>",build:"&"};
 assert.match(dashboard.settingsHTML(),/v&lt;script&gt;/,"identity values are escaped");
@@ -115,9 +124,9 @@ assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget
 assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Display on \u00b7 Collection allowed \u00b7 Greeting blocked \u00b7 Continuation blocked/,"send denial overrides advertised action capabilities");assert.match(settings,/Display off \u00b7 Collection off/);assert.match(settings,/<span class="dash-setting-label">Center on screen<\/span>/,"one monitor is labelled for the placement action");assert.match(settings,/Moves the widget to the top center of the selected display/,"the position row describes the recenter action");assert.doesNotMatch(settings,/Move the widget back to the center/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
 assert.match(settings,/<span class="dash-setting-label">Codex<\/span>[\s\S]*?<input id="dash-plan-price"[^>]*data-dashboard-plan="Codex"[\s\S]*?<span class="dash-setting-label">Claude<\/span>[\s\S]*?<input(?! id="dash-plan-price")[^>]*data-dashboard-plan="Claude"/,"Codex is first and receives the shared plan input id by provider name");
-assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage data sources and history/);assert.match(settings,/<h2>Monthly plan prices<\/h2>/);assert.match(settings,/Saved on this device\. Used to compare your plan price with 30 days of estimated API cost\. Clear a price to remove the comparison\./);assert.doesNotMatch(settings,/dash-setting-description">Monthly/,"rows are label-only");assert.match(settings,/placeholder="Not set"/);assert.match(settings,/aria-label="Codex plan price per month in USD"/);assert.match(settings,/Set by policy file/);assert.match(settings,/Preview report/);assert.match(settings,/Review the local report before sharing\./);assert.match(settings,/Close<\/button>/);assert.match(settings,/Codex reset automation/);assert.match(settings,/No chat text, file paths, account details or tokens\./,"privacy exclusions stay visible inside the report preview");
+assert.doesNotMatch(settings,/reset_actions\.html\?embedded=1/,"the parent document does not embed the token-bearing Settings page");assert.match(settings,/Reset automation settings are managed in the native Settings window/);assert.match(settings,/data-dashboard-action="reset-settings-manage">Manage in Settings/);assert.match(settings,/Manage data sources and history/);assert.match(settings,/<h2>Monthly plan prices<\/h2>/);assert.match(settings,/Saved on this device\. Used to compare your plan price with 30 days of estimated API cost\. Clear a price to remove the comparison\./);assert.doesNotMatch(settings,/dash-setting-description">Monthly/,"rows are label-only");assert.match(settings,/placeholder="Not set"/);assert.match(settings,/aria-label="Codex plan price per month in USD"/);assert.match(settings,/Set by policy file/);assert.match(settings,/Preview report/);assert.match(settings,/Review the local report before sharing\./);assert.match(settings,/Close<\/button>/);assert.match(settings,/Codex reset automation/);assert.match(settings,/No chat text, file paths, account details or tokens\./,"privacy exclusions stay visible inside the report preview");
 assert.match(settingsCss,/\.dash-setting-row\+\.dash-setting-row\{border-top:1px solid var\(--d-edge\);\}/,"Settings rows use the hairline edge token");assert.match(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*background:var\(--d-codex\);/,"the on switch uses Codex indigo");assert.doesNotMatch(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*#425df6/i,"the on switch has no hard-coded blue");
-assert.match(source,/open_reset_actions/);
+assert.match(source,/open_reset_actions/);assert.doesNotMatch(source,/__branchglanceDocumentGeneration/);
 assert.doesNotMatch(source,/X-Branchglance-Settings-Token|settingsToken/,"dashboard never reads or stores the Claude settings token");
 
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true},{id:"display-2",label:"Desktop",selected:false}];
@@ -300,7 +309,7 @@ events.click({target:{closest:selector=>selector==="#dashboard-refresh"?{}:null}
 await new Promise(resolve=>globalThis.setTimeout(resolve,0));
 assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
 
-// A Settings preference update keeps the mounted reset iframe in place (moving it would reload it) and restores focus to its initiating control.
+// A Settings preference update preserves the read-only reset summary and restores focus to its initiating control.
 {
   // A minimal DOM: nodes with ordered children, remove/before/after, and a move counter.
   const mk=(name,extra={})=>({name,parentNode:null,childNodes:[],moves:0,...extra,
@@ -308,8 +317,7 @@ assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
     insert(at,nodes){for(const n of nodes){n.remove?.();n.parentNode=this.parentNode;n.moves++;this.parentNode.childNodes.splice(at++,0,n);}},
     before(...nodes){this.insert(this.parentNode.childNodes.indexOf(this),nodes);},
     after(...nodes){this.insert(this.parentNode.childNodes.indexOf(this)+1,nodes);}});
-  const frameNode=src=>({getAttribute:name=>name==="src"?src:null});
-  const columns=src=>{const cols=mk("cols"),control={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}},inspection={dataset:{inspectionHotkey:"ctrl_alt_t"},focus(){this.focused=true;}};const nodes=[mk("widget",{control,inspection}),mk("group",{frame:frameNode(src),querySelector(sel){return sel==="iframe.reset-embed"?this.frame:null;}}),mk("about")];nodes.forEach(n=>{n.parentNode=cols;cols.childNodes.push(n);});return cols;};
+  const columns=()=>{const cols=mk("cols"),control={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}},inspection={dataset:{inspectionHotkey:"ctrl_alt_t"},focus(){this.focused=true;}};const nodes=[mk("widget",{control,inspection}),mk("group",{querySelector(){return null;}}),mk("about")];nodes.forEach(n=>{n.parentNode=cols;cols.childNodes.push(n);});return cols;};
   const find=(cols,name)=>cols?.childNodes.find(n=>n.name===name)||null;
   const root={dataset:{},addEventListener(){}};
   const insightPanel={_html:"",control:null,set innerHTML(value){this._html=value;this.control={dataset:{dashboardProvider:"Codex"},focus(){this.focused=true;}};},querySelectorAll(selector){return selector==="[data-dashboard-provider]"?[this.control]:[];},querySelector(){return null;}};
@@ -318,20 +326,19 @@ assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
   const docs={activeElement:{dataset:{dashboardProvider:"Codex"}},querySelector(selector){return selector==="#dashboard-settings"?settings:selector==="#dashboard-insights"?insightPanel:selector==="#dashboard-view"?root:null;},querySelectorAll:()=>[],addEventListener(){}};
   const win={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){}};
   const ctx={window:win,document:docs,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://localhost"},fetch:async()=>({ok:false}),setInterval:()=>1,clearInterval(){},requestAnimationFrame:fn=>fn(),Event};
-  docs.createElement=tag=>{assert.equal(tag,"template");const template={content:null,set innerHTML(value){const c=columns((value.match(/src="([^"]+)"/)||[])[1]);template.content={cols:c,querySelector:sel=>sel===".dash-reset-group"?find(c,"group"):sel==="iframe.reset-embed"?find(c,"group")?.frame||null:null};}};return template;};
+  docs.createElement=tag=>{assert.equal(tag,"template");const template={content:null,set innerHTML(_value){const c=columns();template.content={cols:c,querySelector:sel=>sel===".dash-reset-group"?find(c,"group"):null};}};return template;};
   vm.createContext(ctx);vm.runInContext(source,ctx);
   const local=win.__tokenTrackerDashboardTest;local.state.open=true;local.state.tab="insights";local.state.range="7d";local.state.insights={range:"7d",providers:[provider("Claude"),provider("Codex")]};
   win.TokenTrackerDashboard.render();
   assert.equal(insightPanel.control.focused,true,"Insights rerender restores focus to the provider chip that triggered it");
   local.state.tab="settings";local.state.settingsLoaded=true;docs.activeElement={dataset:{dashboardAction:"lock"}};local.state.renderKey="";
   win.TokenTrackerDashboard.render();
-  const mountedGroup=find(cols,"group"),mountedFrame=mountedGroup.frame;
+  const mountedGroup=find(cols,"group");
   assert.equal(replaced,1,"first Settings render mounts the whole panel");
   docs.activeElement={dataset:{dashboardAction:"lock"}};local.state.lock={locked:true};local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
-  assert.equal(replaced,1,"a preference update does not replace the panel around the reset form");
-  assert.equal(find(cols,"group"),mountedGroup,"the reset form group remains the same node");
-  assert.equal(mountedGroup.moves,0,"the reset form group is never moved, so its iframe does not reload");
-  assert.equal(settings.querySelector("iframe.reset-embed"),mountedFrame,"the reset form iframe remains the same mounted node");
+  assert.equal(replaced,2,"a preference update rerenders the read-only reset summary");
+  assert.notEqual(find(cols,"group"),mountedGroup,"the read-only summary is rendered from current Settings state");
+  assert.equal(settings.querySelector("iframe.reset-embed"),null,"the parent Settings panel has no writable reset iframe");
   assert.deepEqual(cols.childNodes.map(n=>n.name),["widget","group","about"],"siblings are replaced in their original order");
   assert.equal(find(cols,"widget").control.focused,true,"settings rerender returns focus to the control that triggered it");
   win.pywebview={api:{get_inspection_hotkey(){},set_inspection_hotkey(){}}};
@@ -339,7 +346,7 @@ assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
   assert.equal(find(cols,"widget").inspection.focused,true,"inspection shortcut choice keeps focus across the status rerender");
   assert.match(local.settingsHTML(),/In use by another app/,"an unavailable persisted shortcut reports its registration state beside the row");
   local.state.source="Claude";local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
-  assert.equal(replaced,1,"Codex reset automation stays fixed when the dashboard source changes");
+  assert.equal(replaced,4,"the read-only reset summary stays mounted in the Settings panel");
 }
 
 // Accepted data stays labeled with its captured range during a later request.

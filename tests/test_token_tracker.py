@@ -6065,7 +6065,7 @@ def test_question_answer_endpoint_fails_closed_until_structured_transport_exists
         worker.join(timeout=2)
 
 
-def test_question_option_queue_is_same_origin_validated_and_labeled_queued(monkeypatch):
+def test_question_option_queue_http_route_is_removed(monkeypatch):
     policies = dict(provider_policy.POLICIES)
     policies["Codex"] = replace(policies["Codex"], send=True, send_origin="provider_env")
     monkeypatch.setattr(provider_policy, "POLICIES", MappingProxyType(policies))
@@ -6079,32 +6079,14 @@ def test_question_option_queue_is_same_origin_validated_and_labeled_queued(monke
     origin = f"http://{httpd.server_address[0]}:{httpd.server_address[1]}"
     body = json.dumps({"thread": "01a0cad8-0000-7000-8000-000000000001", "message": "Yes, both worked"})
     try:
-        connection.request("POST", "/api/queue", body=body, headers={
-            "Content-Type": "application/json", "Origin": origin,
-        })
-        response = connection.getresponse()
-        payload = json.loads(response.read())
-        assert response.status == 200
-        assert payload["status"] == "queued"
-        assert "does not answer" in payload["detail"]
-        assert queued == [("01a0cad8-0000-7000-8000-000000000001", "Yes, both worked")]
-
-        connection.request("POST", "/api/queue", body=body, headers={
-            "Content-Type": "application/json", "Origin": "https://evil.example",
-        })
-        response = connection.getresponse()
-        assert response.status == 403
-        response.read()
-        assert len(queued) == 1
-
-        invalid = json.dumps({"thread": "codex://threads/evil", "message": "hello"})
-        connection.request("POST", "/api/queue", body=invalid, headers={
-            "Content-Type": "application/json", "Origin": origin,
-        })
-        response = connection.getresponse()
-        assert response.status == 400
-        response.read()
-        assert len(queued) == 1
+        for invalid_origin in (origin, "https://evil.example"):
+            connection.request("POST", "/api/queue", body=body, headers={
+                "Content-Type": "application/json", "Origin": invalid_origin,
+            })
+            response = connection.getresponse()
+            assert response.status == 404
+            response.read()
+        assert queued == []
     finally:
         connection.close()
         httpd.shutdown()
@@ -6134,7 +6116,7 @@ def test_open_endpoint_accepts_only_thread_ids():
         assert not server.THREAD_ID.fullmatch(bad)
 
 
-def test_open_endpoint_checks_host_and_supplied_browser_origin_without_launching_app(monkeypatch):
+def test_http_open_route_is_removed_and_never_launches_app(monkeypatch):
     launched = []
     monkeypatch.setattr(server, "_is_collected_codex_thread", lambda thread: True)
     monkeypatch.setattr(server.os, "startfile", lambda target: launched.append(target), raising=False)
@@ -6159,21 +6141,15 @@ def test_open_endpoint_checks_host_and_supplied_browser_origin_without_launching
         ):
             connection.request("GET", route, headers=headers)
             response = connection.getresponse()
-            assert response.status == 403
+            assert response.status == 404
             response.read()
         assert launched == []
 
         connection.request("GET", route, headers={"Origin": origin, "Sec-Fetch-Site": "same-origin"})
         response = connection.getresponse()
-        assert response.status == 200
+        assert response.status == 404
         response.read()
-        assert launched == ["codex://threads/01a0cad8-0000-7000-8000-000000000001"]
-
-        connection.request("GET", route, headers={"Referer": origin + "/runway.html", "Sec-Fetch-Site": "same-site"})
-        response = connection.getresponse()
-        assert response.status == 200
-        response.read()
-        assert launched[-1] == "codex://threads/01a0cad8-0000-7000-8000-000000000001"
+        assert launched == []
     finally:
         connection.close()
         httpd.shutdown()

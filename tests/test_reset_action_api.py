@@ -8,13 +8,14 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from token_tracker import server
+from token_tracker import server, widget
 from token_tracker.limit_reset import LimitResetService, LimitSample
 from token_tracker import provider_policy
 from dataclasses import replace
 
 ONE = "11111111-1111-4111-8111-111111111111"
 TWO = "22222222-2222-4222-8222-222222222222"
+SETTINGS_TOKEN = "reset-action-test-capability"
 
 
 class Service:
@@ -42,6 +43,7 @@ def api(monkeypatch):
     policies["Codex"] = replace(policies["Codex"], send=True, send_origin="provider_env")
     monkeypatch.setattr(provider_policy, "POLICIES", policies)
     service = Service()
+    server.set_settings_token(SETTINGS_TOKEN)
     monkeypatch.setattr(server.Handler, "reset_service", service)
     monkeypatch.setattr("token_tracker.reset_delivery.list_candidates", lambda: [{"id": ONE, "title": "<safe>", "status": "idle"}])
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -51,12 +53,17 @@ def api(monkeypatch):
         yield service, httpd.server_port
     finally:
         httpd.shutdown(); httpd.server_close(); thread.join(timeout=2)
+        server.set_settings_token(None)
 
 
 def request(port, path, body=None, headers=None, raw=None, method=None):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
     base = {"Host": f"127.0.0.1:{port}", "Origin": f"http://127.0.0.1:{port}"}
+    if (method or ("POST" if body is not None or raw is not None else "GET")) == "POST" and path == "/api/reset-action":
+        base["X-Branchglance-Settings-Token"] = SETTINGS_TOKEN
     base.update(headers or {})
+    if base.get("X-Branchglance-Settings-Token", object()) is None:
+        base.pop("X-Branchglance-Settings-Token", None)
     encoded = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
     if encoded is not None:
         base.setdefault("Content-Type", "application/json")
@@ -69,6 +76,7 @@ def request(port, path, body=None, headers=None, raw=None, method=None):
 @contextmanager
 def serve_service(service):
     previous = server.Handler.reset_service
+    server.set_settings_token(SETTINGS_TOKEN)
     server.Handler.reset_service = service
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -78,6 +86,7 @@ def serve_service(service):
     finally:
         httpd.shutdown(); httpd.server_close(); thread.join(timeout=2)
         server.Handler.reset_service = previous
+        server.set_settings_token(None)
 
 
 def test_get_returns_action_and_candidates_and_candidate_failure_preserves_action(api, monkeypatch):
@@ -106,6 +115,118 @@ def test_configure_accepts_only_supported_fields_and_never_dispatches(api):
     status, data = request(port, "/api/reset-action", {"mode": "continue", "threadIds": [ONE, TWO]})
     assert status == 200 and data["action"]["armed"]
     assert service.configure_calls == [("continue", [ONE, TWO])]
+
+
+@pytest.mark.parametrize("header", [None, "wrong", "short", "non-ascii"])
+def test_reset_action_rejects_missing_wrong_malformed_and_retired_tokens(api, header):
+    service, port = api
+    value = {"X-Branchglance-Settings-Token": header}
+    if header == "short":
+        value["X-Branchglance-Settings-Token"] = "x"
+    if header == "non-ascii":
+        value["X-Branchglance-Settings-Token"] = "\N{LATIN SMALL LETTER E WITH ACUTE}"
+    status, body = request(port, "/api/reset-action", {"mode": "greet", "threadIds": []}, value)
+    assert status == 403 and body["error"] == server._SETTINGS_AUTH_MESSAGE
+    assert service.configure_calls == []
+
+
+def test_reset_action_rejects_duplicate_capability_header(api):
+    service, port = api
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    conn.putrequest("POST", "/api/reset-action")
+    conn.putheader("Host", f"127.0.0.1:{port}")
+    conn.putheader("Origin", f"http://127.0.0.1:{port}")
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("X-Branchglance-Settings-Token", SETTINGS_TOKEN)
+    conn.putheader("X-Branchglance-Settings-Token", SETTINGS_TOKEN)
+    body = json.dumps({"mode": "greet", "threadIds": []}).encode()
+    conn.putheader("Content-Length", str(len(body)))
+    conn.endheaders(body)
+    response = conn.getresponse()
+    payload = json.loads(response.read())
+    conn.close()
+    assert response.status == 403 and payload["error"] == server._SETTINGS_AUTH_MESSAGE
+    assert service.configure_calls == []
+
+
+def test_reset_action_rejects_wrong_kind_capability(api):
+    service, port = api
+    server.set_settings_token("new-settings-capability-after-reopen")
+    status, body = request(port, "/api/reset-action", {"mode": "greet", "threadIds": []},
+                           {"X-Branchglance-Settings-Token": "another-capability-kind"})
+    assert status == 403 and body["error"] == server._SETTINGS_AUTH_MESSAGE
+    assert service.configure_calls == []
+
+
+def test_reset_action_rejects_previously_valid_token_after_reopen(api):
+    service, port = api
+    previously_valid = SETTINGS_TOKEN
+    server.set_settings_token("new-settings-capability-after-reopen")
+    status, body = request(port, "/api/reset-action", {"mode": "greet", "threadIds": []},
+                           {"X-Branchglance-Settings-Token": previously_valid})
+    assert status == 403 and body["error"] == server._SETTINGS_AUTH_MESSAGE
+    assert service.configure_calls == []
+
+
+def test_close_settings_before_mutation_boundary_revokes_pending_request(api, monkeypatch):
+    service, port = api
+    entered, resume = threading.Event(), threading.Event()
+
+    class Event:
+        def __init__(self): self.handlers = []
+        def __iadd__(self, handler): self.handlers.append(handler); return self
+        def fire(self):
+            for handler in self.handlers: handler()
+
+    child = type("Child", (), {})()
+    child.events = type("Events", (), {name: Event() for name in ("before_show", "closing", "closed")})()
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._reset_actions_lock = threading.Lock()
+    app._lifecycle = threading.RLock()
+    app._shutdown_requested = threading.Event()
+    app.reset_actions_window = None
+    app._reset_actions_token = None
+    app._settings_bridge_authority = None
+    app.server = type("BoundServer", (), {"server_address": ("127.0.0.1", port)})()
+    app.quitting = False
+    def install_test_authority(window, authority, **_kwargs):
+        adapter = getattr(window, "native_adapter", None)
+        if adapter is None:
+            adapter = window.native_adapter = object()
+        if not authority.already_installed(window, adapter):
+            authority.install(window, adapter)
+        if not authority._admitted:
+            url = "http://127.0.0.1:8765/reset_actions.html"
+            authority.activate(window, adapter, url)
+            authority.begin_navigation(url, 1)
+            authority.complete_navigation(1, True, url)
+        return True
+
+    monkeypatch.setattr(app, "_install_native_authority", install_test_authority)
+    monkeypatch.setattr(widget.webview, "guilib", None, raising=False)
+    monkeypatch.setattr(widget.webview, "create_window", lambda *args, **kwargs: child)
+    monkeypatch.setattr(widget.secrets, "token_urlsafe", lambda _size: SETTINGS_TOKEN)
+
+    def pause(_self):
+        entered.set()
+        assert resume.wait(3)
+
+    monkeypatch.setattr(server.Handler, "_before_reset_action_commit", pause)
+    result = []
+    request_thread = threading.Thread(target=lambda: result.append(
+        request(port, "/api/reset-action", {"mode": "greet", "threadIds": []})))
+    assert app.open_reset_actions() is True
+    child.events.before_show.fire()
+    request_thread.start()
+    assert entered.wait(3)
+    child.events.closing.fire()
+    assert not server._settings_token_matches(SETTINGS_TOKEN), "the native closing callback revokes before closed cleanup"
+    resume.set()
+    request_thread.join(3)
+    assert not request_thread.is_alive()
+    assert result and result[0][0] == 403
+    assert service.configure_calls == []
+    child.events.closed.fire()
 
 
 @pytest.mark.parametrize("headers,status", [
@@ -215,7 +336,7 @@ def test_malformed_policy_fails_closed_before_quota_cache_call(api, monkeypatch)
     assert status == 403 and "unavailable" in body["error"]
 
 
-def test_arbitrary_queue_requires_explicit_send_and_never_invokes_cli(api, monkeypatch):
+def test_http_queue_route_is_removed_and_never_invokes_cli(api, monkeypatch):
     _, port = api
     policies = dict(provider_policy.POLICIES)
     policies["Codex"] = replace(policies["Codex"], send=False, send_origin="default")
@@ -223,7 +344,7 @@ def test_arbitrary_queue_requires_explicit_send_and_never_invokes_cli(api, monke
     calls = []
     monkeypatch.setattr(server, "queue_codex_message", lambda *_args: calls.append("queue"))
     status, body = request(port, "/api/queue", {"thread": ONE, "message": "hello"})
-    assert status == 403 and "SEND" in body["error"]
+    assert status == 404 and body["error"] == "not found"
     assert calls == []
 
 
@@ -293,18 +414,18 @@ def test_http_configuration_persists_until_fresh_available_reset_then_dispatches
     assert restarted.get_reset_action()["lastRun"]["targets"][0]["status"] == "queued"
 
 
-def test_queue_rejects_thread_not_in_collected_codex_set(api, monkeypatch):
+def test_http_queue_route_is_removed_for_collected_and_unknown_threads(api, monkeypatch):
     _, port = api
     calls = []
     monkeypatch.setattr(server, "queue_codex_message", lambda *_args: calls.append("queue"))
     monkeypatch.setattr(server, "_collected_codex_thread_ids", lambda: frozenset({TWO}))
-    status, body = request(port, "/api/queue", {"thread": ONE, "message": "hello"})
-    assert status == 404 and calls == []
-    status, body = request(port, "/api/queue", {"thread": TWO, "message": "hello"})
-    assert status == 200 and body["status"] == "queued" and calls == ["queue"]
+    for thread in (ONE, TWO):
+        status, body = request(port, "/api/queue", {"thread": thread, "message": "hello"})
+        assert status == 404 and body["error"] == "not found"
+    assert calls == []
 
 
-def test_queue_requires_show_even_for_cached_thread_with_send_consent(api, monkeypatch):
+def test_http_queue_route_never_uses_cached_thread_or_send_consent(api, monkeypatch):
     policies = dict(provider_policy.POLICIES)
     policies["Codex"] = replace(policies["Codex"], collect=True, show=False,
                                 send=True, send_origin="provider_env")
@@ -313,8 +434,8 @@ def test_queue_requires_show_even_for_cached_thread_with_send_consent(api, monke
     calls = []
     monkeypatch.setattr(server, "queue_codex_message", lambda *_args: calls.append("queue"))
     _, port = api
-    status, _ = request(port, "/api/queue", {"thread": ONE, "message": "hello"})
-    assert status == 403 and calls == []
+    status, body = request(port, "/api/queue", {"thread": ONE, "message": "hello"})
+    assert status == 404 and body["error"] == "not found" and calls == []
 
 
 def test_collected_set_ignores_claude_rows_even_with_uuid_ids(monkeypatch):
@@ -325,24 +446,18 @@ def test_collected_set_ignores_claude_rows_even_with_uuid_ids(monkeypatch):
     assert server._collected_codex_thread_ids() == frozenset({TWO})
 
 
-def test_open_rejects_unknown_and_policy_denied_threads(api, monkeypatch):
+def test_http_open_route_is_removed_and_never_launches_app(api, monkeypatch):
     _, port = api
     launched = []
     monkeypatch.setattr(server.os, "startfile", lambda target: launched.append(target), raising=False)
-    monkeypatch.setattr(server, "_collected_codex_thread_ids", lambda: frozenset({TWO}))
-    status, _ = request(port, f"/api/open?thread={ONE}")
-    assert status == 404 and launched == []
-    status, body = request(port, f"/api/open?thread={TWO}")
-    assert status == 200 and body["ok"] is True and launched == [f"codex://threads/{TWO}"]
-    launched.clear()
-    policies = dict(provider_policy.POLICIES)
-    policies["Codex"] = replace(policies["Codex"], show=False)
-    monkeypatch.setattr(provider_policy, "POLICIES", policies)
-    status, _ = request(port, f"/api/open?thread={TWO}")
-    assert status == 403 and launched == []
-    policies["Codex"] = replace(policies["Codex"], collect=False, show=True)
-    status, _ = request(port, f"/api/open?thread={TWO}")
-    assert status == 403 and launched == []
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    for thread in (ONE, TWO):
+        conn.request("GET", f"/api/open?thread={thread}")
+        response = conn.getresponse()
+        assert response.status == 404
+        response.read()
+        assert launched == []
+    conn.close()
 
 
 def test_identity_reports_product_build_pid_and_state_root(api):
@@ -383,16 +498,41 @@ def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypa
 
     class SaveWindow:
         selected = str(tmp_path / "example.txt")
+        revoke_during_dialog = False
+        authority = None
 
         def create_file_dialog(self, dialog_type, **kwargs):
             requested.append((dialog_type, kwargs))
+            if self.revoke_during_dialog:
+                self.authority.begin_navigation("http://127.0.0.1:8765/reset_actions.html", 2)
             return self.selected
 
     monkeypatch.setattr(widget.ledger_service, "http_response", export)
     app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app.reset_actions_window = SaveWindow()
+    app.quitting = False
+    authority = widget.BridgeAuthority({"/reset_actions.html"})
+    authority.enable(8765)
+    adapter = object()
+    authority.install(app.reset_actions_window, adapter)
+    settings_url = "http://127.0.0.1:8765/reset_actions.html"
+    authority.activate(app.reset_actions_window, adapter, settings_url)
+    authority.begin_navigation(settings_url, 1)
+    authority.complete_navigation(1, True, settings_url)
+    app._settings_bridge_authority = authority
+    app.reset_actions_window.authority = authority
+    receipt = authority.receive(app.reset_actions_window, "save_ledger_csv",
+                                settings_url, settings_url,
+                                widget._SETTINGS_BRIDGE_OPERATIONS)
+    api = widget.SettingsWindowApi(lambda native_receipt, source_window:
+                                   app.save_ledger_csv(source_window, native_receipt))
+    assert api.save_ledger_csv() == {"ok": False, "error": "Settings window is no longer trusted."}
+    assert app.save_ledger_csv(app.reset_actions_window, None) == {"ok": False, "error": "Settings window is no longer trusted."}
     app.window = SaveWindow()
-    api = widget.WindowApi(None, None, None, on_save_ledger_csv=app.save_ledger_csv)
-    assert api.save_ledger_csv() == {"ok": True}
+    assert app.save_ledger_csv(app.window, receipt) == {"ok": False, "error": "Settings window is no longer trusted."}
+    assert requested == [], "a stale document cannot open the native file dialog"
+    del app.window
+    assert app.save_ledger_csv(app.reset_actions_window, receipt) == {"ok": True}
     assert requested[0] == (widget.ledger_service.EXPORT_PATH, {"range": ["all"], "format": ["csv"]})
     assert requested[1][0] == widget.webview.FileDialog.SAVE
     assert requested[1][1]["save_filename"] == "branchglance-ledger-all.csv"
@@ -400,8 +540,63 @@ def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypa
     assert collision.read_bytes() == b"keep existing file"
 
     SaveWindow.selected = None
-    assert api.save_ledger_csv() == {"ok": False, "cancelled": True}
+    assert app.save_ledger_csv(app.reset_actions_window, receipt) == {"ok": False, "cancelled": True}
     dialog_calls = len(requested)
     monkeypatch.setattr(widget.ledger_service, "http_response", lambda *_args: (503, {}, b""))
-    assert api.save_ledger_csv() == {"ok": False, "error": "Saved history is unavailable or starting."}
+    assert app.save_ledger_csv(app.reset_actions_window, receipt) == {"ok": False, "error": "Saved history is unavailable or starting."}
     assert len(requested) == dialog_calls, "an unavailable filtered export does not open the native dialog"
+
+    receipt = authority.receive(app.reset_actions_window, "save_ledger_csv",
+                                settings_url, settings_url,
+                                widget._SETTINGS_BRIDGE_OPERATIONS)
+    monkeypatch.setattr(widget.ledger_service, "http_response", export)
+    target = tmp_path / "revoked-after-dialog.csv"
+    app.reset_actions_window.selected = str(target)
+    app.reset_actions_window.revoke_during_dialog = True
+    before_dialog = sum(item[0] == widget.webview.FileDialog.SAVE for item in requested)
+    assert app.save_ledger_csv(app.reset_actions_window, receipt)["ok"] is False
+    after_dialog = sum(item[0] == widget.webview.FileDialog.SAVE for item in requested)
+    assert after_dialog == before_dialog + 1, "the successful export reaches the native dialog before revocation is tested"
+    assert not target.exists(), "a close or reload during the file dialog blocks the later write"
+
+
+def test_settings_csv_gui_dispatch_wait_is_bounded(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    body = b"provider,coverageStatus\r\nCodex,complete\r\n"
+    monkeypatch.setattr(widget.ledger_service, "http_response",
+                        lambda *_args: (200, {"Content-Type": "text/csv"}, body))
+    monkeypatch.setattr(widget, "SETTINGS_DIALOG_WAIT_SECONDS", 0.01)
+
+    class Func:
+        @classmethod
+        def __class_getitem__(cls, _item):
+            return lambda function: function
+
+    system = types.ModuleType("System")
+    system.Func = Func
+    system.Object = object
+    monkeypatch.setitem(sys.modules, "System", system)
+
+    class Window:
+        def __init__(self):
+            self.native = types.SimpleNamespace(BeginInvoke=lambda _callback: None)
+        def create_file_dialog(self, *_args, **_kwargs):
+            pytest.fail("an unrun GUI callback cannot open the native dialog")
+
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app.quitting = False
+    app._shutdown_requested = threading.Event()
+    app.reset_actions_window = Window()
+    authority = widget.BridgeAuthority({"/reset_actions.html"})
+    authority.enable(8765)
+    authority.install(app.reset_actions_window, app.reset_actions_window.native)
+    url = "http://127.0.0.1:8765/reset_actions.html"
+    authority.activate(app.reset_actions_window, app.reset_actions_window.native, url)
+    authority.begin_navigation(url, 1); authority.complete_navigation(1, True, url)
+    app._settings_bridge_authority = authority
+    receipt = authority.receive(app.reset_actions_window, "save_ledger_csv", url, url,
+                                widget._SETTINGS_BRIDGE_OPERATIONS)
+    result = app.save_ledger_csv(app.reset_actions_window, receipt)
+    assert result == {"ok": False, "status": "retryable", "error": "The CSV dialog timed out. Try again."}
