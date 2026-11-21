@@ -59,7 +59,9 @@ assert.match(refinedCss,/\.rr \.rr-left\.last-known b\{color:var\(--muted\);\}/,
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr\{[^}]*grid-template-columns:minmax\(0,1fr\) max-content max-content;[^}]*column-gap:8px/,"compact quota cells keep a fixed gap and allow the value cell to shrink");
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr:not\(:has\(\.rr-banked:not\(\[hidden\]\)\)\)\{grid-template-columns:minmax\(0,1fr\) max-content;\}/,"rows without a banked-reset badge reserve only one fixed gap before the reset");
 assert.match(refinedCss,/\.rr-cd\.last-known\{color:var\(--muted\);\}/,"a stale countdown uses the mute ink");
-assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-left\.last-known i\{[^}]*flex:0 0 auto;overflow:visible;text-overflow:clip;white-space:nowrap;/,"the complete stale age is not clipped");
+assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-left\.last-known i\{[^}]*flex:0 0 auto;white-space:nowrap;/,"the complete stale age remains visible without competing with its countdown");
+assert.match(refinedCss,/\.rr-cd\.last-known:empty::before\{content:"";\}/,"a stale cell's empty countdown track stays visually empty");
+assert.match(refinedCss,/\.chat-list \.runway-list-more\{position:sticky;bottom:0;[^}]*color:var\(--muted\)/,"overflow shows a persistent muted continuation cue");
 assert.doesNotMatch(css,/body:has\(\.chat\[data-provider="Codex"\]\):not\(:has\(\.chat\[data-provider="Claude"\]\)\) \.runway-count\.t-live/,"single-provider counters keep the shared workload ink");
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-moment\{grid-column:3;grid-row:1;justify-content:flex-end;\}/,"the reset time stays right-aligned in its own cell");
 assert.match(cssRule('.runway-count.t-live'),/color:var\(--green\)/);
@@ -816,7 +818,8 @@ assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%<
 assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');assert.match(node('#r0-fiveHour-left').title,/Last reported 11m ago/);assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),null,"screen-reader wording is nested text rather than a name on the generic span");
 assert.equal(node('#r0-fiveHour-row').title,'Last reported by Codex 11m ago');
 assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuetext'),'Last known: 92% used');assert.equal(node('#r0-fiveHour-bar').className,'last-known');
-assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.notEqual(node('#r0-fiveHour-cd').textContent,'');
+assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.equal(node('#r0-fiveHour-cd').textContent,'');
+assert.match(node('#r0-fiveHour-left').title,/resets in 25m 00s/);assert.match(node('#r0-fiveHour-left').innerHTML,/sr-only">[^<]*resets in 25m 00s/);assert.equal(node('#r0-fiveHour-cd').title,'Resets in 25m 00s');
 assert.doesNotMatch(node('#r0-fiveHour-cd').className,/unknown/);
 assert.match(node('#r0-fiveHour-cd').className,/last-known/);
 {
@@ -827,6 +830,8 @@ assert.match(node('#r0-fiveHour-cd').className,/last-known/);
   T.renderResets([claude]);
   assert.match(node('#r0-fiveHour-left').innerHTML,/<i>1h 50m ago<\/i>/,"the stale quota cell displays the complete reported age");
   assert.match(node('#r0-fiveHour-cd').className,/last-known/);
+  assert.equal(node('#r0-fiveHour-cd').textContent,'',"the stale countdown is not shown in the compact cell");
+  assert.match(node('#r0-fiveHour-left').title,/resets in 1h 00m/,"the full reset countdown remains in the stale cell's title");
   assert.equal(T.resetView({...claude,identityVerified:false},"fiveHour").tip,"Account unverified · Last reported by Claude 1h 50m ago");
   assert.equal(weekly.lastKnown,true);assert.equal(weekly.usedLabel,"27%");
   const nearWeeklyLimit=T.resetView({...claude,limitsUpdatedAt:ago(6*24*60+23*60),weekly:{percent:27,resetAt:fixedNow/1000+3600}},"weekly");

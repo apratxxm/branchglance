@@ -1,4 +1,5 @@
 import os
+import re
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -543,15 +544,16 @@ def test_recent_standalone_failure_is_visible_with_muted_age(page):
 
 
 def test_branchless_child_timing_shares_parent_right_edge(page):
-    page.set_viewport_size({"width": 560, "height": 478})
-    page.evaluate("""() => {
-      document.body.classList.add('runway-compact'); document.body.dataset.notchMode='inspect';
-      const row=(path)=>`<div class="runway-refined-row"><span class="runway-refined-title"><span class="r-title"><span class="runway-agent-label">Job title</span></span></span><span class="runway-refined-timing"><span class="runway-refined-elapsed">2m 00s</span></span><span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span><span class="runway-refined-path">${path}</span><span class="runway-refined-tokens"></span></div>`;
-      document.querySelector('#chat-list').innerHTML=`<div class="chat"><div class="row">${row('feature/branch')}</div><div class="ag runway-agent"><div class="runway-agent-glance">${row('')}</div></div></div>`;
-    }""")
-    edges = page.locator("#chat-list .runway-refined-elapsed").evaluate_all("els => els.map(el => el.getBoundingClientRect().right)")
-    assert len(edges) == 2, edges
-    assert abs(edges[0] - edges[1]) <= 1, edges
+    for width in (720, 560, 328):
+        page.set_viewport_size({"width": width, "height": 478})
+        page.evaluate("""() => {
+          document.body.classList.add('runway-compact'); document.body.dataset.notchMode='inspect';
+          const row=(path)=>`<div class="runway-refined-row"><span class="runway-refined-title"><span class="r-title"><span class="runway-agent-label">Job title</span></span></span><span class="runway-refined-timing"><span class="runway-refined-elapsed">2m 00s</span></span><span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span><span class="runway-refined-path">${path}</span><span class="runway-refined-tokens"></span></div>`;
+          document.querySelector('#chat-list').innerHTML=`<div class="chat"><div class="row">${row('feature/branch')}</div><div class="ag runway-agent"><div class="runway-agent-glance">${row('')}</div></div></div>`;
+        }""")
+        edges = page.locator("#chat-list .runway-refined-elapsed").evaluate_all("els => els.map(el => el.getBoundingClientRect().right)")
+        assert len(edges) == 2, (width, edges)
+        assert abs(edges[0] - edges[1]) <= 1, (width, edges)
 
 
 def test_overflowing_job_list_has_keyboard_reachable_scroll_cue(page):
@@ -567,7 +569,17 @@ def test_overflowing_job_list_has_keyboard_reachable_scroll_cue(page):
     assert content.get_attribute("tabindex") == "0"
     content.focus()
     content.press("ArrowDown")
+    page.wait_for_function("() => document.querySelector('#chat-list').scrollTop > 0", timeout=2000)
     assert content.evaluate("el => el.scrollTop > 0"), "the visible continuation cue is keyboard scrollable"
+    content.evaluate("el => el.scrollTop = 0")
+    page.evaluate("() => window.__tokenTrackerTest.syncRunwayOverflowCue()")
+    cue = page.locator("#chat-list .runway-list-more")
+    expect(cue).to_be_visible()
+    expect(cue).to_have_text(re.compile(r"\+\d+ more"))
+    cue.focus()
+    cue.press("Enter")
+    page.wait_for_function("() => document.querySelector('#chat-list').scrollTop > 0", timeout=2000)
+    assert content.evaluate("el => el.scrollTop > 0"), "activating the continuation cue advances the list"
 
 
 def test_locked_widget_dims_recenter_and_explains_why(page):

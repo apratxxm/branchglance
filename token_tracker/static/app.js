@@ -345,6 +345,7 @@ function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttrib
 function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
   if(dashboardState.closing)return;
+  const wasInspecting=notch.mode==='inspect';
   const mode=compactModeForState();
   if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
   if(mode==='inspect'){
@@ -371,6 +372,7 @@ function setNotch(expanded, treeSynced=false) {
   const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),transitionId=mode==='dashboard'?dashboardState.generation:null,signature=mode+':'+notch.expanded+':'+height+':'+reduced+(transitionId==null?'':':'+transitionId);
   if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,transitionId==null?[notch.expanded,height,reduced,mode]:[true,height,reduced,mode,transitionId],signature);}
   if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
+  if(mode==='inspect'&&!wasInspecting)syncRunwayOverflowCue();
 }
 function expandForNewWork() {
   if(notch.autoTimer!=null){notch.autoExpanded=true;setNotch(true);return;}
@@ -1386,9 +1388,9 @@ function renderResets(providers) {
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
     const unavailable=!view.hasValue&&!view.expired,unavailableLabel=unavailable?'No live reading for '+String(p.name||'provider'):'';
     const left=$(id+"-left"),readingLabel=view.hasValue?String(p.name||'Provider')+' '+(key==='fiveHour'?'5-hour':'Weekly')+': '+Math.round(view.usedPercent)+'% used'+(view.countdown?(view.countdown==='due'?', reset due':', resets in '+view.countdown):'')+'.'+(view.lastKnown?' Last reported '+view.lastKnownAge+'.':''):'';if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge:'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><span class="rr-provider">'+esc(p.name)+'</span><b>—</b><i></i></span>';const accessible=view.hasValue?readingLabel:unavailable?unavailableLabel:'',labelled=html+(accessible?'<span class="sr-only">'+esc(accessible)+'</span>':'');if(left.innerHTML!==labelled)left.innerHTML=labelled;put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);}
-    set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
+    set("-day",view.day);set("-time",view.time);set("-cd",view.lastKnown?'':view.countdown);set("-stale",view.stale);
     put(left,"className","rr-left"+(unavailable?" is-unavailable":"")+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);
-    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":"")+(view.lastKnown?" last-known":""));const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}
+    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":"")+(view.lastKnown?" last-known":""));const countdownText=view.countdown||'',visibleCountdown=view.lastKnown?'':countdownText;if(cd.textContent!==visibleCountdown)cd.textContent=visibleCountdown;put(cd,"title",countdownText?(view.lastKnown?'Resets in '+countdownText:'Resets '+view.day+' '+view.time):'');attr(cd,'aria-hidden',String(!visibleCountdown));}
     const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
@@ -1803,6 +1805,30 @@ function selectSourceForNewWork(items) {
   if(!chosen||chosen===effectiveSource(state.snapshot))return false;
   return setSource(chosen,{persist:false,manual:false});
 }
+function syncRunwayOverflowCue(list=$('#chat-list')) {
+  if(!list?.querySelectorAll||!list?.insertAdjacentHTML||!list?.getBoundingClientRect)return;
+  if(!list._runwayOverflowCueBound){
+    list._runwayOverflowCueBound=true;
+    list.addEventListener?.('scroll',()=>{
+      if(list._runwayOverflowCueFrame||typeof requestAnimationFrame!=='function')return;
+      list._runwayOverflowCueFrame=requestAnimationFrame(()=>{list._runwayOverflowCueFrame=0;syncRunwayOverflowCue(list);});
+    },{passive:true});
+  }
+  const rows=[...list.querySelectorAll('.runway-refined-row')].filter(row=>row.getBoundingClientRect().height>0);
+  let cue=list.querySelector('.runway-list-more');
+  if(cue)cue.hidden=true;
+  const contentOverflows=rows.length>0&&list.scrollHeight>list.clientHeight+1;
+  if(!contentOverflows){cue?.remove?.();return;}
+  if(!cue){list.insertAdjacentHTML('beforeend','<button class="runway-list-more" type="button" data-action="runway-list-more"></button>');cue=list.querySelector('.runway-list-more');}
+  if(!cue)return;
+  const listRect=list.getBoundingClientRect();
+  const remaining=rows.filter(row=>row.getBoundingClientRect().bottom>listRect.bottom+1).length;
+  if(remaining<1){cue.remove?.();return;}
+  const label='+'+remaining+' more';
+  if(cue.textContent!==label)cue.textContent=label;
+  cue.setAttribute?.('aria-label',remaining+' more jobs below; activate to scroll');
+  cue.title=remaining+' more jobs below';cue.hidden=false;
+}
 function renderChats(providers) {
   scheduleNotchSize();
   const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
@@ -1867,17 +1893,17 @@ function renderChats(providers) {
       for(const el of [...list.children])if(el.classList.contains('chat')){if(!el._leaving)runwayExit(el);}else el.remove();
       if(html)list.insertAdjacentHTML?.('beforeend',html);list._empty=html;
     }
-    state.lastOrder=[];return;
+    state.lastOrder=[];syncRunwayOverflowCue(list);return;
   }
   if(list._empty!==null&&list._empty!==undefined){for(const el of [...list.children])if(!el.classList.contains('chat'))el.remove();list._empty=null;}
-  [...list.children].forEach(el=>{if(!el.classList.contains("chat"))el.remove();});
+  [...list.children].forEach(el=>{if(!el.classList.contains("chat")&&!el.classList.contains("runway-list-more"))el.remove();});
   // Search auto-opens nothing; a subagent match is visible in the always-on tray and outlined there.
   const byKey=new Map(roots.map(c=>[c.key,c]));
   let order=roots.map(c=>c.key);
   // Keep established rows stable while the user points, focuses, or reads a question.
   const focused=list.contains?.(document.activeElement),readingQuestion=Boolean(state.popover&&state.popover.dataset?.action==='runway-question');
   if((state.pointerInList||focused||readingQuestion)&&state.lastOrder){const kept=state.lastOrder.filter(k=>byKey.has(k));order=[...kept,...order.filter(k=>!kept.includes(k))];}
-  const existing=new Map([...list.children].filter(el=>!el._leaving).map(el=>[el.dataset.key,el]));
+  const existing=new Map([...list.children].filter(el=>el.classList.contains('chat')&&!el._leaving).map(el=>[el.dataset.key,el]));
   const scroller=notch.mode!=='inspect'?list.closest?.('.layout'):list;
   const scrollTopBefore=scroller?.scrollTop||0,scrollRect=scroller?.getBoundingClientRect?.();
   const anchor=[...existing].find(([key,el])=>byKey.has(key)&&(()=>{const rect=el.getBoundingClientRect?.();return rect&&(!scrollRect||rect.bottom>scrollRect.top);})())?.[1];
@@ -1897,6 +1923,7 @@ function renderChats(providers) {
   }
   state.lastOrder=order;
   if(anchor&&anchor.isConnected&&Number.isFinite(anchorTop)&&scroller){const moved=anchor.getBoundingClientRect().top-anchorTop;if(Math.abs(moved)>1)scroller.scrollTop=scrollTopBefore+moved;}
+  syncRunwayOverflowCue(list);
 }
 
 /* ---------- footer, title bar, popover ---------- */
@@ -2549,6 +2576,7 @@ function handleClick(event) {
   if(action==='widget-lock'){void toggleWidgetLock();return;}
   if(action==='open-settings'){openDashboard('settings');return;}
   if(action==='jump-waiting'){jumpToWaiting();return;}
+  if(action==='runway-list-more'){const list=$('#chat-list');list?.scrollBy?.({top:Math.max(1,list.clientHeight*.8),behavior:reducedMotion()?'auto':'smooth'});list?.focus?.({preventScroll:true});return;}
   if(action==='source'){setSource(button.dataset.source);return;}
   if(action==='dashboard'){openDashboard();return;}
   if(action==='keep-open'){void toggleKeepOpen();return;}
@@ -2592,7 +2620,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,syncRunwayOverflowCue,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
   renderLoading,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,quotaCountdown,elapsedDuration,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
