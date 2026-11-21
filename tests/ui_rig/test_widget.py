@@ -417,7 +417,8 @@ def test_compact_quota_cells_do_not_overlap_at_328px(page):
     }""")
     assert abs(layout["gap"] - 8) < 0.5, layout
     assert layout["resetRight"], layout
-    assert layout["ageOverflow"], layout
+    # Decided (W-603): the stale cell shows its complete age; the countdown moved to title/aria.
+    assert not layout["ageOverflow"], layout
     assert layout["ageOverflowStyle"] == "hidden", layout
     assert layout["ageEllipsis"] == "ellipsis", layout
     assert layout["resetAlign"] == "right", layout
@@ -513,7 +514,7 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
           const row=el.closest('.runway-refined-row'), titleCell=el.parentElement.getBoundingClientRect(), branch=row.querySelector('.runway-refined-path').getBoundingClientRect();
           let oldTitleWidth=null;
           if(el.classList.contains('runway-agent-name')){
-            const baseline=row.cloneNode(true);baseline.style.gridTemplateColumns='minmax(0,1fr) 62px 112px 96px 80px';baseline.style.position='absolute';baseline.style.left='-10000px';baseline.style.top='0';baseline.style.visibility='hidden';row.parentElement.append(baseline);
+            const baseline=row.cloneNode(true);baseline.style.gridTemplateColumns='minmax(0,1fr) 62px 112px 96px 80px';baseline.querySelector('.runway-refined-title').style.gridColumn='1';baseline.querySelector('.runway-refined-title').style.gridRow='1';baseline.style.position='absolute';baseline.style.left='-10000px';baseline.style.top='0';baseline.style.visibility='hidden';row.parentElement.append(baseline);
             oldTitleWidth=baseline.querySelector('.runway-refined-title').getBoundingClientRect().width;baseline.remove();
           }
           return {title:el.title, label:label.textContent, height:box.height, lineHeight:parseFloat(titleStyle.lineHeight), whiteSpace:style.whiteSpace, titleWidth:titleCell.width, branchWidth:branch.width, oldTitleWidth,
