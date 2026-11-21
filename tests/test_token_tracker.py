@@ -4093,6 +4093,10 @@ def test_grouped_sidecar_publication_is_discarded_if_path_changes_after_guard_va
         pending = pool.submit(providers._incremental_jsonl_reduce_group, path, [spec])
         barrier.wait(timeout=5)
         path.write_bytes(b'{"value":2}\n')
+        # The replacement is intentionally same-size; guarantee the metadata
+        # fingerprint changes even on filesystems with coarse mtime resolution.
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
         barrier.wait(timeout=5)
         assert pending.result() == {kind: {"values": [1]}}
     assert providers._JSONL_CHECKPOINTS.get(key) is None

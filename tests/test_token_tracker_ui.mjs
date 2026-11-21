@@ -323,6 +323,13 @@ T.render(tree);
   const fresh=T.buildForest(snap([{id:"x",title:"New fail",status:"failed",stateDetail:"interrupted",updatedAt:ago(29)}]).providers).roots[0];
   assert.equal(T.rollup(fresh).key,"failed");
 }
+// A verified-dead run stays visibly stopped; live and evidence-free rows do not.
+{
+  const stopped=T.ownState({status:"idle",stateDetail:"stopped"});
+  assert.deepEqual({word:stopped.word,tone:stopped.tone},{word:"Stopped",tone:"mute"});
+  assert.equal(T.ownState({status:"running",stateDetail:null}).word,"Running");
+  assert.equal(T.ownState({status:"unknown",stateDetail:null}).word,"Status unavailable");
+}
 // Historical agents are hidden; active trays show live agents only and never leave an empty metrics shell.
 {
   reset();
