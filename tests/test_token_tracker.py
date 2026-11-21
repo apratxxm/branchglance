@@ -4327,7 +4327,12 @@ def test_final_validation_failure_does_not_restore_an_evicted_warm_checkpoint(tm
     from concurrent.futures import ThreadPoolExecutor
 
     path = tmp_path / "evicted-warm.jsonl"
-    other = tmp_path / "evictor.jsonl"
+    # The evictor must not share the paused scan's lock stripe, or it would wait behind the
+    # scan and the interleaving under test would never happen.
+    def stripe(candidate):
+        return hash(providers._resolve_memoized(candidate)) % len(providers._JSONL_PATH_LOCKS)
+    other = next(candidate for candidate in (tmp_path / f"evictor-{index}.jsonl" for index in range(1000))
+                 if stripe(candidate) != stripe(path))
     path.write_bytes(b'{"value":1}\n')
     other.write_bytes(b'{"value":8}\n')
     warm_kind = f"group-evicted-warm-{id(path)}"
@@ -4336,12 +4341,13 @@ def test_final_validation_failure_does_not_restore_an_evicted_warm_checkpoint(tm
     initial = lambda: {"values": []}
     reduce = lambda state, item: state["values"].append(item["value"])
     warm_spec = {"kind": warm_kind, "initial_state": initial, "reduce_record": reduce}
-    entered_scan, release_scan = threading.Event(), threading.Event()
+    entered_scan, release_scan, released = threading.Event(), threading.Event(), threading.Event()
 
     def blocking_reduce(state, item):
         if not entered_scan.is_set():
             entered_scan.set()
             assert release_scan.wait(timeout=5)
+            released.set()  # a swallowed wait timeout leaves this unset and fails the test
         state["values"].append(item["value"])
 
     cold_spec = {"kind": cold_kind, "initial_state": initial, "reduce_record": blocking_reduce}
@@ -4360,6 +4366,7 @@ def test_final_validation_failure_does_not_restore_an_evicted_warm_checkpoint(tm
                 handle.write(b'{"value":2}\n')
             release_scan.set()
             assert pending.result()[warm_kind] == {"values": [1]}
+            assert released.is_set()
         assert warm_key not in providers._JSONL_CHECKPOINTS
         assert cold_key not in providers._JSONL_CHECKPOINTS
         assert providers._incremental_jsonl_reduce(warm_kind, path, initial, reduce) == {"values": [1, 2]}
@@ -6557,3 +6564,46 @@ def test_persisted_codex_catalog_never_caches_a_failed_or_missing_read(tmp_path,
     (home / "state_5.sqlite").unlink()
     providers._persisted_codex_threads(); providers._persisted_codex_threads()
     assert len(calls) == 4
+
+
+def test_group_eviction_matches_sequential_calls_when_a_resumed_kind_becomes_uncacheable(tmp_path, monkeypatch):
+    # Two slots: the older entry is the resumed kind, the newer one an unrelated path. The
+    # resumed kind turns uncacheable on its new record. Sequential calls keep the unrelated
+    # entry; the group must too.
+    def reduce(state, item):
+        state["values"].append(item["value"])
+        if item["value"] == 99:
+            state["_incremental_uncacheable"] = True
+    initial = lambda: {"values": []}
+    plain = lambda state, item: state["values"].append(item["value"])  # the cold kind stays cacheable
+
+    def run(label, grouped):
+        root = tmp_path / label; root.mkdir()
+        path, unrelated = root / "resumed.jsonl", root / "unrelated.jsonl"
+        path.write_bytes(b'{"value":1}' + bytes([10]))
+        unrelated.write_bytes(b'{"value":5}' + bytes([10]))
+        kinds = {"cold": f"{label}-cold", "resumed": f"{label}-resumed", "unrelated": f"{label}-unrelated"}
+        roles = {kind: role for role, kind in kinds.items()}
+        providers._incremental_jsonl_reduce(kinds["resumed"], path, initial, reduce)
+        providers._incremental_jsonl_reduce(kinds["unrelated"], unrelated, initial, reduce)
+        with path.open("ab") as handle:
+            handle.write(b'{"value":99}' + bytes([10]))
+        specs = [{"kind": kinds["cold"], "initial_state": initial, "reduce_record": plain},
+                 {"kind": kinds["resumed"], "initial_state": initial, "reduce_record": reduce}]
+        if grouped:
+            results = providers._incremental_jsonl_reduce_group(path, specs)
+            values = [results[kinds["cold"]], results[kinds["resumed"]]]
+        else:
+            values = [providers._incremental_jsonl_reduce(spec["kind"], path, initial, spec["reduce_record"]) for spec in specs]
+        retained = [roles[kind] for kind, _path in providers._JSONL_CHECKPOINTS if kind in roles]
+        providers._JSONL_CHECKPOINTS.clear()
+        providers._JSONL_CHECKPOINT_BYTES = 0
+        return values, retained
+
+    monkeypatch.setattr(providers, "_JSONL_CHECKPOINT_MAX_ENTRIES", 2)
+    monkeypatch.setattr(providers, "_JSONL_CHECKPOINTS", type(providers._JSONL_CHECKPOINTS)())
+    monkeypatch.setattr(providers, "_JSONL_CHECKPOINT_BYTES", 0)
+    sequential = run("sequential", grouped=False)
+    group = run("group", grouped=True)
+    assert group == sequential
+    assert sequential[1] == ["unrelated", "cold"]

@@ -838,13 +838,10 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                     _jsonl_checkpoint_remove(key)
                 return format_results({}, {spec["kind"] for spec in reducers})
 
+            # Read references without changing recency; touches and publications are
+            # applied below in request order so eviction matches sequential calls.
             with _JSONL_CHECKPOINT_LOCK:
-                cached = []
-                for key in keys:
-                    entry = _JSONL_CHECKPOINTS.get(key)
-                    if entry:
-                        _JSONL_CHECKPOINTS.move_to_end(key)
-                    cached.append(entry)
+                cached = [_JSONL_CHECKPOINTS.get(key) for key in keys]
 
             results: dict[str, Any] = {}
             warm_hits: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
