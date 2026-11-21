@@ -397,14 +397,16 @@ class _CompactTokenEvents:
     usage, last, inherited). Equal consecutive rate-limit objects and model names
     share one object, so retained size is far below one dict tree per event.
     """
-    __slots__ = ("_rows",)
+    __slots__ = ("_rows", "_checkpoint")
 
     def __init__(self) -> None:
         self._rows: list[tuple[Any, ...]] = []
+        self._checkpoint: Any = None
 
     def copy(self) -> "_CompactTokenEvents":
         copied = _CompactTokenEvents()
         copied._rows = self._rows.copy()
+        copied._checkpoint = self._checkpoint
         return copied
 
     def append(self, timestamp: Any, rate_limits: Any, model: Any, usage: Any, last: Any,
@@ -477,13 +479,18 @@ def _codex_is_subagent(path: Path, stat: os.stat_result) -> bool:
         if cached is not None and cached[0] == identity and stat.st_size >= cached[1]:
             _CODEX_FIRST_RECORD_CACHE.move_to_end(resolved)
             return cached[2]
+        if cached is not None:
+            _CODEX_FIRST_RECORD_CACHE.pop(resolved, None)
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as handle:
-            first = json.loads(handle.readline()).get("payload") or {}
+            line = handle.readline()
+            first = json.loads(line).get("payload") or {}
         source = first.get("source") or {}
         value = bool(first.get("parent_thread_id")) or _chat_source(source) in {"subagent", "review"}
     except (OSError, ValueError, AttributeError):
         return False
+    if not line.endswith("\n"):
+        return value
     with _CODEX_FIRST_RECORD_CACHE_LOCK:
         _CODEX_FIRST_RECORD_CACHE[resolved] = (identity, stat.st_size, value)
         _CODEX_FIRST_RECORD_CACHE.move_to_end(resolved)
@@ -3600,17 +3607,6 @@ class CodexProvider:
                     return cached
 
             identity = (key[3], key[4])
-            resume: _TokenEventResume | None = None
-            previous_key: tuple[str, int, int, int, int, int] | None = None
-            with cls._token_event_cache_lock:
-                candidates = [item for item in cls._token_event_cache if item[0] == resolved]
-                if candidates:
-                    previous_key = candidates[-1]
-                    candidate = cls._token_event_resume.get(previous_key)
-                    if (candidate is not None and candidate.identity == identity
-                            and key[1] >= candidate.offset):
-                        resume = candidate
-
             def digest_before(handle: Any, offset: int) -> bytes:
                 start = max(0, offset - 4096)
                 handle.seek(start)
@@ -3668,53 +3664,94 @@ class CodexProvider:
                     complete_rows = len(events._rows)
                 return model, started, consumed, complete_rows, digest_before(handle, consumed)
 
-            def consume_path() -> tuple[Any, float | None, int, int, bytes]:
-                with path.open("rb") as handle:
-                    file_stat = os.fstat(handle.fileno())
-                    if (file_stat.st_dev, file_stat.st_ino) != identity:
-                        raise OSError("session file identity changed during read")
-                    return consume(handle, events, None, None, 0)
-
-            events = _CompactTokenEvents()
-            model = None
+            events: _CompactTokenEvents | None = None
+            model: Any = None
             started: float | None = None
             offset = 0
-            used_resume = False
-            try:
+            complete_rows = 0
+            event_digest = b""
+            for attempt in range(2):
+                identity = (key[3], key[4])
+                resume: _TokenEventResume | None = None
+                previous_key: tuple[str, int, int, int, int, int] | None = None
+                with cls._token_event_cache_lock:
+                    candidates = [item for item in cls._token_event_cache if item[0] == resolved]
+                    if candidates:
+                        previous_key = candidates[-1]
+                        candidate = cls._token_event_resume.get(previous_key)
+                        if (candidate is not None and candidate.identity == identity
+                                # Append-only transcripts are assumed. The bounded tail
+                                # digest detects recent rewrites, but strictly growing
+                                # rewrites earlier than its 4 KiB window can be missed.
+                                and key[1] > previous_key[1]
+                                and key[1] >= candidate.offset):
+                            resume = candidate
+
+                used_resume = False
+                stale_identity = False
+                events = _CompactTokenEvents()
                 if resume is not None and previous_key is not None:
                     prior = cls._token_event_cache.get(previous_key)
                     if isinstance(prior, _CompactTokenEvents):
-                        with path.open("rb") as handle:
-                            current = os.fstat(handle.fileno())
-                            if ((current.st_dev, current.st_ino) == identity
-                                    and current.st_size >= resume.offset
-                                    and digest_before(handle, resume.offset) == resume.digest):
-                                events = prior.copy()
-                                del events._rows[resume.complete_rows:]
-                                model, started = resume.model, resume.started
-                                model, started, offset, complete_rows, event_digest = consume(
-                                    handle, events, model, started, resume.offset)
-                                used_resume = True
-                if not used_resume:
-                    events = _CompactTokenEvents()
-                    model, started, offset, complete_rows, event_digest = consume_path()
-            except OSError:
-                if used_resume:
+                        try:
+                            with path.open("rb") as handle:
+                                current = os.fstat(handle.fileno())
+                                if (current.st_dev, current.st_ino) != identity:
+                                    stale_identity = True
+                                elif (current.st_size > previous_key[1]
+                                      and current.st_size >= resume.offset
+                                      and digest_before(handle, resume.offset) == resume.digest):
+                                    events = prior.copy()
+                                    del events._rows[resume.complete_rows:]
+                                    model, started = resume.model, resume.started
+                                    model, started, offset, complete_rows, event_digest = consume(
+                                        handle, events, model, started, resume.offset)
+                                    used_resume = True
+                        except OSError:
+                            # A resume read is only an optimization. Retry from byte zero.
+                            used_resume = False
+
+                if stale_identity:
+                    if attempt:
+                        return []
                     try:
-                        events = _CompactTokenEvents()
-                        model, started, offset, complete_rows, event_digest = consume_path()
+                        key = (resolved, *_stat_fingerprint(path))
                     except OSError:
                         return []
-                else:
-                    return []
+                    continue
+
+                if not used_resume:
+                    events = _CompactTokenEvents()
+                    try:
+                        with path.open("rb") as handle:
+                            current = os.fstat(handle.fileno())
+                            if (current.st_dev, current.st_ino) != identity:
+                                stale_identity = True
+                            else:
+                                model, started, offset, complete_rows, event_digest = consume(
+                                    handle, events, None, None, 0)
+                    except OSError:
+                        return []
+                    if stale_identity:
+                        if attempt:
+                            return []
+                        try:
+                            key = (resolved, *_stat_fingerprint(path))
+                        except OSError:
+                            return []
+                        continue
+                break
+            else:
+                return []
+
+            assert events is not None
 
             event_resume = _TokenEventResume(
                 offset, complete_rows, model, started, identity,
                 event_digest,
             )
+            events._checkpoint = event_resume
 
-            # The existing per-entry overhead budget covers the small resume
-            # record and digest as well as the cache key/container bookkeeping.
             retained_bytes = cls._estimate_token_event_cache_entry_bytes(key, events)
             try:
                 unchanged = key == (resolved, *_stat_fingerprint(path))
@@ -3782,6 +3819,10 @@ class CodexProvider:
         """Estimate retained projection size without double-counting shared objects."""
         seen: set[int] = set()
         pending: list[Any] = [key, events._rows if isinstance(events, _CompactTokenEvents) else events]
+        if isinstance(events, _CompactTokenEvents):
+            pending.append(events._checkpoint)
+            if isinstance(events._checkpoint, _TokenEventResume):
+                pending.append(vars(events._checkpoint))
         total = cls._TOKEN_EVENT_CACHE_ENTRY_OVERHEAD + (
             sys.getsizeof(events) if isinstance(events, _CompactTokenEvents) else 0)
         while pending:
