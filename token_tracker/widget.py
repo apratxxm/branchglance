@@ -262,6 +262,28 @@ class _Rect(ctypes.Structure):
     ]
 
 
+_MONITOR_INFO_LOCK = threading.Lock()
+_MONITOR_INFO_TYPES = None
+
+
+def _monitor_info_type(device: bool = False):
+    """Create and retain the monitor structures before ctypes caches pointers to them."""
+    global _MONITOR_INFO_TYPES
+    with _MONITOR_INFO_LOCK:
+        if _MONITOR_INFO_TYPES is None:
+            class MonitorInfo(ctypes.Structure):
+                _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
+                            ("work", _Rect), ("flags", ctypes.c_ulong)]
+
+            class MonitorInfoEx(ctypes.Structure):
+                _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
+                            ("work", _Rect), ("flags", ctypes.c_ulong),
+                            ("device", ctypes.c_wchar * 32)]
+
+            _MONITOR_INFO_TYPES = (MonitorInfo, MonitorInfoEx)
+        return _MONITOR_INFO_TYPES[1 if device else 0]
+
+
 @contextmanager
 def _physical_coordinates():
     """Use one coordinate space for native rectangles on mixed-DPI displays."""
@@ -287,9 +309,7 @@ def _work_area(hwnd: int | None = None) -> tuple[int, int, int, int]:
     user32 = ctypes.windll.user32
     try:
         if hwnd:
-            class MonitorInfo(ctypes.Structure):
-                _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
-                            ("work", _Rect), ("flags", ctypes.c_ulong)]
+            MonitorInfo = _monitor_info_type()
             user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
             user32.MonitorFromWindow.restype = ctypes.c_void_p
             user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -396,8 +416,7 @@ def _monitor_work_areas(physical: bool = False) -> list[tuple[int, int, int, int
     try:
         user32 = ctypes.windll.user32
 
-        class MonitorInfo(ctypes.Structure):
-            _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect), ("work", _Rect), ("flags", ctypes.c_ulong)]
+        MonitorInfo = _monitor_info_type()
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_Rect), ctypes.c_long)
         scale = 1.0 if physical else _system_scale()
@@ -584,10 +603,7 @@ def _monitor_descriptors() -> list[dict]:
         user32 = ctypes.windll.user32
         user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
-        class MonitorInfo(ctypes.Structure):
-            _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
-                        ("work", _Rect), ("flags", ctypes.c_ulong),
-                        ("device", ctypes.c_wchar * 32)]
+        MonitorInfo = _monitor_info_type(device=True)
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
                                            ctypes.POINTER(_Rect), ctypes.c_ssize_t)

@@ -18,6 +18,7 @@ import re
 import secrets
 import stat
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -32,23 +33,73 @@ PRODUCT = "Branchglance"
 LEGACY_PRODUCT_DIR = "TokenTracker"
 APP_USER_MODEL_ID = "Branchglance.App"
 CLAUDE_HOOK_LAUNCHER = True
+_WINDOWS_PRODUCT_LOCK = threading.RLock()
+_WINDOWS_PRODUCT_TYPES = None
+_WINDOWS_PRODUCT_API = None
+_WINDOWS_PRODUCT_DLL_FACTORY = None
+
+
+def _windows_product_types():
+    global _WINDOWS_PRODUCT_TYPES
+    import ctypes
+    from ctypes import wintypes
+    with _WINDOWS_PRODUCT_LOCK:
+        if _WINDOWS_PRODUCT_TYPES is None:
+            class SECURITY_ATTRIBUTES(ctypes.Structure):
+                _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                            ("bInheritHandle", wintypes.BOOL)]
+            _WINDOWS_PRODUCT_TYPES = (SECURITY_ATTRIBUTES,)
+        return _WINDOWS_PRODUCT_TYPES
+
+
+def _windows_product_api():
+    global _WINDOWS_PRODUCT_API, _WINDOWS_PRODUCT_DLL_FACTORY
+    import ctypes
+    from ctypes import wintypes
+    with _WINDOWS_PRODUCT_LOCK:
+        if _WINDOWS_PRODUCT_API is None or _WINDOWS_PRODUCT_DLL_FACTORY is not ctypes.WinDLL:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+            if hasattr(kernel, "GetCurrentProcess"):
+                kernel.GetCurrentProcess.restype = wintypes.HANDLE
+            if hasattr(kernel, "CloseHandle"):
+                kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            if hasattr(kernel, "LocalFree"):
+                kernel.LocalFree.argtypes = [ctypes.c_void_p]
+            if hasattr(advapi, "GetTokenInformation"):
+                advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                       wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+                advapi.GetTokenInformation.restype = wintypes.BOOL
+            if hasattr(advapi, "ConvertSidToStringSidW"):
+                advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+                advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+            if hasattr(advapi, "OpenProcessToken"):
+                advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+                advapi.OpenProcessToken.restype = wintypes.BOOL
+            if hasattr(advapi, "ConvertStringSecurityDescriptorToSecurityDescriptorW"):
+                advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+                    wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                    ctypes.POINTER(wintypes.DWORD)]
+                advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+            SECURITY_ATTRIBUTES = _windows_product_types()[0]
+            if hasattr(kernel, "CreateMutexW"):
+                kernel.CreateMutexW.argtypes = [ctypes.POINTER(SECURITY_ATTRIBUTES), wintypes.BOOL, wintypes.LPCWSTR]
+                kernel.CreateMutexW.restype = ctypes.c_void_p
+            if hasattr(kernel, "OpenMutexW"):
+                kernel.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+                kernel.OpenMutexW.restype = ctypes.c_void_p
+            _WINDOWS_PRODUCT_API = (kernel, advapi)
+            _WINDOWS_PRODUCT_DLL_FACTORY = ctypes.WinDLL
+        return _WINDOWS_PRODUCT_API
+
+
 def current_user_sid() -> str:
     if os.name != "nt":
         return "S-1-5-21-0-0-0-1000"  # deterministic namespace for non-Windows tests only
     import ctypes
     from ctypes import wintypes
-    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                          wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
-    advapi.GetTokenInformation.restype = wintypes.BOOL
-    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
-    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel, advapi = _windows_product_api()
     token = wintypes.HANDLE()
-    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
-    advapi.OpenProcessToken.restype = wintypes.BOOL
     if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
@@ -64,7 +115,6 @@ def current_user_sid() -> str:
         try:
             sid = text.value
         finally:
-            kernel.LocalFree.argtypes = [ctypes.c_void_p]
             kernel.LocalFree(text)
         if not re.fullmatch(r"S-1-(?:\d+-)+\d+", sid):
             raise OSError("Current user SID is malformed")
@@ -134,20 +184,13 @@ def _create_mutex_with_dacl(name: str, sddl: str, kernel, advapi):
     descriptor = ctypes.c_void_p()
     if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
         raise ctypes.WinError(ctypes.get_last_error())
-    class SECURITY_ATTRIBUTES(ctypes.Structure):
-        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
-                    ("bInheritHandle", wintypes.BOOL)]
+    SECURITY_ATTRIBUTES = _windows_product_types()[0]
     attrs = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), descriptor, False)
-    kernel.CreateMutexW.argtypes = [ctypes.POINTER(SECURITY_ATTRIBUTES), wintypes.BOOL, wintypes.LPCWSTR]
-    kernel.CreateMutexW.restype = ctypes.c_void_p
     handle = kernel.CreateMutexW(ctypes.byref(attrs), False, name)
     error = ctypes.get_last_error() if not handle else 0
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
     kernel.LocalFree(descriptor)
     if not handle:
         if error == 5:
-            kernel.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
-            kernel.OpenMutexW.restype = ctypes.c_void_p
             handle = kernel.OpenMutexW(0x00100001, False, name)  # synchronize + modify-state
         if not handle:
             raise OSError(error or ctypes.get_last_error(), "CreateMutexW/OpenMutexW failed")
@@ -164,8 +207,7 @@ def create_secured_mutex(name: str):
     purpose = name[len(prefix):] if name.startswith(prefix) else ""
     if purpose not in ("Install", "Instance") and not re.fullmatch(r"Instance\.Test\.[0-9a-f]{32}", purpose):
         raise ValueError("mutex name is not scoped to the current user")
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel, advapi = _windows_product_api()
     return _create_mutex_with_dacl(name, mutex_security_sddl(sid), kernel, advapi)
 
 
