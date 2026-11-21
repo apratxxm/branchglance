@@ -70,8 +70,9 @@ def _windows_codex_api():
     import ctypes
     from ctypes import wintypes as wt
     with _WINDOWS_CODEX_LOCK:
-        if _WINDOWS_CODEX_API is None or _WINDOWS_CODEX_DLL_FACTORY is not ctypes.WinDLL:
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        factory = ctypes.WinDLL
+        if _WINDOWS_CODEX_API is None or _WINDOWS_CODEX_DLL_FACTORY is not factory:
+            kernel = factory("kernel32", use_last_error=True)
             STARTUPINFO, _STARTUPINFOEX, PROCESS_INFORMATION = _windows_codex_types()[3:]
             kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
             kernel.CreateJobObjectW.restype = wt.HANDLE
@@ -98,7 +99,7 @@ def _windows_codex_api():
             kernel.TerminateJobObject.argtypes = [wt.HANDLE, wt.UINT]
             kernel.TerminateJobObject.restype = wt.BOOL
             _WINDOWS_CODEX_API = kernel
-            _WINDOWS_CODEX_DLL_FACTORY = ctypes.WinDLL
+            _WINDOWS_CODEX_DLL_FACTORY = factory
         return _WINDOWS_CODEX_API
 
 

@@ -46,6 +46,7 @@ _CLAUDE_PROCESS_LINKS: dict[str, dict[str, Any]] = {}
 _WINDOWS_RECEIPT_LOCK = threading.RLock()
 _WINDOWS_RECEIPT_TYPES = None
 _WINDOWS_RECEIPT_APIS = {}
+_WINDOWS_RECEIPT_API_FACTORY = None
 
 
 def _windows_receipt_types():
@@ -79,13 +80,18 @@ def _windows_receipt_types():
 
 def _windows_receipt_api(key: str):
     """Cache per-operation DLLs so their function signatures remain independent."""
+    global _WINDOWS_RECEIPT_API_FACTORY
     with _WINDOWS_RECEIPT_LOCK:
+        factory = ctypes.WinDLL
+        if _WINDOWS_RECEIPT_API_FACTORY is not factory:
+            _WINDOWS_RECEIPT_APIS.clear()
+            _WINDOWS_RECEIPT_API_FACTORY = factory
         if key in _WINDOWS_RECEIPT_APIS:
             return _WINDOWS_RECEIPT_APIS[key]
         from ctypes import wintypes
         if key == "known_folder":
-            shell = ctypes.WinDLL("shell32", use_last_error=True)
-            ole = ctypes.WinDLL("ole32", use_last_error=True)
+            shell = factory("shell32", use_last_error=True)
+            ole = factory("ole32", use_last_error=True)
             GUID = _windows_receipt_types()[0]
             shell.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
                                                    ctypes.POINTER(ctypes.c_void_p)]
@@ -93,14 +99,14 @@ def _windows_receipt_api(key: str):
             ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
             api = (shell, ole)
         elif key == "file_identity":
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel = factory("kernel32", use_last_error=True)
             INFO = _windows_receipt_types()[2]
             kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(INFO)]
             kernel.GetFileInformationByHandle.restype = wintypes.BOOL
             api = kernel
         elif key == "private_inbox":
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-            advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+            kernel = factory("kernel32", use_last_error=True)
+            advapi = factory("advapi32", use_last_error=True)
             SECURITY_ATTRIBUTES = _windows_receipt_types()[3]
             advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
                 wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]

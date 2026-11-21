@@ -57,9 +57,10 @@ def _windows_product_api():
     import ctypes
     from ctypes import wintypes
     with _WINDOWS_PRODUCT_LOCK:
-        if _WINDOWS_PRODUCT_API is None or _WINDOWS_PRODUCT_DLL_FACTORY is not ctypes.WinDLL:
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-            advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        factory = ctypes.WinDLL
+        if _WINDOWS_PRODUCT_API is None or _WINDOWS_PRODUCT_DLL_FACTORY is not factory:
+            kernel = factory("kernel32", use_last_error=True)
+            advapi = factory("advapi32", use_last_error=True)
             if hasattr(kernel, "GetCurrentProcess"):
                 kernel.GetCurrentProcess.restype = wintypes.HANDLE
             if hasattr(kernel, "CloseHandle"):
@@ -89,7 +90,7 @@ def _windows_product_api():
                 kernel.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
                 kernel.OpenMutexW.restype = ctypes.c_void_p
             _WINDOWS_PRODUCT_API = (kernel, advapi)
-            _WINDOWS_PRODUCT_DLL_FACTORY = ctypes.WinDLL
+            _WINDOWS_PRODUCT_DLL_FACTORY = factory
         return _WINDOWS_PRODUCT_API
 
 
@@ -177,10 +178,6 @@ def mutex_security_sddl(sid: str | None = None) -> str:
 
 def _create_mutex_with_dacl(name: str, sddl: str, kernel, advapi):
     import ctypes
-    from ctypes import wintypes
-    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
-        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
-    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
     descriptor = ctypes.c_void_p()
     if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
         raise ctypes.WinError(ctypes.get_last_error())

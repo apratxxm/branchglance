@@ -38,6 +38,7 @@ MAX_DROP_LOG_BYTES = 64 * 1024
 _WINDOWS_HOOK_LOCK = threading.RLock()
 _WINDOWS_HOOK_TYPES = None
 _WINDOWS_HOOK_APIS = {}
+_WINDOWS_HOOK_API_FACTORY = None
 
 
 def _windows_hook_types():
@@ -74,14 +75,19 @@ def _windows_hook_types():
 
 def _windows_hook_api(key: str):
     """Cache per-operation DLL bindings; avoid per-call signature setup in hot paths."""
+    global _WINDOWS_HOOK_API_FACTORY
     import ctypes
     import ctypes.wintypes as wt
     with _WINDOWS_HOOK_LOCK:
+        factory = ctypes.WinDLL
+        if _WINDOWS_HOOK_API_FACTORY is not factory:
+            _WINDOWS_HOOK_APIS.clear()
+            _WINDOWS_HOOK_API_FACTORY = factory
         if key in _WINDOWS_HOOK_APIS:
             return _WINDOWS_HOOK_APIS[key]
         if key == "process":
             ProcessEntry = _windows_hook_types()[0]
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel = factory("kernel32", use_last_error=True)
             kernel.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
             kernel.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
             kernel.Process32First.argtypes = [wt.HANDLE, ctypes.POINTER(ProcessEntry)]
@@ -91,7 +97,7 @@ def _windows_hook_api(key: str):
             kernel.CloseHandle.argtypes = [wt.HANDLE]
             api = kernel
         elif key == "probe":
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel = factory("kernel32", use_last_error=True)
             kernel.OpenProcess.restype = ctypes.c_void_p
             kernel.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
             kernel.CloseHandle.argtypes = [ctypes.c_void_p]
@@ -100,7 +106,7 @@ def _windows_hook_api(key: str):
             api = kernel
         elif key == "retention":
             _unicode, OBJECT_ATTRIBUTES, IO_STATUS_BLOCK, ATTR_TAG = _windows_hook_types()[1:]
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel = factory("kernel32", use_last_error=True)
             kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
             kernel.CreateFileW.restype = wt.HANDLE
             kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
@@ -115,7 +121,7 @@ def _windows_hook_api(key: str):
             kernel.SetFileInformationByHandle.restype = wt.BOOL
             kernel.GetFileType.argtypes = [wt.HANDLE]
             kernel.GetFileType.restype = wt.DWORD
-            ntdll = ctypes.WinDLL("ntdll")
+            ntdll = factory("ntdll")
             ntdll.NtCreateFile.argtypes = [ctypes.POINTER(wt.HANDLE), wt.ULONG,
                                            ctypes.POINTER(OBJECT_ATTRIBUTES), ctypes.POINTER(IO_STATUS_BLOCK),
                                            ctypes.c_void_p, wt.ULONG, wt.ULONG, wt.ULONG, wt.ULONG,
@@ -123,7 +129,7 @@ def _windows_hook_api(key: str):
             ntdll.NtCreateFile.restype = ctypes.c_long
             api = (kernel, ntdll)
         elif key == "append":
-            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel = factory("kernel32", use_last_error=True)
             kernel.CreateFileW.restype = wt.HANDLE
             kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p,
                                            wt.DWORD, wt.DWORD, wt.HANDLE]
