@@ -10,7 +10,7 @@ from test_ledger_support import (
 )
 
 from token_tracker import providers
-from token_tracker.ledger import Ledger
+from token_tracker.ledger import Ledger, LedgerUnavailable, read_summary
 from token_tracker import ledger_model
 
 ALL = {"Claude": True, "Codex": True}
@@ -93,6 +93,98 @@ def test_claude_cache_tiers_and_cost_match_reducer(tmp_path):
                               "cache_1h_tokens": 500, "output_tokens": 100, "total_tokens": 3900}},
         providers.CLAUDE_PRICING, claude=True)["apiEquivalentCost"]
     assert row["knownCostUsd"] == pytest.approx(expected, abs=1e-4)
+
+
+@pytest.mark.parametrize("model", ["claude-haiku-5-5", "claude-haiku-5-5-20251001"])
+@pytest.mark.parametrize("prompt,expected", [(99_999, "standard"), (100_000, "standard"), (100_001, "long-context")])
+@pytest.mark.parametrize("split", [False, True])
+def test_haiku_prompt_evidence_thresholds(model, prompt, expected, split):
+    if split:
+        usage = {"input_tokens": 1, "cache_read_input_tokens": 2,
+                 "cache_creation": {"ephemeral_5m_input_tokens": prompt - 3, "ephemeral_1h_input_tokens": 0}}
+    else:
+        usage = {"input_tokens": 1, "cache_read_input_tokens": 2,
+                 "cache_creation_input_tokens": prompt - 3}
+    evidence = ledger_model.claude_prompt_evidence(usage)
+    assert evidence == prompt
+    assert ledger_model.claude_price_tier(model, evidence) == expected
+
+
+def test_haiku_duplicate_report_components_do_not_sum_for_tier():
+    import sqlite3
+    from token_tracker import ledger_store as store
+
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    store.migrate(conn)
+    first = _staging_fact(1, prompt_evidence=90_000, input_total=90_000, model="claude-haiku-5-5")
+    second = _staging_fact(2, prompt_evidence=90_000, input_total=90_000, model="claude-haiku-5-5")
+    first["fact_key"] = second["fact_key"] = "copy"
+    first["fields"]["cached_read"] = 90_000
+    second["fields"]["cache_write_5m"] = 90_000
+    with store.transaction(conn):
+        store.upsert_fact(conn, first, merge=True, overrides={})
+        store.upsert_fact(conn, second, merge=True, overrides={})
+    assert conn.execute("SELECT input_total, prompt_peak, price_tier FROM facts").fetchone() == (180_000, 90_000, "standard")
+    conn.close()
+
+
+def test_haiku_long_tier_prices_unknown_cache_writes_at_five_minute_rate():
+    sums = {"input_total": 120_000, "cached_read": 0, "cache_write_5m": 0,
+            "cache_write_1h": 0, "cache_write_unknown": 120_000, "output_total": 0}
+    expected = 120_000 * providers.HAIKU_5_5_LONG_PROMPT[2] / 1_000_000
+    assert ledger_model.price_usd("Claude", "claude-haiku-5-5", "long-context", sums) == pytest.approx(expected)
+
+
+def test_invalid_claude_raw_prompt_counters_do_not_establish_long_tier():
+    usage = {"input_tokens": 1, "cache_read_input_tokens": 100_000,
+             "cache_creation": {"ephemeral_5m_input_tokens": 0}}
+    assert ledger_model.claude_prompt_evidence(usage) is None
+    assert ledger_model.claude_price_tier("claude-haiku-5-5", None) == "standard"
+
+
+@pytest.mark.parametrize("schema", [3, 5])
+def test_reader_rejects_uncommitted_or_newer_schema(tmp_path, schema):
+    ledger, _, _ = open_ledger(tmp_path)
+    ledger.conn.execute("UPDATE meta SET value=? WHERE key='schemaVersion'", (str(schema),))
+    with pytest.raises(LedgerUnavailable):
+        ledger.summary(HOUR_START, DAY_END, show=ALL)
+    with pytest.raises(LedgerUnavailable):
+        read_summary(ledger.data_dir, HOUR_START, DAY_END, show=ALL, time_zone="UTC")
+    ledger.close()
+
+
+def test_staged_haiku_tier_crossing_is_visible_and_promotes_or_discards_exactly():
+    import sqlite3
+    from token_tracker import ledger_store as store
+
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    store.migrate(conn)
+    confirmed = _staging_fact(5, prompt_evidence=99_000, input_total=99_000, model="claude-haiku-5-5")
+    staged = _staging_fact(9, prompt_evidence=101_000, input_total=101_000, model="claude-haiku-5-5")
+    with store.transaction(conn):
+        store.upsert_fact(conn, confirmed, merge=True, overrides={})
+        store.stage_observation(conn, "source", 1, 1, staged)
+    rows = store.summary_rows(conn, 0, 3600)
+    assert [(row["price_tier"], row["requests"], row["input_total"], row["total"]) for row in rows] == [
+        ("long-context", 1, 101_000, 101_009)]
+    with store.transaction(conn):
+        store.discard_epoch(conn, "Claude", "source", 1, 1)
+    assert conn.execute("SELECT * FROM hourly").fetchall() == [
+        (0, "Claude", "claude-haiku-5-5", "standard", "lead", "default", 1, 99_000, 5, 99_005,
+         0, 0, 0, 0, 0, 1, 1, 1, 1, 1)]
+    with store.transaction(conn):
+        store.stage_observation(conn, "source", 1, 2, staged)
+    with store.transaction(conn):
+        assert store.promote_epoch(conn, "Claude", "source", 1, 2)
+    assert conn.execute("SELECT price_tier, prompt_peak FROM facts").fetchone() == ("long-context", 101_000)
+    promoted = conn.execute("SELECT * FROM hourly").fetchall()
+    assert promoted == [(0, "Claude", "claude-haiku-5-5", "long-context", "lead", "default", 1,
+                         101_000, 9, 101_009, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1)]
+    with store.transaction(conn):
+        store.rebuild_rollups(conn, store.load_overrides(conn))
+    assert conn.execute("SELECT * FROM hourly").fetchall() == promoted
+
+    conn.close()
 
 
 def test_unknown_cache_tier_is_null_not_zero(tmp_path):
@@ -442,11 +534,11 @@ def test_provisional_fact_and_verifying_coverage_survive_restart(tmp_path, monke
     assert ledger.coverage()["status"] == "complete"
 
 
-def _staging_fact(output):
-    return {"provider": "Claude", "fact_key": "response", "thread_id": "thread", "model": "model",
-            "price_tier": "standard", "hour": 0, "kind": "lead", "rule": "default", "slug": None,
+def _staging_fact(output, *, prompt_evidence=None, input_total=0, model="model"):
+    return {"provider": "Claude", "fact_key": "response", "thread_id": "thread", "model": model,
+            "price_tier": "standard", "prompt_evidence": prompt_evidence, "hour": 0, "kind": "lead", "rule": "default", "slug": None,
             "classification_version": 1, "segment_turn": None, "merge": True,
-            "fields": {"input_total": 0, "output_total": output, "total": output,
+            "fields": {"input_total": input_total, "output_total": output, "total": input_total + output,
                        "cached_read": None, "cache_write_5m": None, "cache_write_1h": None,
                        "cache_write_unknown": None, "reasoning_output": None}}
 

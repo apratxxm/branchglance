@@ -78,6 +78,18 @@ def claude_usage(usage: Any) -> dict[str, Any] | None:
     return fields if fields["total"] > 0 else None
 
 
+def claude_prompt_evidence(usage: Any) -> int | None:
+    """Raw, Insights-compatible prompt size for one report, or None when counters are invalid."""
+    if not isinstance(usage, dict) or not providers._claude_request_size_known(usage):
+        return None
+    creation = usage.get("cache_creation")
+    if isinstance(creation, dict) and creation:
+        writes = creation["ephemeral_5m_input_tokens"] + creation["ephemeral_1h_input_tokens"]
+    else:
+        writes = usage["cache_creation_input_tokens"]
+    return usage["input_tokens"] + usage["cache_read_input_tokens"] + writes
+
+
 def codex_usage(delta: Mapping[str, int], present: frozenset[str]) -> dict[str, Any]:
     """Normalized fields for one Codex counter delta (see providers._counter_delta)."""
     input_tokens = int(delta["input_tokens"])
@@ -108,6 +120,13 @@ def codex_price_tier(model: str, last_input: int | None) -> str:
     return STANDARD_TIER
 
 
+def claude_price_tier(model: str, prompt_peak: int | None) -> str:
+    """Derive Claude's request tier from valid per-report prompt evidence."""
+    eligible = any(providers._price_for(model, {key: ()}) is not None
+                   for key in providers.PRICE_ESTIMATE_LOW)
+    return LONG_CONTEXT_TIER if eligible and prompt_peak is not None and prompt_peak > 100_000 else STANDARD_TIER
+
+
 def price_usd(provider: str, model: str, tier: str, sums: Mapping[str, int]) -> float | None:
     """API-equivalent cost of summed normalized tokens; None when the model has no list price.
 
@@ -118,6 +137,9 @@ def price_usd(provider: str, model: str, tier: str, sums: Mapping[str, int]) -> 
         rates = providers._price_for(model, providers.CLAUDE_PRICING)
         if not rates:
             return None
+        if tier == LONG_CONTEXT_TIER and any(providers._price_for(model, {key: ()}) is not None
+                                             for key in providers.PRICE_ESTIMATE_LOW):
+            rates = providers.HAIKU_5_5_LONG_PROMPT
         cached = sums["cached_read"]
         write_5m, write_1h, write_unknown = sums["cache_write_5m"], sums["cache_write_1h"], sums["cache_write_unknown"]
         uncached = sums["input_total"] - cached - write_5m - write_1h - write_unknown
@@ -140,5 +162,7 @@ def pricing_version() -> str:
     payload = json.dumps({
         "claude": providers.CLAUDE_PRICING, "codex": providers.CODEX_PRICING,
         "codexLongContext": providers.CODEX_LONG_CONTEXT, "aliases": providers.PRICE_MODEL_ALIASES,
+        "haikuLongPrompt": providers.HAIKU_5_5_LONG_PROMPT,
+        "priceEstimateLow": providers.PRICE_ESTIMATE_LOW,
     }, sort_keys=True, default=list)
     return "p-" + hashlib.blake2b(payload.encode("utf-8"), digest_size=6).hexdigest()
