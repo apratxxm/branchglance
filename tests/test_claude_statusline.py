@@ -504,3 +504,20 @@ def test_full_provider_mixed_history_and_live_uses_older_actual_timestamp(tmp_pa
     snap = provider.snapshot()
     assert snap['fiveHour']['percent'] == 70 and snap['weekly']['percent'] is None
     assert snap['limitsUpdatedAt'] == '1970-01-01T00:18:20+00:00'
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="Windows handle guard")
+def test_guarded_open_does_not_retain_a_ctypes_type_per_call(tmp_path):
+    # ctypes.POINTER caches every struct class for the life of the process; a struct
+    # defined per call grew that cache on every guarded open (the r18 memory leak).
+    import ctypes
+
+    def open_and_close():
+        handle = statusline._windows_open(tmp_path, 0x81, 3, 3, directory=True)
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+    open_and_close()
+    before = len(ctypes._pointer_type_cache)
+    for _ in range(50):
+        open_and_close()
+    assert len(ctypes._pointer_type_cache) == before
