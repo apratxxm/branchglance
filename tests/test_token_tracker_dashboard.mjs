@@ -104,8 +104,10 @@ assert.match(dashboard.settingsHTML(),/24-hour/);
 
 dashboard.state.policy={origin:"policy_file",policyFile:"ok",providers:[{name:"Codex",show:true,collect:true,send:false,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},{name:"Claude",show:true,collect:false,send:false,sendOrigin:"default",capabilities:{greet:true,continue:false}}]};
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];dashboard.state.settingsLoaded=true;
+dashboard.state.resetAction={schemaVersion:2,mode:"continue",threadIds:["thread-1"],armed:true,lastRun:{at:"2026-11-21T09:00:00Z"}};dashboard.state.resetActionThreads=[{id:"thread-1",title:"<selected chat>"}];
 dashboard.state.identity={version:"1.0.0",build:"abc123"};
 const settings=dashboard.settingsHTML();
+assert.match(settings,/Saved choice: Continue/);assert.match(settings,/&lt;selected chat&gt;/,"saved reset target is escaped");assert.match(settings,/Last run: 2026-11-21T09:00:00Z/);
 assert.match(settings,/<span class="dash-h2-note">v1\.0\.0<\/span>/);
 dashboard.state.identity={version:"<script>",build:"&"};
 assert.match(dashboard.settingsHTML(),/v&lt;script&gt;/,"identity values are escaped");
@@ -117,7 +119,7 @@ assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check 
 assert.match(settings,/<span class="dash-setting-label">Codex<\/span>[\s\S]*?<input id="dash-plan-price"[^>]*data-dashboard-plan="Codex"[\s\S]*?<span class="dash-setting-label">Claude<\/span>[\s\S]*?<input(?! id="dash-plan-price")[^>]*data-dashboard-plan="Claude"/,"Codex is first and receives the shared plan input id by provider name");
 assert.doesNotMatch(settings,/reset_actions\.html\?embedded=1/,"the parent document does not embed the token-bearing Settings page");assert.match(settings,/Reset automation settings are managed in the native Settings window/);assert.match(settings,/data-dashboard-action="reset-settings-manage">Manage in Settings/);assert.match(settings,/Manage data sources and history/);assert.match(settings,/<h2>Monthly plan prices<\/h2>/);assert.match(settings,/Saved on this device\. Used to compare your plan price with 30 days of estimated API cost\. Clear a price to remove the comparison\./);assert.doesNotMatch(settings,/dash-setting-description">Monthly/,"rows are label-only");assert.match(settings,/placeholder="Not set"/);assert.match(settings,/aria-label="Codex plan price per month in USD"/);assert.match(settings,/Set by policy file/);assert.match(settings,/Preview report/);assert.match(settings,/Review the local report before sharing\./);assert.match(settings,/Close<\/button>/);assert.match(settings,/Codex reset automation/);assert.match(settings,/No chat text, file paths, account details or tokens\./,"privacy exclusions stay visible inside the report preview");
 assert.match(settingsCss,/\.dash-setting-row\+\.dash-setting-row\{border-top:1px solid var\(--d-edge\);\}/,"Settings rows use the hairline edge token");assert.match(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*background:var\(--d-codex\);/,"the on switch uses Codex indigo");assert.doesNotMatch(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*#425df6/i,"the on switch has no hard-coded blue");
-assert.match(source,/open_reset_actions/);assert.match(source,/__branchglanceDocumentGeneration/);
+assert.match(source,/open_reset_actions/);assert.doesNotMatch(source,/__branchglanceDocumentGeneration/);
 assert.doesNotMatch(source,/X-Branchglance-Settings-Token|settingsToken/,"dashboard never reads or stores the Claude settings token");
 
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true},{id:"display-2",label:"Desktop",selected:false}];

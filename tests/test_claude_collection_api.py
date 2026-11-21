@@ -192,7 +192,7 @@ def _rejection_handler(headers, chunks):
     ("/api/queue", [("Content-Length", "1, 1")]),
     ("/api/queue", [("Content-Length", "+1")]),
     ("/api/queue", [("Content-Length", "-1")]),
-        ("/api/queue", [("Content-Length", "4097")]),
+    ("/api/queue", [("Content-Length", "2513")]),
     ("/api/claude-collection", [("Content-Length", "4097")]),
     ("/api/queue", [("Content-Length", "1"), ("Transfer-Encoding", "identity")]),
 ])
@@ -278,7 +278,7 @@ def test_complete_small_body_denials_loopback_stress(api, monkeypatch, server_er
     assert calls == []
 
 
-@pytest.mark.parametrize("path", ["/api/reset-action", "/api/claude-collection", "/api/ledger/purge",
+@pytest.mark.parametrize("path", ["/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge",
                                   "/api/quota", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"])
 def test_rejected_post_reads_its_small_body_before_replying(path):
     # Unread request data at close makes the OS reset the connection (seen as

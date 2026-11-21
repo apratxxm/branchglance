@@ -127,8 +127,7 @@ class TestDate extends Date {constructor(...args){super(...(args.length?args:[te
 const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},document:{querySelector:node,querySelectorAll(selector){return selector==='.pywebview-drag-region'?dragRegionNodes:[];},documentElement:{style:{setProperty(key,value){this[key]=value;}}},hidden:false,activeElement:null},
   localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))},fetch:async url=>{openRequests.push(String(url));return {ok:true,json:async()=>({ok:true})};},Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,setTimeout:fakeSetTimeout,clearTimeout:fakeClearTimeout,setInterval(){return 0;}};
 context.window.addEventListener=()=>{};context.document.addEventListener=()=>{};
-context.window.__branchglanceDocumentGeneration=4;
-context.window.pywebview={api:{open_thread:async(thread,generation)=>{bridgeOpens.push([thread,generation]);return {ok:true};}}};
+context.window.pywebview={api:{open_thread:async(thread)=>{bridgeOpens.push(thread);return {ok:true};}}};
 vm.createContext(context);vm.runInContext(app,context);
 const T=context.window.__tokenTrackerTest,ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
 assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times" aria-label="Resumed 2 times">↻2<\/span>/);
@@ -977,7 +976,7 @@ assert.match(exactPanel,/data-action="close-popover"/);
 const questionButton={dataset:{action:"runway-question",key:"Codex:exact-ask"},getBoundingClientRect:()=>({left:12,bottom:36})};
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?questionButton:null}});
 await Promise.resolve();
-assert.deepEqual(bridgeOpens,[["exact-ask",4]]);
+assert.deepEqual(bridgeOpens,["exact-ask"]);
 assert.equal(T.state.popover,null);assert.equal(T.notch.manual,false);
 const ownAsk={...questionParent,status:"needs-input",pendingQuestion:"Own question"};
 T.render({...snapshot,providers:[{...provider,chats:[ownAsk,exactAsk]}]});
@@ -985,7 +984,7 @@ assert.match(T.rowHTML(T.state.forest.roots.find(chat=>chat.id==="question-paren
 const ownButton={dataset:{action:"runway-question",key:"Codex:question-parent"}};
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?ownButton:null}});
 await Promise.resolve();
-assert.equal(bridgeOpens.at(-1)[0],"question-parent","the parent's own pending question takes precedence");
+assert.equal(bridgeOpens.at(-1),"question-parent","the parent's own pending question takes precedence");
 const noTextWait={...exactAsk,pendingQuestion:"",status:"needs-input"};
 T.render({...snapshot,providers:[{...provider,chats:[questionParent,noTextWait]}]});
 assert.match(T.rowHTML(T.state.forest.roots.find(chat=>chat.id==="question-parent")),/runway-refined-status t-live[^>]*>.*?runway-state-word">Running/);
@@ -999,7 +998,7 @@ T.render({...snapshot,providers:[{...provider,chats:[questionParent,{...noTextWa
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?staleButton:null}});
 await Promise.resolve();
 assert.equal(bridgeOpens.length,2,"resolved waiting indicators safely ignore stale clicks");
-assert.ok(bridgeOpens.every(([thread])=>thread==="exact-ask"||thread==="question-parent"),"desktop Waiting text passes only exact-chat ids to the native bridge");
+assert.ok(bridgeOpens.every(thread=>thread==="exact-ask"||thread==="question-parent"),"desktop Waiting text passes only exact-chat ids to the native bridge");
 assert.deepEqual(openRequests,[],"the native Windows bridge path does not issue HTTP open requests");
 const futureMessage={...child,parentId:"question-parent",latestMessageAt:new Date(fixedNow+5000).toISOString()};
 assert.equal(T.runwayAgentHasNewMessage(futureMessage),false);

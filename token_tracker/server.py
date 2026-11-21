@@ -55,6 +55,18 @@ def set_settings_token(token: str | None) -> None:
         _SETTINGS_TOKEN = token
 
 
+def clear_settings_token(expected: str | None = None, on_cleared=None) -> bool:
+    """Clear the current capability and run its native revoke callback under the mutation lock."""
+    global _SETTINGS_TOKEN
+    with _SETTINGS_TOKEN_LOCK:
+        if expected is not None and _SETTINGS_TOKEN != expected:
+            return False
+        _SETTINGS_TOKEN = None
+        if on_cleared is not None:
+            on_cleared()
+        return True
+
+
 def _settings_token_matches(provided: str | None) -> bool:
     with _SETTINGS_TOKEN_LOCK:
         return _settings_token_matches_locked(provided)
@@ -1215,10 +1227,6 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC), **kwargs)
 
-    def end_headers(self):
-        self.send_header("Content-Security-Policy", "frame-src 'self'")
-        super().end_headers()
-
     def do_GET(self):
         if not self._valid_local_host():
             self._send_json({"ok": False, "error": "local Host required"}, 403)
@@ -1629,7 +1637,7 @@ class Handler(SimpleHTTPRequestHandler):
                     return
             self._send_json({"ok": True})
             return
-        if settings_mutation and parsed.path != "/api/reset-action":
+        if parsed.path == "/api/claude-collection":
             action = body.get("action") if isinstance(body, dict) else None
             if not isinstance(action, str) or action not in {"enable", "disable"} or set(body) != {"action"}:
                 self._send_json({"ok": False, "error": "Expected action enable or disable."}, 400)
@@ -1808,7 +1816,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _reject_post(self, path: str, value, status: int) -> None:
         self.close_connection = True
         lengths = self.headers.get_all("Content-Length", [])
-        limit = 4096
+        limit = QUEUE_MESSAGE_LIMIT + 512 if path == "/api/queue" else 4096
         digits = lengths[0].lstrip("0") or "0" if len(lengths) == 1 else ""
         # Drain a small body before replying: closing with unread request data
         # makes the OS reset the connection, so the client may never see the status.
@@ -1853,6 +1861,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(payload)
 
     def end_headers(self):
+        self.send_header("Content-Security-Policy", "frame-src 'self'")
         if self.path.endswith((".html", ".css", ".js")):
             self.send_header("Cache-Control", "no-store, max-age=0")
         super().end_headers()

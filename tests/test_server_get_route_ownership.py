@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 from io import BytesIO
+import http.client
+import threading
 
 import pytest
 
@@ -86,6 +88,23 @@ def test_get_unknown_path_falls_through_to_static_handler(monkeypatch):
     server.Handler.do_GET(handler)
 
     assert served == ["/api/open?thread=01234567-89ab-cdef-0123-456789abcdef"]
+
+
+def test_app_pages_emit_frame_csp_header():
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
+    worker.start()
+    try:
+        for path in ("/runway.html", "/reset_actions.html"):
+            conn = http.client.HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
+            conn.request("GET", path, headers={"Host": f"127.0.0.1:{httpd.server_port}"})
+            response = conn.getresponse()
+            response.read()
+            assert response.status == 200
+            assert response.getheader("Content-Security-Policy") == "frame-src 'self'"
+            conn.close()
+    finally:
+        httpd.shutdown(); httpd.server_close(); worker.join(timeout=3)
 
 
 def _allow_success_paths(monkeypatch):

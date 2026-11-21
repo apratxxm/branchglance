@@ -8,12 +8,14 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import socket
 import subprocess
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
@@ -51,8 +53,19 @@ _WAIT_ABANDONED = 0x80
 _WAIT_TIMEOUT = 0x102
 
 
+@dataclass
+class NativeBridgeReceipt:
+    authority: object
+    window: object
+    operation: str
+    source_url: str
+    top_url: str
+    generation: int
+    committed: bool = False
+
+
 class BridgeAuthority:
-    """Per-window bridge lease tied to this listener and one trusted document load."""
+    """Per-window bridge lease tied to a native receipt and trusted document generation."""
 
     def __init__(self, page_paths):
         self._lock = threading.RLock()
@@ -61,6 +74,8 @@ class BridgeAuthority:
         self._generation = 0
         self._admitted = False
         self._shutting_down = False
+        self._window = None
+        self._adapter = None
 
     @property
     def generation(self):
@@ -70,7 +85,22 @@ class BridgeAuthority:
     def enable(self, port):
         with self._lock:
             self._port = int(port)
+            self._admitted = False
+
+    def install(self, window, adapter=None):
+        with self._lock:
+            if self._port is None or self._shutting_down:
+                return False
+            if self._admitted:
+                return self._window is window and self._adapter is adapter
+            self._window = window
+            self._adapter = adapter
             self._admitted = True
+            return True
+
+    def already_installed(self, window, adapter):
+        with self._lock:
+            return self._admitted and self._window is window and self._adapter is adapter
 
     def revoke(self):
         with self._lock:
@@ -83,25 +113,65 @@ class BridgeAuthority:
             self._generation += 1
             return self._generation
 
+    def begin_navigation(self, target):
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            self._generation += 1
+            return self._trusted_url_locked(target)
+        finally:
+            self._lock.release()
+
     def trusted_url(self, value):
         with self._lock:
-            port = self._port
-            if not port or not isinstance(value, str):
-                return False
-            try:
-                parsed = urlsplit(value)
-                return (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
-                        and parsed.port == port and not parsed.username and not parsed.password
-                        and parsed.path in self._page_paths and not parsed.query)
-            except (ValueError, TypeError):
-                return False
+            return self._trusted_url_locked(value)
 
-    def admits(self, sender_url, current_url, generation):
+    def _trusted_url_locked(self, value):
+        port = self._port
+        if not port or not isinstance(value, str):
+            return False
+        try:
+            parsed = urlsplit(value)
+            return (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+                    and parsed.port == port and not parsed.username and not parsed.password
+                    and parsed.path in self._page_paths and not parsed.query)
+        except (ValueError, TypeError):
+            return False
+
+    def receive(self, window, operation, sender_url, top_url, allowed_operations):
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if (not self._admitted or self._shutting_down or self._window is not window
+                    or not isinstance(operation, str) or operation.startswith("_") or "." in operation
+                    or operation not in allowed_operations
+                    or not self._trusted_url_locked(sender_url) or not self._trusted_url_locked(top_url)):
+                return None
+            if (urlsplit(sender_url).path != urlsplit(top_url).path
+                    or urlsplit(sender_url).netloc != urlsplit(top_url).netloc):
+                return None
+            return NativeBridgeReceipt(self, window, operation, sender_url, top_url, self._generation)
+        finally:
+            self._lock.release()
+
+    def receipt_is_current(self, receipt, window, operation=None):
         with self._lock:
-            return (self._admitted and not self._shutting_down
-                    and type(generation) is int and generation == self._generation
-                    and self.trusted_url(sender_url) and self.trusted_url(current_url)
-                    and urlsplit(sender_url).path == urlsplit(current_url).path)
+            return self.receipt_is_current_locked(receipt, window, operation)
+
+    def receipt_is_current_locked(self, receipt, window, operation=None):
+        return (isinstance(receipt, NativeBridgeReceipt) and receipt.authority is self
+                and receipt.window is window and self._window is window
+                and receipt.generation == self._generation and self._admitted
+                and not self._shutting_down
+                and (operation is None or receipt.operation == operation))
+
+    def commit(self, receipt, window, operation):
+        """Linearize a side effect against navigation and shutdown without holding the lock through UI work."""
+        with self._lock:
+            if not self.receipt_is_current_locked(receipt, window, operation):
+                return False
+            receipt.committed = True
+            return True
 
 
 def _external_http_url(value):
@@ -110,6 +180,17 @@ def _external_http_url(value):
         return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
     except (TypeError, ValueError):
         return False
+
+
+_MAIN_BRIDGE_OPERATIONS = frozenset({
+    "begin_drag", "close", "end_drag", "fit", "get_inspection_hotkey", "get_keep_open",
+    "get_monitors", "get_widget_lock", "minimize", "open_reset_actions", "open_thread",
+    "queue_message", "recenter", "resize", "resize_start", "select_monitor",
+    "set_inspection_hotkey", "set_keep_open", "set_monitor_name", "set_notch",
+    "set_widget_lock", "toggle_maximize",
+})
+_SETTINGS_BRIDGE_OPERATIONS = frozenset({"save_ledger_csv"})
+_RECEIPTED_OPERATIONS = frozenset({"open_reset_actions", "open_thread", "queue_message", "save_ledger_csv"})
 
 
 def claim_install_mutex(timeout: float = 20.0) -> tuple[object | None, str]:
@@ -870,14 +951,11 @@ def _advance_notch_deadline(deadline, now, interval=NOTCH_FRAME_INTERVAL):
 class SettingsWindowApi:
     """The Settings window's only bridge: saving the history CSV through the native file dialog."""
 
-    def __init__(self, on_save_ledger_csv, can_dispatch=None) -> None:
+    def __init__(self, on_save_ledger_csv) -> None:
         self._save_ledger_csv = on_save_ledger_csv
-        self._can_dispatch = can_dispatch
 
-    def save_ledger_csv(self, generation=None):
-        if not self._can_dispatch or not self._can_dispatch(generation):
-            return {"ok": False, "error": "Settings window is no longer trusted."}
-        return self._save_ledger_csv() if self._save_ledger_csv else {"ok": False, "error": "Native file saving is unavailable."}
+    def save_ledger_csv(self):
+        return {"ok": False, "error": "Settings window is no longer trusted."}
 
 
 class WindowApi:
@@ -911,16 +989,14 @@ class WindowApi:
         self._queue_message = on_queue_message
         self._open_thread = on_open_thread
 
-    def queue_message(self, thread, message, generation=None):
-        return self._queue_message(thread, message, generation) if self._queue_message else {"ok": False, "error": "Queue is unavailable."}
+    def queue_message(self, thread, message):
+        return {"ok": False, "error": "Queue call has no native receipt."}
 
-    def open_thread(self, thread, generation=None):
-        return self._open_thread(thread, generation) if self._open_thread else {"ok": False, "error": "Open in Codex is unavailable."}
+    def open_thread(self, thread):
+        return {"ok": False, "error": "Open call has no native receipt."}
 
-    def open_reset_actions(self, generation=None):
-        if not self._open_reset_actions:
-            return False
-        return self._open_reset_actions() if generation is None else self._open_reset_actions(generation)
+    def open_reset_actions(self):
+        return False
 
     def begin_drag(self, intent=None):
         if intent is None:
@@ -1083,7 +1159,6 @@ class WidgetApp:
         self._reset_actions_lock = threading.Lock()
         self._bridge_authority = BridgeAuthority({"/runway.html", "/dashboard.html"})
         self._settings_bridge_authority = None
-        self._bridge_native_ids = set()
         self.start_hidden = bool(start_hidden)
         self.visible = not self.start_hidden
         self.server: ThreadingHTTPServer | None = None
@@ -2713,8 +2788,11 @@ class WidgetApp:
         if authority is not None:
             authority.revoke()
         settings_authority = getattr(self, "_settings_bridge_authority", None)
-        if settings_authority is not None:
-            settings_authority.revoke()
+        with self._reset_actions_lock:
+            settings_token = self._reset_actions_token
+            self._reset_actions_token = None
+            server_module.clear_settings_token(
+                settings_token, settings_authority.revoke if settings_authority is not None else None)
         _arm_shutdown_trace()
         from .providers import stop_snapshot_workers
         stop_snapshot_workers()
@@ -2740,9 +2818,8 @@ class WidgetApp:
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()
-        # Revoke the settings capability, then destroy its window before the port is released.
+        # The Settings capability was revoked synchronously before shutdown work began.
         with self._reset_actions_lock:
-            server_module.set_settings_token(None)
             self._reset_actions_token = None
         child, self.reset_actions_window = self.reset_actions_window, None
         if child is not None:
@@ -2788,27 +2865,21 @@ class WidgetApp:
                 return False
             return self._open_reset_actions_locked()
 
-    def _main_bridge_allowed(self, generation) -> bool:
+    def _open_reset_actions_from_bridge(self, receipt, window):
         authority = getattr(self, "_bridge_authority", None)
-        window = getattr(self, "window", None)
-        if not authority or not window or self.quitting:
-            return False
-        try:
-            current = window.get_current_url()
-        except Exception:
-            return False
-        return authority.admits(current, current, generation)
-
-    def _open_reset_actions_from_bridge(self, generation=None):
-        if not self._main_bridge_allowed(generation):
+        if authority is None or window is not getattr(self, "window", None):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        if self.quitting or not authority.commit(receipt, window, "open_reset_actions"):
             return False
         with self._lifecycle:
-            if not self._main_bridge_allowed(generation) or self.quitting:
+            if self.quitting:
                 return False
             return self._open_reset_actions_locked()
 
-    def queue_message(self, thread, message, generation=None):
-        if not self._main_bridge_allowed(generation):
+    def queue_message(self, thread, message, receipt, window):
+        authority = getattr(self, "_bridge_authority", None)
+        if (authority is None or window is not getattr(self, "window", None)
+                or not authority.receipt_is_current(receipt, window, "queue_message")):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
             return {"ok": False, "error": "invalid thread id"}
@@ -2818,7 +2889,7 @@ class WidgetApp:
             return {"ok": False, "error": "Explicit Codex SEND consent is required."}
         if not server_module._is_collected_codex_thread(thread):
             return {"ok": False, "error": "unknown Codex thread"}
-        if not self._main_bridge_allowed(generation):
+        if not authority.commit(receipt, window, "queue_message"):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         try:
             server_module.queue_codex_message(thread, message)
@@ -2832,8 +2903,10 @@ class WidgetApp:
             return {"ok": False, "error": "Codex CLI rejected the queue request"}
         return {"ok": True, "status": "queued", "detail": "Queued for the next turn. This does not answer the pending question."}
 
-    def open_thread(self, thread, generation=None):
-        if not self._main_bridge_allowed(generation):
+    def open_thread(self, thread, receipt, window):
+        authority = getattr(self, "_bridge_authority", None)
+        if (authority is None or window is not getattr(self, "window", None)
+                or not authority.receipt_is_current(receipt, window, "open_thread")):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
             return {"ok": False, "error": "invalid thread id"}
@@ -2841,7 +2914,7 @@ class WidgetApp:
             return {"ok": False, "error": "Codex is not enabled."}
         if not server_module._is_collected_codex_thread(thread):
             return {"ok": False, "error": "unknown Codex thread"}
-        if not self._main_bridge_allowed(generation):
+        if not authority.commit(receipt, window, "open_thread"):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         try:
             url = f"codex://threads/{thread}"
@@ -2857,7 +2930,12 @@ class WidgetApp:
         except (AttributeError, TypeError, OSError, subprocess.SubprocessError) as exc:
             return {"ok": False, "error": str(exc)[:120]}
 
-    def save_ledger_csv(self) -> dict:
+    def save_ledger_csv(self, window, receipt) -> dict:
+        authority = getattr(receipt, "authority", None)
+        if (not isinstance(authority, BridgeAuthority)
+                or not authority.receipt_is_current(receipt, window, "save_ledger_csv")
+                or window is not getattr(self, "reset_actions_window", None)):
+            return {"ok": False, "error": "Settings window is no longer trusted."}
         try:
             status, _headers, body = ledger_service.http_response(
                 ledger_service.EXPORT_PATH, {"range": ["all"], "format": ["csv"]})
@@ -2866,10 +2944,12 @@ class WidgetApp:
         if status != 200 or not any(name.lower() == "content-type" and value.startswith("text/csv")
                                     for name, value in _headers.items()):
             return {"ok": False, "error": "Saved history is unavailable or starting."}
-        window = getattr(self, "reset_actions_window", None) or self.window
         if window is None or not callable(getattr(window, "create_file_dialog", None)):
             return {"ok": False, "error": "Native file saving is unavailable."}
         try:
+            if (window is not self.reset_actions_window
+                    or not authority.commit(receipt, window, "save_ledger_csv")):
+                return {"ok": False, "error": "Settings window is no longer trusted."}
             selected = window.create_file_dialog(
                 webview.FileDialog.SAVE,
                 save_filename="branchglance-ledger-all.csv",
@@ -2880,13 +2960,20 @@ class WidgetApp:
             if not selected:
                 return {"ok": False, "cancelled": True}
             target = Path(selected)
-            target.write_bytes(body)
+            with authority._lock:
+                if (not authority.receipt_is_current_locked(receipt, window, "save_ledger_csv")
+                        or window is not self.reset_actions_window):
+                    return {"ok": False, "error": "Settings window is no longer trusted."}
+                target.write_bytes(body)
             return {"ok": True}
         except Exception:
             return {"ok": False, "error": "Could not save the CSV file."}
 
     def _open_reset_actions_locked(self) -> bool:
         child = self.reset_actions_window
+        if (child is not None and (self._settings_bridge_authority is None
+                                   or not self._settings_bridge_authority._admitted)):
+            child = self.reset_actions_window = None
         if child is not None:
             try:
                 child.show()
@@ -2897,35 +2984,32 @@ class WidgetApp:
                 self.reset_actions_window = None
         try:
             token = secrets.token_urlsafe(32)
-            self._settings_bridge_authority = BridgeAuthority({"/reset_actions.html"})
-            self._settings_bridge_authority.enable(self.server.server_address[1])
+            authority = BridgeAuthority({"/reset_actions.html"})
+            authority.enable(self.server.server_address[1])
+            self._settings_bridge_authority = authority
             with self._reset_actions_lock:
                 server_module.set_settings_token(token)
                 self._reset_actions_token = token
-            child = webview.create_window(
-                "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
-                width=440, height=540, min_size=(360, 360), resizable=True,
-                background_color="#111316",
-                js_api=SettingsWindowApi(self.save_ledger_csv,
-                                         lambda generation: self._settings_bridge_allowed(generation)),
-            )
-            self.reset_actions_window = child
 
-            child.events.loaded += lambda *_: self._install_native_authority(
-                child, self._settings_bridge_authority, settings=True)
-
-            def on_closed(*_args):
+            def revoke_on_closing():
                 with self._reset_actions_lock:
-                    if self.reset_actions_window is child:
-                        self.reset_actions_window = None
                     if self._reset_actions_token == token:
                         self._reset_actions_token = None
-                        server_module.set_settings_token(None)
-                        authority = self._settings_bridge_authority
-                        if authority is not None:
-                            authority.revoke()
+                        server_module.clear_settings_token(token, authority.revoke)
+                    else:
+                        authority.revoke()
 
-            child.events.closed += on_closed
+            settings_api = SettingsWindowApi(lambda receipt, source_window:
+                                             self.save_ledger_csv(source_window, receipt))
+            child = self._create_settings_native_window(settings_api, authority, revoke_on_closing, token)
+            if not authority._admitted:
+                self._revoke_settings_authority(authority)
+                with suppress(Exception):
+                    child.destroy()
+                self.reset_actions_window = None
+                return False
+            self.reset_actions_window = child
+            child.events.closed += lambda *_: self._clear_closed_settings_reference(child)
             return True
         except Exception:
             with self._reset_actions_lock:
@@ -2936,80 +3020,199 @@ class WidgetApp:
             self.reset_actions_window = None
             return False
 
-    def _settings_bridge_allowed(self, generation):
-        authority = getattr(self, "_settings_bridge_authority", None)
-        window = getattr(self, "reset_actions_window", None)
-        if not authority or not window or self.quitting:
-            return False
+    def _clear_closed_settings_reference(self, child):
+        if self.reset_actions_window is child:
+            self.reset_actions_window = None
+
+    def _create_settings_native_window(self, settings_api, authority, revoke_on_closing, token):
+        """Initialize the pinned pywebview Window model, then bind guards before native creation."""
+        gui = getattr(webview, "guilib", None)
+        if gui is None:
+            child = webview.create_window(
+                "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
+                width=440, height=540, min_size=(360, 360), resizable=True,
+                background_color="#111316", js_api=settings_api)
+            child.events.before_show += lambda *_: self._install_native_authority(
+                child, authority, settings=True)
+            child.events.closing += revoke_on_closing
+            self._install_native_authority(child, authority, settings=True)
+            return child
+
+        # pywebview 6.2.1's public create_window creates native children before it
+        # returns on a running GUI thread. Construct its Window model directly so
+        # the synchronous before_show/closing hooks exist before guilib creates
+        # BrowserForm, EdgeChrome and the first CoreWebView2 navigation.
+        uid = "child_" + secrets.token_hex(4)
+        child = webview.Window(
+            uid, "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
+            width=440, height=540, min_size=(360, 360), resizable=True,
+            background_color="#111316", js_api=settings_api)
+        webview.windows.append(child)
+        if not child._initialize(gui=gui, server=None):
+            webview.windows.remove(child)
+            return None
+        child.events.before_show += lambda *_: self._install_native_authority(
+            child, authority, settings=True)
+        child.events.closing += revoke_on_closing
         try:
-            current = window.get_current_url()
+            gui.create_window(child)
         except Exception:
-            return False
-        return authority.admits(current, current, generation)
+            with suppress(ValueError):
+                webview.windows.remove(child)
+            raise
+        return child
 
     def _install_native_authority(self, window, authority, *, settings=False):
-        """Guard Edge WebView bridge messages and navigations at their native event source."""
-        if authority is None or not authority._admitted:
+        """Install receipt, navigation and popup guards on the pinned Edge adapter pre-navigation."""
+        if authority is None or authority._port is None:
             return
         native = getattr(window, "native", None)
         if native is None:
-            authority.revoke()
-            return
-        native_id = id(native)
+            if settings:
+                self._revoke_settings_authority(authority)
+            else:
+                authority.revoke()
+            return False
+        adapter = getattr(native, "browser", None)
         try:
-            if native_id not in self._bridge_native_ids:
-                original_notify = native.on_script_notify
+            if adapter is None:
+                if settings:
+                    self._revoke_settings_authority(authority)
+                else:
+                    authority.revoke()
+                return False
+            if authority.already_installed(window, adapter):
+                return True
+            webview_control = getattr(adapter, "webview", None)
+            original_notify = getattr(adapter, "on_script_notify", None)
+            original_ready = getattr(adapter, "on_webview_ready", None)
+            if webview_control is None or original_notify is None or original_ready is None:
+                if settings:
+                    self._revoke_settings_authority(authority)
+                else:
+                    authority.revoke()
+                return False
+            operations = _SETTINGS_BRIDGE_OPERATIONS if settings else _MAIN_BRIDGE_OPERATIONS
 
-                def guarded_notify(sender, args):
-                    try:
-                        source = str(args.Source)
-                        current = window.get_current_url()
-                        generation = authority.generation
-                        if not authority.admits(source, current, generation):
-                            return
-                    except Exception:
+            def guarded_notify(sender, args):
+                try:
+                    wire = json.loads(args.get_WebMessageAsJson())
+                    if not isinstance(wire, list) or len(wire) != 3:
                         return
-                    return original_notify(sender, args)
-
-                native.webview.WebMessageReceived -= original_notify
-                native.webview.WebMessageReceived += guarded_notify
-                native.on_script_notify = guarded_notify
-
-                def navigation_starting(_sender, args):
-                    generation = authority.navigation_started()
-                    target = str(args.Uri)
-                    if authority.trusted_url(target):
+                    operation, encoded_params, value_id = wire
+                    if (not isinstance(operation, str) or operation.startswith("_") or "." in operation
+                            or not isinstance(value_id, str) or not re.fullmatch(r"[0-9]{1,64}", value_id)):
                         return
-                    args.Cancel = True
-                    if authority.trusted_url(window.get_current_url()):
-                        window.evaluate_js("window.__branchglanceDocumentGeneration=" + str(generation))
-                    if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
-                        import webbrowser
-                        webbrowser.open(target)
+                    params = json.loads(encoded_params)
+                    if not isinstance(params, list):
+                        return
+                    core = sender.CoreWebView2
+                    source_url = str(args.Source)
+                    top_url = str(core.Source)
+                    receipt = authority.receive(window, operation, source_url, top_url, operations)
+                    if receipt is None:
+                        return
+                except Exception:
+                    return
+                self._dispatch_native_bridge_call(window, operation, params, value_id, receipt)
 
-                native.webview.NavigationStarting += navigation_starting
+            def navigation_starting(_sender, args):
+                target = str(args.Uri)
+                trusted = authority.begin_navigation(target)
+                if trusted:
+                    return
+                args.Cancel = True
+                if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
+                    import webbrowser
+                    webbrowser.open(target)
 
-                def new_window_requested(_sender, args):
-                    args.set_Handled(True)
-                    target = str(args.get_Uri())
-                    if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
-                        import webbrowser
-                        webbrowser.open(target)
+            def new_window_requested(_sender, args):
+                args.set_Handled(True)
+                target = str(args.get_Uri())
+                if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
+                    import webbrowser
+                    webbrowser.open(target)
 
-                core = native.webview.CoreWebView2
-                core.NewWindowRequested -= native.on_new_window_request
-                core.NewWindowRequested += new_window_requested
+            # CoreWebView2InitializationCompleted is subscribed in EdgeChrome.__init__.
+            # Rewire that instance callback so the default popup route is removed before
+            # on_webview_ready starts the first navigation.
+            def guarded_ready(sender, args):
+                original_ready(sender, args)
+                if args.IsSuccess:
+                    core = sender.CoreWebView2
+                    core.NewWindowRequested -= adapter.on_new_window_request
+                    core.NewWindowRequested += new_window_requested
 
-                def navigation_completed(_sender, _args):
-                    if authority.trusted_url(window.get_current_url()):
-                        window.evaluate_js("window.__branchglanceDocumentGeneration=" + str(authority.generation))
-
-                native.webview.NavigationCompleted += navigation_completed
-                self._bridge_native_ids.add(native_id)
-            if authority.trusted_url(window.get_current_url()):
-                window.evaluate_js("window.__branchglanceDocumentGeneration=" + str(authority.generation))
+            webview_control.WebMessageReceived -= original_notify
+            webview_control.WebMessageReceived += guarded_notify
+            adapter.on_script_notify = guarded_notify
+            webview_control.NavigationStarting += navigation_starting
+            webview_control.CoreWebView2InitializationCompleted -= original_ready
+            webview_control.CoreWebView2InitializationCompleted += guarded_ready
+            if not authority.install(window, adapter):
+                if settings:
+                    self._revoke_settings_authority(authority)
+                else:
+                    authority.revoke()
+                return False
+            return True
         except Exception:
-            authority.revoke()
+            if settings:
+                self._revoke_settings_authority(authority)
+            else:
+                authority.revoke()
+            return False
+
+    def _revoke_settings_authority(self, authority):
+        with self._reset_actions_lock:
+            token = self._reset_actions_token
+            if token is None:
+                authority.revoke()
+                return
+            self._reset_actions_token = None
+            server_module.clear_settings_token(token, authority.revoke)
+
+    def _dispatch_native_bridge_call(self, window, operation, params, value_id, receipt):
+        """Resolve only allowlisted top-level operations and carry native receipt to execution."""
+        authority = receipt.authority
+        api = getattr(window, "_js_api", None)
+
+        def run():
+            try:
+                if operation in _RECEIPTED_OPERATIONS:
+                    if operation == "queue_message":
+                        callback = getattr(api, "_queue_message", None)
+                        result = callback(*params, receipt, window) if callback else {"ok": False, "error": "Queue is unavailable."}
+                    elif operation == "open_thread":
+                        callback = getattr(api, "_open_thread", None)
+                        result = callback(*params, receipt, window) if callback else {"ok": False, "error": "Open in Codex is unavailable."}
+                    elif operation == "open_reset_actions":
+                        callback = getattr(api, "_open_reset_actions", None)
+                        result = callback(receipt, window) if callback else False
+                    else:
+                        callback = getattr(api, "_save_ledger_csv", None)
+                        result = callback(receipt, window) if callback else {"ok": False, "error": "Native file saving is unavailable."}
+                else:
+                    method = getattr(api, operation, None)
+                    if method is None or operation.startswith("_") or "." in operation:
+                        return
+                    if not authority.commit(receipt, window, operation):
+                        return
+                    result = method(*params)
+            except Exception:
+                result = {"ok": False, "error": "Native action could not be completed."}
+            if not authority.receipt_is_current(receipt, window, operation):
+                return
+            try:
+                serialized = json.dumps(result).replace("\\", "\\\\").replace("'", "\\'")
+                window.evaluate_js(
+                    f'window.pywebview._returnValuesCallbacks["{operation}"]["{value_id}"]'
+                    f'({{value: \'{serialized}\'}})'
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=run, name="widget-native-bridge", daemon=True).start()
 
     def _startup_step(self, action):
         """Run one startup acquisition unless a shutdown was requested; serialized with quit()."""
@@ -3135,7 +3338,7 @@ class WidgetApp:
                              on_queue_message=self.queue_message, on_open_thread=self.open_thread),
         )
         self.window.events.before_show += self._set_native_background_fallback
-        self.window.events.loaded += lambda *_: self._install_native_authority(
+        self.window.events.before_show += lambda *_: self._install_native_authority(
             self.window, self._bridge_authority, settings=False)
         self.window.events.closing += self.on_closing
         # The native Handle does not exist until the GUI backend has loaded.

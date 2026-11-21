@@ -3,7 +3,6 @@
   const embedded=new URLSearchParams(window.location.search).get("embedded")==="1";
   let policyFailed=false;
   if(embedded){document.querySelectorAll("#ledger-history .ledger-row").forEach(row=>row.remove());document.documentElement.classList.add("settings-embedded");document.body.classList.add("settings-embedded");document.body.dataset.source="Codex";}
-  else { $("#modes").hidden=true;$("#picker").hidden=true;$("#oneshot-note").hidden=true;$("footer").hidden=true;$("#message").hidden=true; }
   let settingsToken="";
   try {
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
@@ -178,7 +177,6 @@
     renderSelection();
     renderLastRun(state.action?.lastRun);
     const saved=$("#saved-action-state");if(saved){saved.hidden=!state.actionReady;saved.textContent=state.action?.mode==="continue"&&state.action.armed?`Scheduled for the next reset · ${state.action.threadIds?.length||0} chats`:"No continuation scheduled";}
-    if(!embedded){$("#picker").hidden=true;$("#last-run").hidden=true;$("#saved-action-state").hidden=true;$("#permission").hidden=true;}
   }
   // Selection controls update in place so a toggled chat keeps keyboard focus (no list rebuild).
   function renderSelection() {
@@ -237,7 +235,7 @@
     if(state.selected.size>20){message("Choose no more than 20 chats.",true);return;}
     state.busy=true;render();message("Saving action…");
     try {
-      const response=await fetch("/api/reset-action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:chosenMode,threadIds:chosenMode==="continue"?[...state.selected]:[]}),cache:"no-store",signal:AbortSignal.timeout(15000)});
+      const response=await fetch("/api/reset-action",{method:"POST",headers:{"Content-Type":"application/json","X-Branchglance-Settings-Token":settingsToken},body:JSON.stringify({mode:chosenMode,threadIds:chosenMode==="continue"?[...state.selected]:[]}),cache:"no-store",signal:AbortSignal.timeout(15000)});
       const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||"Could not save reset action.");
       if(!validSavedAction(data.action))throw new Error("Saved action response was invalid.");
       state.action=data.action;state.serverActionFingerprint=JSON.stringify(data.action);state.actionReady=true;state.actionLoadError=false;state.selected=new Set(data.action?.mode==="continue"&&data.action?.armed===true?data.action.threadIds||[]:[]);state.dirty=false;state.actionChanged=false;message("Choice saved. It runs only while startup permissions allow it.");
@@ -285,7 +283,7 @@
     }
     state.exportBusy=true;state.exportStatus="Choose where to save the CSV.";state.exportError=false;renderLedger();
     try{
-      const result=await api.save_ledger_csv(window.__branchglanceDocumentGeneration);
+      const result=await api.save_ledger_csv();
       if(result?.ok){state.exportStatus="Saved CSV.";}
       else if(result?.cancelled){state.exportStatus="Export cancelled.";}
       else throw new Error(result?.error||"Could not export saved history.");

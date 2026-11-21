@@ -2497,9 +2497,7 @@ async function openInCodex(thread, button) {
     const api=window.pywebview?.api;
     let result;
     if(typeof api?.open_thread==="function"){
-      const generation=window.__branchglanceDocumentGeneration;
-      if(!Number.isSafeInteger(generation))return false;
-      result=await api.open_thread(thread,generation);
+      result=await api.open_thread(thread);
     }else{
       const response=await fetch("/api/open?thread="+encodeURIComponent(thread),{cache:"no-store",signal:AbortSignal.timeout(5000)});
       result=await response.json();
@@ -2527,9 +2525,7 @@ async function queueAnswer(thread, message, button) {
   if(typeof api?.queue_message!=="function")return {ok:false,error:"Queue is unavailable on this host."};
   if(button)button.disabled=true;
   try {
-    const generation=window.__branchglanceDocumentGeneration;
-    if(!Number.isSafeInteger(generation))throw new Error("Queue status unknown. Check the Codex task before retrying.");
-    const result=await api.queue_message(thread,message,generation);
+    const result=await api.queue_message(thread,message);
     if(!result?.ok){
       if(button){button.classList.add("send-failed");button.title=result.error||"Could not queue this message.";}
       return result;
@@ -2624,7 +2620,7 @@ function handleClick(event) {
   else if(action==="analytics"){state.analyticsOpen=!state.analyticsOpen;if(state.snapshot)renderAnalytics(state.snapshot);return;}
   else if(action==="window"){setWindow(Number(button.dataset.days));queueSelectionRefresh();}
   else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);if(html){openPopover(html,button);void loadIdentityPolicyWarnings(button);}else closePopover();}return;}
-  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api,generation=window.__branchglanceDocumentGeneration;if(typeof api?.open_reset_actions==="function"){if(typeof api.queue_message==="function"){if(Number.isSafeInteger(generation))void api.open_reset_actions(generation);}else void api.open_reset_actions();}return;}
+  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(typeof api?.open_reset_actions==="function")void api.open_reset_actions();return;}
   else if(action==="search"){openSearch(!state.searchOpen);}
   else if(action==="search-close"){openSearch(false);}
   else if(action==="refresh"){refresh(true);return;}

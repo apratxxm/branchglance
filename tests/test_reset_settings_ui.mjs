@@ -24,7 +24,7 @@ assert.match(frameCss,/\.settings-embedded \.mode\+\.mode\{border-top:1px solid 
 assert.match(frameCss,/\.settings-embedded #oneshot-note\{padding-top:8px;border-top:1px solid var\(--d-edge\);color:var\(--d-sub\);font-size:12px;\}/,"the conditional reset footer is a quiet Settings note");
 assert.match(app,/data-action="reset-settings"/);
 assert.match(app,/api\?\.open_reset_actions/);
-assert.match(app,/__branchglanceDocumentGeneration/);
+assert.doesNotMatch(app,/__branchglanceDocumentGeneration/);
 assert.doesNotMatch(app,/window\.open\?\.\("\/reset_actions\.html"/,"Settings can open only through the trusted native bridge");
 
 const elements=new Map();
@@ -87,6 +87,7 @@ const context={document,window,AbortSignal:{timeout(){}},URLSearchParams,fetch:a
   }
   gets.push(url);
   if(options.method==="POST"){
+    if(url==="/api/reset-action")assert.equal(options.headers["X-Branchglance-Settings-Token"],settingsToken,"reset saves carry the Settings capability");
     calls.push(JSON.parse(options.body));
     if(failSave)return {ok:false,json:async()=>({error:"Could not save"})};
     return {ok:true,json:async()=>({ok:true,action:{schemaVersion:2,mode:calls.at(-1).mode,threadIds:calls.at(-1).threadIds,armed:calls.at(-1).mode==="continue",oneShot:true,lastRun:null}})};
@@ -110,6 +111,9 @@ await element('#statusline-toggle').onclick();
 assert.equal(element('#statusline-toggle').textContent,'Disconnect Claude status line');
 assert.deepEqual(historyUrls,["/reset_actions.html"]);
 assert.equal(location.hash,"");
+assert.equal(element("#modes").hidden,false,"native Settings shows Off, Greet and Continue controls");
+assert.equal(element("footer").hidden,false,"native Settings shows Save and Discard controls");
+assert.match(html,/id="save"[^>]*>Save action<\/button>/,"native Settings exposes its Save control");
 assert.ok(requests.indexOf("/api/provider-policy")<requests.indexOf("/api/reset-action"),"policy is checked before action settings are fetched");
 assert.ok(requests.includes("/api/claude-collection"),"Claude Code status is loaded independently");
 assert.equal(element("#claude-status").textContent,"Off");
