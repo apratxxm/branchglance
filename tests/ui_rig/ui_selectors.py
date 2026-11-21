@@ -14,4 +14,10 @@ ACTION = '[data-dashboard-action="{}"]'
 CLOCK = "[data-dashboard-clock]"
 INTERACTIVE = 'summary, button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]'
 
-RESET_FRAME = 'iframe.reset-embed'
+# The widget's read-only reset summary; the editable form lives in the native Settings window.
+RESET_GROUP = ".dash-reset-group"
+
+# Standalone Settings page (/reset_actions.html), loaded by the native Settings window.
+SETTINGS_SAVED_STATE = "#saved-action-state"
+SETTINGS_MODE = 'input[name="mode"]'
+SETTINGS_FOOTER = ".settings > footer"

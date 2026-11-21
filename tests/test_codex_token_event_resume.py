@@ -224,6 +224,10 @@ def test_same_size_rewrite_forces_full_parse(tmp_path):
     rewritten = raw.replace(b'"total_tokens": 12', b'"total_tokens": 99')
     assert len(rewritten) == len(raw)
     path.write_bytes(rewritten)
+    # Some filesystems preserve the same observable mtime for rapid rewrites;
+    # make the changed fingerprint part of the test's explicit setup.
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
     assert (path.stat().st_dev, path.stat().st_ino) == identity
     events = providers.CodexProvider._token_events(path)
     assert events[0]["usage"]["total_tokens"] == 99

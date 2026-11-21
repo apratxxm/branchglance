@@ -836,6 +836,9 @@ function ownState(chat) {
     const word=chat.stateDetail==="interrupted"?"Stopped":"Failed";
     return recentFail(chat)?{key:"failed",glyph:"dot",tone:"err",word}:{key:"failed-old",glyph:"dot",tone:"mute",word};
   }
+  // Exact process verification can mark a dead Codex run as stopped while its
+  // provider status remains idle. Keep that terminal state visible in the tree.
+  if(chat.stateDetail==="stopped")return {key:"stopped",glyph:"dot",tone:"mute",word:"Stopped"};
   if(chat.status==="running")return {key:"running",glyph:"dot",tone:"live",word:"Running"};
   if(chat.status==="compacting")return {key:"compacting",glyph:"dot",tone:"attn",word:"Compacting"};
   if(chat.status==="quiet")return {key:"quiet",glyph:"ring",tone:"live",wordTone:"mute",word:"Quiet",title:"No transcript writes for 3+ minutes; may be in a long tool call"};

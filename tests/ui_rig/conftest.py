@@ -76,9 +76,9 @@ def browser():
         browser.close()
 
 
-@pytest.fixture
-def page(browser, server):
-    context = browser.new_context(viewport={"width": 720, "height": 608}, reduced_motion="reduce")
+def _rig_context(browser, server, viewport):
+    """A fresh context whose page errors, failed local requests and HTTP errors fail the test."""
+    context = browser.new_context(viewport=viewport, reduced_motion="reduce")
     errors = []
     page = context.new_page()
     page.on("pageerror", lambda error: errors.append(f"page error: {error}"))
@@ -87,6 +87,12 @@ def page(browser, server):
     page.on("requestfailed", lambda request: errors.append(f"request failed: {request.url}: {request.failure}") if request.url.startswith(server) and "ERR_ABORTED" not in (request.failure or "") else None)
     page.on("response", lambda response: errors.append(f"HTTP {response.status}: {response.url}") if response.url.startswith(server) and response.status >= 400 else None)
     context.route("**/*", lambda route: route.continue_() if route.request.url.startswith(server + "/") else route.abort())
+    return context, page, errors
+
+
+@pytest.fixture
+def page(browser, server):
+    context, page, errors = _rig_context(browser, server, {"width": 720, "height": 608})
     page.goto(server + "/runway.html?review=1&capture=tree")
     page.wait_for_function("window.__tokenTrackerTest && document.querySelector('#dashboard-open')")
     page.evaluate("""() => {
@@ -97,8 +103,11 @@ def page(browser, server):
       document.addEventListener("keydown", t.handleKey);
       const api = window.pywebview.api;
       window.__rigCalls = [];
+      window.__rigOpenSettingsResult = true;
       api.set_widget_lock = async (locked, expanded) => { window.__rigCalls.push(['lock', locked]); return {locked, expanded, revision: Date.now(), keepOpen: false, keepOpenRevision: 0}; };
       api.set_keep_open = async (keepOpen) => { window.__rigCalls.push(['keep-open', keepOpen]); return {keepOpen, keepOpenRevision: Date.now()}; };
+      // Settings is its own native window; the widget only asks the bridge to open it.
+      api.open_reset_actions = async (...args) => { window.__rigCalls.push(['open-settings', ...args]); return window.__rigOpenSettingsResult; };
       window.open = (...args) => { window.__rigCalls.push(['open', ...args]); return null; };
     }""")
     yield page
@@ -106,3 +115,37 @@ def page(browser, server):
         assert not errors, "\n".join(errors)
     finally:
         context.close()
+
+
+# widget.py opens Settings natively at 440x540 (minimum 360x360) on /reset_actions.html#t=<token>.
+SETTINGS_WINDOW = {"width": 440, "height": 540}
+SETTINGS_TOKEN = "ui-rig-fictional-settings-token"
+GRANT_ALL_POLICY = {"schemaVersion": 1, "generation": "ui-rig-settings-window",
+                    "providers": [{"name": "Codex", "collect": True, "show": True,
+                                   "send": True, "sendOrigin": "provider_env",
+                                   "capabilities": {"greet": True, "continue": True}}]}
+
+
+@pytest.fixture
+def settings_window(browser, server):
+    """Open the standalone Settings page the way the native window loads it, in its own context."""
+    opened = []
+
+    def open_window(*, grant_all=False, viewport=SETTINGS_WINDOW):
+        context, page, errors = _rig_context(browser, server, viewport)
+        opened.append((context, errors))
+        # The shared fixture policy denies automatic actions; grant_all enables every reset choice.
+        if grant_all:
+            context.route("**/api/provider-policy", lambda route: route.fulfill(json=GRANT_ALL_POLICY))
+        # Discard closes the native window; record it instead of closing the rig page.
+        context.add_init_script("window.__rigCalls = []; window.close = () => { window.__rigCalls.push(['close']); };")
+        page.goto(f"{server}/reset_actions.html#t={SETTINGS_TOKEN}")
+        return page
+
+    yield open_window
+    try:
+        failures = [error for _, errors in opened for error in errors]
+        assert not failures, "\n".join(failures)
+    finally:
+        for context, _ in opened:
+            context.close()

@@ -322,24 +322,38 @@ def test_settings_switches_and_clock(page):
     expect(page.locator(f'{ui.CLOCK}[aria-pressed="true"]')).to_have_count(1)
 
 
-def test_settings_rerender_keeps_reset_form_loaded(page):
+def test_settings_rerender_keeps_reset_form_loaded(page, settings_window):
     open_settings(page)
-    frame = page.locator(ui.RESET_FRAME)
-    expect(page.frame_locator(ui.RESET_FRAME).locator(ui.INTERACTIVE).first).to_be_attached()
-    frame.evaluate("el => { el.contentWindow.__rigMarker = 1; }")
+    expect(page.locator(ui.RESET_GROUP)).to_be_visible()
+    summary = page.locator(ui.RESET_GROUP).inner_text()
+    assert "Saved choice:" in summary and "Manage in Settings" in summary, summary
     page.get_by_role("switch", name="Lock widget position").click()
     page.locator(f'{ui.CLOCK}[aria-pressed="false"]').click()
     expect(page.locator(f'{ui.CLOCK}[aria-pressed="true"]')).to_have_count(1)
-    assert frame.evaluate("el => el.contentWindow.__rigMarker") == 1, "the reset form reloaded on a Settings re-render"
+    # Settings re-renders keep the read-only reset summary intact (the editable form lives in the native window).
+    expect(page.locator(ui.RESET_GROUP)).to_have_count(1)
+    assert page.locator(ui.RESET_GROUP).inner_text() == summary
+    page.evaluate("""() => {
+      const action = document.createElement('button');
+      action.dataset.action = 'reset-settings';
+      document.body.append(action);
+      action.click();
+      action.remove();
+    }""")
+    assert page.evaluate("() => window.__rigCalls.some(call => call[0] === 'open-settings')")
+
+    settings = settings_window()
+    expect(settings.locator(ui.SETTINGS_SAVED_STATE)).to_be_visible()
 
 
 def test_settings_reachable(page):
     open_settings(page)
     content = page.locator(ui.SETTINGS_SCROLLER)
-    frame = page.frame_locator(ui.RESET_FRAME)
-    expect(frame.locator("#saved-action-state")).to_be_visible()
-    expect(frame.locator("#saved-action-state")).to_have_text("No continuation scheduled")
-    # The embedded reset form grows the page once it loads; measure after layout settles.
+    # The widget retains a read-only reset summary; the editable Settings form is a native window.
+    expect(page.locator(ui.RESET_GROUP)).to_be_visible()
+    expect(page.locator(ui.RESET_GROUP)).to_contain_text("Saved choice:")
+    expect(page.locator(ui.RESET_GROUP)).to_contain_text("managed in the native Settings window")
+    expect(page.locator(ui.RESET_GROUP).get_by_role("button", name="Manage in Settings")).to_be_visible()
     content.evaluate("el => new Promise(resolve => { let last = -1, stable = 0; const tick = () => { const h = el.scrollHeight; stable = h === last ? stable + 1 : 0; last = h; if (stable >= 3) resolve(); else requestAnimationFrame(tick); }; tick(); })")
     size = content.evaluate("el => ({scroll: el.scrollHeight, client: el.clientHeight})")
     assert size["scroll"] > size["client"]
@@ -347,6 +361,17 @@ def test_settings_reachable(page):
     content.evaluate("el => el.scrollTop = el.scrollHeight")
     last = page.locator(ui.ACTION.format("debug-preview"))
     assert last.evaluate("el => { const r=el.getBoundingClientRect(), p=document.querySelector('#dashboard-content').getBoundingClientRect(); return r.bottom <= p.bottom && r.top >= p.top; }")
+
+
+def test_settings_page_reachable(settings_window):
+    settings = settings_window()
+    expect(settings.locator(ui.SETTINGS_SAVED_STATE)).to_be_visible()
+    expect(settings.locator(ui.SETTINGS_SAVED_STATE)).to_have_text("No continuation scheduled")
+    footer = settings.locator(ui.SETTINGS_FOOTER)
+    page_size = settings.evaluate("() => ({scroll: document.documentElement.scrollHeight, client: innerHeight})")
+    if page_size["scroll"] > page_size["client"]:
+        settings.evaluate("() => window.scrollTo(0, document.documentElement.scrollHeight)")
+    assert footer.evaluate("el => { const r=el.getBoundingClientRect(); return r.bottom <= innerHeight && r.top >= 0; }")
 
 
 def test_tall_by_work_chart_scrolls_at_full_and_compact_heights(page):
@@ -603,37 +628,31 @@ def test_horizontal_layout(page):
     assert not bad, bad
 
 
-def test_settings_keyboard_reaches_controls(page):
-    # The shared fixture denies automatic actions; grant all reset choices to the embedded test frame.
-    def reset_frame_policy(route):
-        if urlsplit(route.request.frame.url).path == "/reset_actions.html":
-            route.fulfill(json={"schemaVersion": 1, "generation": "ui-rig-reset-frame",
-                                "providers": [{"name": "Codex", "collect": True, "show": True,
-                                               "send": True, "sendOrigin": "provider_env",
-                                               "capabilities": {"greet": True, "continue": True}}]})
-        else:
-            route.continue_()
-
-    page.route("**/api/provider-policy", reset_frame_policy)
+def test_settings_keyboard_reaches_controls(page, settings_window):
     open_settings(page)
-    controls = page.locator(ui.SETTINGS).locator(ui.INTERACTIVE).filter(visible=True)
-    frame = page.frame_locator(ui.RESET_FRAME)
-    # Count the embedded form only after it has rendered, or the expected total races its load.
-    expect(frame.locator(ui.INTERACTIVE).filter(visible=True).first).to_be_visible()
-    # Loading state shows its own controls; count only once the saved mode is selected and every granted mode is enabled.
-    expect(frame.locator('input[name="mode"]:checked')).to_have_count(1)
-    expect(frame.locator('input[name="mode"]:not([disabled])')).to_have_count(3)
-    inner = frame.locator(ui.INTERACTIVE).filter(visible=True)
-    expected_outer = controls.count()
-    enabled_radios = frame.locator('input[name="mode"]:not([disabled])')
-    radio_count = enabled_radios.count()
-    expected_inner = inner.count() - radio_count + (1 if radio_count else 0)
-    expected = expected_outer + expected_inner
-    assert expected_outer > 0
+    widget_controls = page.locator(ui.SETTINGS).locator(ui.INTERACTIVE).filter(visible=True)
+    expected_widget = widget_controls.count()
+    page.locator(ui.SETTINGS_TAB).focus()
+    widget_seen = set()
+    for _ in range(100):
+        page.keyboard.press("Tab")
+        index = widget_controls.evaluate_all("els => els.indexOf(document.activeElement)")
+        if index >= 0:
+            visible = page.evaluate("""() => {const r=document.activeElement.getBoundingClientRect(), p=document.querySelector('#dashboard-content').getBoundingClientRect(); return r.top >= p.top && r.bottom <= p.bottom;}""")
+            if visible:
+                widget_seen.add(index)
+    assert len(widget_seen) == expected_widget, (len(widget_seen), expected_widget)
 
-    off = frame.locator('input[name="mode"][value="off"]')
-    greet = frame.locator('input[name="mode"][value="greet"]')
-    continuation = frame.locator('input[name="mode"][value="continue"]')
+    page = settings_window(grant_all=True)
+    controls = page.locator(ui.INTERACTIVE).filter(visible=True)
+    expect(page.locator(ui.SETTINGS_MODE + ":checked")).to_have_count(1)
+    expect(page.locator(ui.SETTINGS_MODE + ":not([disabled])")).to_have_count(3)
+    radios = page.locator(ui.SETTINGS_MODE + ":not([disabled])")
+    expected = controls.count() - radios.count() + 1
+
+    off = page.locator(ui.SETTINGS_MODE + '[value="off"]')
+    greet = page.locator(ui.SETTINGS_MODE + '[value="greet"]')
+    continuation = page.locator(ui.SETTINGS_MODE + '[value="continue"]')
     off.focus()
     page.keyboard.press("ArrowDown")
     expect(greet).to_be_checked()
@@ -643,23 +662,17 @@ def test_settings_keyboard_reaches_controls(page):
     expect(greet).to_be_checked()
     page.keyboard.press("ArrowUp")
     expect(off).to_be_checked()
-    frame.get_by_role("button", name="Discard changes").click()
+    page.get_by_role("button", name="Discard changes").click()
+    expect(page.locator("body")).to_be_visible()
+    assert page.evaluate("() => window.__rigCalls.some(call => call[0] === 'close')")
 
-    page.locator(ui.SETTINGS_TAB).focus()
+    page.locator(ui.SETTINGS_MODE + '[value="off"]').focus()
     seen = set()
-    for _ in range(100):
+    for _ in range(60):
         page.keyboard.press("Tab")
         index = controls.evaluate_all("els => els.indexOf(document.activeElement)")
         if index >= 0:
-            visible = page.evaluate("""() => {const r=document.activeElement.getBoundingClientRect(), p=document.querySelector('#dashboard-content').getBoundingClientRect(); return r.top >= p.top && r.bottom <= p.bottom;}""")
-            if visible:
-                seen.add(("outer", index))
-        inner_index = inner.evaluate_all("els => els.indexOf(document.activeElement)")
-        if inner_index >= 0 and page.locator(ui.RESET_FRAME).evaluate("el => document.activeElement === el"):
-            if inner.nth(inner_index).get_attribute("name") == "mode":
-                seen.add(("frame", "mode-radio-group"))
-            else:
-                seen.add(("frame", inner_index))
+            seen.add(index)
     assert len(seen) == expected, (len(seen), expected)
 
 
