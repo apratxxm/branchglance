@@ -109,6 +109,18 @@ def _migrate_claude_prompt_tiers(conn: sqlite3.Connection) -> None:
         tier = model_mod.claude_price_tier(model, prompt_peak)
         conn.execute("UPDATE facts SET price_tier=? WHERE provider=? AND fact_key=?",
                      (tier, model_mod.CLAUDE, fact_key))
+    # Staged observations written by schema 3 have no prompt_evidence key at all; give them the same
+    # stored-input-total estimate. An explicit null (written by this schema) means invalid counters and stays.
+    staged = conn.execute("SELECT rowid, observation FROM provisional_facts WHERE provider=?",
+                          (model_mod.CLAUDE,)).fetchall()
+    for rowid, text in staged:
+        observation = json.loads(text)
+        if "prompt_evidence" in observation:
+            continue
+        fields = observation.get("fields") or {}
+        observation["prompt_evidence"] = fields.get("input_total")
+        observation["price_tier"] = model_mod.claude_price_tier(observation.get("model"), observation["prompt_evidence"])
+        conn.execute("UPDATE provisional_facts SET observation=? WHERE rowid=?", (json.dumps(observation), rowid))
     rebuild_rollups(conn, load_overrides(conn))
     meta_set(conn, "revision", int(meta_value(conn, "revision") or 0) + 1)
 

@@ -74,6 +74,9 @@ class Ledger:
             else:
                 try:
                     store.quick_check(conn)
+                except sqlite3.OperationalError:
+                    conn.close()
+                    raise  # a locked or busy integrity check proves nothing about corruption
                 except sqlite3.DatabaseError:
                     conn.close()
                     self.recovery = self._begin_recovery("corrupt")
