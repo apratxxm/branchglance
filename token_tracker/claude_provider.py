@@ -232,11 +232,9 @@ def _agent_descriptions(parent: Path | None) -> dict[str, str]:
     if parent is None:
         return {}
     from . import providers
-    providers._incremental_jsonl_reduce_group(parent, _claude_transcript_reducer_specs())
-    state = providers._incremental_jsonl_reduce(
-        _AGENT_DESCRIPTION_KIND, parent, _new_agent_description_state, _reduce_agent_descriptions,
-        project=lambda state: {"result": dict(state["result"])}, unavailable={"result": {}},
-        needles=_AGENT_DESCRIPTION_NEEDLES)
+    specs = _claude_transcript_reducer_specs()
+    providers._incremental_jsonl_reduce_group(parent, specs)
+    state = _run_claude_transcript_reducer(_AGENT_DESCRIPTION_KIND, parent)
     result = state.get("result") if isinstance(state, dict) else None
     return dict(result) if isinstance(result, dict) else {}
 
@@ -407,18 +405,33 @@ def _reduce_transcript(state: dict[str, Any], item: Any) -> None:
 _USAGE_NEEDLES = (b'"usage"',)
 
 
-def _claude_transcript_reducer_specs() -> list[dict[str, Any]]:
+_CLAUDE_TRANSCRIPT_REDUCER_SPECS: tuple[dict[str, Any], ...] | None = None
+
+
+def _claude_transcript_reducer_specs() -> tuple[dict[str, Any], ...]:
     """Reducers that share one Claude Code transcript in a snapshot build."""
-    return [
+    global _CLAUDE_TRANSCRIPT_REDUCER_SPECS
+    if _CLAUDE_TRANSCRIPT_REDUCER_SPECS is None:
+        _CLAUDE_TRANSCRIPT_REDUCER_SPECS = (
         {"kind": "claude-code-transcript", "initial_state": _new_transcript_state,
-         "reduce_record": _reduce_transcript, "unavailable": _new_transcript_state()},
+         "reduce_record": lambda state, item: _reduce_transcript(state, item),
+         "unavailable": _new_transcript_state()},
         {"kind": _AGENT_DESCRIPTION_KIND, "initial_state": _new_agent_description_state,
-         "reduce_record": _reduce_agent_descriptions,
+         "reduce_record": lambda state, item: _reduce_agent_descriptions(state, item),
          "project": lambda state: {"result": dict(state["result"])},
          "unavailable": {"result": {}}, "needles": _AGENT_DESCRIPTION_NEEDLES},
         {"kind": _USAGE_KIND, "initial_state": _new_usage_state,
-         "reduce_record": _reduce_usage, "unavailable": None, "needles": _USAGE_NEEDLES},
-    ]
+         "reduce_record": lambda state, item: _reduce_usage(state, item),
+         "unavailable": None, "needles": _USAGE_NEEDLES},
+        )
+    return _CLAUDE_TRANSCRIPT_REDUCER_SPECS
+
+
+def _run_claude_transcript_reducer(kind: str, path: Path) -> Any:
+    from . import providers
+    spec = next(spec for spec in _claude_transcript_reducer_specs() if spec["kind"] == kind)
+    args = {"kind": kind, **{name: value for name, value in spec.items() if name != "kind"}}
+    return providers._incremental_jsonl_reduce(path=path, **args)
 
 
 def transcript_summary(path: Path | None) -> dict[str, Any]:
@@ -426,9 +439,7 @@ def transcript_summary(path: Path | None) -> dict[str, Any]:
         return _new_transcript_state()
     from . import providers
     providers._incremental_jsonl_reduce_group(path, _claude_transcript_reducer_specs())
-    state = providers._incremental_jsonl_reduce(
-        "claude-code-transcript", path, _new_transcript_state, _reduce_transcript,
-        unavailable=_new_transcript_state())
+    state = _run_claude_transcript_reducer("claude-code-transcript", path)
     return state if isinstance(state, dict) else _new_transcript_state()
 
 
@@ -785,9 +796,7 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
     session_activity: dict[str, dict[str, Any]] = {}
     for _created, _name, path in _usage_files(base, now - (days + 1) * 86400):
         providers._incremental_jsonl_reduce_group(path, _claude_transcript_reducer_specs())
-        state = providers._incremental_jsonl_reduce(
-            _USAGE_KIND, path, _new_usage_state, _reduce_usage,
-            unavailable=None, needles=_USAGE_NEEDLES)
+        state = _run_claude_transcript_reducer(_USAGE_KIND, path)
         if not isinstance(state, dict):
             continue
         subagent = "subagents" in path.parts

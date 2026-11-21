@@ -3763,39 +3763,96 @@ def test_incremental_jsonl_checkpoints_enforce_entry_budget_without_large_state(
     assert 0 < providers._JSONL_CHECKPOINT_BYTES <= providers._JSONL_CHECKPOINT_MAX_BYTES
 
 
-def test_incremental_jsonl_group_matches_individual_reducers_across_file_changes(tmp_path):
+def test_incremental_jsonl_group_matches_individual_reducers_across_file_changes(tmp_path, monkeypatch):
     path = tmp_path / "group.jsonl"
+    group_kind, single_kind = f"group-history-{id(path)}", f"single-history-{id(path)}"
+    sidecar = ["v1"]
 
-    def reducer(kind):
+    def reducer_spec(kind):
         return {"kind": kind, "initial_state": lambda: {"values": []},
                 "reduce_record": lambda state, item: state["values"].append(item["value"]),
-                "unavailable": None}
+                "unavailable": None, "fingerprint_extra": sidecar[0]}
 
-    kinds = [f"group-{id(path)}-{index}" for index in range(3)]
-    specs = [dict(reducer(kind), kind=kind) for kind in kinds]
+    def checkpoint(key):
+        value = providers._JSONL_CHECKPOINTS.get((key, str(path.resolve(strict=False))))
+        if value is None:
+            return None
+        return {name: providers.deepcopy(value[name]) for name in ("state", "offset", "stat", "prefix", "cursor", "extra")}
 
-    def compare(contents):
-        path.write_bytes(contents)
-        grouped = providers._incremental_jsonl_reduce_group(path, specs)
-        expected = {kind: providers._incremental_jsonl_reduce(
-            kind, path, lambda: {"values": []},
-            lambda state, item: state["values"].append(item["value"])) for kind in kinds}
-        assert grouped == expected
+    def compare_transition(contents=None, *, replace=False, unreadable=False):
+        if replace:
+            replacement = tmp_path / "replacement.jsonl"
+            replacement.write_bytes(contents)
+            os.replace(replacement, path)
+        elif contents is not None:
+            path.write_bytes(contents)
+        grouped_spec, single_spec = reducer_spec(group_kind), reducer_spec(single_kind)
+        if unreadable:
+            original_open = Path.open
+            def blocked(self, *args, **kwargs):
+                if self == path:
+                    raise PermissionError("unreadable warm transcript")
+                return original_open(self, *args, **kwargs)
+            with monkeypatch.context() as patch:
+                patch.setattr(Path, "open", blocked)
+                grouped = providers._incremental_jsonl_reduce_group(path, [grouped_spec])[group_kind]
+                single = providers._incremental_jsonl_reduce(single_kind, path,
+                                                              single_spec["initial_state"], single_spec["reduce_record"],
+                                                              fingerprint_extra=single_spec["fingerprint_extra"],
+                                                              unavailable=None)
+        else:
+            grouped = providers._incremental_jsonl_reduce_group(path, [grouped_spec])[group_kind]
+            single = providers._incremental_jsonl_reduce(single_kind, path,
+                                                          single_spec["initial_state"], single_spec["reduce_record"],
+                                                          fingerprint_extra=single_spec["fingerprint_extra"],
+                                                          unavailable=None)
+        assert grouped == single
+        group_checkpoint, single_checkpoint = checkpoint(group_kind), checkpoint(single_kind)
+        assert (group_checkpoint is None) == (single_checkpoint is None)
+        if group_checkpoint is not None:
+            assert group_checkpoint == single_checkpoint
+        return grouped
 
-    compare(b'{"value":1}\n{"value":2}\n')
-    with path.open("ab") as handle:
-        handle.write(b'{"value":3}\n')
-    expected = {kind: {"values": [1, 2, 3]} for kind in kinds}
-    assert providers._incremental_jsonl_reduce_group(path, specs) == expected
-    compare(b'{"value":7}\n')  # truncate/rewrite
-    replacement = tmp_path / "replacement.jsonl"
-    replacement.write_bytes(b'{"value":9}\n')
-    os.replace(replacement, path)
-    grouped = providers._incremental_jsonl_reduce_group(path, specs)
-    assert grouped == {kind: {"values": [9]} for kind in kinds}
-    assert {kind: providers._incremental_jsonl_reduce(
-        kind, path, lambda: {"values": []},
-        lambda state, item: state["values"].append(item["value"])) for kind in kinds} == grouped
+    try:
+        long_rows = [json.dumps({"value": "a" * 24, "row": index}) + "\n" for index in range(16)]
+        compare_transition("".join(long_rows).encode())  # fresh
+        with path.open("ab") as handle:
+            handle.write(b'{"value":"append","row":17}\n')
+        compare_transition()  # append
+
+        original = path.read_bytes()
+        middle = original.index(b"a" * 24, len(original) // 3)
+        rewritten = original[:middle] + b"b" * 24 + original[middle + 24:]
+        assert len(rewritten) == len(original)
+        old_mtime = path.stat().st_mtime_ns
+        path.write_bytes(rewritten)
+        os.utime(path, ns=(path.stat().st_atime_ns, old_mtime + 2_000_000_000))
+        compare_transition()  # same-size rewrite beyond both edge guards
+
+        compare_transition(b'{"value":"short"}\n')  # truncation
+        compare_transition(b'{"value":"replacement"}\n', replace=True)  # file identity change
+
+        with path.open("ab") as handle:
+            handle.write(b'{"value":"pending"}\n')
+        compare_transition(unreadable=True)  # unreadable after both histories were warm
+        compare_transition()  # restore readable checkpoints
+
+        sidecar[0] = "v2"
+        compare_transition()  # sidecar-only fingerprint change
+
+        # An append that expands the retained state beyond the byte budget must
+        # retire both prior entries, matching the single-kind path.
+        prior_costs = [checkpoint(group_kind)["state"], checkpoint(single_kind)["state"]]
+        old_cost = providers._jsonl_state_cost(prior_costs[0], (group_kind, str(path.resolve(strict=False))), "v2")
+        with path.open("ab") as handle:
+            handle.write(json.dumps({"value": "z" * 5000}).encode() + b"\n")
+        with monkeypatch.context() as patch:
+            patch.setattr(providers, "_JSONL_CHECKPOINT_MAX_BYTES", old_cost + 128)
+            compare_transition()
+        assert checkpoint(group_kind) is None and checkpoint(single_kind) is None
+    finally:
+        providers._jsonl_checkpoint_remove((group_kind, str(path.resolve(strict=False))))
+        providers._jsonl_checkpoint_remove((single_kind, str(path.resolve(strict=False))))
 
 
 def test_incremental_jsonl_group_opens_once_and_serializes_same_path_calls(tmp_path, monkeypatch):
@@ -3851,14 +3908,30 @@ def test_incremental_jsonl_group_opens_once_and_serializes_same_path_calls(tmp_p
     # A concurrent single-kind call may win the stripe lock first; either way,
     # both paths must publish the same final state without corrupting checkpoints.
     path.write_bytes(payload + b'{"value":50}\n')
+    single_kind = f"group-concurrent-single-{id(path)}"
+    barrier = threading.Barrier(2)
+
+    def group_call():
+        barrier.wait(timeout=5)
+        return providers._incremental_jsonl_reduce_group(path, specs)
+
+    def single_call():
+        barrier.wait(timeout=5)
+        return providers._incremental_jsonl_reduce(
+            single_kind, path, lambda: {"n": 0},
+            lambda state, _item: state.__setitem__("n", state["n"] + 1))
+
     with ThreadPoolExecutor(max_workers=2) as pool:
-        group = pool.submit(providers._incremental_jsonl_reduce_group, path, specs)
-        single = pool.submit(providers._incremental_jsonl_reduce, kinds[0], path,
-                             lambda: {"n": 0}, lambda state, _item: state.__setitem__("n", state["n"] + 1))
+        group = pool.submit(group_call)
+        single = pool.submit(single_call)
         grouped = group.result()
         individual = single.result()
     assert grouped == {kind: {"n": 51} for kind in kinds}
     assert individual == {"n": 51}
+    for kind in (*kinds, single_kind):
+        checkpoint = providers._JSONL_CHECKPOINTS[(kind, str(path.resolve(strict=False)))]
+        assert checkpoint["state"]["n"] == 51
+        assert checkpoint["offset"] == path.stat().st_size
 
 
 def test_incremental_jsonl_group_unreadable_and_never_advances_unseen_kind(tmp_path, monkeypatch):
@@ -3898,6 +3971,181 @@ def test_incremental_jsonl_group_respects_each_reducers_checkpoint_offset(tmp_pa
     assert providers._incremental_jsonl_reduce_group(path, group) == {
         old_kind: {"values": [1, 2]}, new_kind: {"values": [1, 2]}}
     assert old_offset < providers._JSONL_CHECKPOINTS[(old_kind, str(path.resolve(strict=False)))]["offset"]
+
+
+def test_grouped_session_insights_spec_is_valid_when_transcript_is_missing(tmp_path):
+    missing = tmp_path / "removed-rollout.jsonl"
+    spec = providers._session_insights(str(missing), _spec_only=True)
+    assert spec["kind"] == "codex-session-insights"
+    assert providers._incremental_jsonl_reduce_group(missing, [spec]) == {spec["kind"]: {}}
+
+
+def test_grouped_valid_null_record_reaches_unfiltered_reducer(tmp_path):
+    path = tmp_path / "valid-null.jsonl"
+    path.write_bytes(b"null\n")
+    kind = f"group-null-{id(path)}"
+    spec = {"kind": kind, "initial_state": list, "reduce_record": lambda state, item: state.append(item)}
+    assert providers._incremental_jsonl_reduce_group(path, [spec])[kind] == [None]
+    assert providers._JSONL_CHECKPOINTS[(kind, str(path.resolve(strict=False)))]["state"] == [None]
+    assert providers._JSONL_CHECKPOINTS[(kind, str(path.resolve(strict=False)))]["offset"] == path.stat().st_size
+
+
+def test_grouped_incomplete_fragment_refreshes_prefix_guard_without_advancing_offset(tmp_path):
+    path = tmp_path / "short-incomplete.jsonl"
+    path.write_bytes(b'{"value":"first"}\n')
+    group_kind, single_kind = f"group-prefix-{id(path)}", f"single-prefix-{id(path)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    group_spec = {"kind": group_kind, "initial_state": initial, "reduce_record": reduce}
+    assert providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind] == {"values": ["first"]}
+    assert providers._incremental_jsonl_reduce(single_kind, path, initial, reduce) == {"values": ["first"]}
+    group_key, single_key = (group_kind, str(path.resolve(strict=False))), (single_kind, str(path.resolve(strict=False)))
+    with path.open("ab") as handle:
+        handle.write(b'{"value":"incomplete')
+    grouped = providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind]
+    single = providers._incremental_jsonl_reduce(single_kind, path, initial, reduce)
+    assert grouped == single == {"values": ["first"]}
+    assert providers._JSONL_CHECKPOINTS[group_key]["offset"] == providers._JSONL_CHECKPOINTS[single_key]["offset"]
+    assert providers._JSONL_CHECKPOINTS[group_key]["prefix"] == providers._JSONL_CHECKPOINTS[single_key]["prefix"]
+    with path.open("ab") as handle:
+        handle.write(b'"}\n')
+    grouped = providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind]
+    single = providers._incremental_jsonl_reduce(single_kind, path, initial, reduce)
+    assert grouped == single == {"values": ["first", "incomplete"]}
+
+
+def test_grouped_sidecar_publication_is_discarded_if_path_changes_after_guard_validation(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "sidecar-race.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    extra = ["before"]
+    kind = f"group-sidecar-race-{id(path)}"
+    spec = {"kind": kind, "initial_state": lambda: {"values": []},
+            "reduce_record": lambda state, item: state["values"].append(item["value"]),
+            "fingerprint_extra": extra[0]}
+    assert providers._incremental_jsonl_reduce_group(path, [spec])[kind] == {"values": [1]}
+    key = (kind, str(path.resolve(strict=False)))
+    before = providers.deepcopy(providers._JSONL_CHECKPOINTS[key])
+    extra[0] = "after"
+    spec["fingerprint_extra"] = extra[0]
+    barrier = threading.Barrier(2)
+    real_guards = providers._jsonl_guards
+    synchronized = [False]
+
+    def guarded(handle, offset, size):
+        value = real_guards(handle, offset, size)
+        if not synchronized[0]:
+            synchronized[0] = True
+            barrier.wait(timeout=5)
+            barrier.wait(timeout=5)
+        return value
+
+    monkeypatch.setattr(providers, "_jsonl_guards", guarded)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(providers._incremental_jsonl_reduce_group, path, [spec])
+        barrier.wait(timeout=5)
+        path.write_bytes(b'{"value":2}\n')
+        barrier.wait(timeout=5)
+        assert pending.result() == {kind: {"values": [1]}}
+    assert providers._JSONL_CHECKPOINTS.get(key) is None
+    assert before["extra"] == "before"
+
+
+def test_grouped_reducer_exception_drops_only_that_kind(tmp_path):
+    from token_tracker import claude_provider
+
+    path = tmp_path / "reducer-isolation.jsonl"
+    stamp = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps({"type": "assistant", "timestamp": stamp, "message": {
+        "id": "usage-1", "model": "claude-3-haiku", "stop_reason": ["malformed"],
+        "usage": {"input_tokens": 4, "output_tokens": 2, "cache_read_input_tokens": 1}}}) + "\n",
+        encoding="utf-8")
+    results = providers._incremental_jsonl_reduce_group(path, list(claude_provider._claude_transcript_reducer_specs()))
+    usage_kind = claude_provider._USAGE_KIND
+    summary_kind = "claude-code-transcript"
+    assert isinstance(results[usage_kind], dict)
+    assert (usage_kind, str(path.resolve(strict=False))) in providers._JSONL_CHECKPOINTS
+    assert (summary_kind, str(path.resolve(strict=False))) not in providers._JSONL_CHECKPOINTS
+    assert isinstance(claude_provider._run_claude_transcript_reducer(usage_kind, path), dict)
+
+
+def test_grouped_open_failure_projects_warm_and_unavailable_states(tmp_path, monkeypatch):
+    path = tmp_path / "projection-open-failure.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    warm_kind, cold_kind = f"group-projection-warm-{id(path)}", f"group-projection-cold-{id(path)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    project = lambda state: len(state["values"])
+    warm = {"kind": warm_kind, "initial_state": initial, "reduce_record": reduce,
+            "project": project, "unavailable": {"values": []}}
+    cold = {"kind": cold_kind, "initial_state": initial, "reduce_record": reduce,
+            "project": project, "unavailable": {"values": []}}
+    assert providers._incremental_jsonl_reduce_group(path, [warm]) == {warm_kind: 1}
+    original = Path.open
+
+    def blocked(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("temporary grouped open failure")
+        return original(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", blocked)
+        assert providers._incremental_jsonl_reduce_group(path, [warm, cold]) == {
+            warm_kind: 1, cold_kind: 0}
+
+
+def test_grouped_stat_open_race_retries_with_fresh_fingerprint(tmp_path, monkeypatch):
+    path = tmp_path / "stat-open-race.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    kind = f"group-stat-race-{id(path)}"
+    spec = {"kind": kind, "initial_state": lambda: {"values": []},
+            "reduce_record": lambda state, item: state["values"].append(item["value"])}
+    assert providers._incremental_jsonl_reduce_group(path, [spec])[kind] == {"values": [1]}
+    cold_kind = f"group-stat-race-cold-{id(path)}"
+    cold_spec = dict(spec, kind=cold_kind)
+    original = Path.open
+    injected = [False]
+    read_opens = []
+
+    def append_before_read_open(self, mode="r", *args, **kwargs):
+        if self == path and mode == "rb":
+            read_opens.append(1)
+            if not injected[0]:
+                injected[0] = True
+                with original(self, "ab") as handle:
+                    handle.write(b'{"value":2}\n')
+        return original(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", append_before_read_open)
+    assert providers._incremental_jsonl_reduce_group(path, [spec, cold_spec]) == {
+        kind: {"values": [1, 2]}, cold_kind: {"values": [1, 2]}}
+    assert len(read_opens) == 2
+
+
+def test_claude_single_kind_readers_use_the_canonical_group_specs(monkeypatch, tmp_path):
+    from token_tracker import claude_provider
+
+    specs = claude_provider._claude_transcript_reducer_specs()
+    assert specs is claude_provider._claude_transcript_reducer_specs()
+    captured = []
+
+    def record_call(*args, **kwargs):
+        captured.append((args, kwargs))
+        return "captured"
+
+    monkeypatch.setattr(providers, "_incremental_jsonl_reduce", record_call)
+    for spec in specs:
+        assert claude_provider._run_claude_transcript_reducer(spec["kind"], tmp_path / "unused.jsonl") == "captured"
+        args, kwargs = captured[-1]
+        assert not args
+        assert kwargs["kind"] == spec["kind"]
+        assert kwargs["path"] == tmp_path / "unused.jsonl"
+        assert kwargs["initial_state"] is spec["initial_state"]
+        assert kwargs["reduce_record"] is spec["reduce_record"]
+        assert kwargs.get("project") is spec.get("project")
+        assert kwargs.get("unavailable") == spec.get("unavailable")
+        assert kwargs.get("needles") == spec.get("needles")
 
 
 def test_session_insights_reloads_changed_subagent_sidecar_and_thread_name_beats_preview(tmp_path):
