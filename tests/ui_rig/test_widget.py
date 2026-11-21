@@ -526,6 +526,62 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
         assert metrics[1]["titleWidth"] >= metrics[1]["oldTitleWidth"] + metrics[0]["branchWidth"] - 1, (width, metrics)
 
 
+def test_recent_standalone_failure_is_visible_with_muted_age(page):
+    page.wait_for_function("window.__tokenTrackerTest && window.__tokenTrackerTest.state.snapshot")
+    page.evaluate("""() => {
+      const t=window.__tokenTrackerTest, now=new Date().toISOString(), source=t.state.snapshot;
+      const provider=source.providers.find(item=>item.name==='Codex');
+      const failed={id:'rig-failed',key:'Codex:rig-failed',parentKey:null,title:'Standalone failed job',status:'failed',stateDetail:'errored',updatedAt:now,model:'gpt-6.1-sol'};
+      const snapshot={...source,generatedAt:now,graph:{revision:99,edges:{'Codex:rig-failed':null}},providers:[{...provider,chats:[failed]}]};
+      t.render(snapshot);
+    }""")
+    row = page.locator('.chat[data-key="Codex:rig-failed"]')
+    expect(row).to_be_visible()
+    assert "t-mute" in row.locator('.runway-refined-status').get_attribute("class")
+    expect(row.locator('.runway-refined-status')).to_contain_text("Failed")
+    expect(row.locator('.runway-refined-elapsed')).not_to_be_empty()
+
+
+def test_branchless_child_timing_shares_parent_right_edge(page):
+    page.set_viewport_size({"width": 560, "height": 478})
+    page.evaluate("""() => {
+      document.body.classList.add('runway-compact'); document.body.dataset.notchMode='inspect';
+      const row=(path)=>`<div class="runway-refined-row"><span class="runway-refined-title"><span class="r-title"><span class="runway-agent-label">Job title</span></span></span><span class="runway-refined-timing"><span class="runway-refined-elapsed">2m 00s</span></span><span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span><span class="runway-refined-path">${path}</span><span class="runway-refined-tokens"></span></div>`;
+      document.querySelector('#chat-list').innerHTML=`<div class="chat"><div class="row">${row('feature/branch')}</div><div class="ag runway-agent"><div class="runway-agent-glance">${row('')}</div></div></div>`;
+    }""")
+    edges = page.locator("#chat-list .runway-refined-elapsed").evaluate_all("els => els.map(el => el.getBoundingClientRect().right)")
+    assert len(edges) == 2, edges
+    assert abs(edges[0] - edges[1]) <= 1, edges
+
+
+def test_overflowing_job_list_has_keyboard_reachable_scroll_cue(page):
+    page.set_viewport_size({"width": 560, "height": 478})
+    page.evaluate("""() => {
+      document.body.classList.add('runway-compact'); document.body.dataset.notchMode='inspect';
+      const list=document.querySelector('#chat-list'); list.style.height='140px'; list.style.maxHeight='140px';
+      list.innerHTML=Array.from({length:12},(_,i)=>`<div class="chat"><div class="row"><div class="runway-refined-row" style="height:50px">Job ${i}</div></div></div>`).join('');
+    }""")
+    content = page.locator("#chat-list")
+    assert content.evaluate("el => el.scrollHeight > el.clientHeight")
+    assert content.evaluate("el => getComputedStyle(el).scrollbarWidth === 'thin'")
+    assert content.get_attribute("tabindex") == "0"
+    content.focus()
+    content.press("ArrowDown")
+    assert content.evaluate("el => el.scrollTop > 0"), "the visible continuation cue is keyboard scrollable"
+
+
+def test_locked_widget_dims_recenter_and_explains_why(page):
+    page.evaluate("() => window.tokenTrackerInspect()")
+    lock = page.locator("#widget-lock")
+    expect(lock).to_be_visible()
+    if lock.get_attribute("aria-pressed") != "true":
+        lock.click()
+    recenter = page.locator("#window-recenter")
+    expect(recenter).to_have_attribute("aria-disabled", "true")
+    expect(recenter).to_have_attribute("title", "Unlock the widget to move it")
+    assert recenter.evaluate("el => el.disabled && Number.parseFloat(getComputedStyle(el).opacity) < 1")
+
+
 def test_horizontal_layout(page):
     open_settings(page)
     bad = page.locator(ui.SETTINGS).locator(ui.INTERACTIVE).evaluate_all("els => els.filter(e => {const r=e.getBoundingClientRect(), p=document.querySelector('#dashboard-view').getBoundingClientRect(); return r.width && (r.left < p.left - 1 || r.right > p.right + 1)}).map(e => e.outerHTML)")

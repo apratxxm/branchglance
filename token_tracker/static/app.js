@@ -66,7 +66,7 @@ const lockIcon=locked=>locked?'<svg class="ic" viewBox="0 0 12 12" aria-hidden="
 function updateWidgetLockButton() {
   const button=$('#widget-lock');if(!button)return;
   const label=widgetLock.locked?'Release position':'Hold position';
-  const title=label+'. Prevents automatic repositioning; you can still drag.';
+  const title=widgetLock.locked?'Release position to move the widget. Prevents automatic repositioning.':'Lock widget position. Prevents automatic repositioning.';
   button.disabled=widgetLock.pending||!widgetLock.known;
   button.setAttribute?.('aria-pressed',String(widgetLock.locked));button.setAttribute?.('aria-label',label);button.title=title;
   if(button.innerHTML!==lockIcon(widgetLock.locked))button.innerHTML=lockIcon(widgetLock.locked);
@@ -74,7 +74,7 @@ function updateWidgetLockButton() {
 }
 function updateRecenterButton() {
   const button=$('#window-recenter');if(!button)return;
-  button.disabled=!widgetLock.known||widgetLock.pending||widgetLock.locked;
+  button.disabled=!widgetLock.known||widgetLock.pending||widgetLock.locked;button.setAttribute?.('aria-disabled',String(button.disabled));
   button.title=widgetLock.locked?'Unlock the widget to move it':'Recenter widget';
 }
 function updateKeepOpenButton() {
@@ -797,9 +797,17 @@ function runwayCounts(forest) {
 }
 // The yellow waiting count opens the widget on the first waiting chat and shows its question.
 function jumpToWaiting() {
-  const target=[...(state.forest?.rows||[])].find(chat=>runwayWaiting(chat));if(!target)return;
+  const roots=state.forest?.roots||[];
+  const target=roots.flatMap(root=>[root,...(root.descendants||[])]).find(chat=>runwayWaiting(chat));if(!target)return;
+  const root=roots.find(item=>item===target||(item.descendants||[]).includes(target));
+  if(root)state.hiddenChats.delete(root.key);state.hiddenChats.delete(target.key);
   notch.manual=true;setNotch(true);
-  const reveal=()=>{const link=[...(document.querySelectorAll?.('.runway-waiting-link')||[])].find(item=>item.dataset?.key===target.key);if(!link)return;link.scrollIntoView?.({block:'nearest'});if(state.popover===link&&!$('#popover')?.hidden)return;link.click?.();};
+  const reveal=()=>{
+    if(state.query){state.query='';const search=$('#chat-search');if(search)search.value='';}
+    renderChats(providersFor(state.snapshot));
+    const link=[...(document.querySelectorAll?.('.runway-waiting-link')||[])].find(item=>item.dataset?.key===target.key);if(!link)return;
+    link.scrollIntoView?.({block:'nearest'});link.focus?.({preventScroll:true});if(state.popover===link&&!$('#popover')?.hidden)return;link.click?.();
+  };
   if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>requestAnimationFrame(reveal));else reveal();
 }
 function renderRunwayCounts(counts) {
@@ -1095,7 +1103,7 @@ function visibleRoots(forest, days=state.windowDays) {
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||chat.descendants.some(runwayActionable))&&matches;
+      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||runwayActionable(chat)||chat.descendants.some(runwayActionable))&&matches;
   });
 }
 function nextWindowWithChats(forest) {
@@ -1377,10 +1385,10 @@ function renderResets(providers) {
     const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");put(row,"title",view.tip);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
     const unavailable=!view.hasValue&&!view.expired,unavailableLabel=unavailable?'No live reading for '+String(p.name||'provider'):'';
-    const left=$(id+"-left"),readingLabel=view.hasValue?String(p.name||'Provider')+' '+(key==='fiveHour'?'5-hour':'Weekly')+': '+Math.round(view.usedPercent)+'% used'+(view.countdown?(view.countdown==='due'?', reset due':', resets in '+view.countdown):'')+'.'+(view.lastKnown?' Last reported '+view.lastKnownAge+'.':''):'';if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><span class="rr-provider">'+esc(p.name)+'</span><b>—</b><i></i></span>';const accessible=view.hasValue?readingLabel:unavailable?unavailableLabel:'',labelled=html+(accessible?'<span class="sr-only">'+esc(accessible)+'</span>':'');if(left.innerHTML!==labelled)left.innerHTML=labelled;put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);}
+    const left=$(id+"-left"),readingLabel=view.hasValue?String(p.name||'Provider')+' '+(key==='fiveHour'?'5-hour':'Weekly')+': '+Math.round(view.usedPercent)+'% used'+(view.countdown?(view.countdown==='due'?', reset due':', resets in '+view.countdown):'')+'.'+(view.lastKnown?' Last reported '+view.lastKnownAge+'.':''):'';if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge:'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><span class="rr-provider">'+esc(p.name)+'</span><b>—</b><i></i></span>';const accessible=view.hasValue?readingLabel:unavailable?unavailableLabel:'',labelled=html+(accessible?'<span class="sr-only">'+esc(accessible)+'</span>':'');if(left.innerHTML!==labelled)left.innerHTML=labelled;put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);}
     set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
     put(left,"className","rr-left"+(unavailable?" is-unavailable":"")+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);
-    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}
+    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":"")+(view.lastKnown?" last-known":""));const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}
     const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
@@ -1494,7 +1502,7 @@ function runwayStateElapsed(chat) {
   const execution=runwayExecutionView(chat);
   const status=runwayEffectiveStatus(chat);
   const waiting=runwayWaiting(chat);
-  const candidates=execution&&!waiting?(status==='running'?[execution.since,chat.activeRunStartedAt,chat.runStartedAt,chat.firstSeenAt]:[execution.since]):[waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince:null];
+  const candidates=execution&&!waiting?(status==='running'?[execution.since,chat.activeRunStartedAt,chat.runStartedAt,chat.firstSeenAt]:[execution.since,status==='failed'?chat.updatedAt:null]):[waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince||(status==='failed'?chat.updatedAt:null):null];
   const now=Date.now(),since=candidates.map(stamp).find(value=>value&&value<=now+5000);
   return since?runSpan(Math.max(0,now-since)/1000):'—';
 }
@@ -1579,9 +1587,10 @@ function runwayTelemetryHTML(chat,agent=false) {
   const childWaiting=(chat.descendants||[]).some(runwayWaiting),childRunning=(chat.descendants||[]).some(runwayRunning);
   const ownCurrent=runwayWaiting(chat)||runwayRunning(chat)||(!runwayTerminated(chat)&&recentFail(chat));
   const effectiveStatus=runwayEffectiveStatus(chat);
-  const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
-  const statusUnavailable=!currentEvidence||((chat.status==='unknown'||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
-  const status=chat.retainedRun===true&&chat.stateDetail==='stopped'?'Stopped':statusUnavailable?'':runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
+  const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':effectiveStatus==='failed'?'mute':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
+  const statusMissing=(chat.status===undefined||chat.status===null||String(chat.status).trim()==='')&&chat.executionStatus===undefined;
+  const statusUnavailable=!currentEvidence||((chat.status==='unknown'||statusMissing||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
+  const status=chat.retainedRun===true&&chat.stateDetail==='stopped'?'Stopped':statusUnavailable?(currentEvidence?'Status unknown':''):runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
   const modelText=runwayModelLabel(chat);
   const modelChanged=runwayModelRecentlyChanged(chat);
   const modelEvent=state.modelVersions.get(chat.key||[chat.provider,chat.id].join(':'))?.highlightEventAt;
@@ -1596,7 +1605,8 @@ function runwayTelemetryHTML(chat,agent=false) {
   const activityHTML=runwayActivityHTML(chat);
   const displayTitle=runwayTitle(chat,agent);
   const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times" aria-label="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
-  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
+  const fullTitle=agent?agentLabel(chat):runwayFirstLine(chat.title||'Untitled');
+  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(fullTitle)+'" aria-label="'+esc(fullTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
   const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);
   const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
