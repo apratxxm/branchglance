@@ -83,7 +83,7 @@ def test_keepalive_fixture_never_reads_desktop(tmp_path, monkeypatch):
 
 
 def make(tmp_path: Path, clock: Clock | None = None, **senders) -> LimitResetService:
-    return LimitResetService(
+    watcher = LimitResetService(
         sources={},
         senders=senders or {"Claude": Sender(), "Codex": Sender()},
         state_path=tmp_path / "state.json",
@@ -92,6 +92,9 @@ def make(tmp_path: Path, clock: Clock | None = None, **senders) -> LimitResetSer
         enabled=True,
         clock=clock or Clock(),
     )
+    # These cases exercise greeting delivery; new installations default to Off.
+    watcher.configure_reset_action("greet", [])
+    return watcher
 
 
 def logged(tmp_path: Path) -> list[dict]:
@@ -397,6 +400,16 @@ def test_codex_synthetic_deadline_backs_off_and_pauses_after_three_unverified(tm
     state = provider(watcher, "Codex")
     assert state["unverifiedAttempts"] == 3
     assert state["nextGreetingAt"] > clock.now
+
+
+def test_codex_off_mode_keeps_quota_samples_but_never_sends(tmp_path):
+    clock = Clock()
+    sender = Sender()
+    watcher = make(tmp_path, clock, Codex=sender)
+    watcher.configure_reset_action("off", [])
+    watcher.check_provider("Codex", LimitSample(20, 30, T0, T0 + 600))
+    assert sender.calls == 0
+    assert provider(watcher, "Codex")["lastStatus"]["five_hour_percent"] == 20
 
 
 def test_codex_stable_zero_percent_window_is_followed_not_greeted(tmp_path):

@@ -106,16 +106,16 @@ dashboard.state.policy={policyFile:"D:\\work\\sample-app\\policy.json",providers
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];dashboard.state.settingsLoaded=true;
 dashboard.state.identity={version:"1.0.0",build:"abc123"};
 const settings=dashboard.settingsHTML();
-assert.match(settings,/<span class="dash-h2-note">v1\.0\.0\+abc123<\/span>/);
+assert.match(settings,/<span class="dash-h2-note">v1\.0\.0<\/span>/);
 dashboard.state.identity={version:"<script>",build:"&"};
-assert.match(dashboard.settingsHTML(),/v&lt;script&gt;\+&amp;/,"identity values are escaped");
+assert.match(dashboard.settingsHTML(),/v&lt;script&gt;/,"identity values are escaped");
 dashboard.state.identity=null;
 assert.match(dashboard.settingsHTML(),/Version unavailable/,"missing identity is described without fabricating a version");
 assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget open/);
-assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Shown \u00b7 collecting \u00b7 send permission off/,"provider rows state their flags in one plain-text line");assert.match(settings,/Shown \u00b7 not collecting \u00b7 send permission off/);assert.match(settings,/<span class="dash-setting-label">Widget position<\/span>/,"one monitor is labelled Widget position");assert.match(settings,/Recenter/);assert.match(settings,/Move the widget to the center of this screen/,"the position row describes the recenter action");assert.doesNotMatch(settings,/Move the widget back to the center/);
+assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Display on \u00b7 Collection allowed \u00b7 Greeting unavailable \u00b7 Continuation unavailable/,"provider rows state effective permissions");assert.match(settings,/Display on \u00b7 Collection off/);assert.match(settings,/<span class="dash-setting-label">Center on screen<\/span>/,"one monitor is labelled for the placement action");assert.match(settings,/Moves the widget to the top center of the selected display/,"the position row describes the recenter action");assert.doesNotMatch(settings,/Move the widget back to the center/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
 assert.match(settings,/<span class="dash-setting-label">Codex<\/span>[\s\S]*?<input id="dash-plan-price"[^>]*data-dashboard-plan="Codex"[\s\S]*?<span class="dash-setting-label">Claude<\/span>[\s\S]*?<input(?! id="dash-plan-price")[^>]*data-dashboard-plan="Claude"/,"Codex is first and receives the shared plan input id by provider name");
-assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage providers, automation and history/);assert.match(settings,/<h2>Plan price<\/h2>/);assert.match(settings,/Compares the last 30 days of estimated API cost with your monthly plan price/);assert.doesNotMatch(settings,/dash-setting-description">Monthly/,"rows are label-only");assert.doesNotMatch(settings,/placeholder=/,"an unset plan price is shown by an empty field, not a placeholder");assert.match(settings,/aria-label="Codex plan price per month"/);assert.match(settings,/Set by policy file/);assert.match(settings,/Create report/,"the bug report row replaces Preview");assert.match(settings,/No chat text, file paths, account details or tokens\./);assert.doesNotMatch(settings,/Review it before sharing/);assert.match(settings,/After a Codex quota reset/);
+assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage data sources and history/);assert.match(settings,/<h2>Monthly plan prices<\/h2>/);assert.match(settings,/30 days of estimated API cost/);assert.doesNotMatch(settings,/dash-setting-description">Monthly/,"rows are label-only");assert.match(settings,/placeholder="Not set"/);assert.match(settings,/aria-label="Codex plan price per month in USD"/);assert.doesNotMatch(settings,/Set by policy file/);assert.match(settings,/Preview report/);assert.match(settings,/Review the local report before sharing\./);assert.match(settings,/Close<\/button>/);assert.match(settings,/Codex reset automation/);
 assert.match(settingsCss,/\.dash-setting-row\+\.dash-setting-row\{border-top:1px solid var\(--d-edge\);\}/,"Settings rows use the hairline edge token");assert.match(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*background:var\(--d-codex\);/,"the on switch uses Codex indigo");assert.doesNotMatch(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*#425df6/i,"the on switch has no hard-coded blue");
 assert.match(source,/open_reset_actions/);
 assert.doesNotMatch(source,/X-Branchglance-Settings-Token|settingsToken/,"dashboard never reads or stores the Claude settings token");
@@ -302,7 +302,7 @@ assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
   assert.deepEqual(cols.childNodes.map(n=>n.name),["widget","group","about"],"siblings are replaced in their original order");
   assert.equal(find(cols,"widget").control.focused,true,"settings rerender returns focus to the control that triggered it");
   local.state.source="Claude";local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
-  assert.equal(replaced,2,"a different reset form source replaces the panel");
+  assert.equal(replaced,1,"Codex reset automation stays fixed when the dashboard source changes");
 }
 
 // Accepted data stays labeled with its captured range during a later request.
@@ -504,12 +504,12 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
   assert.equal(liveRows.find(row=>row.date===dayA)["B"],null,"live missing day stays null");
 }
 
-// One shown provider: Settings carries one quiet line naming the other; two shown providers: no line.
+// Provider permissions do not speculate about how to enable a hidden provider.
 {
   dashboard.state.policy={providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:false,collect:false,send:false}]};
-  assert.match(dashboard.settingsHTML(),/dash-add-provider">Add Claude to track its agents too\./);assert.match(dashboard.settingsHTML(),/Hidden/);
+  assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider|Add Claude to track its agents too/);assert.match(dashboard.settingsHTML(),/Display off/);
   dashboard.state.policy={providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:true,collect:true,send:false}]};
-  assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider/);assert.match(dashboard.settingsHTML(),/Shown \u00b7 collecting \u00b7 send permission off/);
+  assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider/);assert.match(dashboard.settingsHTML(),/Display on \u00b7 Collection allowed/);
 }
 
 // Stage 2: lower bounds, empty cells, chart range, model folding and quota copy.

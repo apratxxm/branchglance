@@ -344,10 +344,15 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-setting-error{margin:4px 0 0;color:var(--d-ink);font-size:12px;font-weight:600;line-height:1.35;}
 #dashboard-settings{font-variant-numeric:normal;font-feature-settings:normal;letter-spacing:0;}
 .dash-provider-status{display:block;margin-top:1px;color:var(--d-mute);font-size:12px;line-height:1.35;}
-.dash-settings-group[aria-label="Provider permissions"] .dash-provider-row{grid-template-columns:minmax(0,1fr);}
+.dash-settings-group[aria-label="Provider permissions"] .dash-provider-row{grid-template-columns:minmax(0,1fr) minmax(0,1.7fr);}
 .dash-settings-group[aria-label="Provider permissions"] .dash-provider-row:hover{background:transparent;}
+.dash-settings-group .dash-setting-row{min-height:42px;}
+.dash-provider-status{text-align:right;}
+.dash-provider-reading{display:block;color:var(--d-sub);font-size:11px;line-height:15px;}
 .dash-provider-policy-note{margin-top:8px;}
-.dash-settings-group .dash-setting-note{padding-top:6px;border-top:1px solid var(--d-edge);}
+.dash-settings-group .dash-setting-note{padding-top:6px;border-top:1px solid var(--d-edge);color:var(--d-sub);font-size:12px;line-height:17px;}
+.dash-settings-group .dash-status{margin:0 0 8px;color:var(--d-sub);font-size:12px;line-height:17px;}
+.dash-plan-empty{color:var(--d-sub);font-size:12px;}
 .dash-plan-set{padding:0;border:0;background:transparent;color:var(--d-sub);font:inherit;text-decoration:none;cursor:pointer;}
 .dash-plan-set:hover,.dash-plan-set:focus-visible{text-decoration:underline;}
 .dash-plan-set:focus-visible{outline:2px solid var(--d-codex-text);outline-offset:2px;}
@@ -384,7 +389,6 @@ body.runway-refined.runway-compact[data-notch-mode="dashboard"]:not(.phone) #das
 .dash-model-table .dash-model-bar{margin-left:0;}
 .dash-none{color:var(--d-sub);}
 .dash-toggle{border-color:#697181;}
-.dash-reset-state{margin:0;color:var(--d-sub);font-size:12px;}
 .dash-status-line button{margin-left:6px;}
 .dash-period{grid-area:period;align-self:center;margin-top:8px;color:var(--d-mute);font-size:11px;}
 .dash-hero>.dash-chips{grid-area:chips;justify-self:end;align-self:end;margin-top:8px;}

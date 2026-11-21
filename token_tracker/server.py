@@ -1640,13 +1640,17 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "Expected only mode and threadIds."}, 400)
                 return
             mode, thread_ids = body.get("mode"), body.get("threadIds")
-            if (not isinstance(mode, str) or mode not in {"greet", "continue"} or not isinstance(thread_ids, list)
+            if (not isinstance(mode, str) or mode not in {"off", "greet", "continue"} or not isinstance(thread_ids, list)
                     or len(thread_ids) > 20
                     or any(not isinstance(item, str) or not THREAD_ID.fullmatch(item) for item in thread_ids)
-                    or (mode == "greet" and thread_ids) or (mode == "continue" and not thread_ids)):
+                    or (mode in {"off", "greet"} and thread_ids) or (mode == "continue" and not thread_ids)):
                 self._send_json({"ok": False, "error": "Invalid reset action mode or chat IDs."}, 400)
                 return
-            if not _codex_queue_allowed():
+            if mode == "off":
+                if not _codex_allows("collect") or not _codex_allows("show"):
+                    self._send_json({"ok": False, "error": "Codex collection and display must be enabled to change reset settings."}, 403)
+                    return
+            elif not _codex_queue_allowed():
                 self._send_json({"ok": False, "error": "Explicit Codex SEND consent is required."}, 403)
                 return
             try:

@@ -84,10 +84,21 @@ def test_codex_continuation_does_not_depend_on_claude_identity(current_generatio
 def test_greeting_default_and_getter_are_copy_isolated():
     h = Harness()
     original = h.dispatcher.get()
-    assert original == {"schemaVersion": 2, "mode": "greet", "threadIds": [], "armed": False,
+    assert original == {"schemaVersion": 2, "mode": "off", "threadIds": [], "armed": False,
                         "oneShot": True, "lastRun": None}
     original["threadIds"].append(ONE)
     assert h.dispatcher.get()["threadIds"] == []
+
+
+def test_off_persists_disarm_without_changing_last_outcome():
+    h = Harness()
+    prior = {"at": T0, "targets": [{"threadId": ONE, "status": "queued"}]}
+    h.state.update(mode="continue", threadIds=[ONE], armed=True, lastRun=prior)
+    result = h.dispatcher.configure("off", [])
+    assert result["mode"] == "off" and result["armed"] is False and result["threadIds"] == []
+    assert result["lastRun"] == prior
+    assert h.dispatcher.dispatch("next-cycle") is None
+    assert h.queue_calls == []
 
 
 def test_configure_continue_normalizes_deduplicates_and_requires_existing_uuid():
@@ -464,7 +475,7 @@ def test_limit_service_persists_selection_and_respects_quota_gate(tmp_path):
         list_candidates=h.dispatcher.list_candidates, inspect_target=h.dispatcher.inspect_target,
         queue_continue=lambda thread_id: (queued.append(thread_id) or {"status": "queued"}),
     )
-    assert watcher.get_reset_action()["mode"] == "greet"
+    assert watcher.get_reset_action()["mode"] == "off"
     assert watcher.configure_reset_action("continue", [ONE])["armed"] is True
 
     watcher.check_provider("Codex", LimitSample(20, 20, T0, T0 + 10))
@@ -533,6 +544,16 @@ def test_legacy_armed_selection_migrates_unarmed_and_preserves_delivery_ledger()
     assert h.state["ledger"] == ledger
     assert dispatcher.dispatch("codex:cycle-new") is None
     assert h.queue_calls == []
+
+
+def test_existing_greeting_action_migrates_without_being_turned_off():
+    h = Harness()
+    previous = {"cycleId": "greeting-cycle", "at": T0}
+    h.state.clear()
+    h.state.update({"mode": "greet", "threadIds": [], "armed": False, "lastRun": previous})
+    action = h.make_dispatcher().get()
+    assert action["mode"] == "greet"
+    assert action["lastRun"] == previous
 
 
 def test_legacy_global_consent_cannot_configure_or_dispatch_continue():

@@ -793,7 +793,7 @@ class WindowApi:
                  on_monitors=None, on_monitor=None, on_recenter=None, on_drag_begin=None, on_drag_end=None,
                  on_lock=None, on_get_lock=None, on_reset_actions=None,
                  on_keep_open=None, on_get_keep_open=None, on_compact_profile=None,
-                 on_set_monitor_name=None) -> None:
+                 on_set_monitor_name=None, on_get_inspection_hotkey=None, on_set_inspection_hotkey=None) -> None:
         self._minimize = on_minimize
         self._toggle_maximize = on_toggle_maximize
         self._close = on_close
@@ -813,6 +813,8 @@ class WindowApi:
         self._get_keep_open = on_get_keep_open
         self._is_compact_profile = on_compact_profile
         self._set_monitor_name = on_set_monitor_name
+        self._get_inspection_hotkey = on_get_inspection_hotkey
+        self._set_inspection_hotkey = on_set_inspection_hotkey
 
     def open_reset_actions(self):
         return self._open_reset_actions() if self._open_reset_actions else False
@@ -842,6 +844,12 @@ class WindowApi:
 
     def set_monitor_name(self, monitor_id, name):
         return self._set_monitor_name(monitor_id, name) if self._set_monitor_name else []
+
+    def get_inspection_hotkey(self):
+        return self._get_inspection_hotkey() if self._get_inspection_hotkey else None
+
+    def set_inspection_hotkey(self, choice):
+        return self._set_inspection_hotkey(choice) if self._set_inspection_hotkey else None
 
     def recenter(self):
         return self._recenter() if self._recenter else None
@@ -1931,6 +1939,9 @@ class WidgetApp:
             status = self._start_inspection_hotkey()
             return {"ok": status == "registered", "choice": choice, "status": status}
 
+    def get_inspection_hotkey(self) -> dict:
+        return {"choice": self.inspection_hotkey, "status": self._inspection_hotkey_status}
+
     def _inspection_hotkey_menu_item(self, choice: str, label: str):
         def text(_item):
             if choice == self.inspection_hotkey and choice != "off" and self._inspection_hotkey_status == "unavailable":
@@ -2823,7 +2834,9 @@ class WidgetApp:
                              on_get_lock=self.get_widget_lock, on_reset_actions=self.open_reset_actions,
                              on_keep_open=self.set_keep_open, on_get_keep_open=self.get_keep_open,
                               on_compact_profile=lambda: self.compact_profile,
-                              on_set_monitor_name=self.set_monitor_name),
+                             on_set_monitor_name=self.set_monitor_name,
+                             on_get_inspection_hotkey=self.get_inspection_hotkey,
+                             on_set_inspection_hotkey=self.set_inspection_hotkey),
         )
         self.window.events.before_show += self._set_native_background_fallback
         self.window.events.closing += self.on_closing

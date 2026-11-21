@@ -12,16 +12,16 @@ assert.match(html,/data-feature="live_usage"/);assert.match(html,/data-feature="
 assert.match(html,/undocumented endpoint could break or be disallowed/i);
 assert.match(html,/Enabling adds Branchglance hooks to Claude Code settings \(with a backup\) and reads Claude session activity locally\./);
 assert.match(html,/Open settings from the Branchglance widget to change this\./);
-assert.match(html,/one-shot action for the next genuine quota reset/i);
-assert.match(html,/queued chat has not necessarily started/i);
+assert.match(html,/value="off"/);assert.match(html,/Do not send anything after resets\. Quota tracking continues\./);
+assert.match(source,/Queues ‘continue’ once at the next detected reset/);
+assert.match(source,/queued chat has not necessarily started/i);
 // The embedded frame pages its chat list and now has a reachable vertical scroll path.
 assert.match(html,/id="pager"[^>]*hidden/);assert.match(html,/id="page-prev"/);assert.match(html,/id="page-next"/);
 assert.match(source,/PAGE_SIZE = 3/);assert.match(source,/embedded\?available\.slice\(state\.page\*PAGE_SIZE/);
 const frameCss=fs.readFileSync(new URL("../token_tracker/static/reset_actions.css",import.meta.url),"utf8");
 assert.match(frameCss,/\.settings-embedded #threads\{[^}]*overflow:visible/);assert.doesNotMatch(frameCss.slice(frameCss.indexOf("Round 3")),/overflow:auto/);
 assert.match(frameCss,/\.settings-embedded \.mode\+\.mode\{border-top:1px solid var\(--d-edge\);padding-top:8px;\}/,"embedded reset choices use the Settings separator token");
-assert.match(frameCss,/\.settings-embedded #oneshot-note\{padding-top:8px;border-top:1px solid var\(--d-edge\);\}/,"the embedded one-shot note has the Settings group separator");
-assert.match(frameCss,/\.settings-embedded #oneshot-note\{color:var\(--d-sub\);font-size:12px;\}/,"embedded footer note matches Settings footer size and muted text");
+assert.match(frameCss,/\.settings-embedded #oneshot-note\{padding-top:8px;border-top:1px solid var\(--d-edge\);color:var\(--d-sub\);font-size:12px;\}/,"the conditional reset footer is a quiet Settings note");
 assert.match(app,/data-action="reset-settings"/);
 assert.match(app,/api\?\.open_reset_actions/);
 assert.match(app,/window\.open\?\.\("\/reset_actions\.html","_blank","noopener"\)/);
@@ -29,9 +29,9 @@ assert.match(app,/window\.open\?\.\("\/reset_actions\.html","_blank","noopener"\
 const elements=new Map();
 const listenerCounts=new Map();
 function element(selector){if(!elements.has(selector))elements.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;listenerCounts.set(`${selector}:${type}`,(listenerCounts.get(`${selector}:${type}`)||0)+1);}});return elements.get(selector);}
-const radios=[{value:"greet",checked:true,disabled:false},{value:"continue",checked:false,disabled:false}];
+const radios=[{value:"greet",checked:true,disabled:false},{value:"continue",checked:false,disabled:false},{value:"off",checked:false,disabled:false}];
 const listeners={};
-const document={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:element(selector),querySelectorAll:()=>[],addEventListener:(type,fn)=>listeners[type]=fn};
+const document={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:selector==='input[name="mode"][value="off"]'?radios[2]:element(selector),querySelectorAll:()=>[],addEventListener:(type,fn)=>listeners[type]=fn};
 const calls=[];
 const claudeCalls=[];
 const gets=[];
@@ -86,7 +86,7 @@ const context={document,window,AbortSignal:{timeout(){}},URLSearchParams,fetch:a
   if(options.method==="POST"){
     calls.push(JSON.parse(options.body));
     if(failSave)return {ok:false,json:async()=>({error:"Could not save"})};
-    return {ok:true,json:async()=>({ok:true,action:{schemaVersion:2,mode:calls.at(-1).mode,threadIds:calls.at(-1).threadIds,armed:true,oneShot:true,lastRun:null}})};
+    return {ok:true,json:async()=>({ok:true,action:{schemaVersion:2,mode:calls.at(-1).mode,threadIds:calls.at(-1).threadIds,armed:calls.at(-1).mode==="continue",oneShot:true,lastRun:null}})};
   }
   return {ok:true,json:async()=>({ok:true,action:actionRecord,threads:[
     {id:"11111111-1111-4111-8111-111111111111",title:"<img src=x onerror=alert(1)>",status:"idle"},
@@ -223,9 +223,9 @@ assert.equal(T.state.threads.length,0);
   assert.equal(node('[data-reason="Codex"]').hidden,true);
   node('[data-purge="Codex"]').onclick();
   await settle();
-  assert.equal(node('[data-purge="Codex"]').textContent,"Delete — confirm","first click arms the confirm");
+  assert.equal(node('[data-confirm="Codex"]').hidden,false);
   assert.equal(sent.length,0,"the first click sends nothing");
-  node('[data-purge="Codex"]').onclick();
+  node('[data-confirm-purge="Codex"]').onclick();
   await settle();
   assert.deepEqual(sent,[{url:"/api/ledger/purge",method:"POST",token:"ledger-test-token",body:{provider:"Codex"}}]);
   assert.equal(node('[data-status="Codex"]').textContent,"Deleted");
@@ -269,7 +269,7 @@ assert.equal(T.state.threads.length,0);
   assert.equal(node("#embedded-policy-retry").hidden,false);
   assert.equal(actionReads,0,"unknown permission state never loads reset actions as Off");
   node("#embedded-policy-retry").onclick();await settle();
-  assert.equal(node("#embedded-policy-message").textContent,"Off: turn on collecting and auto-send for Codex in your policy file.","several missing permissions are named once");
+  assert.equal(node("#embedded-policy-message").textContent,"Off: turn on collection and greeting for Codex in startup settings.","several missing permissions are named once");
   assert.equal(node("#embedded-policy-retry").hidden,true);
   assert.equal(actionReads,0,"known Off prerequisite prevents action settings from loading");
   const beforeRefresh=embeddedRequests.length,policiesBefore=policyAttempts;
@@ -292,7 +292,7 @@ assert.equal(T.state.threads.length,0);
   vm.createContext(ctx);vm.runInContext(source,ctx);
   const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
   await settle();
-  assert.equal(node("#embedded-policy-message").textContent,"Off: auto-send is off for Codex in your policy file.","one missing permission is named alone");
+  assert.equal(node("#embedded-policy-message").textContent,"Off: greeting is off for Codex in startup settings.","one missing permission is named alone");
   assert.equal(node("#embedded-policy-state").hidden,false);
   assert.equal(radios[0].disabled,true,"greet is disabled when both actions are denied");
   assert.equal(radios[1].disabled,true,"continue is disabled when both actions are denied");
@@ -305,8 +305,8 @@ assert.equal(T.state.threads.length,0);
   await win.__resetActionsTest.load();
   assert.equal(radios[0].disabled,false,"greet stays selectable when only continue is blocked");
   assert.equal(radios[1].disabled,true,"continue is blocked for a legacy send origin");
-  assert.equal(node("#greet-help").textContent,"Send a short Codex request that uses quota.","the greeting discloses its quota use when available");
-  assert.equal(node("#continue-help").textContent,"Unavailable: Codex startup settings do not allow this.","continue-only help names no permission that is on");
+  assert.equal(node("#greet-help").textContent,"Sends one short request that uses Codex quota and repeats after each eligible reset.","the greeting discloses quota use and repetition");
+  assert.equal(node("#continue-help").textContent,"Needs Codex send turned on by environment variable. The policy file allows greetings only.","continue denial distinguishes greeting-only permission");
   assert.equal(node("#permission").textContent,"","no other denial text appears when only continue is blocked");
   assert.equal(node("#embedded-policy-state").hidden,true,"the permitted state shows no policy line");
 }
@@ -352,12 +352,12 @@ assert.equal(T.state.threads.length,0);
   for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(node("footer").hidden,true,"saved mode hides footer");
   assert.equal(node("#save").textContent,"Save");
-  assert.equal(node("#greet-help").textContent,"Send a short Codex request that uses quota.");
-  assert.equal(node("#oneshot-note").textContent,"Sends after eligible quota resets while greeting is selected.");
+  assert.equal(node("#greet-help").textContent,"Sends one short request that uses Codex quota and repeats after each eligible reset.");
+  assert.equal(node("#oneshot-note").hidden,true,"one-shot text is absent in greeting mode");
   radios[0].checked=false;radios[1].checked=true;
   listeners.change({target:{matches:selector=>selector==='input[name="mode"]'}});
   assert.equal(node("footer").hidden,false,"changed mode shows footer");
-  assert.equal(node("#oneshot-note").textContent,"Runs once, at the next quota reset. A queued chat has not necessarily started.");
+  assert.equal(node("#oneshot-note").textContent,"Queues ‘continue’ once at the next detected reset. A queued chat has not necessarily started.");
   posts.length=0;node("#cancel").onclick();
   assert.equal(radios[0].checked,true,"cancel restores saved radio");
   assert.equal(node("footer").hidden,true);assert.equal(posts.length,0,"cancel sends no parent message");
@@ -389,7 +389,7 @@ assert.match(resetCss,/\.mode:has\(input:disabled\) b,\.mode:has\(input:disabled
     return {node,statusRef};
   };
   const idle={ok:true,state:"live",purging:[],lastPurge:{},collect:{Claude:false,Codex:false}};
-  const sendTwice=async(h,provider)=>{h.node(`[data-purge="${provider}"]`).onclick();await settle();h.node(`[data-purge="${provider}"]`).onclick();await settle();};
+  const sendTwice=async(h,provider)=>{h.node(`[data-purge="${provider}"]`).onclick();await settle();assert.equal(h.node(`[data-confirm="${provider}"]`).hidden,false,"inline confirmation is shown");h.node(`[data-confirm-purge="${provider}"]`).onclick();await settle();};
 
   // Sol's replay: Claude's purge fails and Codex's succeeds afterwards. Claude must never read as Deleted.
   const A=harness({...idle,purging:["Claude"]},{

@@ -951,6 +951,11 @@ class LimitResetService:
                 if name not in self._sending:
                     self._reconcile_codex_finalization()
                 action = self._state.setdefault("resetAction", default_action())
+                if action.get("mode") == "off":
+                    # Keep quota observations current while the user has disabled
+                    # all reset automation; this path never reaches a sender.
+                    self._check_codex_keepalive(name, sample)
+                    return
                 if action.get("mode") == "continue" and not action.get("armed"):
                     self._record_collected_status(name, sample)
                     return
@@ -1462,6 +1467,16 @@ class LimitResetService:
                 return
             self._reconcile_codex_finalization()
             action = self._state.setdefault("resetAction", default_action())
+            if action.get("mode") == "off":
+                state = self._provider_state(name)
+                state["lastStatus"] = {**asdict(sample), "checkedAt": _checked_at(sample)}
+                deadline = _epoch_seconds(sample.reset_at)
+                if deadline is not None and deadline > self._clock():
+                    state["nextGreetingAt"] = deadline
+                    self._record(name, "active_window_observed", nextGreetingAt=deadline,
+                                 fiveHourPercent=_valid_quota_percent(sample.five_hour_percent))
+                self._save_state()
+                return
             if action.get("mode") == "continue" and action.get("armed"):
                 state = self._provider_state(name)
                 state["lastStatus"] = {**asdict(sample), "checkedAt": _checked_at(sample)}

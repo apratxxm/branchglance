@@ -3,13 +3,13 @@
   const RANGE_DAYS={"24h":1,"7d":7,"30d":30,all:31};
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
   const RANGE_PREVIOUS={"24h":"previous day","7d":"previous week","30d":"previous 30 days",all:"previous period"};
-  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,pendingViewChange:null,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
+  const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,inspection:null,placementError:"",manageError:"",settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,planError:"",planDraft:{},debugOpener:null,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,pendingViewChange:null,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
   const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
   const readPref=(key,fallback)=>{try{return localStorage.getItem(key)??fallback;}catch{return fallback;}};
-  const writePref=(key,value)=>{try{localStorage.setItem(key,value);}catch{}};
-  const clearPref=key=>{try{localStorage.removeItem(key);}catch{}};
+  const writePref=(key,value)=>{try{localStorage.setItem(key,value);return true;}catch{return false;}};
+  const clearPref=key=>{try{localStorage.removeItem(key);return true;}catch{return false;}};
   const storedRange=()=>{let value=readPref("branchglanceInsightsRange","30d");if(value==="all"){value="30d";writePref("branchglanceInsightsRange",value);}return isRange(value)?value:"30d";};
   const reducedMotion=()=>window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches===true;
   const nfmt=new Intl.NumberFormat("en",{notation:"compact",minimumSignificantDigits:3,maximumSignificantDigits:3});
@@ -479,28 +479,34 @@
   }
   function setPlanPrice(name,value){
     if(!PLAN_PROVIDERS.includes(name))return;
-    if(String(value??"").trim()===""){clearPref(`branchglancePlanPrice.${name}`);state.settingsError=false;state.settingsStatus="";state.settingsRenderKey="";state.renderKey="";render();return;}
-    const number=Number(value);
-    if(!Number.isFinite(number)||number<=0){state.settingsError=true;state.settingsStatus=`${name} plan price must be a number above 0.`;state.settingsRenderKey="";render();return;}
-    writePref(`branchglancePlanPrice.${name}`,String(number));state.settingsError=false;state.settingsStatus="";state.settingsRenderKey="";state.renderKey="";render();
+    const input=value&&typeof value==="object"?value:null,raw=input?input.value:value;
+    if(input?.validity?.badInput){state.planDraft[name]=raw;state.planError=`Enter a valid ${name} price or clear the field to remove it.`;state.settingsRenderKey="";render();return;}
+    if(String(raw??"").trim()===""){if(!clearPref(`branchglancePlanPrice.${name}`)){state.planDraft[name]="";state.planError=`Could not remove the saved ${name} price.`;state.settingsRenderKey="";render();return;}delete state.planDraft[name];state.planError="";state.settingsRenderKey="";state.renderKey="";render();return;}
+    const number=Number(raw);
+    if(!Number.isFinite(number)||number<0.01){state.planDraft[name]=raw;state.planError=`${name} plan price must be at least USD 0.01.`;state.settingsRenderKey="";render();return;}
+    if(!writePref(`branchglancePlanPrice.${name}`,String(number))){state.planDraft[name]=raw;state.planError=`Could not save the ${name} plan price.`;state.settingsRenderKey="";render();return;}delete state.planDraft[name];state.planError="";state.settingsRenderKey="";state.renderKey="";render();
   }
-  const toggleRow=(label,description,action,value)=>{const busy=state.togglePending.has(action),failed=state.toggleErrors.has(action);return `<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control"><button class="dash-toggle${value?" is-on":""}" role="switch" aria-checked="${Boolean(value)}" aria-label="${label}"${busy?' aria-busy="true" disabled':""} data-dashboard-action="${action}"></button></div></div>${failed?'<p class="dash-setting-error" role="alert">Couldn\'t save. Try again.</p>':""}`;};
+  const toggleRow=(label,description,action,value,unavailable=false)=>{const busy=state.togglePending.has(action),failed=state.toggleErrors.has(action);return `<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control"><button class="dash-toggle${value?" is-on":""}" role="switch" aria-checked="${Boolean(value)}" aria-label="${label}"${busy?' aria-busy="true" disabled':unavailable?' disabled':""} data-dashboard-action="${action}"></button></div></div>${failed?'<p class="dash-setting-error" role="alert">Couldn\'t save. Try again.</p>':""}`;};
 
   const rowHTML=(label,description,control="")=>`<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${label}</span><span class="dash-setting-description">${description}</span></div><div class="dash-setting-control">${control}</div></div>`;
   function settingsHTML(){
     const clock=readPref("branchglanceClockFormat","12")==="24"?"24":"12",policies=Array.isArray(state.policy?.providers)?state.policy.providers:[];
     const flag=(value,yes,no)=>value===true?yes:value===false?no:"Unavailable";
-    const providerRows=policies.length?policies.map(row=>`<div class="dash-setting-row dash-provider-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(row.name)}</span><span class="dash-provider-status">${esc([flag(row.show,"Shown","Hidden"),flag(row.collect,"collecting","not collecting"),flag(row.send,"send permission on","send permission off")].join(" \u00b7 "))}</span></div></div>`).join(""):'<p class="dash-setting-note">Provider status unavailable.</p>';
-    const policyPath=String(state.policy?.policyFile||""),policyTitle=/[\\/]/.test(policyPath)?` title="${esc(policyPath)}"`:"";
-    const providers=`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers</h2>${providerRows}<p class="dash-setting-note dash-provider-policy-note"${policyTitle}>Set by policy file</p>${(shown=>shown.length===1&&policies.length>1?`<p class="dash-setting-note dash-add-provider">Add ${esc(policies.find(row=>row.show!==true).name)} to track its agents too.</p>`:"")(policies.filter(row=>row.show===true))}<button class="dash-action" data-dashboard-action="claude-settings">Manage providers, automation and history&#8230;</button></section>`;
-    const reset=state.settingsLoaded?`<iframe class="reset-embed" title="After a Codex quota reset" src="/reset_actions.html?embedded=1&amp;source=${encodeURIComponent(state.source)}"></iframe>`:`<p class="dash-status" role="status">Loading</p>`;
+    const providerRows=policies.length?policies.map(row=>{const caps=row.capabilities||{},reading=row.lastQuotaReading,actions=[caps.greet===true?"Greeting allowed":caps.greet===false?"Greeting blocked":"Greeting unavailable",caps.continue===true?"Continuation allowed":caps.continue===false?"Continuation blocked":"Continuation unavailable"],readingText=reading&&typeof reading==="object"&&reading.at?`<span class="dash-provider-reading">Last quota reading · ${esc(reading.source||"Source unavailable")} · ${esc(reading.at)}</span>`:"";return `<div class="dash-setting-row dash-provider-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(row.name)}</span></div><div class="dash-setting-control dash-provider-status">${esc([flag(row.show,"Display on","Display off"),flag(row.collect,"Collection allowed","Collection off"),...actions].join(" · "))}${readingText}</div></div>`;}).join(""):'<p class="dash-setting-note">Provider status unavailable.</p>';
+    const meta=state.policy||{},policyNote=meta.policyFile==="malformed"?"Policy file ignored; defaults in use":meta.policyFile==="ok"&&meta.origin==="policy_file"?"Set by policy file":meta.policyFile==="ok"&&String(meta.origin||"").includes("environment")?"Set by policy file and environment":meta.origin==="environment"?"Set at startup":meta.origin==="defaults"?"App defaults":"";
+    const providers=`<section class="dash-settings-group" aria-label="Provider permissions"><h2>Providers</h2>${providerRows}${policyNote?`<p class="dash-setting-note dash-provider-policy-note">${esc(policyNote)}</p>`:""}<button class="dash-action" data-dashboard-action="claude-settings">Manage data sources and history&#8230;</button>${state.manageError?`<p class="dash-setting-error" role="alert">${esc(state.manageError)}</p>`:""}</section>`;
+    const reset=state.settingsLoaded?`<iframe class="reset-embed" title="Codex reset automation" src="/reset_actions.html?embedded=1"></iframe>`:`<p class="dash-status" role="status">Loading</p>`;
     const singleMonitor=state.monitors.length<2;
-    const widget=`<section class="dash-settings-group"><h2>Widget</h2>${toggleRow("Lock widget position","Keep the widget where it is","lock",state.lock?.locked)}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen)}${rowHTML("Clock format","",`<div class="dash-clock-segment" role="group" aria-label="Clock format">${[["12","12-hour"],["24","24-hour"]].map(([value,label])=>`<button type="button" data-dashboard-clock="${value}" aria-pressed="${clock===value}">${label}</button>`).join("")}</div>`)}${rowHTML(singleMonitor?"Widget position":"Monitor",state.lock?.locked?"Unlock the widget to move it":singleMonitor?"Move the widget to the center of this screen":"Choose where the widget opens",`<div class="dash-monitor-controls">${state.monitors.length>1?`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor" ${state.lock?.locked?"disabled":""}>${state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("")}</select>`:""}<button class="dash-action" title="${state.lock?.locked?"Unlock the widget to move it":"Recenter widget"}" data-dashboard-action="recenter" ${state.lock?.locked?"disabled":""}>Recenter</button></div>`)}</section>`;
-    const plan=`<section class="dash-settings-group dash-plan-group-section" aria-label="Plan price"><h2>Plan price</h2>${PLAN_PROVIDERS.map(name=>{const price=planPrice(name);return `<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(name)}</span></div><div class="dash-setting-control"><label class="dash-plan-field"><span aria-hidden="true">$</span><input${name==="Codex"?' id="dash-plan-price"':""} type="number" min="1" step="any" inputmode="decimal" value="${price==null?"":esc(price)}" aria-label="${esc(name)} plan price per month" data-dashboard-plan="${esc(name)}"></label></div></div>`;}).join("")}<p class="dash-setting-note dash-plan-note">Compares the last 30 days of estimated API cost with your monthly plan price.</p></section>`;
+    const placementError=state.placementError?`<p class="dash-setting-error" role="alert">${esc(state.placementError)}</p>`:"";
+    const lockReady=Boolean(state.lock&&typeof window.pywebview?.api?.set_widget_lock==="function"),keepReady=Boolean(state.keepOpen&&typeof window.pywebview?.api?.set_keep_open==="function");
+    const monitorRow=rowHTML(singleMonitor?"Center on screen":"Monitor",state.lock?.locked?"Unlock the widget to move it":singleMonitor?"Moves the widget to the top center of the selected display":"Moves the widget to the selected display",`<div class="dash-monitor-controls">${state.monitors.length>1?`<select class="dash-select" aria-label="Monitor" data-dashboard-action="monitor" ${!lockReady||typeof window.pywebview?.api?.select_monitor!=="function"||state.lock?.locked?"disabled":""}>${state.monitors.map(row=>`<option value="${esc(row.id)}"${row.selected?" selected":""}>${esc(row.label||row.kind||"Monitor")}</option>`).join("")}</select>`:""}<button class="dash-action" title="${state.lock?.locked?"Unlock the widget to move it":"Recenter widget"}" data-dashboard-action="recenter" ${!lockReady||state.lock?.locked||typeof window.pywebview?.api?.recenter!=="function"?"disabled":""}>Recenter</button></div>`);
+    const inspectionRow=typeof window.pywebview?.api?.get_inspection_hotkey==="function"&&typeof window.pywebview?.api?.set_inspection_hotkey==="function"?rowHTML("Inspection shortcut","Keyboard shortcut for inspecting the current chat",`<div class="dash-clock-segment" role="group" aria-label="Inspection shortcut">${[["ctrl_shift_t","Ctrl+Shift+T"],["ctrl_alt_t","Ctrl+Alt+T"],["off","Off"]].map(([value,label])=>`<button type="button" data-inspection-hotkey="${value}" aria-pressed="${state.inspection?.choice===value}" ${!state.inspection?"disabled":""}>${label}</button>`).join("")}</div>${state.inspection?.status&&state.inspection.status!=="registered"&&state.inspection.status!=="off"?`<p class="dash-setting-error" role="alert">In use by another app</p>`:""}`):"";
+    const widget=`<section class="dash-settings-group"><h2>Widget</h2>${toggleRow("Lock widget position","Stops dragging and Recenter","lock",state.lock?.locked,!lockReady)}${monitorRow}${toggleRow("Keep widget open","Do not collapse automatically","keep-open",state.keepOpen?.keepOpen,!keepReady)}${rowHTML("Clock format","",`<div class="dash-clock-segment" role="group" aria-label="Clock format">${[["12","12-hour"],["24","24-hour"]].map(([value,label])=>`<button type="button" data-dashboard-clock="${value}" aria-pressed="${clock===value}">${label}</button>`).join("")}</div>`)}${inspectionRow}${placementError}</section>`;
+    const plan=`<section class="dash-settings-group dash-plan-group-section" aria-label="Monthly plan prices"><h2>Monthly plan prices</h2>${PLAN_PROVIDERS.map(name=>{const price=planPrice(name),value=Object.hasOwn(state.planDraft,name)?state.planDraft[name]:price;return `<div class="dash-setting-row"><div class="dash-setting-copy"><span class="dash-setting-label">${esc(name)}</span></div><div class="dash-setting-control"><label class="dash-plan-field"><span>USD</span><input${name==="Codex"?' id="dash-plan-price"':""} type="number" min="0.01" step="any" inputmode="decimal" value="${value==null?"":esc(value)}" placeholder="Not set" aria-label="${esc(name)} plan price per month in USD" data-dashboard-plan="${esc(name)}"></label>${value==null?'<span class="dash-plan-empty">Not set</span>':""}</div></div>`;}).join("")}<p class="dash-setting-note dash-plan-note">Saved on this device. Used to compare your plan price with 30 days of estimated API cost. Clear a price to remove the comparison.</p>${state.planError?`<p class="dash-setting-error" role="alert">${esc(state.planError)}</p>`:""}</section>`;
     const status=state.settingsStatus?`<p class="dash-status${state.settingsError?" error":""}" role="status">${esc(state.settingsStatus)}</p>`:"";
-    const versionNote=typeof state.identity?.version==="string"&&typeof state.identity?.build==="string"?`v${esc(state.identity.version)}+${esc(state.identity.build)}`:state.settingsLoaded?"Version unavailable":"";
-    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="About and bug report"><h2>About${versionNote?`<span class="dash-h2-note">${versionNote}</span>`:""}</h2>${rowHTML("Bug report","No chat text, file paths, account details or tokens.",`<button class="dash-action" data-dashboard-action="debug-preview">Create report</button>`)}<div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
-    return `<div class="dash-settings-columns">${widget}${providers}<section class="dash-settings-group dash-reset-group"><h2>After a Codex quota reset</h2>${reset}</section>${plan}${status}${debug}</div>`;
+    const versionNote=typeof state.identity?.version==="string"?`v${esc(state.identity.version)}`:state.settingsLoaded?"Version unavailable":"";
+    const debug=`<section class="dash-settings-group dash-debug-group" aria-label="About and bug report"><h2>About${versionNote?`<span class="dash-h2-note">${versionNote}</span>`:""}</h2>${rowHTML("Bug report","Review the local report before sharing.",`<button class="dash-action" data-dashboard-action="debug-preview">Preview report</button>`)}<div class="dash-debug-panel"${state.debugReport?"":" hidden"}><textarea class="dash-debug-text" id="dash-debug-report" readonly spellcheck="false" aria-label="Debug report text" rows="12">${esc(state.debugReport||"")}</textarea><div class="dash-debug-actions"><button class="dash-action" data-dashboard-action="debug-copy">Copy</button><button class="dash-action" data-dashboard-action="debug-issue">Open GitHub issue</button><button class="dash-action" data-dashboard-action="debug-close">Close</button></div></div><p class="dash-status${state.debugError?" error":""}" id="dash-debug-status" role="status">${esc(state.debugStatus||"")}</p></section>`;
+    return `<div class="dash-settings-columns">${status}${widget}${providers}${plan}<section class="dash-settings-group dash-reset-group"><h2>Codex reset automation</h2>${reset}</section>${debug}</div>`;
   }
   const DEBUG_ISSUE_URL="https://github.com/apratxxm/branchglance/issues/new?template=bug_report.yml";
   const DEBUG_TITLE="# Branchglance debug report";
@@ -518,8 +524,8 @@
       const box=$("#dash-debug-report"),panel=$(".dash-debug-panel");
       if(box)box.value=text;
       if(panel)panel.hidden=false;
-      setDebugStatus("Review the report before sharing.");
-    }catch{setDebugStatus("Debug report is unavailable.",true);}
+      setDebugStatus("Review the local report before sharing.");
+    }catch{state.debugReport="";const box=$("#dash-debug-report"),panel=$(".dash-debug-panel");if(box)box.value="";if(panel)panel.hidden=true;setDebugStatus("Debug report is unavailable.",true);}
   }
   async function copyDebugReport(){
     const text=state.debugReport;
@@ -538,6 +544,10 @@
     try{window.open(debugIssueURL(),"_blank","noopener,noreferrer");}
     catch{setDebugStatus("Could not open the issue page.",true);}
   }
+  function closeDebugPreview(){state.debugReport="";const panel=$(".dash-debug-panel"),box=$("#dash-debug-report"),opener=state.debugOpener;if(panel)panel.hidden=true;if(box)box.value="";state.debugOpener=null;opener?.focus?.();}
+  async function recenterWidget(){const api=window.pywebview?.api;if(typeof api?.recenter!=="function"||state.lock?.locked)return;try{const rows=await api.recenter();if(!Array.isArray(rows)||!rows.some(row=>row.selected))throw new Error("Widget could not be recentered.");state.monitors=rows;state.placementError="";}catch(error){state.placementError=error?.message||"Widget could not be recentered.";}finally{state.settingsRenderKey="";render();}}
+  async function setInspectionHotkey(choice){const api=window.pywebview?.api;if(typeof api?.set_inspection_hotkey!=="function"||typeof api?.get_inspection_hotkey!=="function")return;try{const result=await api.set_inspection_hotkey(choice);if(!result?.ok||result.choice!==choice)throw new Error("Shortcut change was not applied.");state.inspection=result;state.placementError="";}catch(error){state.placementError=error?.message||"Inspection shortcut could not be changed.";}finally{state.settingsRenderKey="";render();}}
+  async function openProviderManagement(){try{if(typeof window.pywebview?.api?.open_reset_actions!=="function"||await window.pywebview.api.open_reset_actions()!==true)throw new Error("Provider and history settings could not be opened.");state.manageError="";}catch(error){state.manageError=error?.message||"Provider and history settings could not be opened.";}finally{state.settingsRenderKey="";render();}}
   let activePoint=null,activeMode=null,tooltipBound=false,tooltipGeneration=0;
   function dismissTooltip(){
     tooltipGeneration++;activePoint=null;activeMode=null;document.querySelectorAll(".dash-point.is-hover,.dash-marker.is-hover,.dash-marker.is-focus").forEach(el=>el.classList.remove("is-hover","is-focus"));const tip=$("#dash-tooltip");
@@ -663,14 +673,20 @@
   }
   async function loadSettings(){
     if(state.settingsBusy)return;state.settingsBusy=true;state.settingsError=false;state.settingsStatus="Loading settings…";render();const api=window.pywebview?.api;
-    try{const [policyResponse,identityResponse]=await Promise.all([fetch("/api/provider-policy",{cache:"no-store",signal:AbortSignal.timeout(10000)}),fetch("/api/identity",{cache:"no-store",signal:AbortSignal.timeout(10000)})]);if(!policyResponse.ok)throw new Error("Provider policy is unavailable.");state.policy=await policyResponse.json();state.identity=identityResponse.ok?await identityResponse.json():null;const [monitors,lock,keep]=await Promise.all([api?.get_monitors?.()||[],api?.get_widget_lock?.()||null,api?.get_keep_open?.()||null]);state.monitors=Array.isArray(monitors)?monitors:[];state.lock=lock;state.keepOpen=keep;state.settingsStatus="";state.settingsLoaded=true;}
-    catch(error){state.policy=null;state.identity=null;state.monitors=[];state.lock=null;state.keepOpen=null;state.settingsLoaded=true;state.settingsError=true;state.settingsStatus=error?.message||"Settings could not be loaded.";}
-    finally{state.settingsBusy=false;state.settingsRenderKey="";render();}
+    try{const results=await Promise.allSettled([fetch("/api/provider-policy",{cache:"no-store",signal:AbortSignal.timeout(10000)}),fetch("/api/identity",{cache:"no-store",signal:AbortSignal.timeout(10000)}),Promise.resolve().then(()=>api?.get_monitors?.()),Promise.resolve().then(()=>api?.get_widget_lock?.()),Promise.resolve().then(()=>api?.get_keep_open?.()),Promise.resolve().then(()=>api?.get_inspection_hotkey?.())]);
+    const [policy,identity,monitors,lock,keep,inspection]=results;
+    if(policy.status==="fulfilled"&&policy.value?.ok)try{state.policy=await policy.value.json();}catch{state.policy=null;}else state.policy=null;
+    if(identity.status==="fulfilled"&&identity.value?.ok)try{state.identity=await identity.value.json();}catch{state.identity=null;}else state.identity=null;
+    state.monitors=monitors?.status==="fulfilled"&&Array.isArray(monitors.value)?monitors.value:[];
+      state.lock=lock?.status==="fulfilled"?lock.value:null;state.keepOpen=keep?.status==="fulfilled"?keep.value:null;state.inspection=inspection?.status==="fulfilled"?inspection.value:null;state.placementError=monitors?.status==="rejected"||lock?.status==="rejected"||keep?.status==="rejected"?"Widget placement status is unavailable.":"";
+    state.settingsLoaded=true;state.settingsError=false;state.settingsStatus=state.policy?"":"Provider policy is unavailable.";
+    }catch{state.settingsError=true;state.settingsStatus="Settings could not be loaded.";}
+    finally{state.settingsBusy=false;state.settingsRenderKey="";render();state.frame?.contentWindow?.postMessage({type:"dashboard-reset-refresh"},location.origin);}
   }
   async function chooseMonitor(id){
     const api=window.pywebview?.api;if(typeof api?.select_monitor!=="function")return;
-    try{const result=typeof window.tokenTrackerSelectMonitor==="function"?await window.tokenTrackerSelectMonitor(id):await api.select_monitor(id);state.monitors=Array.isArray(result)?result:state.monitors;if(typeof api.get_widget_lock==="function")state.lock=await api.get_widget_lock();state.settingsError=false;state.settingsStatus="";}
-    catch(error){state.lock=null;state.settingsError=true;state.settingsStatus=error?.message||"Monitor could not be selected.";}
+    try{const result=await api.select_monitor(id);if(!Array.isArray(result)||!result.some(row=>row.selected&&row.id===id))throw new Error("Monitor could not be selected.");state.monitors=result;if(typeof api.get_widget_lock==="function")state.lock=await api.get_widget_lock();state.placementError="";}
+    catch(error){state.lock=null;state.placementError=error?.message||"Monitor could not be selected.";}
     finally{state.settingsRenderKey="";render();}
   }
   // "Set plan" switches to Settings; render focuses that provider's plan price input once it exists.
@@ -680,7 +696,7 @@
     if(state.togglePending.has(action))return;
     const api=window.pywebview?.api;
     state.togglePending.add(action);state.toggleErrors.delete(action);state.settingsRenderKey="";render();
-    try{if(action==="lock"&&typeof api?.set_widget_lock==="function")state.lock=await api.set_widget_lock(state.lock?.locked!==true,state.lock?.expanded===true,null,state.lock?.revision);if(action==="keep-open"&&typeof api?.set_keep_open==="function")state.keepOpen=await api.set_keep_open(state.keepOpen?.keepOpen!==true,state.keepOpen?.keepOpenRevision);state.settingsError=false;state.settingsStatus="";}
+    try{let result;if(action==="lock"){if(typeof api?.set_widget_lock!=="function"||!state.lock)throw new Error("Widget lock is unavailable.");const expected=state.lock.locked!==true;result=await api.set_widget_lock(expected,state.lock.expanded===true,null,state.lock.revision);if(result?.locked!==expected)throw new Error("Widget lock change was not applied.");state.lock=result;}if(action==="keep-open"){if(typeof api?.set_keep_open!=="function"||!state.keepOpen)throw new Error("Widget setting is unavailable.");const expected=state.keepOpen.keepOpen!==true;result=await api.set_keep_open(expected,state.keepOpen.keepOpenRevision);if(result?.keepOpen!==expected)throw new Error("Widget setting change was not applied.");state.keepOpen=result;}state.settingsError=false;state.settingsStatus="";}
     catch{state.toggleErrors.add(action);}
     // Focus returns to the switch only if it still holds focus or focus fell to the page; a user who moved on keeps their place.
     finally{const active=document.activeElement,keepFocus=!active||active===document.body||active.dataset?.dashboardAction===action;state.togglePending.delete(action);state.settingsRenderKey="";render();const next=$(`#dashboard-settings [data-dashboard-action="${action}"]`),now=document.activeElement;if(keepFocus&&next&&(!now||now===document.body))next.focus?.();}
@@ -689,7 +705,6 @@
     value=String(value);if(!["12","24"].includes(value))return false;
     writePref("branchglanceClockFormat",value);window.TokenTrackerSetClockFormat?.(value);state.settingsRenderKey="";render();return true;
   }
-  function toggleClock(){setClockFormat(readPref("branchglanceClockFormat","12")==="12"?"24":"12");}
   function render(){
     if(!state.open)return;
     const active=document.activeElement,focusData=active?.dataset||{};
@@ -697,7 +712,7 @@
     if(insightsKey!==state.renderKey){dismissTooltip();state.renderKey=insightsKey;const insights=$("#dashboard-insights");if(insights){insights.innerHTML=insightsHTML();let replacement=null;if(focusData.dashboardProvider!=null)replacement=[...insights.querySelectorAll("[data-dashboard-provider]")].find(node=>node.dataset.dashboardProvider===focusData.dashboardProvider);else if(focusData.dashboardRange)replacement=insights.querySelector(`[data-dashboard-range="${focusData.dashboardRange}"]`);else if(focusData.dashboardMetric)replacement=insights.querySelector(`[data-dashboard-metric="${focusData.dashboardMetric}"]`);else if(focusData.dashboardChartStyle)replacement=insights.querySelector(`[data-dashboard-chart-style="${focusData.dashboardChartStyle}"]`);else if(focusData.dashboardModels)replacement=insights.querySelector(`[data-dashboard-models="${focusData.dashboardModels}"]`);replacement?.focus?.();}}
     const settings=$("#dashboard-settings");
     if(settings&&state.tab==="settings"){
-      const settingsKey=[state.source,JSON.stringify(state.policy),state.identity?.version,state.identity?.build,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.lock?.revision,state.keepOpen?.keepOpenRevision,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
+      const settingsKey=[state.source,JSON.stringify(state.policy),state.identity?.version,state.identity?.build,state.settingsLoaded,state.settingsStatus,state.settingsBusy,state.settingsError,state.planError,state.manageError,state.lock?.revision,state.keepOpen?.keepOpenRevision,state.inspection?.choice,state.inspection?.status,readPref("branchglanceClockFormat","12"),state.monitors.map(m=>`${m.id}:${m.label}:${m.selected}`).join("|")].join("|");
       if(settingsKey!==state.settingsRenderKey){const focus=document.activeElement,selector=focus?.dataset?.dashboardAction?`[data-dashboard-action="${focus.dataset.dashboardAction}"]`:focus?.dataset?.dashboardClock?`[data-dashboard-clock="${focus.dataset.dashboardClock}"]`:focus?.dataset?.dashboardPlan?`[data-dashboard-plan="${focus.dataset.dashboardPlan}"]`:null,oldGroup=settings.querySelector(".dash-reset-group");state.settingsRenderKey=settingsKey;const template=document.createElement("template");template.innerHTML=settingsHTML();const newGroup=template.content.querySelector(".dash-reset-group"),src=group=>group?.querySelector("iframe.reset-embed")?.getAttribute("src");
         // Moving an iframe in the DOM reloads it, so a mounted reset form stays where it is and only its siblings are replaced.
         if(oldGroup&&newGroup&&src(oldGroup)&&src(oldGroup)===src(newGroup)){const keep=oldGroup.parentNode,nodes=[...newGroup.parentNode.childNodes],at=nodes.indexOf(newGroup);[...keep.childNodes].forEach(node=>{if(node!==oldGroup)node.remove();});oldGroup.before(...nodes.slice(0,at));oldGroup.after(...nodes.slice(at+1));}
@@ -774,6 +789,7 @@
   function setSource(source){if(typeof source==="string"&&source!==state.source){state.source=source;state.renderKey="";render();}}
   document.addEventListener("keydown",()=>{state.keyAt=Date.now();},true);
   document.addEventListener("click",event=>{
+    const hotkey=event.target?.closest?.("[data-inspection-hotkey]");if(hotkey){setInspectionHotkey(hotkey.dataset.inspectionHotkey);return;}
     const tab=event.target?.closest?.("[data-dashboard-tab]");if(tab){selectTab(tab.dataset.dashboardTab);return;}
     if(event.target?.closest?.("#dashboard-refresh")){void loadInsights();return;}
     const clock=event.target?.closest?.("[data-dashboard-clock]");if(clock){setClockFormat(clock.dataset.dashboardClock);return;}
@@ -786,25 +802,20 @@
     const name=action.dataset.dashboardAction;
     if(name==="close")window.tokenTrackerCloseDashboard?.();
     else if(name==="lock"||name==="keep-open")void toggleSetting(name);
-    else if(name==="clock")toggleClock();
     else if(name==="set-plan")openPlanPrice(action.dataset.dashboardPlanProvider);
-    else if(name==="recenter"){if(state.lock?.locked)return;void Promise.resolve(window.tokenTrackerRecenter?.()).then(()=>loadPlacement());}
-    else if(name==="dashboard-recenter")void window.tokenTrackerRecenter?.();
-    else if(name==="claude-settings")void window.pywebview?.api?.open_reset_actions?.();
-    else if(name==="debug-preview")void previewDebugReport();
+    else if(name==="recenter")void recenterWidget();
+    else if(name==="claude-settings")void openProviderManagement();
+    else if(name==="debug-preview"){state.debugOpener=action;void previewDebugReport();}
     else if(name==="debug-copy")void copyDebugReport();
     else if(name==="debug-issue")openDebugIssue();
+    else if(name==="debug-close")closeDebugPreview();
   });
   document.addEventListener("keydown",event=>{const tab=event.target?.closest?.("[role=tab][data-dashboard-tab]");if(!tab)return;const keys=["insights","settings"],index=keys.indexOf(tab.dataset.dashboardTab);let next=null;if(event.key==="ArrowRight")next=keys[(index+1)%keys.length];else if(event.key==="ArrowLeft")next=keys[(index+keys.length-1)%keys.length];else if(event.key==="Home")next=keys[0];else if(event.key==="End")next=keys.at(-1);if(next){event.preventDefault();selectTab(next);requestAnimationFrame(()=>$("#dashboard-tab-"+next)?.focus());}});
-  document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);if(target?.dataset?.dashboardPlan)setPlanPrice(target.dataset.dashboardPlan,target.value);});
+  document.addEventListener("change",event=>{const target=event.target;if(target?.dataset?.dashboardAction==="monitor")void chooseMonitor(target.value);if(target?.dataset?.dashboardPlan)setPlanPrice(target.dataset.dashboardPlan,target);});
   window.addEventListener("message",event=>{
     if(event.origin!==location.origin||event.source!==state.frame?.contentWindow)return;
     if(event.data?.type==="dashboard-reset-cancel")window.tokenTrackerCloseDashboard?.();
-    if(event.data?.type==="dashboard-open-settings")void window.pywebview?.api?.open_reset_actions?.();
-    // The frame reports the Claude Code status; it shows in the "Claude tracking" row, not inside the frame.
-    if(event.data?.type==="dashboard-reset-state"){const frame=state.frame;const status=frame?.parentElement?.querySelector(".dash-reset-state");if(status)status.textContent=String(event.data.text||"");}
     if(event.data?.type==="dashboard-reset-height"){const height=Math.round(Number(event.data.height));if(state.frame&&Number.isFinite(height)&&height>0)state.frame.style.height=`${Math.min(1200,Math.max(24,height))}px`;}
-    if(event.data?.type==="dashboard-claude-status"){state.claudeStatus=String(event.data.text||"").slice(0,120);const node=$("#dash-claude-status");if(node)node.textContent=state.claudeStatus;}
   });
   window.addEventListener("load",()=>{state.frame=$("#dashboard-settings iframe");});
   // Focus moving into the embedded reset form blurs this window. Coming back from it is not a return to the app,
@@ -812,7 +823,6 @@
   let frameFocused=false;
   window.addEventListener("blur",()=>{setTimeout(()=>{frameFocused=!!state.frame&&document.activeElement===state.frame;},0);});
   window.addEventListener("focus",()=>{if(frameFocused){frameFocused=false;return;}if(state.open&&state.tab==="settings")void loadSettings();});
-  async function loadPlacement(){const api=window.pywebview?.api;try{if(typeof api?.get_widget_lock==="function")state.lock=await api.get_widget_lock();if(typeof api?.get_monitors==="function")state.monitors=await api.get_monitors();state.settingsStatus="";state.settingsError=false;}catch{state.lock=null;state.settingsStatus="Widget placement status is unavailable.";state.settingsError=true;}state.settingsRenderKey="";render();}
   window.TokenTrackerDashboard={open,close,windowHeight,setSource,setSnapshot,selectTab,render,loadSettings,state};
   window.tokenTrackerDashboardSyncQuota=syncQuota;
   if(window.__TOKEN_TRACKER_DASHBOARD_TEST__)window.__tokenTrackerDashboardTest={compactPanel,insightsData,seriesChart,curvePath,insightsHTML,settingsHTML,statusText,normalizeStats,emptyHTML,planCellsHTML,planMultiple,storedRange,toggleProvider,loadMonth,setPlanPrice,setSnapshot,setSource,setRange,setMetric,setChartStyle,setClockFormat,loadInsights,loadInsightsOnce,workData,workHTML,workNote,loadLedger,debugIssueURL,previewDebugReport,copyDebugReport,openDebugIssue,state};

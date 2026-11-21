@@ -19,7 +19,7 @@ TWO = "22222222-2222-4222-8222-222222222222"
 
 class Service:
     def __init__(self):
-        self.action = {"mode": "greet", "threadIds": [], "armed": False, "oneShot": True, "lastRun": None}
+        self.action = {"mode": "off", "threadIds": [], "armed": False, "oneShot": True, "lastRun": None}
         self.configure_calls = []
         self.error = None
 
@@ -93,6 +93,7 @@ def test_get_returns_action_and_candidates_and_candidate_failure_preserves_actio
     {"mode": "greet", "threadIds": [], "prompt": "x"}, {"mode": "other", "threadIds": []},
     {"mode": "continue", "threadIds": ["bad"]}, {"mode": "continue", "threadIds": [ONE] * 21},
     {"mode": "continue", "threadIds": []}, {"mode": [], "threadIds": []},
+    {"mode": "off", "threadIds": [ONE]},
 ])
 def test_rejects_invalid_body_without_configuring(api, body):
     service, port = api
@@ -184,6 +185,16 @@ def test_reset_configuration_requires_explicit_send_before_service_call(api, mon
     status, body = request(port, "/api/reset-action", {"mode": "greet", "threadIds": []})
     assert status == 403 and "SEND" in body["error"]
     assert service.configure_calls == []
+
+
+def test_off_mode_can_be_saved_without_send_permission(api, monkeypatch):
+    service, port = api
+    policies = dict(provider_policy.POLICIES)
+    policies["Codex"] = replace(policies["Codex"], send=False, send_origin="default")
+    monkeypatch.setattr(provider_policy, "POLICIES", policies)
+    status, body = request(port, "/api/reset-action", {"mode": "off", "threadIds": []})
+    assert status == 200 and body["action"]["mode"] == "off" and body["action"]["armed"] is False
+    assert service.configure_calls == [("off", [])]
 
 
 def test_service_provider_policy_error_maps_to_generic_forbidden(api):

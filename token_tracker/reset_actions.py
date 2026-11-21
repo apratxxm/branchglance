@@ -23,7 +23,7 @@ NOT_STARTED_RETRY_SECONDS = 900
 
 
 def default_action() -> dict[str, Any]:
-    return {"schemaVersion": ACTION_SCHEMA_VERSION, "mode": "greet", "threadIds": [],
+    return {"schemaVersion": ACTION_SCHEMA_VERSION, "mode": "off", "threadIds": [],
             "armed": False, "oneShot": True, "lastRun": None}
 
 
@@ -146,13 +146,13 @@ class ResetActionDispatcher:
             return self.public_state(state)
 
     def validate_configuration(self, mode: str, thread_ids: Iterable[str]) -> list[str]:
-        if mode not in {"greet", "continue"}:
-            raise ValueError("mode must be 'greet' or 'continue'")
+        if mode not in {"off", "greet", "continue"}:
+            raise ValueError("mode must be 'off', 'greet' or 'continue'")
         if mode == "continue":
             policy_for("Codex", self.policies).require("continue")
         ids = _valid_ids(thread_ids)
-        if mode == "greet" and ids:
-            raise ValueError("greet mode cannot have selected chats")
+        if mode != "continue" and ids:
+            raise ValueError(f"{mode} mode cannot have selected chats")
         if mode == "continue":
             if not ids:
                 raise ValueError("continue mode requires at least one selected chat")

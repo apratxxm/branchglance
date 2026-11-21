@@ -89,7 +89,7 @@ function bootDashboard({fetchText = REPORT, fetchOk = true, platform = "Win32", 
 {
   const {dashboard, calls} = bootDashboard({fetchOk: false});
   await dashboard.previewDebugReport();
-  assert.equal(dashboard.state.debugReport, undefined);
+  assert.equal(dashboard.state.debugReport, "");
   assert.equal(dashboard.state.debugError, true);
   assert.equal(dashboard.state.debugStatus, "Debug report is unavailable.");
   assert.equal(calls.clipboard.length, 0);
