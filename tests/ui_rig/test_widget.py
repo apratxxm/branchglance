@@ -334,6 +334,8 @@ def test_settings_rerender_keeps_reset_form_loaded(page):
 def test_settings_reachable(page):
     open_settings(page)
     content = page.locator(ui.SETTINGS_SCROLLER)
+    # The embedded reset form grows the page once it loads; measure after layout settles.
+    content.evaluate("el => new Promise(resolve => { let last = -1, stable = 0; const tick = () => { const h = el.scrollHeight; stable = h === last ? stable + 1 : 0; last = h; if (stable >= 3) resolve(); else requestAnimationFrame(tick); }; tick(); })")
     size = content.evaluate("el => ({scroll: el.scrollHeight, client: el.clientHeight})")
     assert size["scroll"] > size["client"]
     assert content.evaluate("el => ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)")
@@ -549,6 +551,9 @@ def test_settings_keyboard_reaches_controls(page):
     frame = page.frame_locator(ui.RESET_FRAME)
     # Count the embedded form only after it has rendered, or the expected total races its load.
     expect(frame.locator(ui.INTERACTIVE).filter(visible=True).first).to_be_visible()
+    # Loading state shows its own controls; count only once the saved mode is selected and every granted mode is enabled.
+    expect(frame.locator('input[name="mode"]:checked')).to_have_count(1)
+    expect(frame.locator('input[name="mode"]:not([disabled])')).to_have_count(3)
     inner = frame.locator(ui.INTERACTIVE).filter(visible=True)
     expected_outer = controls.count()
     enabled_radios = frame.locator('input[name="mode"]:not([disabled])')
