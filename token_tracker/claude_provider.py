@@ -232,6 +232,7 @@ def _agent_descriptions(parent: Path | None) -> dict[str, str]:
     if parent is None:
         return {}
     from . import providers
+    providers._incremental_jsonl_reduce_group(parent, _claude_transcript_reducer_specs())
     state = providers._incremental_jsonl_reduce(
         _AGENT_DESCRIPTION_KIND, parent, _new_agent_description_state, _reduce_agent_descriptions,
         project=lambda state: {"result": dict(state["result"])}, unavailable={"result": {}},
@@ -406,10 +407,25 @@ def _reduce_transcript(state: dict[str, Any], item: Any) -> None:
 _USAGE_NEEDLES = (b'"usage"',)
 
 
+def _claude_transcript_reducer_specs() -> list[dict[str, Any]]:
+    """Reducers that share one Claude Code transcript in a snapshot build."""
+    return [
+        {"kind": "claude-code-transcript", "initial_state": _new_transcript_state,
+         "reduce_record": _reduce_transcript, "unavailable": _new_transcript_state()},
+        {"kind": _AGENT_DESCRIPTION_KIND, "initial_state": _new_agent_description_state,
+         "reduce_record": _reduce_agent_descriptions,
+         "project": lambda state: {"result": dict(state["result"])},
+         "unavailable": {"result": {}}, "needles": _AGENT_DESCRIPTION_NEEDLES},
+        {"kind": _USAGE_KIND, "initial_state": _new_usage_state,
+         "reduce_record": _reduce_usage, "unavailable": None, "needles": _USAGE_NEEDLES},
+    ]
+
+
 def transcript_summary(path: Path | None) -> dict[str, Any]:
     if path is None:
         return _new_transcript_state()
     from . import providers
+    providers._incremental_jsonl_reduce_group(path, _claude_transcript_reducer_specs())
     state = providers._incremental_jsonl_reduce(
         "claude-code-transcript", path, _new_transcript_state, _reduce_transcript,
         unavailable=_new_transcript_state())
@@ -768,6 +784,7 @@ def usage_aggregates(now: float | None = None, root: Path | None = None,
     active_hours: set[str] = set()
     session_activity: dict[str, dict[str, Any]] = {}
     for _created, _name, path in _usage_files(base, now - (days + 1) * 86400):
+        providers._incremental_jsonl_reduce_group(path, _claude_transcript_reducer_specs())
         state = providers._incremental_jsonl_reduce(
             _USAGE_KIND, path, _new_usage_state, _reduce_usage,
             unavailable=None, needles=_USAGE_NEEDLES)

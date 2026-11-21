@@ -3763,6 +3763,143 @@ def test_incremental_jsonl_checkpoints_enforce_entry_budget_without_large_state(
     assert 0 < providers._JSONL_CHECKPOINT_BYTES <= providers._JSONL_CHECKPOINT_MAX_BYTES
 
 
+def test_incremental_jsonl_group_matches_individual_reducers_across_file_changes(tmp_path):
+    path = tmp_path / "group.jsonl"
+
+    def reducer(kind):
+        return {"kind": kind, "initial_state": lambda: {"values": []},
+                "reduce_record": lambda state, item: state["values"].append(item["value"]),
+                "unavailable": None}
+
+    kinds = [f"group-{id(path)}-{index}" for index in range(3)]
+    specs = [dict(reducer(kind), kind=kind) for kind in kinds]
+
+    def compare(contents):
+        path.write_bytes(contents)
+        grouped = providers._incremental_jsonl_reduce_group(path, specs)
+        expected = {kind: providers._incremental_jsonl_reduce(
+            kind, path, lambda: {"values": []},
+            lambda state, item: state["values"].append(item["value"])) for kind in kinds}
+        assert grouped == expected
+
+    compare(b'{"value":1}\n{"value":2}\n')
+    with path.open("ab") as handle:
+        handle.write(b'{"value":3}\n')
+    expected = {kind: {"values": [1, 2, 3]} for kind in kinds}
+    assert providers._incremental_jsonl_reduce_group(path, specs) == expected
+    compare(b'{"value":7}\n')  # truncate/rewrite
+    replacement = tmp_path / "replacement.jsonl"
+    replacement.write_bytes(b'{"value":9}\n')
+    os.replace(replacement, path)
+    grouped = providers._incremental_jsonl_reduce_group(path, specs)
+    assert grouped == {kind: {"values": [9]} for kind in kinds}
+    assert {kind: providers._incremental_jsonl_reduce(
+        kind, path, lambda: {"values": []},
+        lambda state, item: state["values"].append(item["value"])) for kind in kinds} == grouped
+
+
+def test_incremental_jsonl_group_opens_once_and_serializes_same_path_calls(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "group-count.jsonl"
+    payload = b"".join(f'{{"value":{index}}}\n'.encode() for index in range(50))
+    path.write_bytes(payload)
+    real_open = Path.open
+    opens = []
+    bytes_read = []
+
+    class CountingReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def read(self, *args, **kwargs):
+            data = self.handle.read(*args, **kwargs)
+            bytes_read.append(len(data))
+            return data
+
+        def readline(self, *args, **kwargs):
+            data = self.handle.readline(*args, **kwargs)
+            bytes_read.append(len(data))
+            return data
+
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+
+    def counted_open(self, *args, **kwargs):
+        if self == path:
+            opens.append(1)
+            return CountingReader(real_open(self, *args, **kwargs))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counted_open)
+    kinds = [f"group-concurrent-{id(path)}-{index}" for index in range(4)]
+    specs = [{"kind": kind, "initial_state": lambda: {"n": 0},
+              "reduce_record": lambda state, _item: state.__setitem__("n", state["n"] + 1)}
+             for kind in kinds]
+    grouped = providers._incremental_jsonl_reduce_group(path, specs)
+    assert grouped == {kind: {"n": 50} for kind in kinds}
+    assert len(opens) == 1
+    assert sum(bytes_read) == len(payload)
+    opens.clear()
+    # A concurrent single-kind call may win the stripe lock first; either way,
+    # both paths must publish the same final state without corrupting checkpoints.
+    path.write_bytes(payload + b'{"value":50}\n')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        group = pool.submit(providers._incremental_jsonl_reduce_group, path, specs)
+        single = pool.submit(providers._incremental_jsonl_reduce, kinds[0], path,
+                             lambda: {"n": 0}, lambda state, _item: state.__setitem__("n", state["n"] + 1))
+        grouped = group.result()
+        individual = single.result()
+    assert grouped == {kind: {"n": 51} for kind in kinds}
+    assert individual == {"n": 51}
+
+
+def test_incremental_jsonl_group_unreadable_and_never_advances_unseen_kind(tmp_path, monkeypatch):
+    path = tmp_path / "group-unreadable.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    kind = f"group-unreadable-{id(path)}"
+    seen = []
+    spec = {"kind": kind, "initial_state": lambda: {"values": []},
+            "reduce_record": lambda state, item: (seen.append(item["value"]), state["values"].append(item["value"]))}
+    assert providers._incremental_jsonl_reduce_group(path, [spec])[kind] == {"values": [1]}
+    key = (kind, str(path.resolve(strict=False)))
+    assert providers._JSONL_CHECKPOINTS[key]["offset"] == path.stat().st_size
+    assert seen == [1]
+
+    original = Path.open
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("unreadable test file")
+        return original(self, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", unreadable)
+        assert providers._incremental_jsonl_reduce_group(path, [dict(spec, kind=kind + "-new")])[kind + "-new"] is None
+
+
+def test_incremental_jsonl_group_respects_each_reducers_checkpoint_offset(tmp_path):
+    path = tmp_path / "group-offsets.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    old_kind, new_kind = f"group-offset-old-{id(path)}", f"group-offset-new-{id(path)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    assert providers._incremental_jsonl_reduce(old_kind, path, initial, reduce) == {"values": [1]}
+    old_offset = providers._JSONL_CHECKPOINTS[(old_kind, str(path.resolve(strict=False)))]["offset"]
+    with path.open("ab") as handle:
+        handle.write(b'{"value":2}\n')
+    group = [{"kind": old_kind, "initial_state": initial, "reduce_record": reduce},
+             {"kind": new_kind, "initial_state": initial, "reduce_record": reduce}]
+    assert providers._incremental_jsonl_reduce_group(path, group) == {
+        old_kind: {"values": [1, 2]}, new_kind: {"values": [1, 2]}}
+    assert old_offset < providers._JSONL_CHECKPOINTS[(old_kind, str(path.resolve(strict=False)))]["offset"]
+
+
 def test_session_insights_reloads_changed_subagent_sidecar_and_thread_name_beats_preview(tmp_path):
     folder = tmp_path / "subagents"
     folder.mkdir()
