@@ -518,12 +518,8 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
         metrics = page.locator("#chat-list .runway-refined-title > span").evaluate_all("""els => els.map(el => {
           const label=el.querySelector('.runway-agent-label'), style=getComputedStyle(label), titleStyle=getComputedStyle(el), box=el.getBoundingClientRect();
           const row=el.closest('.runway-refined-row'), titleCell=el.parentElement.getBoundingClientRect(), branch=row.querySelector('.runway-refined-path').getBoundingClientRect();
-          let oldTitleWidth=null;
-          if(el.classList.contains('runway-agent-name')){
-            const baseline=row.cloneNode(true);baseline.style.gridTemplateColumns='minmax(0,1fr) 62px 112px 96px 80px';baseline.querySelector('.runway-refined-title').style.gridColumn='1';baseline.querySelector('.runway-refined-title').style.gridRow='1';baseline.style.position='absolute';baseline.style.left='-10000px';baseline.style.top='0';baseline.style.visibility='hidden';row.parentElement.append(baseline);
-            oldTitleWidth=baseline.querySelector('.runway-refined-title').getBoundingClientRect().width;baseline.remove();
-          }
-          return {title:el.title, label:label.textContent, height:box.height, lineHeight:parseFloat(titleStyle.lineHeight), whiteSpace:style.whiteSpace, titleWidth:titleCell.width, branchWidth:branch.width, oldTitleWidth,
+          return {title:el.title, label:label.textContent, height:box.height, lineHeight:parseFloat(titleStyle.lineHeight), whiteSpace:style.whiteSpace, titleWidth:titleCell.width, titleTop:titleCell.top, titleBottom:titleCell.bottom, branchWidth:branch.width,
+            timingMid:(row.querySelector('.runway-refined-elapsed').getBoundingClientRect().top+row.querySelector('.runway-refined-elapsed').getBoundingClientRect().bottom)/2, rowHeight:row.getBoundingClientRect().height,
             overflow:style.overflow, textOverflow:style.textOverflow, scrollWidth:label.scrollWidth, clientWidth:label.clientWidth};
         })""")
         assert len(metrics) == 2, (width, metrics)
@@ -533,8 +529,11 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
             assert item["whiteSpace"] == "nowrap", (width, item)
             if item["scrollWidth"] > item["clientWidth"]:
                 assert item["overflow"] == "hidden" and item["textOverflow"] == "ellipsis", (width, item)
-        assert metrics[1]["oldTitleWidth"] > 0, (width, metrics)
-        assert metrics[1]["titleWidth"] >= metrics[1]["oldTitleWidth"] + metrics[0]["branchWidth"] - 1, (width, metrics)
+        parent, child = metrics
+        # The child keeps the parent's single band: its timing sits beside its title, not on a lower line.
+        assert child["titleTop"] - 1 <= child["timingMid"] <= child["titleBottom"] + 1, (width, metrics)
+        assert child["rowHeight"] <= parent["rowHeight"] + 1, (width, metrics)
+        assert child["titleWidth"] > 0, (width, metrics)
 
 
 def test_recent_standalone_failure_is_visible_with_muted_age(page):
@@ -566,7 +565,7 @@ def test_branchless_child_timing_shares_parent_right_edge(page):
         assert abs(edges[0] - edges[1]) <= 1, (width, edges)
 
 
-def test_overflowing_job_list_has_keyboard_reachable_scroll_cue(page):
+def test_overflowing_job_list_stays_keyboard_scrollable_without_a_more_cue(page):
     page.set_viewport_size({"width": 560, "height": 478})
     page.evaluate("""() => {
       document.body.classList.add('runway-compact'); document.body.dataset.notchMode='inspect';
@@ -580,16 +579,10 @@ def test_overflowing_job_list_has_keyboard_reachable_scroll_cue(page):
     content.focus()
     content.press("ArrowDown")
     page.wait_for_function("() => document.querySelector('#chat-list').scrollTop > 0", timeout=2000)
-    assert content.evaluate("el => el.scrollTop > 0"), "the visible continuation cue is keyboard scrollable"
-    content.evaluate("el => el.scrollTop = 0")
-    page.evaluate("() => window.__tokenTrackerTest.syncRunwayOverflowCue()")
-    cue = page.locator("#chat-list .runway-list-more")
-    expect(cue).to_be_visible()
-    expect(cue).to_have_text(re.compile(r"\+\d+ more"))
-    cue.focus()
-    cue.press("Enter")
-    page.wait_for_function("() => document.querySelector('#chat-list').scrollTop > 0", timeout=2000)
-    assert content.evaluate("el => el.scrollTop > 0"), "activating the continuation cue advances the list"
+    assert content.evaluate("el => el.scrollTop > 0"), "a list past the window cap stays keyboard scrollable"
+    assert page.evaluate("() => typeof window.__tokenTrackerTest.syncRunwayOverflowCue") == "undefined"
+    expect(page.locator("#chat-list .runway-list-more")).to_have_count(0)
+    expect(page.get_by_text(re.compile(r"\+\d+ more"))).to_have_count(0)
 
 
 def test_locked_widget_dims_recenter_and_explains_why(page):

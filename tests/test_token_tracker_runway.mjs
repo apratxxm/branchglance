@@ -61,7 +61,8 @@ assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.r
 assert.match(refinedCss,/\.rr-cd\.last-known\{color:var\(--muted\);\}/,"a stale countdown uses the mute ink");
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-left\.last-known i\{[^}]*flex:0 0 auto;white-space:nowrap;/,"the complete stale age remains visible without competing with its countdown");
 assert.match(refinedCss,/\.rr-cd\.last-known:empty::before\{content:"";\}/,"a stale cell's empty countdown track stays visually empty");
-assert.match(refinedCss,/\.chat-list \.runway-list-more\{position:sticky;bottom:0;[^}]*color:var\(--muted\)/,"overflow shows a persistent muted continuation cue");
+assert.doesNotMatch(refinedCss,/runway-list-more/,"the job list never shows a +N more cue");
+assert.doesNotMatch(app,/runway-list-more|syncRunwayOverflowCue/,"no script inserts a +N more cue");
 assert.doesNotMatch(css,/body:has\(\.chat\[data-provider="Codex"\]\):not\(:has\(\.chat\[data-provider="Claude"\]\)\) \.runway-count\.t-live/,"single-provider counters keep the shared workload ink");
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-moment\{grid-column:3;grid-row:1;justify-content:flex-end;\}/,"the reset time stays right-aligned in its own cell");
 assert.match(cssRule('.runway-count.t-live'),/color:var\(--green\)/);
