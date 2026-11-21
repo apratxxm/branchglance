@@ -262,11 +262,12 @@ def test_reload_between_settings_reservation_and_native_creation_discards_the_re
     native_creations = []
 
     def create_settings(_api, authority, _revoke, _clear, register_child, _token):
-        reserved.set()
-        assert continue_create.wait(3)
         if not register_child(child):
             return None
-        native_creations.append(child)
+        reserved.set()
+        assert continue_create.wait(3)
+        if not register_child(child, lambda: native_creations.append(child)):
+            return None
         return child
 
     app._create_settings_native_window = create_settings
@@ -284,6 +285,39 @@ def test_reload_between_settings_reservation_and_native_creation_discards_the_re
     assert result == [False] and native_creations == []
     assert app._settings_child_reservation is None and app.reset_actions_window is None
     assert server._SETTINGS_TOKEN is None
+
+
+def test_known_queue_refusal_waits_past_three_seconds_for_current_document():
+    authority, window = _bound_authority()
+    lock_held = threading.Event()
+    reply_received = threading.Event()
+    responses = []
+
+    def hold_for_probe():
+        with authority._lock:
+            lock_held.set()
+            time.sleep(3.35)
+
+    holder = threading.Thread(target=hold_for_probe, daemon=True)
+    holder.start()
+    assert lock_held.wait(2)
+    receipt, refusal, epoch = authority.receive_status(
+        window, "queue_message", TRUSTED, TRUSTED, widget._MAIN_BRIDGE_OPERATIONS)
+    assert receipt is None and refusal == "contended"
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+
+    def schedule(_window, operation, callback_id, result):
+        responses.append((operation, callback_id, result))
+        reply_received.set()
+
+    app._schedule_native_reply = schedule
+    app._dispatch_retryable_bridge_refusal(
+        window, authority, "queue_message", ["thread", "message"], "3e-35",
+        TRUSTED, TRUSTED, epoch, widget._MAIN_BRIDGE_OPERATIONS)
+    assert reply_received.wait(8)
+    holder.join(2)
+    assert responses == [("queue_message", "3e-35",
+                          {"ok": False, "status": "retryable", "error": "The widget is busy. Try again."})]
 
 
 def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allowlisted(monkeypatch):

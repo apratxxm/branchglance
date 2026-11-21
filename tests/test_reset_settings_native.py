@@ -153,9 +153,15 @@ def test_settings_native_guards_are_registered_before_pinned_gui_creates_the_win
     monkeypatch.setattr(widget.webview, "guilib", gui, raising=False)
     monkeypatch.setattr(app, "_install_native_authority",
                         lambda window, lease, **_kwargs: lease.install(window, window.native))
+    def register(child, create_native=None):
+        if create_native is None:
+            return authority.reserve_window(child)
+        create_native()
+        return True
+
     child = app._create_settings_native_window(widget.SettingsWindowApi(lambda *_args: {}),
                                                authority, lambda: None, lambda _child: None,
-                                               lambda _child: True, "fragment-token")
+                                               register, "fragment-token")
     assert child is observations[0][0]
     assert observations == [(child, False)], "native guards bind before navigation; admission waits for the trusted document"
 
@@ -185,15 +191,15 @@ def test_manage_settings_reuses_a_registered_child_while_its_document_loads(monk
 
     def create_child(_api, authority, revoke, clear, register_child, _token):
         child = Child()
-        adapter = object()
-        authority.install(child, adapter)
-        child.native_adapter = adapter
         child.events.closing += revoke
         child.events.closed += lambda: clear(child)
         created.append(child)
         assert register_child(child)
         child_registered.set()
         assert release_create.wait(3)
+        adapter = object()
+        assert authority.install(child, adapter), "the model remains a valid pending reservation before adapter installation"
+        child.native_adapter = adapter
         return child  # Simulate CoreWebView2 initialization still pending.
 
     monkeypatch.setattr(app, "_create_settings_native_window", create_child)
@@ -205,11 +211,12 @@ def test_manage_settings_reuses_a_registered_child_while_its_document_loads(monk
     pending_child = created[0]
     authority = app._settings_bridge_authority
     registered_token = app._reset_actions_token
-    assert authority.guards_installed(pending_child) and not authority.document_ready(pending_child)
+    assert authority.window_registered(pending_child) and not authority.document_ready(pending_child)
     second_receipt = app._bridge_authority.receive(app.window, "open_reset_actions", main_url, main_url,
                                                     widget._MAIN_BRIDGE_OPERATIONS)
     assert app._open_reset_actions_from_bridge(second_receipt, app.window) is True
     assert created == [pending_child], "repeated Manage clicks reuse the pending child and capability"
+    assert app._reset_actions_token == registered_token, "pending reuse must not rotate the Settings capability"
     release_create.set(); opener.join(3)
     assert not opener.is_alive() and first_result == [True]
     assert pending_child.calls == []
@@ -293,13 +300,13 @@ def test_shutdown_intent_and_token_revocation_win_against_pending_settings_regis
     child = Child()
 
     def create_child(_api, authority, revoke, clear, register_child, _token):
+        assert register_child(child)
         authority.install(child, child)
         authority.activate(child, child, "http://127.0.0.1:8765/reset_actions.html")
         authority.begin_navigation("http://127.0.0.1:8765/reset_actions.html", 1)
         authority.complete_navigation(1, True, "http://127.0.0.1:8765/reset_actions.html")
         child.events.closing += revoke
         child.events.closed += lambda: clear(child)
-        assert register_child(child)
         registered.set()
         assert release.wait(3)
         return child
@@ -350,10 +357,10 @@ def test_rejected_settings_child_is_detached_before_synchronous_gui_destroy():
     child.destroy = destroy_synchronously_through_gui
 
     def create_then_quit(_api, authority, revoke, clear, register_child, _token):
+        assert register_child(child)
         authority.install(child, object())
         child.events.closing += revoke
         child.events.closed += lambda: clear(child)
-        assert register_child(child)
         app._begin_shutdown()
         return child
 
@@ -390,11 +397,11 @@ def test_discarded_settings_child_is_destroyed_outside_lifecycle_lock():
     child.destroy = destroy_synchronously_through_gui
 
     def create_then_quit(_api, authority, revoke, clear, register_child, _token):
+        assert register_child(child)
         adapter = object()
         authority.install(child, adapter)
         child.events.closing += revoke
         child.events.closed += lambda: clear(child)
-        assert register_child(child)
         app._begin_shutdown()
         return child
 

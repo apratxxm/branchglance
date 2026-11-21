@@ -52,7 +52,12 @@ _WAIT_OBJECT_0 = 0x0
 _WAIT_ABANDONED = 0x80
 _WAIT_TIMEOUT = 0x102
 SETTINGS_DIALOG_WAIT_SECONDS = 300.0
-BRIDGE_REFUSAL_WAIT_SECONDS = 3.0
+BRIDGE_REFUSAL_DEADLINES = {
+    "queue_message": 20.0,
+    "open_thread": 10.0,
+    "open_reset_actions": 10.0,
+    "save_ledger_csv": SETTINGS_DIALOG_WAIT_SECONDS + 10.0,
+}
 
 
 @dataclass
@@ -73,6 +78,7 @@ class SettingsChildReservation:
     window: object | None = None
     opener_receipt: object | None = None
     source_window: object | None = None
+    native_created: bool = False
 
 
 class BridgeAuthority:
@@ -87,6 +93,7 @@ class BridgeAuthority:
         self._admitted = False
         self._shutting_down = False
         self._window = None
+        self._pending_window = None
         self._adapter = None
         self._navigating = False
         self._document_url = None
@@ -109,8 +116,20 @@ class BridgeAuthority:
                 return False
             if self._window is not None:
                 return self._window is window and self._adapter is adapter
+            if self._pending_window is not None and self._pending_window is not window:
+                return False
             self._window = window
             self._adapter = adapter
+            self._pending_window = None
+            return True
+
+    def reserve_window(self, window):
+        with self._lock:
+            if self._shutting_down or self._port is None or self._window is not None:
+                return False
+            if self._pending_window not in (None, window):
+                return False
+            self._pending_window = window
             return True
 
     def activate(self, window, adapter, target_url):
@@ -134,8 +153,8 @@ class BridgeAuthority:
             if self._port is None or self._shutting_down:
                 return False
             if window is None:
-                return self._window is None
-            return self._window is window and self._adapter is not None
+                return self._window is None and self._pending_window is None
+            return (self._window is window and self._adapter is not None) or self._pending_window is window
 
     def document_ready(self, window):
         with self._lock:
@@ -146,6 +165,7 @@ class BridgeAuthority:
         with self._lock:
             self._shutting_down = True
             self._admitted = False
+            self._pending_window = None
             self._generation += 1
 
     def begin_navigation(self, target, navigation_id=None):
@@ -3027,6 +3047,9 @@ class WidgetApp:
                         existing = reservation.window
                     elif not authority.receipt_is_current(receipt, source_window, "open_reset_actions"):
                         return False
+                    else:
+                        reservation.opener_receipt = receipt
+                        reservation.source_window = source_window
                 elif receipt is not None:
                     reservation.opener_receipt = receipt
                     reservation.source_window = source_window
@@ -3069,7 +3092,7 @@ class WidgetApp:
                             self._settings_child_reservation = None
                         self._clear_closed_settings_reference(closed_child)
 
-                def register_child(created_child):
+                def register_child(created_child, create_native=None):
                     with self._lifecycle:
                         if (self._shutdown_pending() or self._settings_child_reservation is not reservation
                                 or self._reset_actions_token != token):
@@ -3079,8 +3102,8 @@ class WidgetApp:
                             opener_authority = getattr(opener_receipt, "authority", None)
                             if (opener_authority is not self._bridge_authority
                                     or reservation.source_window is not getattr(self, "window", None)
-                                    or not opener_authority.commit(opener_receipt, reservation.source_window,
-                                                                   "open_reset_actions")):
+                                    or not opener_authority.receipt_is_current(
+                                        opener_receipt, reservation.source_window, "open_reset_actions")):
                                 with self._reset_actions_lock:
                                     if (self._settings_child_reservation is reservation
                                             and self._reset_actions_token == token):
@@ -3088,6 +3111,25 @@ class WidgetApp:
                                         self._settings_child_reservation = None
                                         server_module.clear_settings_token(token, authority.revoke)
                                 return False
+                        if create_native is None:
+                            if not authority.reserve_window(created_child):
+                                return False
+                            reservation.window = created_child
+                            return True
+                        if opener_receipt is not None and not opener_authority.commit(
+                                opener_receipt, reservation.source_window, "open_reset_actions"):
+                            with self._reset_actions_lock:
+                                if (self._settings_child_reservation is reservation
+                                        and self._reset_actions_token == token):
+                                    self._reset_actions_token = None
+                                    self._settings_child_reservation = None
+                                    server_module.clear_settings_token(token, authority.revoke)
+                            return False
+                        # WinForms invokes this callback on its GUI thread. The native
+                        # constructor runs synchronously below, so a navigation event
+                        # cannot interleave between the receipt check and construction.
+                        create_native()
+                        reservation.native_created = True
                         reservation.window = created_child
                         self.reset_actions_window = created_child
                         return True
@@ -3370,7 +3412,36 @@ class WidgetApp:
                 webview.windows.remove(child)
             return None
         try:
-            gui.create_window(child)
+            created = {"ok": False}
+            completed = threading.Event()
+
+            def create_on_gui():
+                try:
+                    created["ok"] = register_child(child, lambda: gui.create_window(child))
+                except Exception:
+                    created["ok"] = False
+                    raise
+                finally:
+                    completed.set()
+
+            main_window = getattr(self, "window", None)
+            main_native = getattr(main_window, "native", None) if main_window is not None else None
+            begin_invoke = getattr(main_native, "BeginInvoke", None) if main_native is not None else None
+            invoke_required = bool(getattr(main_native, "InvokeRequired", False)) if main_native is not None else False
+            if callable(begin_invoke) and invoke_required:
+                try:
+                    from System import Func, Object
+                    begin_invoke(Func[Object](create_on_gui))
+                except Exception:
+                    raise
+                if not completed.wait(30.0):
+                    raise TimeoutError("Settings native creation timed out")
+            else:
+                create_on_gui()
+            if not created["ok"]:
+                with suppress(ValueError):
+                    webview.windows.remove(child)
+                return None
         except Exception:
             with suppress(ValueError):
                 webview.windows.remove(child)
@@ -3567,7 +3638,7 @@ class WidgetApp:
     def _dispatch_retryable_bridge_refusal(self, window, authority, operation, params, value_id,
                                            source_url, top_url, generation, operations):
         def reply_if_current():
-            deadline = time.monotonic() + BRIDGE_REFUSAL_WAIT_SECONDS
+            deadline = time.monotonic() + BRIDGE_REFUSAL_DEADLINES.get(operation, 10.0)
             while True:
                 state = authority.retryable_state(window, operation, source_url, top_url,
                                                   generation, operations)
