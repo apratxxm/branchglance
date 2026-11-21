@@ -804,6 +804,16 @@ def _advance_notch_deadline(deadline, now, interval=NOTCH_FRAME_INTERVAL):
     return deadline + missed_slots * interval
 
 
+class SettingsWindowApi:
+    """The Settings window's only bridge: saving the history CSV through the native file dialog."""
+
+    def __init__(self, on_save_ledger_csv) -> None:
+        self._save_ledger_csv = on_save_ledger_csv
+
+    def save_ledger_csv(self):
+        return self._save_ledger_csv() if self._save_ledger_csv else {"ok": False, "error": "Native file saving is unavailable."}
+
+
 class WindowApi:
     def __init__(self, on_minimize, on_toggle_maximize, on_close, on_size=None, on_resize=None, on_fit=None, on_notch=None,
                  on_monitors=None, on_monitor=None, on_recenter=None, on_drag_begin=None, on_drag_end=None,
@@ -2744,7 +2754,7 @@ class WidgetApp:
                 "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
                 width=440, height=540, min_size=(360, 360), resizable=True,
                 background_color="#111316",
-                js_api=WindowApi(None, None, None, on_save_ledger_csv=self.save_ledger_csv),
+                js_api=SettingsWindowApi(self.save_ledger_csv),
             )
             self.reset_actions_window = child
 

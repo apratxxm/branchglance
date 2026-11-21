@@ -64,7 +64,10 @@ def test_native_settings_window_reuses_and_clears_reference(monkeypatch):
     assert len(calls) == 1
     assert calls[0][1]["width"] == 440 and calls[0][1]["height"] == 540
     assert calls[0][1]["min_size"] == (360, 360) and calls[0][1]["resizable"] is True
-    assert "js_api" not in calls[0][1]
+    # The Settings window gets only the CSV-save bridge, never the widget's WindowApi.
+    bridge = calls[0][1]["js_api"]
+    assert type(bridge) is widget.SettingsWindowApi
+    assert {name for name in dir(bridge) if not name.startswith("_")} == {"save_ledger_csv"}
     first_url = calls[0][0][1]
     from urllib.parse import urlsplit, parse_qs
     parsed = urlsplit(first_url)

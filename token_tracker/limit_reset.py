@@ -1972,7 +1972,7 @@ class LimitResetService:
                 summary = self._provider_summary(providers.get(name, {}), now)
                 if name == "Codex":
                     summary["automationMode"] = reset_mode
-                    if reset_mode == "off":
+                    if reset_mode == "off" and self.enabled:
                         summary.update(
                             phase="off", armed=False, exhaustedAt=None,
                             exhaustedSampleAt=None, nextGreetingAt=None,
