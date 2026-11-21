@@ -507,17 +507,27 @@ def test_full_provider_mixed_history_and_live_uses_older_actual_timestamp(tmp_pa
 
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="Windows handle guard")
-def test_guarded_open_does_not_retain_a_ctypes_type_per_call(tmp_path):
+def test_guarded_open_does_not_retain_a_ctypes_type_per_call(tmp_path, monkeypatch):
     # ctypes.POINTER caches every struct class for the life of the process; a struct
     # defined per call grew that cache on every guarded open (the r18 memory leak).
+    # Count the struct types handed to POINTER, which works whether the cache is the
+    # global dict (3.12/3.13) or an attribute on each type (3.14+).
     import ctypes
+
+    real_pointer = ctypes.POINTER
+    seen = set()
+
+    def recording_pointer(cls):
+        if getattr(cls, "__module__", "") == statusline.__name__:
+            seen.add(cls)
+        return real_pointer(cls)
+
+    monkeypatch.setattr(ctypes, "POINTER", recording_pointer)
 
     def open_and_close():
         handle = statusline._windows_open(tmp_path, 0x81, 3, 3, directory=True)
         ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
 
-    open_and_close()
-    before = len(ctypes._pointer_type_cache)
     for _ in range(50):
         open_and_close()
-    assert len(ctypes._pointer_type_cache) == before
+    assert len(seen) <= 1
