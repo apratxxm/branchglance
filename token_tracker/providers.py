@@ -691,8 +691,8 @@ def _provider_collection_sets(policies: Any) -> tuple[tuple[str, ...], tuple[str
 _JSONL_CHECKPOINTS: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _JSONL_CHECKPOINT_LOCK = threading.Lock()
 _JSONL_CHECKPOINT_BYTES = 0
-_JSONL_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024
-_JSONL_CHECKPOINT_MAX_ENTRIES = 1024
+_JSONL_CHECKPOINT_MAX_BYTES = 64 * 1024 * 1024
+_JSONL_CHECKPOINT_MAX_ENTRIES = 4096
 _JSONL_GUARD_BYTES = 128
 # Fixed lock stripes serialize calls for a path without retaining one lock per
 # path or holding a global lock during file IO. Collisions only serialize extra work.
@@ -794,6 +794,273 @@ def _incremental_jsonl_reduce(kind: str, path: Path, initial_state: Any,
             if result is not _STALE_PRE_READ_STAT:
                 return result
             fresh = True
+
+
+def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Advance independent reducer checkpoints from one serialized JSONL scan."""
+    if not reducers:
+        return {}
+    resolved = _resolve_memoized(path)
+    keys = [(spec["kind"], resolved) for spec in reducers]
+    lock = _JSONL_PATH_LOCKS[hash(resolved) % len(_JSONL_PATH_LOCKS)]
+
+    def project(spec: dict[str, Any], state: Any) -> Any:
+        callback = spec.get("project")
+        return callback(state) if callback else state
+
+    def format_results(results: dict[str, Any], unavailable: set[str] | None = None) -> dict[str, Any]:
+        unavailable = unavailable or set()
+        formatted = {}
+        for spec in reducers:
+            kind = spec["kind"]
+            if kind in unavailable or kind not in results:
+                formatted[kind] = deepcopy(spec.get("unavailable"))
+            else:
+                formatted[kind] = project(spec, results[kind])
+        return formatted
+
+    def touch_or_restore(key: tuple[str, str], checkpoint: dict[str, Any]) -> None:
+        with _JSONL_CHECKPOINT_LOCK:
+            current = _JSONL_CHECKPOINTS.get(key)
+            if current is not None:
+                _JSONL_CHECKPOINTS.move_to_end(key)
+                return
+        _jsonl_cache_checkpoint(key, checkpoint["state"], checkpoint["offset"], checkpoint["stat"],
+                                (checkpoint["prefix"], checkpoint["cursor"]), checkpoint.get("extra"))
+
+    with lock:
+        fresh = False
+        while True:
+            try:
+                before = _fingerprint_of(_stat_fresh(path) if fresh else _stat_memoized(path))
+            except OSError:
+                for key in keys:
+                    _jsonl_checkpoint_remove(key)
+                return format_results({}, {spec["kind"] for spec in reducers})
+
+            # Read references without changing recency; touches and publications are
+            # applied below in request order so eviction matches sequential calls.
+            with _JSONL_CHECKPOINT_LOCK:
+                cached = [_JSONL_CHECKPOINTS.get(key) for key in keys]
+
+            results: dict[str, Any] = {}
+            warm_hits: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
+            active: list[dict[str, Any]] = []
+            for spec, key, checkpoint in zip(reducers, keys, cached):
+                extra = spec.get("fingerprint_extra")
+                if checkpoint and checkpoint["stat"] == before and checkpoint.get("extra") == extra:
+                    results[spec["kind"]] = deepcopy(checkpoint["state"])
+                    warm_hits[spec["kind"]] = (key, checkpoint)
+                    continue
+                same_fingerprint = bool(checkpoint and checkpoint["stat"] == before)
+                append_candidate = bool(checkpoint and checkpoint["stat"][2:4] == before[2:4]
+                                        and checkpoint["stat"][0] < before[0])
+                active.append({"spec": spec, "key": key, "old": checkpoint,
+                               "same_fingerprint": same_fingerprint,
+                               "append_candidate": append_candidate, "extra": extra})
+
+            if not active:
+                for spec in reducers:
+                    hit = warm_hits.get(spec["kind"])
+                    if hit is not None:
+                        touch_or_restore(*hit)
+                return format_results(results)
+
+            try:
+                handle_context = path.open("rb")
+            except OSError:
+                for item in active:
+                    _jsonl_checkpoint_remove(item["key"])
+                unavailable = {item["spec"]["kind"] for item in active}
+                for spec in reducers:
+                    hit = warm_hits.get(spec["kind"])
+                    if hit is not None:
+                        touch_or_restore(*hit)
+                return format_results(results, unavailable)
+
+            retry = False
+            failed: set[str] = set()
+            with handle_context as handle:
+                opened = _jsonl_stat(handle)
+                if opened != before:
+                    if not fresh:
+                        fresh = True
+                        retry = True
+                    else:
+                        for item in active:
+                            _jsonl_checkpoint_remove(item["key"])
+                            spec = item["spec"]
+                            initial = spec["initial_state"]
+                            results[spec["kind"]] = initial() if callable(initial) else deepcopy(initial)
+                else:
+                    states: dict[str, Any] = {}
+                    offsets: dict[str, int] = {}
+                    committed: dict[str, int] = {}
+                    old_guards: dict[str, tuple[bytes, bytes] | None] = {}
+                    guard_cache: dict[tuple[int, int], tuple[bytes, bytes]] = {}
+                    unterminated: set[str] = set()
+                    extra_updates: set[str] = set()
+
+                    def guards_for(offset: int, size: int) -> tuple[bytes, bytes]:
+                        guard_key = (offset, size)
+                        value = guard_cache.get(guard_key)
+                        if value is None:
+                            value = _jsonl_guards(handle, offset, size)
+                            guard_cache[guard_key] = value
+                        return value
+
+                    for item in active:
+                        spec, checkpoint = item["spec"], item["old"]
+                        kind = spec["kind"]
+                        reusable = bool(checkpoint and (
+                            item["same_fingerprint"] or item["append_candidate"]))
+                        if reusable:
+                            reusable = (guards_for(checkpoint["offset"], checkpoint["stat"][0])
+                                        == (checkpoint["prefix"], checkpoint["cursor"]))
+                        if reusable:
+                            states[kind] = deepcopy(checkpoint["state"])
+                            offsets[kind] = committed[kind] = checkpoint["offset"]
+                            old_guards[kind] = (checkpoint["prefix"], checkpoint["cursor"])
+                            if item["same_fingerprint"]:
+                                extra_updates.add(kind)
+                        else:
+                            initial = spec["initial_state"]
+                            states[kind] = initial() if callable(initial) else deepcopy(initial)
+                            offsets[kind] = committed[kind] = 0
+                            old_guards[kind] = None
+
+                    needs_scan = [item for item in active
+                                  if item["spec"]["kind"] not in extra_updates]
+                    start_offset = min((offsets[item["spec"]["kind"]] for item in needs_scan), default=0)
+                    prefix = b""
+                    cursor_tails: dict[str, bytes] = {}
+                    if needs_scan:
+                        handle.seek(start_offset)
+                        rolling_tail = b""
+                        while True:
+                            _raise_if_snapshot_shutdown()
+                            line_start = handle.tell()
+                            line = handle.readline()
+                            if not line:
+                                break
+                            if line_start < _JSONL_GUARD_BYTES:
+                                prefix = (prefix + line)[:_JSONL_GUARD_BYTES]
+                            rolling_tail = (rolling_tail + line)[-_JSONL_GUARD_BYTES:]
+                            line_end = handle.tell()
+                            complete = line.endswith(b"\n")
+                            candidates = [item for item in needs_scan
+                                          if item["spec"]["kind"] not in failed
+                                          and line_start >= offsets[item["spec"]["kind"]]]
+                            if not candidates:
+                                continue
+                            try:
+                                record = json.loads(line.decode("utf-8", errors="ignore"))
+                                parsed = True
+                            except (ValueError, UnicodeError, RecursionError):
+                                record, parsed = None, False
+                            if not complete and not parsed:
+                                break
+                            for item in candidates:
+                                spec, kind = item["spec"], item["spec"]["kind"]
+                                if parsed:
+                                    needles = spec.get("needles")
+                                    if (complete and needles and b"\\u" not in line
+                                            and not any(n in line for n in needles)):
+                                        try:
+                                            line.decode("utf-8")
+                                        except UnicodeDecodeError:
+                                            pass
+                                        else:
+                                            if complete:
+                                                committed[kind] = line_end
+                                                cursor_tails[kind] = rolling_tail
+                                            continue
+                                    try:
+                                        spec["reduce_record"](states[kind], record)
+                                    except Exception:
+                                        failed.add(kind)
+                                        continue
+                                if complete:
+                                    committed[kind] = line_end
+                                    cursor_tails[kind] = rolling_tail
+                                else:
+                                    unterminated.add(kind)
+
+                    staged: dict[str, tuple[Any, int, tuple[bytes, bytes], Any]] = {}
+                    for item in active:
+                        spec, kind = item["spec"], item["spec"]["kind"]
+                        if kind in failed:
+                            continue
+                        offset = committed[kind]
+                        if kind in extra_updates:
+                            guards = guards_for(offset, before[0])
+                        elif start_offset == 0:
+                            cursor_tail = cursor_tails.get(kind)
+                            if cursor_tail is not None:
+                                cursor_guard = hashlib.blake2s(cursor_tail).digest()
+                            elif offset == 0:
+                                cursor_guard = hashlib.blake2s(b"").digest()
+                            elif old_guards[kind] is not None:
+                                # The old cursor bytes were checked against the
+                                # current handle before suffix reuse.
+                                cursor_guard = old_guards[kind][1]
+                            else:
+                                cursor_guard = guards_for(offset, before[0])[1]
+                            guards = (hashlib.blake2s(prefix).digest(),
+                                      cursor_guard)
+                        else:
+                            guards = guards_for(offset, before[0])
+                        results[kind] = states[kind]
+                        if kind not in unterminated and not _jsonl_state_uncacheable(states[kind]):
+                            staged[kind] = (states[kind], offset, guards, item["extra"])
+
+                    # Evaluate both identities independently after every guard
+                    # read. A failed handle check must not skip the path stat,
+                    # which refreshes the current build's memoized fingerprint.
+                    try:
+                        after_handle = _jsonl_stat(handle)
+                    except OSError:
+                        after_handle = None
+                    try:
+                        after_path = _stat_fingerprint(path)
+                    except OSError:
+                        after_path = None
+                    stable = after_handle == before and after_path == before
+
+                    if not stable:
+                        for item in active:
+                            kind = item["spec"]["kind"]
+                            if kind not in failed:
+                                _jsonl_checkpoint_remove(item["key"])
+
+                    # Recency and publications follow the requested kind order.
+                    # A publication can evict a later validated hit; that hit
+                    # is restored through the bounded helper when its turn arrives.
+                    active_by_kind = {item["spec"]["kind"]: item for item in active}
+                    for spec in reducers:
+                        kind = spec["kind"]
+                        item = active_by_kind.get(kind)
+                        if not stable:
+                            continue
+                        if item is None:
+                            hit = warm_hits.get(kind)
+                            if hit is not None:
+                                touch_or_restore(*hit)
+                            continue
+                        if kind in failed:
+                            if item["old"] is not None:
+                                touch_or_restore(item["key"], item["old"])
+                            continue
+                        _jsonl_checkpoint_remove(item["key"])
+                        publication = staged.get(kind)
+                        if publication is not None:
+                            state, offset, guards, extra = publication
+                            _jsonl_cache_checkpoint(item["key"], state, offset, before, guards, extra)
+
+            if retry:
+                continue
+            unavailable = failed if opened == before else set()
+            return format_results(results, unavailable)
 
 
 _STALE_PRE_READ_STAT = object()
@@ -912,11 +1179,12 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
 
 def _jsonl_cache_checkpoint(key: tuple[str, str], state: Any, offset: int,
                             stamp: tuple[int, int, int, int, int], guards: tuple[bytes, bytes],
-                            fingerprint_extra: Any = None) -> None:
+                            fingerprint_extra: Any = None) -> bool:
     global _JSONL_CHECKPOINT_BYTES
     cost = _jsonl_state_cost(state, key, fingerprint_extra)
     if cost > _JSONL_CHECKPOINT_MAX_BYTES or _jsonl_state_uncacheable(state):
-        return
+        _jsonl_checkpoint_remove(key)
+        return False
     checkpoint = {"state": deepcopy(state), "offset": offset, "stat": stamp,
                   "prefix": guards[0], "cursor": guards[1], "cost": cost,
                   "extra": deepcopy(fingerprint_extra)}
@@ -930,6 +1198,7 @@ def _jsonl_cache_checkpoint(key: tuple[str, str], state: Any, offset: int,
                or len(_JSONL_CHECKPOINTS) > _JSONL_CHECKPOINT_MAX_ENTRIES):
             _old_key, old = _JSONL_CHECKPOINTS.popitem(last=False)
             _JSONL_CHECKPOINT_BYTES -= old["cost"]
+        return key in _JSONL_CHECKPOINTS
 
 
 def _file_memo(kind: str, path: Path, compute: Any) -> Any:
@@ -1085,6 +1354,7 @@ def _codex_rollout_state(path_value: str | None) -> dict[str, Any]:
         # live polling runs it for every known rollout every two seconds.
         with path.open("rb", buffering=0) as handle:
             handle.read(1)
+        _incremental_jsonl_reduce_group(path, _codex_rollout_reducer_specs(path))
         state = _codex_recorded_state(path)
     except (OSError, IsADirectoryError):
         return {"status": "unavailable", "question": None, "questionIds": [], "detail": None,
@@ -1262,7 +1532,7 @@ def _tracker_question_supersessions(text: Any) -> list[tuple[str, str, int]]:
     return [identity for raw in value["superseded"] if (identity := _question_item_id(raw))]
 
 
-def _codex_recorded_state(path: Path) -> dict[str, Any]:
+def _codex_recorded_state(path: Path, *, _spec_only: bool = False) -> dict[str, Any]:
     def initial_state() -> dict[str, Any]:
         return {"status": "unknown", "detail": None, "stateSince": None,
                 "compactionStartedAt": None, "activity": None,
@@ -1791,6 +2061,9 @@ def _codex_recorded_state(path: Path) -> dict[str, Any]:
                          executionPendingCalls={},
                          executionResumeAt=exec_stamp if exec_transition_admitted else None)
 
+    if _spec_only:
+        return {"kind": "codex-question-state", "initial_state": initial_state,
+                "reduce_record": reduce_record}
     state = _incremental_jsonl_reduce("codex-question-state", path, initial_state, reduce_record)
     pending = state.get("pendingQuestions") or {}
     sync = state.get("syncQuestion")
@@ -2410,7 +2683,7 @@ def _repair_mojibake(title: str) -> str:
     return re.sub(r"[^\x00-\x7f]+", fix, title)
 
 
-def _codex_exec_title(path_value: str | Path | None) -> str | None:
+def _codex_exec_title(path_value: str | Path | None, *, _spec_only: bool = False) -> str | None:
     if not path_value:
         return None
 
@@ -2431,6 +2704,9 @@ def _codex_exec_title(path_value: str | Path | None) -> str | None:
             if first and not first.startswith(("# AGENTS.md", "<")):
                 state["title"] = re.sub(r"\s*\((?:continue|retry)\b[^)]*\)\s*$", "", first, flags=re.I)[:240] or first[:240]
 
+    if _spec_only:
+        return {"kind": "codex-exec-title", "initial_state": dict,
+                "reduce_record": reduce_title, "unavailable": {}}
     state = _incremental_jsonl_reduce("codex-exec-title", Path(path_value), dict, reduce_title, unavailable={})
     return state.get("title") if state else None
 
@@ -2653,12 +2929,15 @@ def _project_run_stats(state: dict[str, Any]) -> dict[str, Any]:
     return stats
 
 
-def _read_codex_run_stats(path: Path) -> dict[str, Any]:
+def _read_codex_run_stats(path: Path, *, _spec_only: bool = False) -> dict[str, Any]:
     """Incrementally reduce complete rollout records to per-agent statistics."""
     now_epoch = time.time()
+    reducer = lambda state, item: _reduce_run_stats(state, item, now_epoch)
+    if _spec_only:
+        return {"kind": "codex-run-stats", "initial_state": _new_run_stats_state,
+                "reduce_record": reducer, "project": _project_run_stats, "unavailable": {}}
     return _incremental_jsonl_reduce("codex-run-stats", path, _new_run_stats_state,
-                                     lambda state, item: _reduce_run_stats(state, item, now_epoch),
-                                     _project_run_stats, unavailable={})
+                                     reducer, _project_run_stats, unavailable={})
 
 
 def _codex_agent_stats(path_value: str | Path | None, status: str, is_subagent: bool,
@@ -2811,7 +3090,7 @@ def _reduce_session_insights(result: dict[str, Any], item: Any, now_epoch: float
                 result["preview"] = " ".join(text.split())[:160]
 
 
-def _session_insights(path_value: str | Path | None) -> dict[str, Any]:
+def _session_insights(path_value: str | Path | None, *, _spec_only: bool = False) -> dict[str, Any]:
     """Keep only display metadata, never tool output or full messages, in the cache."""
     if not path_value:
         return {}
@@ -2819,8 +3098,9 @@ def _session_insights(path_value: str | Path | None) -> dict[str, Any]:
     try:
         _stat_fingerprint_memoized(path)
     except OSError:
-        _jsonl_checkpoint_remove(("codex-session-insights", _resolve_memoized(path)))
-        return {}
+        if not _spec_only:
+            _jsonl_checkpoint_remove(("codex-session-insights", _resolve_memoized(path)))
+            return {}
     meta_path = path.with_suffix(".meta.json") if path.parent.name == "subagents" else None
     meta_stamp: tuple[int, ...] = ()
     if meta_path is not None:
@@ -2829,9 +3109,13 @@ def _session_insights(path_value: str | Path | None) -> dict[str, Any]:
         except OSError:
             meta_stamp = (-1, -1, -1, -1, -1)
     now_epoch = time.time()
+    reducer = lambda state, item: _reduce_session_insights(state, item, now_epoch)
+    if _spec_only:
+        return {"kind": "codex-session-insights", "initial_state": _new_session_insights_state,
+                "reduce_record": reducer, "fingerprint_extra": meta_stamp, "unavailable": {}}
     result = _incremental_jsonl_reduce(
         "codex-session-insights", path, _new_session_insights_state,
-        lambda state, item: _reduce_session_insights(state, item, now_epoch),
+        reducer,
         fingerprint_extra=meta_stamp, unavailable={})
     if result is None:
         return {}
@@ -2847,6 +3131,24 @@ def _session_insights(path_value: str | Path | None) -> dict[str, Any]:
         result["title"] = meta.get("description") or meta.get("agentType") or result.get("preview") or "Subagent"
         result["agentName"] = meta.get("agentType")
     return result
+
+
+def _codex_rollout_reducer_specs(path: Path) -> list[dict[str, Any]]:
+    """Shared reducer definitions used by the Codex transcript group pass."""
+    return [
+        _codex_recorded_state(path, _spec_only=True),
+        _codex_exec_title(path, _spec_only=True),
+        _read_codex_run_stats(path, _spec_only=True),
+        _session_insights(str(path), _spec_only=True),
+        _codex_turn_count_spec(),
+    ]
+
+
+def _codex_turn_count_spec() -> dict[str, Any]:
+    return {"kind": "codex-turn-count", "initial_state": lambda: {"turns": 0},
+            "reduce_record": lambda state, item: state.__setitem__(
+                "turns", state["turns"] + int(isinstance(item, dict) and item.get("type") == "turn_context")),
+            "project": lambda state: state["turns"] or None, "unavailable": None}
 
 
 def _mtime(path_value: str | Path) -> float:
@@ -3968,6 +4270,8 @@ class CodexProvider:
 
     @classmethod
     def _thread(cls, row: dict[str, Any]) -> dict[str, Any]:
+        if row.get("path"):
+            _incremental_jsonl_reduce_group(Path(row["path"]), _codex_rollout_reducer_specs(Path(row["path"])))
         insights = _session_insights(row.get("path"))
         recency = row.get("recencyAt") or row.get("recency_at")
         changed = row.get("updatedAt") or row.get("updated_at")
@@ -4204,7 +4508,7 @@ class CodexProvider:
         if not path_value:
             return None
         path = Path(path_value)
-        return _file_memo("codex-turns", path, lambda: cls._read_turn_count(path))
+        return _incremental_jsonl_reduce(**_codex_turn_count_spec(), path=path)
 
     @staticmethod
     def _read_turn_count(path: Path) -> int | None:
