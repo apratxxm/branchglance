@@ -2873,6 +2873,9 @@ def main(argv=None) -> None:
         # CLI only: no UI, no instance lock. Writes a file; the frozen app has no console to print to.
         raise SystemExit(debug_report.write_cli(_debug_report_target(args.debug_report), port=HTTP_PORT))
     debug_report.install_handler()
+    with suppress(Exception):
+        from . import memory_diagnostics
+        memory_diagnostics.start_if_requested()
     # Wait for any setup transaction before taking the Instance lock or loading
     # provider policy. A timeout exits quietly so repeated Start-menu clicks do
     # not leave message-box processes behind.
