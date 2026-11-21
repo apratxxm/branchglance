@@ -403,7 +403,10 @@ def test_compact_quota_cells_do_not_overlap_at_328px(page):
     left = page.locator("#r1-weekly-left")
     expect(left).to_contain_text("100%")
     expect(left).to_contain_text("12m ago")
-    expect(page.locator("#r1-weekly-cd")).to_contain_text("6d 23h")
+    weekly_countdown = page.locator("#r1-weekly-cd")
+    expect(weekly_countdown).to_have_text("")
+    expect(left).to_have_attribute("title", re.compile(r"resets in 6d 23h", re.I))
+    assert re.search(r"resets in 6d 23h", left.locator(".sr-only").inner_text(), re.I)
     layout = page.evaluate("""() => {
       const row=document.querySelector('#r1-weekly-row'), left=document.querySelector('#r1-weekly-left'), age=left.querySelector('i');
       const reset=document.querySelector('#r1-weekly-row .rr-moment'), l=left.getBoundingClientRect(), r=reset.getBoundingClientRect();

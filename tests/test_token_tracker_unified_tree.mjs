@@ -352,9 +352,11 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(page,/id="brand-name">Branchglance/);
   const template=css.match(/\.runway-refined-row\{\s*grid-template-columns:([^;]+);/)?.[1];
   assert.ok(template,"the inspect row declares shared tracks");
-  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{grid-template-columns:minmax\(0,1fr\) 62px 112px 96px 80px;grid-template-rows:18px 18px 18px 16px;row-gap:0;min-height:78px;/,'a branchless child retains the parent path track so trailing columns keep their edges');
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{[^}]*grid-template-columns:/,'a branchless child inherits the exact parent timing/status/metric tracks');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{grid-template-rows:18px 18px 18px 16px;row-gap:0;min-height:78px;/,'the branchless title and aligned telemetry occupy separate rows');
   assert.ok(css.includes('.ag.runway-agent .runway-refined-row:has(> .runway-refined-path:empty)>.runway-refined-path{display:none;}'),'a branchless child hides its empty path track');
-  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{grid-template-columns:calc\(var\(--runway-inspect-clock-axis,278px\) - 80px\) 84px minmax\(0,1fr\);grid-template-rows:18px 18px 18px 16px;column-gap:8px;row-gap:0;min-height:78px;/,'a narrow branchless child keeps shared parent tracks while giving its title the empty path space');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{grid-template-rows:18px 18px 18px 16px;column-gap:8px;row-gap:0;min-height:78px;/,'a narrow branchless child inherits parent columns and separates title from telemetry');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)>\.runway-refined-title\{grid-column:1\/4;grid-row:1\/3;/,'the narrow child title spans the title and empty path area');
   assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)>\.runway-refined-status\{grid-column:3;grid-row:3;/,'branchless child status ends at the parent status column edge');
   assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-timing\{grid-column:4/,'child timing stays in the shared timing column');
   const minimums=[120,46,82,70,80,78],gap=8,padLeft=30,centers=[];let x=padLeft;
