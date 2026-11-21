@@ -50,7 +50,7 @@
         <header id="chats-head" class="chats-head">
           <div class="ch-search"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><circle cx="5.25" cy="5.25" r="3.5"/><path d="m7.9 7.9 2.6 2.6"/></svg><input id="chat-search" type="text" spellcheck="false" autocomplete="off" placeholder="Search · is:needs is:running is:failed is:hidden" aria-label="Search chats and agents"><button id="hidden-chats-toggle" class="hidden-chats-toggle" data-action="show-hidden" aria-pressed="false" hidden>Show hidden</button><span id="result-count" class="ch-count"></span><button class="icon-btn" data-action="search-close" aria-label="Close search"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9"/></svg></button></div>
         </header>
-        <div id="chat-list" class="chat-list"></div>
+        <div id="chat-list" class="chat-list" tabindex="0" role="region" aria-label="Job list; scroll for more jobs"></div>
       </section>
     </div>
     <section id="dashboard-view" class="dashboard-view" aria-label="Insights and Settings dashboard" hidden inert aria-hidden="true">

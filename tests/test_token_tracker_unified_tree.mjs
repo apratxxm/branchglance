@@ -352,9 +352,12 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(page,/id="brand-name">Branchglance/);
   const template=css.match(/\.runway-refined-row\{\s*grid-template-columns:([^;]+);/)?.[1];
   assert.ok(template,"the inspect row declares shared tracks");
-  assert.ok(css.includes('.ag.runway-agent .runway-refined-row:has(> .runway-refined-path:empty){grid-template-columns:minmax(0,1fr) 62px 112px 80px;}'),'a branchless child reclaims the empty path track for its title');
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{[^}]*grid-template-columns:/,'a branchless child inherits the exact parent timing/status/metric tracks');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{grid-template-rows:18px 18px 18px 16px;row-gap:0;min-height:78px;/,'the branchless title and aligned telemetry occupy separate rows');
   assert.ok(css.includes('.ag.runway-agent .runway-refined-row:has(> .runway-refined-path:empty)>.runway-refined-path{display:none;}'),'a branchless child hides its empty path track');
-  assert.ok(css.includes('.ag.runway-agent .runway-refined-row:has(> .runway-refined-path:empty){grid-template-columns:minmax(0,1fr) 84px;grid-template-rows:18px 18px 34px;column-gap:8px;row-gap:2px;min-height:78px;}'),'a narrow branchless child reflows into non-overlapping title, status, and detail tracks');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)\{grid-template-rows:18px 18px 18px 16px;column-gap:8px;row-gap:0;min-height:78px;/,'a narrow branchless child inherits parent columns and separates title from telemetry');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)>\.runway-refined-title\{grid-column:1\/4;grid-row:1\/3;/,'the narrow child title spans the title and empty path area');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-row:has\(> \.runway-refined-path:empty\)>\.runway-refined-status\{grid-column:3;grid-row:3;/,'branchless child status ends at the parent status column edge');
   assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-timing\{grid-column:4/,'child timing stays in the shared timing column');
   const minimums=[120,46,82,70,80,78],gap=8,padLeft=30,centers=[];let x=padLeft;
   for(const width of minimums){centers.push(x+width/2);x+=width+gap;}
@@ -365,7 +368,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(css,/\.runway-model-name\.is-codex-model\{color:#b3a8ff;text-shadow:/);
   assert.match(css,/\.runway-model-name\.is-claude-model\{color:#f0a06e/);
   assert.match(css,/--tree-claude-surface:#19130f/,"Claude keeps the darker surface token");
-  assert.match(css,/\.chat\[data-provider="Claude"\]>.row>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 12%[^}]*transparent 100%/,"Claude parent halo stays warm, subtle, and edgeless");
+  assert.match(css,/\.chat\[data-provider="Claude"\]>.row:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 12%[^}]*transparent 100%/,"Claude parent halo stays warm, subtle, and edgeless only for active rows");
   assert.match(css,/\.ag\[data-provider="Claude"\]>.runway-agent-glance>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 9%[^}]*transparent 100%/,"Claude children use a softer transparent tint");
   assert.match(css,/\.ag\[data-provider="Codex"\]>.runway-agent-glance>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--source-glow-primary\) 11%[^}]*transparent 100%/,"OpenAI rows use a subtle transparent tint");
   assert.doesNotMatch(css,/\.runway-refined-row\{[^}]*background-color:/,"tree rows have no rectangular background fill");

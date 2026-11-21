@@ -66,7 +66,7 @@ const lockIcon=locked=>locked?'<svg class="ic" viewBox="0 0 12 12" aria-hidden="
 function updateWidgetLockButton() {
   const button=$('#widget-lock');if(!button)return;
   const label=widgetLock.locked?'Release position':'Hold position';
-  const title=label+'. Prevents automatic repositioning; you can still drag.';
+  const title=widgetLock.locked?'Release position to move the widget. Prevents automatic repositioning.':'Lock widget position. Prevents automatic repositioning.';
   button.disabled=widgetLock.pending||!widgetLock.known;
   button.setAttribute?.('aria-pressed',String(widgetLock.locked));button.setAttribute?.('aria-label',label);button.title=title;
   if(button.innerHTML!==lockIcon(widgetLock.locked))button.innerHTML=lockIcon(widgetLock.locked);
@@ -74,7 +74,7 @@ function updateWidgetLockButton() {
 }
 function updateRecenterButton() {
   const button=$('#window-recenter');if(!button)return;
-  button.disabled=!widgetLock.known||widgetLock.pending||widgetLock.locked;
+  button.disabled=!widgetLock.known||widgetLock.pending||widgetLock.locked;button.setAttribute?.('aria-disabled',String(button.disabled));
   button.title=widgetLock.locked?'Unlock the widget to move it':'Recenter widget';
 }
 function updateKeepOpenButton() {
@@ -345,6 +345,7 @@ function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttrib
 function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
   if(dashboardState.closing)return;
+  const wasInspecting=notch.mode==='inspect';
   const mode=compactModeForState();
   if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
   if(mode==='inspect'){
@@ -371,6 +372,7 @@ function setNotch(expanded, treeSynced=false) {
   const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),transitionId=mode==='dashboard'?dashboardState.generation:null,signature=mode+':'+notch.expanded+':'+height+':'+reduced+(transitionId==null?'':':'+transitionId);
   if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,transitionId==null?[notch.expanded,height,reduced,mode]:[true,height,reduced,mode,transitionId],signature);}
   if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
+  if(mode==='inspect'&&!wasInspecting)syncRunwayOverflowCue();
 }
 function expandForNewWork() {
   if(notch.autoTimer!=null){notch.autoExpanded=true;setNotch(true);return;}
@@ -797,9 +799,17 @@ function runwayCounts(forest) {
 }
 // The yellow waiting count opens the widget on the first waiting chat and shows its question.
 function jumpToWaiting() {
-  const target=[...(state.forest?.rows||[])].find(chat=>runwayWaiting(chat));if(!target)return;
+  const roots=state.forest?.roots||[];
+  const target=roots.flatMap(root=>[root,...(root.descendants||[])]).find(chat=>runwayWaiting(chat));if(!target)return;
+  const root=roots.find(item=>item===target||(item.descendants||[]).includes(target));
+  if(root)state.hiddenChats.delete(root.key);state.hiddenChats.delete(target.key);
   notch.manual=true;setNotch(true);
-  const reveal=()=>{const link=[...(document.querySelectorAll?.('.runway-waiting-link')||[])].find(item=>item.dataset?.key===target.key);if(!link)return;link.scrollIntoView?.({block:'nearest'});if(state.popover===link&&!$('#popover')?.hidden)return;link.click?.();};
+  const reveal=()=>{
+    if(state.query){state.query='';const search=$('#chat-search');if(search)search.value='';}
+    renderChats(providersFor(state.snapshot));
+    const link=[...(document.querySelectorAll?.('.runway-waiting-link')||[])].find(item=>item.dataset?.key===target.key);if(!link)return;
+    link.scrollIntoView?.({block:'nearest'});link.focus?.({preventScroll:true});if(state.popover===link&&!$('#popover')?.hidden)return;link.click?.();
+  };
   if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>requestAnimationFrame(reveal));else reveal();
 }
 function renderRunwayCounts(counts) {
@@ -1095,7 +1105,7 @@ function visibleRoots(forest, days=state.windowDays) {
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||chat.descendants.some(runwayActionable))&&matches;
+      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||runwayActionable(chat)||chat.descendants.some(runwayActionable))&&matches;
   });
 }
 function nextWindowWithChats(forest) {
@@ -1382,10 +1392,10 @@ function renderResets(providers) {
     const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");put(row,"title",view.tip);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
     const unavailable=!view.hasValue&&!view.expired,unavailableLabel=unavailable?'No live reading for '+String(p.name||'provider'):'';
-    const left=$(id+"-left"),readingLabel=view.hasValue?String(p.name||'Provider')+' '+(key==='fiveHour'?'5-hour':'Weekly')+': '+Math.round(view.usedPercent)+'% used'+(view.countdown?(view.countdown==='due'?', reset due':', resets in '+view.countdown):'')+'.'+(view.lastKnown?' Last reported '+view.lastKnownAge+'.':''):'';if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><span class="rr-provider">'+esc(p.name)+'</span><b>—</b><i></i></span>';const accessible=view.hasValue?readingLabel:unavailable?unavailableLabel:'',labelled=html+(accessible?'<span class="sr-only">'+esc(accessible)+'</span>':'');if(left.innerHTML!==labelled)left.innerHTML=labelled;put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);}
-    set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
+    const left=$(id+"-left"),readingLabel=view.hasValue?String(p.name||'Provider')+' '+(key==='fiveHour'?'5-hour':'Weekly')+': '+Math.round(view.usedPercent)+'% used'+(view.countdown?(view.countdown==='due'?', reset due':', resets in '+view.countdown):'')+'.'+(view.lastKnown?' Last reported '+view.lastKnownAge+'.':''):'';if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge:'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><span class="rr-provider">'+esc(p.name)+'</span><b>—</b><i></i></span>';const accessible=view.hasValue?readingLabel:unavailable?unavailableLabel:'',labelled=html+(accessible?'<span class="sr-only">'+esc(accessible)+'</span>':'');if(left.innerHTML!==labelled)left.innerHTML=labelled;put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);}
+    set("-day",view.day);set("-time",view.time);set("-cd",view.lastKnown?'':view.countdown);set("-stale",view.stale);
     put(left,"className","rr-left"+(unavailable?" is-unavailable":"")+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);
-    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}
+    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":"")+(view.lastKnown?" last-known":""));const countdownText=view.countdown||'',visibleCountdown=view.lastKnown?'':countdownText;if(cd.textContent!==visibleCountdown)cd.textContent=visibleCountdown;put(cd,"title",countdownText?(view.lastKnown?'Resets in '+countdownText:'Resets '+view.day+' '+view.time):'');attr(cd,'aria-hidden',String(!visibleCountdown));}
     const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
@@ -1502,7 +1512,7 @@ function runwayStateElapsed(chat) {
   const execution=runwayExecutionView(chat);
   const status=runwayEffectiveStatus(chat);
   const waiting=runwayWaiting(chat);
-  const candidates=execution&&!waiting?(status==='running'?[execution.since,chat.activeRunStartedAt,chat.runStartedAt,chat.firstSeenAt]:[execution.since]):[waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince:null];
+  const candidates=execution&&!waiting?(status==='running'?[execution.since,chat.activeRunStartedAt,chat.runStartedAt,chat.firstSeenAt]:[execution.since,status==='failed'?chat.updatedAt:null]):[waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince||(status==='failed'?chat.updatedAt:null):null];
   const now=Date.now(),since=candidates.map(stamp).find(value=>value&&value<=now+5000);
   return since?runSpan(Math.max(0,now-since)/1000):'—';
 }
@@ -1587,9 +1597,10 @@ function runwayTelemetryHTML(chat,agent=false) {
   const childWaiting=(chat.descendants||[]).some(runwayWaiting),childRunning=(chat.descendants||[]).some(runwayRunning);
   const ownCurrent=runwayWaiting(chat)||runwayRunning(chat)||(!runwayTerminated(chat)&&recentFail(chat));
   const effectiveStatus=runwayEffectiveStatus(chat);
-  const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
-  const statusUnavailable=!currentEvidence||((chat.status==='unknown'||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
-  const status=chat.retainedRun===true&&chat.stateDetail==='stopped'?'Stopped':statusUnavailable?'':runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
+  const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':effectiveStatus==='failed'?'mute':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
+  const statusMissing=(chat.status===undefined||chat.status===null||String(chat.status).trim()==='')&&chat.executionStatus===undefined;
+  const statusUnavailable=!currentEvidence||((chat.status==='unknown'||statusMissing||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
+  const status=chat.retainedRun===true&&chat.stateDetail==='stopped'?'Stopped':statusUnavailable?(currentEvidence?'Status unknown':''):runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
   const modelText=runwayModelLabel(chat);
   const modelChanged=runwayModelRecentlyChanged(chat);
   const modelEvent=state.modelVersions.get(chat.key||[chat.provider,chat.id].join(':'))?.highlightEventAt;
@@ -1604,7 +1615,8 @@ function runwayTelemetryHTML(chat,agent=false) {
   const activityHTML=runwayActivityHTML(chat);
   const displayTitle=runwayTitle(chat,agent);
   const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times" aria-label="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
-  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
+  const fullTitle=agent?agentLabel(chat):runwayFirstLine(chat.title||'Untitled');
+  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(fullTitle)+'" aria-label="'+esc(fullTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
   const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);
   const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
@@ -1801,6 +1813,30 @@ function selectSourceForNewWork(items) {
   if(!chosen||chosen===effectiveSource(state.snapshot))return false;
   return setSource(chosen,{persist:false,manual:false});
 }
+function syncRunwayOverflowCue(list=$('#chat-list')) {
+  if(!list?.querySelectorAll||!list?.insertAdjacentHTML||!list?.getBoundingClientRect)return;
+  if(!list._runwayOverflowCueBound){
+    list._runwayOverflowCueBound=true;
+    list.addEventListener?.('scroll',()=>{
+      if(list._runwayOverflowCueFrame||typeof requestAnimationFrame!=='function')return;
+      list._runwayOverflowCueFrame=requestAnimationFrame(()=>{list._runwayOverflowCueFrame=0;syncRunwayOverflowCue(list);});
+    },{passive:true});
+  }
+  const rows=[...list.querySelectorAll('.runway-refined-row')].filter(row=>row.getBoundingClientRect().height>0);
+  let cue=list.querySelector('.runway-list-more');
+  if(cue)cue.hidden=true;
+  const contentOverflows=rows.length>0&&list.scrollHeight>list.clientHeight+1;
+  if(!contentOverflows){cue?.remove?.();return;}
+  if(!cue){list.insertAdjacentHTML('beforeend','<button class="runway-list-more" type="button" data-action="runway-list-more"></button>');cue=list.querySelector('.runway-list-more');}
+  if(!cue)return;
+  const listRect=list.getBoundingClientRect();
+  const remaining=rows.filter(row=>row.getBoundingClientRect().bottom>listRect.bottom+1).length;
+  if(remaining<1){cue.remove?.();return;}
+  const label='+'+remaining+' more';
+  if(cue.textContent!==label)cue.textContent=label;
+  cue.setAttribute?.('aria-label',remaining+' more jobs below; activate to scroll');
+  cue.title=remaining+' more jobs below';cue.hidden=false;
+}
 function renderChats(providers) {
   scheduleNotchSize();
   const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
@@ -1865,17 +1901,17 @@ function renderChats(providers) {
       for(const el of [...list.children])if(el.classList.contains('chat')){if(!el._leaving)runwayExit(el);}else el.remove();
       if(html)list.insertAdjacentHTML?.('beforeend',html);list._empty=html;
     }
-    state.lastOrder=[];return;
+    state.lastOrder=[];syncRunwayOverflowCue(list);return;
   }
   if(list._empty!==null&&list._empty!==undefined){for(const el of [...list.children])if(!el.classList.contains('chat'))el.remove();list._empty=null;}
-  [...list.children].forEach(el=>{if(!el.classList.contains("chat"))el.remove();});
+  [...list.children].forEach(el=>{if(!el.classList.contains("chat")&&!el.classList.contains("runway-list-more"))el.remove();});
   // Search auto-opens nothing; a subagent match is visible in the always-on tray and outlined there.
   const byKey=new Map(roots.map(c=>[c.key,c]));
   let order=roots.map(c=>c.key);
   // Keep established rows stable while the user points, focuses, or reads a question.
   const focused=list.contains?.(document.activeElement),readingQuestion=Boolean(state.popover&&state.popover.dataset?.action==='runway-question');
   if((state.pointerInList||focused||readingQuestion)&&state.lastOrder){const kept=state.lastOrder.filter(k=>byKey.has(k));order=[...kept,...order.filter(k=>!kept.includes(k))];}
-  const existing=new Map([...list.children].filter(el=>!el._leaving).map(el=>[el.dataset.key,el]));
+  const existing=new Map([...list.children].filter(el=>el.classList.contains('chat')&&!el._leaving).map(el=>[el.dataset.key,el]));
   const scroller=notch.mode!=='inspect'?list.closest?.('.layout'):list;
   const scrollTopBefore=scroller?.scrollTop||0,scrollRect=scroller?.getBoundingClientRect?.();
   const anchor=[...existing].find(([key,el])=>byKey.has(key)&&(()=>{const rect=el.getBoundingClientRect?.();return rect&&(!scrollRect||rect.bottom>scrollRect.top);})())?.[1];
@@ -1895,6 +1931,7 @@ function renderChats(providers) {
   }
   state.lastOrder=order;
   if(anchor&&anchor.isConnected&&Number.isFinite(anchorTop)&&scroller){const moved=anchor.getBoundingClientRect().top-anchorTop;if(Math.abs(moved)>1)scroller.scrollTop=scrollTopBefore+moved;}
+  syncRunwayOverflowCue(list);
 }
 
 /* ---------- footer, title bar, popover ---------- */
@@ -2547,6 +2584,7 @@ function handleClick(event) {
   if(action==='widget-lock'){void toggleWidgetLock();return;}
   if(action==='open-settings'){openDashboard('settings');return;}
   if(action==='jump-waiting'){jumpToWaiting();return;}
+  if(action==='runway-list-more'){const list=$('#chat-list');list?.scrollBy?.({top:Math.max(1,list.clientHeight*.8),behavior:reducedMotion()?'auto':'smooth'});list?.focus?.({preventScroll:true});return;}
   if(action==='source'){setSource(button.dataset.source);return;}
   if(action==='dashboard'){openDashboard();return;}
   if(action==='keep-open'){void toggleKeepOpen();return;}
@@ -2590,7 +2628,7 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,syncRunwayOverflowCue,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
   renderLoading,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,quotaCountdown,elapsedDuration,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,

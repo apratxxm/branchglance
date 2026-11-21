@@ -19,6 +19,7 @@ assert.match(page,/id="sync-age"[^>]*data-action="refresh"[^>]*aria-label="Refre
 assert.doesNotMatch(page,/id="monitor-toggle"|id="toolbar-more"|id="toolbar-menu"/,"the dock has no monitor item or overflow menu");
 assert.match(page,/id="dashboard-open"[^>]*data-action="dashboard"[^>]*aria-label="Open Insights dashboard"/);
 assert.match(page,/id="window-recenter" class="icon-btn" aria-label="Recenter widget" title="Recenter widget"><svg class="ic"/,"the dock renders the Recenter icon button");
+assert.match(page,/id="chat-list" class="chat-list" tabindex="0" role="region" aria-label="Job list; scroll for more jobs"/,"the job list exposes keyboard scrolling and a continuation label");
 assert.match(page,/id="dashboard-settings-open" class="icon-btn" data-action="open-settings" aria-label="Open Settings" title="Settings"><svg class="ic"/,"the dock renders the Settings icon button");
 assert.ok(page.indexOf('id="dashboard-open"')<page.indexOf('id="dashboard-settings-open"')&&page.indexOf('id="dashboard-settings-open"')<page.indexOf('id="sync-age"')&&page.indexOf('id="sync-age"')<page.indexOf('id="widget-lock"')&&page.indexOf('id="widget-lock"')<page.indexOf('id="widget-keep-open"')&&page.indexOf('id="widget-keep-open"')<page.indexOf('id="window-recenter"')&&page.indexOf('id="window-recenter"')<page.indexOf('class="tb-fill'),"dock order is Insights, Settings | Refresh | Lock, Keep open, Recenter");
 assert.match(page,/id="dashboard-refresh" type="button" aria-label="Refresh Insights" title="Refresh"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4\.8A4\.5 4\.5 0 1 0 10 7"/);
@@ -53,13 +54,23 @@ assert.doesNotMatch(css,/^\.t-live,\.t-attn,\.t-err/m); // telemetry overrides c
 assert.match(css,/\.rr-left\.last-known[^{}]*\{[^}]*opacity:\.62/);
 assert.match(css,/\.meter\.last-known i\{background:var\(--muted\)\}/);
 assert.match(refinedCss,/\.meter\.last-known i\{background:var\(--muted\);\}/);
-assert.match(refinedCss,/\.rr-left\.last-known i\{display:none;\}/,"the strip keeps the age in the tooltip so it cannot push into the countdown");
+assert.match(refinedCss,/\.rr-left\.last-known i\{display:inline;[^}]*white-space:nowrap;/,"the strip shows the full stale age beside the last-known value");
 assert.match(refinedCss,/\.rr \.rr-left\.last-known b\{color:var\(--muted\);\}/,"a last-known value is grey like its meter");
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr\{[^}]*grid-template-columns:minmax\(0,1fr\) max-content max-content;[^}]*column-gap:8px/,"compact quota cells keep a fixed gap and allow the value cell to shrink");
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr:not\(:has\(\.rr-banked:not\(\[hidden\]\)\)\)\{grid-template-columns:minmax\(0,1fr\) max-content;\}/,"rows without a banked-reset badge reserve only one fixed gap before the reset");
-assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-left\.last-known i\{[^}]*flex:0 1 auto;min-width:1ch;max-width:100%;overflow:hidden;color:var\(--d-mute,var\(--muted\)\);text-overflow:ellipsis;white-space:nowrap;/,"the stale-age note is muted and ellipsizes before the reset time");
+assert.match(refinedCss,/\.rr-cd\.last-known\{color:var\(--muted\);\}/,"a stale countdown uses the mute ink");
+assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-left\.last-known i\{[^}]*flex:0 0 auto;white-space:nowrap;/,"the complete stale age remains visible without competing with its countdown");
+assert.match(refinedCss,/\.rr-cd\.last-known:empty::before\{content:"";\}/,"a stale cell's empty countdown track stays visually empty");
+assert.match(refinedCss,/\.chat-list \.runway-list-more\{position:sticky;bottom:0;[^}]*color:var\(--muted\)/,"overflow shows a persistent muted continuation cue");
+assert.doesNotMatch(css,/body:has\(\.chat\[data-provider="Codex"\]\):not\(:has\(\.chat\[data-provider="Claude"\]\)\) \.runway-count\.t-live/,"single-provider counters keep the shared workload ink");
 assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-moment\{grid-column:3;grid-row:1;justify-content:flex-end;\}/,"the reset time stays right-aligned in its own cell");
 assert.match(cssRule('.runway-count.t-live'),/color:var\(--green\)/);
+assert.match(refinedCss,/\.rr-cd\.last-known\{color:var\(--muted\);\}/);
+assert.match(refinedCss,/\.chat\[data-provider="Codex"\]>\.row:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)>\.runway-refined-row/);
+assert.match(refinedCss,/\.chat>\.row:not\(:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)\)::after\{content:none;background:none;/,"non-running and non-waiting root rows suppress the decorative wash");
+assert.match(refinedCss,/runway-compact\[data-notch-mode="inspect"\][^{}]*\.chat>\.row:not\(:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)\)::after\{content:none;background:none;/,"the compact widget also suppresses the wash on unknown-status roots");
+assert.doesNotMatch(refinedCss,/\.chat\[data-provider="Codex"\]>\.row>\.runway-refined-row\{[^}]*background-image/,"unknown-status roots do not get the active row wash");
+assert.match(refinedCss,/\.icon-btn:disabled\{opacity:\.45/);
 assert.match(cssRule('.runway-count.t-attn'),/color:var\(--orange\)/);
 assert.match(css,/\.row:has\(\[data-own-waiting=true\]\) \.r-title/);
 assert.match(css,/\.row:has\(\[data-child-waiting=true\]\) \.r-title/);
@@ -121,6 +132,13 @@ const T=context.window.__tokenTrackerTest,ago=minutes=>new Date(fixedNow-minutes
 assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times" aria-label="Resumed 2 times">↻2<\/span>/);
 assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread',resumeCount:1},false), /runway-resume-badge/);
 assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread'},false), /runway-resume-badge/);
+{
+  const full='A very long top-level job title that is intentionally truncated in the visible row';
+  const markup=T.runwayTelemetryHTML({title:full,status:'running'},false);
+  assert.match(markup,/title="A very long top-level job title that is intentionally truncated in the visible row" aria-label="A very long top-level job title that is intentionally truncated in the visible row"/,
+    'the root title tooltip and accessible name retain the full first line');
+  assert.match(markup,/class="runway-agent-label">A very long top-level job title[^<]*…/,'the visible label remains shortened while its tooltip keeps the full title');
+}
  assert.equal(T.openDashboard(),true,"the production widget opens the dashboard");
 assert.equal(T.closeDashboard(),true,"the dashboard returns to the widget");
 scheduledTimers.get(T.dashboardState.timer).callback();context.window.tokenTrackerNotchSettled(T.dashboardState.restoreMode,false,T.dashboardState.generation);scheduledTimers.get(T.dashboardState.timer).callback();
@@ -246,6 +264,8 @@ assert.doesNotMatch(idleParent,/Identifying safe cleanup targets|data-runway-slo
 const unavailableParent=T.rowHTML({...root,status:"unknown",telemetryUnavailable:true,latestUpdate:parentDoing,activity:null});
 assert.doesNotMatch(unavailableParent,/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
 assert.doesNotMatch(unavailableParent,/Identifying safe cleanup targets/);
+assert.match(T.rowHTML({...root,status:"unknown",statusSource:"unavailable"}),/runway-refined-status t-mute[^>]*>.*?Status unknown/s,"fresh rows with unknown status explain the missing telemetry in muted ink");
+assert.match(T.rowHTML({...root,status:undefined,executionStatus:undefined}),/runway-refined-status t-mute[^>]*>.*?Status unknown/s,"rows with no status use the muted unknown label");
 const oldParentDoing=T.rowHTML({...root,activeRunStartedAt:ago(1),latestUpdate:parentDoing,latestUpdateAt:ago(3),activity:null});
 assert.doesNotMatch(oldParentDoing,/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
 assert.doesNotMatch(oldParentDoing,/Identifying safe cleanup targets/);
@@ -634,13 +654,31 @@ assert.equal((node('#notch-counts').innerHTML.match(/class="count-value"/g)||[])
 assert.equal(T.notch.counts.roots,4);assert.equal(T.notch.counts.total,8);assert.equal(T.notch.counts.waiting,2);
 assert.ok(T.notch.active>0);
 T.state.query='';T.render(countSnapshot);
-assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:(?:quiet-root|idle-root|failed-only|stopped|deleted|expired-question)"/);
+assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:(?:quiet-root|idle-root|stopped|deleted|expired-question)"/);
+assert.match(node('#chat-list').innerHTML,/data-key="Codex:failed-only"[\s\S]*?runway-refined-status t-mute[\s\S]*?runway-state-word">Failed/,"a recent standalone failure remains visible with muted status ink");
+assert.match(T.rowHTML({...root,id:'failed-only',status:'failed',stateDetail:'errored',updatedAt:ago(1)}),/runway-refined-elapsed">[^<]+<\/span>/,"a recent failed root retains its elapsed age");
+testNow=fixedNow+31*60000;T.render(countSnapshot);
+assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:failed-only"/,"a failed root ages out at the existing recent-failure boundary");
+testNow=fixedNow;T.render(countSnapshot);
 const parent=T.state.forest.roots.find(chat=>chat.id==='finished-parent');
 assert.match(T.rowHTML(parent),/runway-refined-status t-attn[^>]*data-child-waiting="true"/);
 assert.doesNotMatch(T.rowHTML(parent),/Agent waiting/);
 assert.match(T.rowHTML({...parent,status:'running',stateDetail:'running'}),/runway-refined-status t-live[^>]*data-own-waiting="false" data-child-waiting="true"[^>]*>.*?runway-state-word">Running/s);
 assert.doesNotMatch(T.rowHTML({...parent,status:'running',stateDetail:'running'}),/runway-waiting-link|>Agent waiting/,"a running parent remains Running while its waiting child exposes its own row control");
-assert.match(T.rowHTML({...parent,status:'failed',stateDetail:'errored'}),/runway-refined-status t-err[^>]*>.*?runway-state-word">Failed/);
+assert.match(T.rowHTML({...parent,status:'failed',stateDetail:'errored'}),/runway-refined-status t-mute[^>]*>.*?runway-state-word">Failed/,"failed jobs use the muted state ink");
+{
+  const firstWaiting=T.state.forest.rows.find(T.runwayWaiting),clicked=[];
+  const waitingRoot=T.state.forest.roots.find(root=>root===firstWaiting||root.descendants.includes(firstWaiting));
+  T.state.hiddenChats.add(waitingRoot.key);
+  const link={dataset:{key:firstWaiting.key},focus(){clicked.push('focus');},scrollIntoView(){clicked.push('scroll');},click(){clicked.push('click');}};
+  const original=context.document.querySelectorAll.bind(context.document);
+  context.document.querySelectorAll=selector=>selector==='.runway-waiting-link'?[link]:original(selector);
+  T.state.query='query-that-hides-the-waiting-job';T.jumpToWaiting();
+  assert.equal(T.state.query,'','the waiting shortcut clears a filter that hides its target');
+  assert.equal(T.state.hiddenChats.has(waitingRoot.key),false,'the waiting shortcut reveals a target under a hidden root');
+  assert.deepEqual(clicked,['scroll','focus','click'],'the first counted waiting job is revealed, focused, then opened');
+  context.document.querySelectorAll=original;
+}
 assert.match(node('#chat-list').innerHTML,/data-key="Codex:live-review"/);
 assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:completed-review"/);
 T.state.query='worker is:running';T.state.windowDays=30;
@@ -799,13 +837,20 @@ assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%<
 assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');assert.match(node('#r0-fiveHour-left').title,/Last reported 11m ago/);assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),null,"screen-reader wording is nested text rather than a name on the generic span");
 assert.equal(node('#r0-fiveHour-row').title,'Last reported by Codex 11m ago');
 assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuetext'),'Last known: 92% used');assert.equal(node('#r0-fiveHour-bar').className,'last-known');
-assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.notEqual(node('#r0-fiveHour-cd').textContent,'');
+assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.equal(node('#r0-fiveHour-cd').textContent,'');
+assert.match(node('#r0-fiveHour-left').title,/resets in 25m 00s/);assert.match(node('#r0-fiveHour-left').innerHTML,/sr-only">[^<]*resets in 25m 00s/);assert.equal(node('#r0-fiveHour-cd').title,'Resets in 25m 00s');
 assert.doesNotMatch(node('#r0-fiveHour-cd').className,/unknown/);
+assert.match(node('#r0-fiveHour-cd').className,/last-known/);
 {
   const staleAt=ago(110),claude={name:"Claude",connected:true,identityVerified:true,identityGeneration:"account-1",fiveHour:{percent:14,resetAt:fixedNow/1000+3600},weekly:{percent:27,resetAt:fixedNow/1000+6*86400},limitsUpdatedAt:staleAt};
   const fiveHour=T.resetView(claude,"fiveHour"),weekly=T.resetView(claude,"weekly");
   assert.equal(fiveHour.measured,false);assert.equal(fiveHour.lastKnown,true);assert.equal(fiveHour.usedLabel,"14%");assert.equal(fiveHour.lastKnownAge,"1h 50m ago");assert.equal(fiveHour.tone,"");
   assert.equal(fiveHour.tip,"Last reported by Claude 1h 50m ago");assert.notEqual(fiveHour.countdown,"");
+  T.renderResets([claude]);
+  assert.match(node('#r0-fiveHour-left').innerHTML,/<i>1h 50m ago<\/i>/,"the stale quota cell displays the complete reported age");
+  assert.match(node('#r0-fiveHour-cd').className,/last-known/);
+  assert.equal(node('#r0-fiveHour-cd').textContent,'',"the stale countdown is not shown in the compact cell");
+  assert.match(node('#r0-fiveHour-left').title,/resets in 1h 00m/,"the full reset countdown remains in the stale cell's title");
   assert.equal(T.resetView({...claude,identityVerified:false},"fiveHour").tip,"Account unverified · Last reported by Claude 1h 50m ago");
   assert.equal(weekly.lastKnown,true);assert.equal(weekly.usedLabel,"27%");
   const nearWeeklyLimit=T.resetView({...claude,limitsUpdatedAt:ago(6*24*60+23*60),weekly:{percent:27,resetAt:fixedNow/1000+3600}},"weekly");
@@ -1128,7 +1173,7 @@ failLockWrite=true;T.handleClick({target:{closest:selector=>selector==='[data-ac
 assert.equal(T.widgetLock.locked,false);assert.equal(node('#widget-lock').getAttribute('aria-pressed'),'false','failed native writes do not optimistically change the lock button');
 assert.equal(await T.setWidgetLock(true),true);assert.deepEqual(lockWriteArgs,[true,true,null,nativeLock.revision-1]);
 assert.equal(T.widgetLock.locked,true);assert.equal(node('#widget-lock').getAttribute('aria-pressed'),'true');
-assert.equal(node('#window-recenter').disabled,true,'the dock Recenter button is disabled while the position is locked');assert.equal(node('#window-recenter').title,'Unlock the widget to move it');
+assert.equal(node('#window-recenter').disabled,true,'the dock Recenter button is disabled while the position is locked');assert.equal(node('#window-recenter').getAttribute('aria-disabled'),'true');assert.equal(node('#window-recenter').title,'Unlock the widget to move it');
 assert.match(node('#widget-lock').innerHTML,/M4 5V3\.8a2 2 0 0 1 4 0V5/,'the locked button uses the closed shackle icon');
 assert.equal(dragBrand.classList.contains('pywebview-drag-region'),true);assert.equal(dragFill.classList.contains('pywebview-drag-region'),true,"compact position lock still allows deliberate dragging");
 widgetEvents.get('pointerleave')();T.syncNotch(0,[]);
@@ -1143,7 +1188,7 @@ T.setNotch(true);T.syncNotch(1,[{key:'Codex:locked-launch',active:true,subagent:
 assert.equal(T.notch.expanded,true,'new work can reveal the widget while position is locked');assert.notEqual(T.notch.autoTimer,null);
 assert.equal(T.applyWidgetLock({locked:false,expanded:false,revision:newerRevision-1}),false,'older native messages cannot restore stale lock state');
 assert.equal(T.widgetLock.locked,true);
-await T.setWidgetLock(false);assert.equal(T.widgetLock.locked,false);assert.equal(node('#window-recenter').disabled,false,'unlocking re-enables the dock Recenter button');
+await T.setWidgetLock(false);assert.equal(T.widgetLock.locked,false);assert.equal(node('#window-recenter').disabled,false,'unlocking re-enables the dock Recenter button');assert.equal(node('#window-recenter').getAttribute('aria-disabled'),'false');
 assert.equal(dragBrand.classList.contains('pywebview-drag-region'),true);assert.equal(dragFill.classList.contains('pywebview-drag-region'),true,'unlock restores original drag-region class membership');
 T.notch.active=1;T.setNotch(true);assert.equal(T.notch.expanded,true);
 await T.setWidgetLock(true);assert.equal(T.widgetLock.locked,true);

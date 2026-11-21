@@ -97,7 +97,7 @@ def page(browser, server):
       document.addEventListener("keydown", t.handleKey);
       const api = window.pywebview.api;
       window.__rigCalls = [];
-      api.set_widget_lock = async (locked) => { window.__rigCalls.push(['lock', locked]); return {locked, revision: Date.now()}; };
+      api.set_widget_lock = async (locked, expanded) => { window.__rigCalls.push(['lock', locked]); return {locked, expanded, revision: Date.now(), keepOpen: false, keepOpenRevision: 0}; };
       api.set_keep_open = async (keepOpen) => { window.__rigCalls.push(['keep-open', keepOpen]); return {keepOpen, keepOpenRevision: Date.now()}; };
       window.open = (...args) => { window.__rigCalls.push(['open', ...args]); return null; };
     }""")
