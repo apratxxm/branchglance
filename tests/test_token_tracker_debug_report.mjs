@@ -10,6 +10,7 @@ const HOSTILE = "# Branchglance debug report\n<img src=x onerror=alert(1)>";
 
 function bootDashboard({fetchText = REPORT, fetchOk = true, platform = "Win32", version = "1.2.3"} = {}) {
   const calls = {fetch: [], clipboard: [], open: []};
+  const fetchState={ok:fetchOk,text:fetchText};
   const elements = new Map();
   const context = {
     window: {__TOKEN_TRACKER_DASHBOARD_TEST__: true, addEventListener() {},
@@ -22,14 +23,14 @@ function bootDashboard({fetchText = REPORT, fetchOk = true, platform = "Win32", 
     Intl, Date, Math, Number, JSON, Map, Set, Array, Promise, URL, AbortSignal: {timeout: ms => ({timeout: ms})},
     fetch: async (url, options) => {
       calls.fetch.push({url: String(url), options});
-      return {ok: fetchOk, status: fetchOk ? 200 : 503, text: async () => fetchText, json: async () => ({})};
+      return {ok: fetchState.ok, status: fetchState.ok ? 200 : 503, text: async () => fetchState.text, json: async () => ({})};
     },
   };
   vm.createContext(context);
   vm.runInContext(dashboardSource, context);
   const dashboard = context.window.__tokenTrackerDashboardTest;
   dashboard.state.identity = {version};
-  return {dashboard, calls, elements};
+  return {dashboard, calls, elements, fetchState};
 }
 
 // Settings UI: preview, copy and the issue URL.
@@ -87,7 +88,10 @@ function bootDashboard({fetchText = REPORT, fetchOk = true, platform = "Win32", 
 }
 
 {
-  const {dashboard, calls} = bootDashboard({fetchOk: false});
+  const {dashboard, calls, fetchState} = bootDashboard();
+  await dashboard.previewDebugReport();
+  assert.equal(dashboard.state.debugReport,REPORT,"the first local preview is retained");
+  fetchState.ok=false;
   await dashboard.previewDebugReport();
   assert.equal(dashboard.state.debugReport, "");
   assert.equal(dashboard.state.debugError, true);

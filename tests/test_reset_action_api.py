@@ -366,3 +366,38 @@ def test_identity_reports_product_build_pid_and_state_root(api):
 def test_sensitive_get_rejects_foreign_origin(api, path):
     _, port = api
     assert request(port, path, headers={"Origin": "https://evil.example"})[0] == 403
+
+
+def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypatch, tmp_path):
+    from token_tracker import widget
+
+    requested = []
+    body = b"provider,coverageStatus\r\nCodex,complete\r\n"
+
+    def export(path, query):
+        requested.append((path, query))
+        return 200, {"Content-Type": "text/csv; charset=utf-8"}, body
+
+    class SaveWindow:
+        selected = str(tmp_path / "saved-history")
+
+        def create_file_dialog(self, dialog_type, **kwargs):
+            requested.append((dialog_type, kwargs))
+            return self.selected
+
+    monkeypatch.setattr(widget.ledger_service, "http_response", export)
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app.window = SaveWindow()
+    api = widget.WindowApi(None, None, None, on_save_ledger_csv=app.save_ledger_csv)
+    assert api.save_ledger_csv() == {"ok": True}
+    assert requested[0] == (widget.ledger_service.EXPORT_PATH, {"range": ["all"], "format": ["csv"]})
+    assert requested[1][0] == widget.webview.FileDialog.SAVE
+    assert requested[1][1]["save_filename"] == "branchglance-ledger-all.csv"
+    assert (tmp_path / "saved-history.csv").read_bytes() == body
+
+    SaveWindow.selected = None
+    assert api.save_ledger_csv() == {"ok": False, "cancelled": True}
+    dialog_calls = len(requested)
+    monkeypatch.setattr(widget.ledger_service, "http_response", lambda *_args: (503, {}, b""))
+    assert api.save_ledger_csv() == {"ok": False, "error": "Saved history is unavailable or starting."}
+    assert len(requested) == dialog_calls, "an unavailable filtered export does not open the native dialog"

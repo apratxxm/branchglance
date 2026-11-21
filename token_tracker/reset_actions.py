@@ -87,34 +87,83 @@ class ResetActionDispatcher:
 
     def _migrate_action_state(self) -> None:
         state = self.action_state()
-        if state.get("schemaVersion") == ACTION_SCHEMA_VERSION:
+        version = state.get("schemaVersion")
+        if type(version) is int and version == ACTION_SCHEMA_VERSION:
+            mode = state.get("mode")
+            raw_ids = state.get("threadIds")
+            valid = (isinstance(raw_ids, list) and type(state.get("armed")) is bool
+                     and (state.get("lastRun") is None
+                          or isinstance(state.get("lastRun"), dict)))
+            try:
+                ids = _valid_ids(raw_ids) if valid else []
+            except ValueError:
+                valid = False
+                ids = []
+            valid = bool(valid and ids == raw_ids and isinstance(mode, str)
+                         and mode in {"off", "greet", "continue"}
+                         and (mode == "continue" and bool(ids) or mode in {"off", "greet"} and not ids)
+                         and (mode == "continue" or state.get("armed") is False))
+            if not valid:
+                self._replace_with_off(state)
+                return
             if (state.get("mode") == "continue" and state.get("armed")
                     and not policy_for("Codex", self.policies).allows("continue")):
                 state["armed"] = False
                 self.save()
             return
+        # Schema 1 and unversioned records with an explicit supported mode are
+        # the only legacy shapes. Missing/unknown versions or modes fail closed.
+        legacy_mode = state.get("mode")
+        if (not (version is None or type(version) is int and version == 1)
+                or not isinstance(legacy_mode, str) or legacy_mode not in {"greet", "continue"}):
+            self._replace_with_off(state)
+            return
         ids: list[str] = []
         saved_ids = state.get("threadIds")
+        if saved_ids is None and legacy_mode == "greet":
+            saved_ids = []
         if isinstance(saved_ids, list):
             for item in saved_ids:
                 if not isinstance(item, str):
-                    continue
+                    self._replace_with_off(state)
+                    return
                 try:
                     parsed = str(uuid.UUID(item))
                 except (ValueError, AttributeError):
-                    continue
-                if parsed == item.lower() and parsed not in ids:
-                    ids.append(parsed)
+                    self._replace_with_off(state)
+                    return
+                if parsed != item.lower() or parsed in ids:
+                    self._replace_with_off(state)
+                    return
+                ids.append(parsed)
+        else:
+            self._replace_with_off(state)
+            return
+        if (legacy_mode == "greet" and ids) or (legacy_mode == "continue" and not ids):
+            self._replace_with_off(state)
+            return
         migrated = default_action()
         migrated.update({
-            "mode": "continue" if ids else "greet",
+            "mode": legacy_mode,
             "threadIds": ids,
             "armed": False,
-            "lastRun": state.get("lastRun"),
+            "lastRun": state.get("lastRun") if isinstance(state.get("lastRun"), dict) else None,
             "ledger": state.get("ledger", {"cycles": []}),
         })
         state.clear()
         state.update(migrated)
+        self.save()
+
+    def _replace_with_off(self, state: dict[str, Any]) -> None:
+        """Fail closed while retaining only a well-shaped prior outcome ledger."""
+        last_run = state.get("lastRun") if isinstance(state.get("lastRun"), dict) else None
+        ledger = state.get("ledger")
+        if not isinstance(ledger, dict) or not isinstance(ledger.get("cycles"), list):
+            ledger = {"cycles": []}
+        state.clear()
+        state.update(default_action())
+        state["lastRun"] = last_run
+        state["ledger"] = ledger
         self.save()
 
     def configure(
@@ -146,7 +195,7 @@ class ResetActionDispatcher:
             return self.public_state(state)
 
     def validate_configuration(self, mode: str, thread_ids: Iterable[str]) -> list[str]:
-        if mode not in {"off", "greet", "continue"}:
+        if not isinstance(mode, str) or mode not in {"off", "greet", "continue"}:
             raise ValueError("mode must be 'off', 'greet' or 'continue'")
         if mode == "continue":
             policy_for("Codex", self.policies).require("continue")
@@ -184,11 +233,17 @@ class ResetActionDispatcher:
 
     @staticmethod
     def public_state(state: dict[str, Any]) -> dict[str, Any]:
+        mode = state.get("mode")
+        if not isinstance(mode, str) or mode not in {"off", "greet", "continue"}:
+            mode = "off"
+        thread_ids = state.get("threadIds")
+        if not isinstance(thread_ids, list):
+            thread_ids = []
         return copy.deepcopy({
             "schemaVersion": state.get("schemaVersion", ACTION_SCHEMA_VERSION),
-            "mode": state.get("mode", "greet"),
-            "threadIds": state.get("threadIds", []),
-            "armed": bool(state.get("armed", False)),
+            "mode": mode,
+            "threadIds": thread_ids,
+            "armed": state.get("armed") is True and mode == "continue",
             "oneShot": True,
             "lastRun": state.get("lastRun"),
         })

@@ -29,7 +29,9 @@ assert.match(app,/window\.open\?\.\("\/reset_actions\.html","_blank","noopener"\
 const elements=new Map();
 const listenerCounts=new Map();
 function element(selector){if(!elements.has(selector))elements.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;listenerCounts.set(`${selector}:${type}`,(listenerCounts.get(`${selector}:${type}`)||0)+1);}});return elements.get(selector);}
-const radios=[{value:"greet",checked:true,disabled:false},{value:"continue",checked:false,disabled:false},{value:"off",checked:false,disabled:false}];
+const radios=[];
+const makeRadio=(value,checked)=>{const radio={value,disabled:false,_checked:checked};Object.defineProperty(radio,"checked",{get(){return this._checked;},set(value){this._checked=value;if(value)for(const other of radios)if(other!==this)other._checked=false;}});radios.push(radio);return radio;};
+makeRadio("greet",true);makeRadio("continue",false);makeRadio("off",false);
 const listeners={};
 const document={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:selector==='input[name="mode"][value="off"]'?radios[2]:element(selector),querySelectorAll:()=>[],addEventListener:(type,fn)=>listeners[type]=fn};
 const calls=[];
@@ -151,6 +153,7 @@ assert.ok(requestHeaders.some(headers=>headers["X-Branchglance-Settings-Token"]=
 assert.match(element("#threads").innerHTML,/&lt;img/);
 assert.doesNotMatch(element("#threads").innerHTML,/<img/);
 radios[0].checked=false;radios[1].checked=true;T.state.selected=new Set(["11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222"]);T.render();
+T.state.dirty=true;
 assert.equal(element("#selected-count").textContent,"2 selected");
 await T.load();
 assert.equal(radios[1].checked,true,"refresh preserves the unsaved mode draft");
@@ -159,6 +162,38 @@ await T.save();
 assert.deepEqual(calls[0],{mode:"continue",threadIds:["11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222"]});
 radios[0].checked=true;radios[1].checked=false;T.render();await T.save();
 assert.deepEqual(calls[1],{mode:"greet",threadIds:[]});
+
+actionRecord={schemaVersion:2,mode:"off",threadIds:[],armed:false,oneShot:true,lastRun:null};
+await T.load();
+assert.equal(radios[2].checked,true,"a clean reload checks the saved Off choice");
+assert.equal(radios[0].checked,false);assert.equal(radios[1].checked,false);
+radios[2].checked=false;radios[0].checked=true;actionRecord={schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null};await T.load();
+
+actionRecord={schemaVersion:2,mode:"unknown",threadIds:[],armed:false,oneShot:true,lastRun:null};
+const postsBeforeMalformed=calls.length;await T.load();
+assert.equal(T.state.actionReady,false,"malformed saved state does not enable writes");
+assert.equal(element("#save").disabled,true,"Save stays disabled for malformed state");
+await T.save();assert.equal(calls.length,postsBeforeMalformed,"malformed state is never overwritten silently");
+actionRecord={schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null};await T.load();
+
+radios[0].checked=false;radios[2].checked=true;T.state.dirty=true;await T.save();
+assert.deepEqual(calls[2],{mode:"off",threadIds:[]},"the saved Off option writes the backend Off mode");
+assert.equal(T.state.action.mode,"off");assert.equal(T.state.action.armed,false);
+actionRecord={schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null};await T.load();
+
+radios[0].checked=false;radios[1].checked=true;T.state.dirty=true;T.state.selected=new Set(["11111111-1111-4111-8111-111111111111"]);
+actionRecord={schemaVersion:2,mode:"off",threadIds:[],armed:false,oneShot:true,lastRun:null};
+const postsBeforeConflict=calls.length;
+await T.load();
+assert.equal(T.state.actionChanged,true,"a competing Off save marks the local Continue draft stale");
+assert.equal(element("#save").disabled,true,"a stale draft cannot overwrite the newer saved action");
+await T.save();assert.equal(calls.length,postsBeforeConflict,"stale Continue draft is not posted");
+T.discardDraft();
+assert.equal(radios[2].checked,true,"discard loads the current saved Off mode");
+assert.equal(T.state.actionChanged,false);
+actionRecord={schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null};
+await T.load();assert.equal(radios[0].checked,true,"a clean reload returns to the currently saved greeting mode");
+
 radios[0].checked=false;radios[1].checked=true;T.state.selected=new Set(["11111111-1111-4111-8111-111111111111"]);failSave=true;await T.save();
 assert.equal(T.state.selected.size,1,"failed save retains the user's draft");
 assert.match(element("#message").textContent,/Could not save/);
@@ -178,9 +213,9 @@ policy={schemaVersion:1,generation:"codex-send-again",providers:[
   {name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},
   {name:"Claude",collect:false,show:false,send:false,sendOrigin:"default",capabilities:{greet:false,continue:false}}
 ]};
-actionRecord={schemaVersion:1,mode:"continue",threadIds:["11111111-1111-4111-8111-111111111111"],armed:true,lastRun:null};
+actionRecord={schemaVersion:2,mode:"continue",threadIds:["11111111-1111-4111-8111-111111111111"],armed:false,oneShot:true,lastRun:null};
 await T.load();
-assert.equal(T.state.selected.size,0,"legacy selections are not re-armed from the server record");
+assert.equal(T.state.selected.size,0,"unarmed continuation selections are not restored");
 assert.equal(T.state.action.threadIds.length,0);
 assert.match(element("#message").textContent,/re-select chats/i);
 
@@ -203,29 +238,56 @@ assert.equal(T.state.threads.length,0);
 // Saved usage history: the delete button is gated by collection and ledger state, and sends only on the second click.
 {
   const nodes=new Map();
-  const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,dataset:{},focused:false,focus(){this.focused=true;},classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
   const sent=[];
   const ledgerState={ok:true,state:"live",purging:[],lastPurge:null,collect:{Claude:true,Codex:false}};
+  let currentLedger=ledgerState;
   const ledgerDocument={querySelector:node,querySelectorAll:()=>[],addEventListener(){}};
-  const ledgerWindow={location:{hash:"#t=ledger-test-token",pathname:"/reset_actions.html",search:""},history:{replaceState(){}}};
+  const ledgerWindow={__RESET_ACTIONS_TEST__:true,location:{hash:"#t=ledger-test-token",pathname:"/reset_actions.html",search:"",href:""},history:{replaceState(){}}};
   const ledgerContext={document:ledgerDocument,window:ledgerWindow,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async(url,options={})=>{
-    if(url==="/api/ledger/status")return {ok:true,status:200,json:async()=>ledgerState};
+    if(url==="/api/ledger/status")return {ok:true,status:200,json:async()=>currentLedger};
     if(url==="/api/ledger/purge"){sent.push({url,method:options.method,token:options.headers["X-Branchglance-Settings-Token"],body:JSON.parse(options.body)});return {ok:true,status:200,json:async()=>({ok:true})};}
     return {ok:false,status:404,json:async()=>({ok:false,error:"not used"})};
   }};
   vm.createContext(ledgerContext);vm.runInContext(source,ledgerContext);
+  const ledgerTest=ledgerWindow.__resetActionsTest;
   const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
   await settle();
+  let exportReply={ok:true};ledgerWindow.pywebview={api:{save_ledger_csv:async()=>exportReply}};
+  await ledgerTest.exportHistory();assert.equal(node("#export-status").textContent,"Saved CSV.");
+  exportReply={ok:false,cancelled:true};await ledgerTest.exportHistory();assert.equal(node("#export-status").textContent,"Export cancelled.");
+  exportReply={ok:false,error:"Could not save the CSV file."};await ledgerTest.exportHistory();assert.equal(node("#export-status").textContent,"Could not save the CSV file.");
+  delete ledgerWindow.pywebview;await ledgerTest.exportHistory();assert.equal(ledgerWindow.location.href,"/api/ledger/export?range=all&format=csv","browser fallback uses the existing filtered CSV route");
   assert.equal(node('[data-purge="Claude"]').disabled,true,"collection on: delete is disabled");
   assert.equal(node('[data-reason="Claude"]').textContent,"Turn off collection first");
   assert.equal(node('[data-reason="Claude"]').hidden,false);
   assert.equal(node('[data-purge="Codex"]').disabled,false,"collection off and ledger on: delete is enabled");
   assert.equal(node('[data-reason="Codex"]').hidden,true);
+  await ledgerTest.confirmPurge("Codex",0);
+  assert.equal(sent.length,0,"confirmation from idle is ignored");
+
+  ledgerTest.purgeClick("Codex");
+  const cancelledId=ledgerTest.state.purge.Codex.confirmationId;
+  ledgerTest.cancelPurge("Codex",cancelledId);
+  assert.equal(node('[data-purge="Codex"]').focused,true,"Cancel restores focus to the provider's delete action");
+  await ledgerTest.confirmPurge("Codex",cancelledId);
+  assert.equal(sent.length,0,"a stale confirmation after Cancel is ignored");
+
+  ledgerTest.purgeClick("Codex");
+  const ineligibleId=ledgerTest.state.purge.Codex.confirmationId;
+  currentLedger={...ledgerState,collect:{Claude:true,Codex:true}};
+  await ledgerTest.confirmPurge("Codex",ineligibleId);
+  assert.equal(sent.length,0,"eligibility is checked again immediately before deletion");
+  currentLedger=ledgerState;ledgerTest.state.ledger=ledgerState;ledgerTest.state.purge.Codex={phase:"idle"};ledgerTest.render();
+
   node('[data-purge="Codex"]').onclick();
   await settle();
   assert.equal(node('[data-confirm="Codex"]').hidden,false);
   assert.equal(sent.length,0,"the first click sends nothing");
-  node('[data-confirm-purge="Codex"]').onclick();
+  const confirmId=ledgerTest.state.purge.Codex.confirmationId;
+  const firstConfirm=ledgerTest.confirmPurge("Codex",confirmId);
+  const duplicateConfirm=ledgerTest.confirmPurge("Codex",confirmId);
+  await Promise.all([firstConfirm,duplicateConfirm]);
   await settle();
   assert.deepEqual(sent,[{url:"/api/ledger/purge",method:"POST",token:"ledger-test-token",body:{provider:"Codex"}}]);
   assert.equal(node('[data-status="Codex"]').textContent,"Deleted");
@@ -321,7 +383,7 @@ assert.equal(T.state.threads.length,0);
   const win={__RESET_ACTIONS_TEST__:true,location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage(){}},history:{replaceState(){}}};
   const policy={schemaVersion:1,generation:"chat-toggle",providers:[{name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}}]};
   const actionThreads=[{id:"11111111-1111-4111-8111-111111111111",title:"First",status:"idle"},{id:"22222222-2222-4222-8222-222222222222",title:"Second",status:"idle"}];
-  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:{mode:"greet",threadIds:[]},threads:actionThreads}:{ok:true}})};
+  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:{schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null},threads:actionThreads}:{ok:true}})};
   vm.createContext(ctx);vm.runInContext(source,ctx);
   for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
   const first={dataset:{id:actionThreads[0].id},checked:false,focus(){doc.activeElement=this;}};
@@ -347,7 +409,7 @@ assert.equal(T.state.threads.length,0);
   const doc={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:node(selector),getElementById:id=>node(`#${id}`),querySelectorAll:()=>[],addEventListener:(type,fn)=>listeners[type]=fn,documentElement:{classList:{add(){}}},body:{classList:{add(){}},dataset:{}}};
   const win={__RESET_ACTIONS_TEST__:true,location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage:message=>posts.push(message)},history:{replaceState(){}}};
   const policy={schemaVersion:1,generation:"on",providers:[{name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}}]};
-  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:{mode:"greet",threadIds:[]},threads:[]}:{ok:true}})};
+  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:{schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null},threads:[]}:{ok:true}})};
   vm.createContext(ctx);vm.runInContext(source,ctx);
   for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(node("footer").hidden,true,"saved mode hides footer");
@@ -374,10 +436,10 @@ assert.match(resetCss,/\.mode:has\(input:disabled\) b,\.mode:has\(input:disabled
   const until=async(predicate,limit=200000)=>{for(let i=0;i<limit&&!predicate();i++)await pause();};
   const harness=(initialStatus,posts)=>{
     const nodes=new Map();
-    const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+    const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,dataset:{},classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
     const statusRef={value:initialStatus};
     const ctx={document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){}},
-      window:{location:{hash:"#t=ledger-test-token",pathname:"/reset_actions.html",search:""},history:{replaceState(){}}},
+      window:{__RESET_ACTIONS_TEST__:true,location:{hash:"#t=ledger-test-token",pathname:"/reset_actions.html",search:""},history:{replaceState(){}}},
       AbortSignal:{timeout(){}},URLSearchParams,clearTimeout,
       setTimeout:(fn,ms,...rest)=>realTimeout(fn,ms===2000?50:ms,...rest),
       fetch:async(url,options={})=>{
@@ -386,10 +448,10 @@ assert.match(resetCss,/\.mode:has\(input:disabled\) b,\.mode:has\(input:disabled
         return {ok:false,status:404,json:async()=>({ok:false,error:"not used"})};
       }};
     vm.createContext(ctx);vm.runInContext(source,ctx);
-    return {node,statusRef};
+    return {node,statusRef,test:ctx.window.__resetActionsTest};
   };
   const idle={ok:true,state:"live",purging:[],lastPurge:{},collect:{Claude:false,Codex:false}};
-  const sendTwice=async(h,provider)=>{h.node(`[data-purge="${provider}"]`).onclick();await settle();assert.equal(h.node(`[data-confirm="${provider}"]`).hidden,false,"inline confirmation is shown");h.node(`[data-confirm-purge="${provider}"]`).onclick();await settle();};
+  const sendTwice=async(h,provider)=>{h.node(`[data-purge="${provider}"]`).onclick();await settle();assert.equal(h.node(`[data-confirm="${provider}"]`).hidden,false,"inline confirmation is shown");const id=h.test.state.purge[provider].confirmationId;await h.test.confirmPurge(provider,id);await settle();};
 
   // Sol's replay: Claude's purge fails and Codex's succeeds afterwards. Claude must never read as Deleted.
   const A=harness({...idle,purging:["Claude"]},{

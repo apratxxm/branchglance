@@ -532,7 +532,7 @@ def test_legacy_armed_selection_migrates_unarmed_and_preserves_delivery_ledger()
         {"threadId": ONE, "status": "unknown", "reason": "old result"},
     ]}]}
     h.state.clear()
-    h.state.update({"mode": "continue", "threadIds": [ONE], "armed": True,
+    h.state.update({"schemaVersion": 1, "mode": "continue", "threadIds": [ONE], "armed": True,
                     "oneShot": True, "lastRun": {"cycleId": "old"}, "ledger": ledger})
 
     dispatcher = h.make_dispatcher()
@@ -551,9 +551,29 @@ def test_existing_greeting_action_migrates_without_being_turned_off():
     previous = {"cycleId": "greeting-cycle", "at": T0}
     h.state.clear()
     h.state.update({"mode": "greet", "threadIds": [], "armed": False, "lastRun": previous})
-    action = h.make_dispatcher().get()
+    h.dispatcher = h.make_dispatcher()
+    action = h.dispatcher.get()
     assert action["mode"] == "greet"
     assert action["lastRun"] == previous
+
+
+@pytest.mark.parametrize("record", [
+    {"schemaVersion": 2, "threadIds": [], "armed": False},
+    {"schemaVersion": 2, "mode": "future", "threadIds": [], "armed": False},
+    {"schemaVersion": 3, "mode": "greet", "threadIds": [], "armed": False},
+    {"mode": "future", "threadIds": [], "armed": False},
+    {"schemaVersion": 2, "mode": "greet", "threadIds": [ONE], "armed": False},
+])
+def test_malformed_or_unknown_reset_records_fail_closed_to_off(record):
+    h = Harness()
+    h.state.clear()
+    h.state.update(record)
+    h.dispatcher = h.make_dispatcher()
+    action = h.dispatcher.get()
+    assert action["mode"] == "off"
+    assert action["armed"] is False and action["threadIds"] == []
+    assert h.dispatcher.dispatch("malformed-record-cycle") is None
+    assert h.queue_calls == []
 
 
 def test_legacy_global_consent_cannot_configure_or_dispatch_continue():

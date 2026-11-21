@@ -402,14 +402,103 @@ def test_codex_synthetic_deadline_backs_off_and_pauses_after_three_unverified(tm
     assert state["nextGreetingAt"] > clock.now
 
 
-def test_codex_off_mode_keeps_quota_samples_but_never_sends(tmp_path):
+def test_codex_off_mode_survives_eligible_reset_and_restart_without_greeting(tmp_path):
     clock = Clock()
-    sender = Sender()
-    watcher = make(tmp_path, clock, Codex=sender)
+    calls = []
+    sender = lambda _cwd: calls.append("sent") or {"ok": True}
+    state_path = tmp_path / "state.json"
+    watcher = LimitResetService(sources={}, senders={"Codex": sender}, state_path=state_path,
+                               log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True,
+                               clock=clock)
+    deadline = T0 + 10
+    watcher.configure_reset_action("greet", [])
+    watcher.check_provider("Codex", LimitSample(20, 30, T0, deadline))
+    assert provider(watcher, "Codex")["nextGreetingAt"] == deadline
     watcher.configure_reset_action("off", [])
-    watcher.check_provider("Codex", LimitSample(20, 30, T0, T0 + 600))
-    assert sender.calls == 0
-    assert provider(watcher, "Codex")["lastStatus"]["five_hour_percent"] == 20
+    assert provider(watcher, "Codex")["nextGreetingAt"] is None
+    event_count = len(names(tmp_path))
+    clock.advance(11)
+    watcher.check_provider("Codex", LimitSample(0, 30, T0 + 11, deadline))
+    assert calls == []
+    assert provider(watcher, "Codex")["lastStatus"]["five_hour_percent"] == 0
+
+    restarted = LimitResetService(sources={}, senders={"Codex": sender}, state_path=state_path,
+                                  log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True,
+                                  clock=clock)
+    restarted.check_provider("Codex", LimitSample(0, 30, T0 + 12, deadline))
+    assert restarted.get_reset_action()["mode"] == "off"
+    assert provider(restarted, "Codex")["nextGreetingAt"] is None
+    assert calls == []
+    assert len(names(tmp_path)) == event_count
+
+
+@pytest.mark.parametrize("record", [
+    {"schemaVersion": 2, "threadIds": [], "armed": False},
+    {"schemaVersion": 2, "mode": "unknown", "threadIds": [], "armed": False},
+    {"schemaVersion": 7, "mode": "greet", "threadIds": [], "armed": False},
+    {"mode": "unknown", "threadIds": [], "armed": False},
+])
+def test_malformed_persisted_modes_restart_as_off_without_sender(tmp_path, record):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({"resetAction": record}), encoding="utf-8")
+    calls = []
+    watcher = LimitResetService(sources={}, senders={"Codex": lambda _cwd: calls.append("sent")},
+                               state_path=state_path, log_path=tmp_path / "events.jsonl",
+                               cwd=tmp_path, enabled=True, clock=Clock())
+    assert watcher.get_reset_action()["mode"] == "off"
+    watcher.check_provider("Codex", LimitSample(20, 20, T0, T0 + 10))
+    watcher.check_provider("Codex", LimitSample(0, 20, T0 + 11, T0 + 10))
+    assert watcher.get_reset_action()["mode"] == "off"
+    assert calls == []
+
+
+def test_codex_mode_recheck_blocks_send_at_main_and_fallback_reservation(tmp_path, monkeypatch):
+    clock = Clock()
+    calls = []
+    sender = lambda _cwd: calls.append("sent") or {"ok": True}
+    main = make(tmp_path / "main", clock, Codex=sender)
+    main.configure_reset_action("greet", [])
+
+    class FlipOnSecondLock:
+        def __init__(self, watcher):
+            import threading
+            self.lock = threading.RLock()
+            self.watcher = watcher
+            self.entries = 0
+
+        def __enter__(self):
+            self.lock.acquire()
+            self.entries += 1
+            if self.entries == 2:
+                self.watcher._state["resetAction"]["mode"] = "off"
+            return self
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    main._lock = FlipOnSecondLock(main)
+    main._check_codex_keepalive("Codex", LimitSample(20, 20, T0, T0 + 20))
+    assert calls == []
+    assert provider(main, "Codex")["lastStatus"]["five_hour_percent"] == 20
+
+    fallback = make(tmp_path / "fallback", clock, Codex=sender)
+    fallback.configure_reset_action("greet", [])
+    fallback.check_provider("Codex", LimitSample(100, 20, T0, None))
+    original_provider_state = fallback._provider_state
+    changed = [False]
+
+    def save_off_at_observation(name):
+        state = original_provider_state(name)
+        if name == "Codex" and not changed[0]:
+            changed[0] = True
+            fallback.configure_reset_action("off", [])
+        return state
+
+    monkeypatch.setattr(fallback, "_provider_state", save_off_at_observation)
+    fallback.check_provider("Codex", LimitSample(0, 20, T0 + 1, None))
+    assert changed[0] is True
+    assert fallback.get_reset_action()["mode"] == "off"
+    assert calls == []
 
 
 def test_codex_stable_zero_percent_window_is_followed_not_greeted(tmp_path):
@@ -496,6 +585,7 @@ def test_codex_active_window_overrides_stale_overdue_anchor_without_sending(tmp_
         sources={}, senders={"Codex": sender}, state_path=state_path,
         log_path=tmp_path / "events.jsonl", cwd=tmp_path, enabled=True, clock=clock,
     )
+    watcher.configure_reset_action("greet", [])
     real_deadline = T0 + 5 * 60 * 60
     watcher.check_provider("Codex", LimitSample(3, 20, T0, real_deadline))
     state = provider(watcher, "Codex")

@@ -793,7 +793,8 @@ class WindowApi:
                  on_monitors=None, on_monitor=None, on_recenter=None, on_drag_begin=None, on_drag_end=None,
                  on_lock=None, on_get_lock=None, on_reset_actions=None,
                  on_keep_open=None, on_get_keep_open=None, on_compact_profile=None,
-                 on_set_monitor_name=None, on_get_inspection_hotkey=None, on_set_inspection_hotkey=None) -> None:
+                 on_set_monitor_name=None, on_get_inspection_hotkey=None, on_set_inspection_hotkey=None,
+                 on_save_ledger_csv=None) -> None:
         self._minimize = on_minimize
         self._toggle_maximize = on_toggle_maximize
         self._close = on_close
@@ -815,6 +816,7 @@ class WindowApi:
         self._set_monitor_name = on_set_monitor_name
         self._get_inspection_hotkey = on_get_inspection_hotkey
         self._set_inspection_hotkey = on_set_inspection_hotkey
+        self._save_ledger_csv = on_save_ledger_csv
 
     def open_reset_actions(self):
         return self._open_reset_actions() if self._open_reset_actions else False
@@ -850,6 +852,9 @@ class WindowApi:
 
     def set_inspection_hotkey(self, choice):
         return self._set_inspection_hotkey(choice) if self._set_inspection_hotkey else None
+
+    def save_ledger_csv(self):
+        return self._save_ledger_csv() if self._save_ledger_csv else {"ok": False, "error": "Native file saving is unavailable."}
 
     def recenter(self):
         return self._recenter() if self._recenter else None
@@ -2676,6 +2681,36 @@ class WidgetApp:
                 return False
             return self._open_reset_actions_locked()
 
+    def save_ledger_csv(self) -> dict:
+        try:
+            status, _headers, body = ledger_service.http_response(
+                ledger_service.EXPORT_PATH, {"range": ["all"], "format": ["csv"]})
+        except Exception:
+            return {"ok": False, "error": "Saved history export is unavailable."}
+        if status != 200 or not any(name.lower() == "content-type" and value.startswith("text/csv")
+                                    for name, value in _headers.items()):
+            return {"ok": False, "error": "Saved history is unavailable or starting."}
+        window = getattr(self, "reset_actions_window", None) or self.window
+        if window is None or not callable(getattr(window, "create_file_dialog", None)):
+            return {"ok": False, "error": "Native file saving is unavailable."}
+        try:
+            selected = window.create_file_dialog(
+                webview.FileDialog.SAVE,
+                save_filename="branchglance-ledger-all.csv",
+                file_types=("CSV files (*.csv)",),
+            )
+            if isinstance(selected, (list, tuple)):
+                selected = selected[0] if selected else None
+            if not selected:
+                return {"ok": False, "cancelled": True}
+            target = Path(selected)
+            if target.suffix.lower() != ".csv":
+                target = target.with_suffix(target.suffix + ".csv" if target.suffix else ".csv")
+            target.write_bytes(body)
+            return {"ok": True}
+        except Exception:
+            return {"ok": False, "error": "Could not save the CSV file."}
+
     def _open_reset_actions_locked(self) -> bool:
         child = self.reset_actions_window
         if child is not None:
@@ -2695,6 +2730,7 @@ class WidgetApp:
                 "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
                 width=440, height=540, min_size=(360, 360), resizable=True,
                 background_color="#111316",
+                js_api=WindowApi(None, None, None, on_save_ledger_csv=self.save_ledger_csv),
             )
             self.reset_actions_window = child
 
@@ -2836,7 +2872,8 @@ class WidgetApp:
                               on_compact_profile=lambda: self.compact_profile,
                              on_set_monitor_name=self.set_monitor_name,
                              on_get_inspection_hotkey=self.get_inspection_hotkey,
-                             on_set_inspection_hotkey=self.set_inspection_hotkey),
+                             on_set_inspection_hotkey=self.set_inspection_hotkey,
+                             on_save_ledger_csv=self.save_ledger_csv),
         )
         self.window.events.before_show += self._set_native_background_fallback
         self.window.events.closing += self.on_closing

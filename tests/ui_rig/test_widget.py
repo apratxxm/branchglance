@@ -533,13 +533,13 @@ def test_horizontal_layout(page):
 
 
 def test_settings_keyboard_reaches_controls(page):
-    # The shared fixture denies automatic actions; grant greet only to the embedded test frame.
+    # The shared fixture denies automatic actions; grant all reset choices to the embedded test frame.
     def reset_frame_policy(route):
         if urlsplit(route.request.frame.url).path == "/reset_actions.html":
             route.fulfill(json={"schemaVersion": 1, "generation": "ui-rig-reset-frame",
                                 "providers": [{"name": "Codex", "collect": True, "show": True,
                                                "send": True, "sendOrigin": "provider_env",
-                                               "capabilities": {"greet": True, "continue": False}}]})
+                                               "capabilities": {"greet": True, "continue": True}}]})
         else:
             route.continue_()
 
@@ -550,9 +550,25 @@ def test_settings_keyboard_reaches_controls(page):
     # Count the embedded form only after it has rendered, or the expected total races its load.
     expect(frame.locator(ui.INTERACTIVE).filter(visible=True).first).to_be_visible()
     inner = frame.locator(ui.INTERACTIVE).filter(visible=True)
-    expected_outer, expected_inner = controls.count(), inner.count()
+    expected_outer = controls.count()
+    enabled_radios = frame.locator('input[name="mode"]:not([disabled])')
+    radio_count = enabled_radios.count()
+    expected_inner = inner.count() - radio_count + (1 if radio_count else 0)
     expected = expected_outer + expected_inner
     assert expected_outer > 0
+
+    off = frame.locator('input[name="mode"][value="off"]')
+    greet = frame.locator('input[name="mode"][value="greet"]')
+    continuation = frame.locator('input[name="mode"][value="continue"]')
+    off.focus()
+    page.keyboard.press("ArrowDown")
+    expect(greet).to_be_checked()
+    page.keyboard.press("ArrowDown")
+    expect(continuation).to_be_checked()
+    page.keyboard.press("ArrowUp")
+    expect(greet).to_be_checked()
+    frame.get_by_role("button", name="Discard changes").click()
+
     page.locator(ui.SETTINGS_TAB).focus()
     seen = set()
     for _ in range(100):
@@ -564,7 +580,10 @@ def test_settings_keyboard_reaches_controls(page):
                 seen.add(("outer", index))
         inner_index = inner.evaluate_all("els => els.indexOf(document.activeElement)")
         if inner_index >= 0 and page.locator(ui.RESET_FRAME).evaluate("el => document.activeElement === el"):
-            seen.add(("frame", inner_index))
+            if inner.nth(inner_index).get_attribute("name") == "mode":
+                seen.add(("frame", "mode-radio-group"))
+            else:
+                seen.add(("frame", inner_index))
     assert len(seen) == expected, (len(seen), expected)
 
 

@@ -729,6 +729,10 @@ class LimitResetService:
                 policy_for("Codex", self.policies).require("continue")
             if self._sending:
                 raise RuntimeError("reset action cannot change while a Codex action is running")
+            codex_state = self._provider_state("Codex")
+            previous_codex_state = copy.deepcopy(codex_state)
+            if mode == "off":
+                self._clear_codex_automation_state(codex_state)
             baseline: dict[str, Any] = {}
             if mode == "continue":
                 codex = self._provider_state("Codex")
@@ -769,7 +773,33 @@ class LimitResetService:
                     ),
                     "cycleId": cycle_id,
                 }
-            return self._reset_actions.configure(mode, thread_ids, baseline=baseline, validated_ids=validated_ids)
+            try:
+                return self._reset_actions.configure(mode, thread_ids, baseline=baseline, validated_ids=validated_ids)
+            except Exception:
+                codex_state.clear()
+                codex_state.update(previous_codex_state)
+                raise
+
+    @staticmethod
+    def _clear_codex_automation_state(state: dict[str, Any]) -> None:
+        for key, value in {
+            "armed": False, "exhaustedAt": None, "exhaustedSampleAt": None,
+            "nextGreetingAt": None, "awaitingVerification": False,
+            "verificationDeadline": None, "preSendResetAt": None,
+            "preSendPercent": None, "verificationEvidence": None,
+            "unverifiedAttempts": 0,
+        }.items():
+            state[key] = value
+        state.pop("greetingIntent", None)
+
+    def _observe_codex_off(self, sample: LimitSample) -> None:
+        """Persist quota observations only while reset automation is disabled."""
+        with self._lock:
+            state = self._provider_state("Codex")
+            self._clear_codex_automation_state(state)
+            state["lastStatus"] = {**asdict(sample), "checkedAt": _checked_at(sample)}
+            state["lastPollError"] = None
+            self._save_state()
 
     _PROVIDER_DEFAULTS: dict[str, Any] = {
         # original keys
@@ -936,7 +966,17 @@ class LimitResetService:
         policy.require("collect")
         identity = claude_identity.current_identity() if name == "Claude" else None
         if not (policy.allows("greet") or policy.allows("continue")):
-            self._record_collected_status(name, sample)
+            if name == "Codex":
+                with self._lock:
+                    action = self._state.setdefault("resetAction", default_action())
+                    if action.get("mode") == "off" or action.get("mode") not in ("greet", "continue"):
+                        if action.get("mode") != "off":
+                            self._reset_actions._replace_with_off(action)
+                        self._observe_codex_off(sample)
+                    else:
+                        self._record_collected_status(name, sample)
+            else:
+                self._record_collected_status(name, sample)
             return
         if name == "Claude" and policy.allows("greet") and self.senders.get(name) is not None:
             self._check_claude_keepalive(sample)
@@ -951,10 +991,9 @@ class LimitResetService:
                 if name not in self._sending:
                     self._reconcile_codex_finalization()
                 action = self._state.setdefault("resetAction", default_action())
-                if action.get("mode") == "off":
-                    # Keep quota observations current while the user has disabled
-                    # all reset automation; this path never reaches a sender.
-                    self._check_codex_keepalive(name, sample)
+                mode = action.get("mode")
+                if mode == "off" or not isinstance(mode, str) or mode not in ("greet", "continue"):
+                    self._observe_codex_off(sample)
                     return
                 if action.get("mode") == "continue" and not action.get("armed"):
                     self._record_collected_status(name, sample)
@@ -982,6 +1021,17 @@ class LimitResetService:
             state = self._provider_state(name)
             checked_at = _checked_at(sample) if name == "Codex" else _claude_checked_at(sample, self._now_iso())
             state["lastStatus"] = {**asdict(sample), "checkedAt": checked_at}
+            current_mode = self._state.setdefault("resetAction", default_action()).get("mode")
+            if name == "Codex" and current_mode != "greet":
+                # A concurrent Off (or any non-greeting mode) wins before the
+                # fallback path reserves its sender.
+                if current_mode == "continue":
+                    self._record_collected_status(name, sample)
+                else:
+                    if current_mode != "off":
+                        self._reset_actions._replace_with_off(self._state["resetAction"])
+                    self._observe_codex_off(sample)
+                return
             five = sample.five_hour_percent
             weekly = sample.weekly_percent
             if five is None:
@@ -1467,15 +1517,11 @@ class LimitResetService:
                 return
             self._reconcile_codex_finalization()
             action = self._state.setdefault("resetAction", default_action())
-            if action.get("mode") == "off":
-                state = self._provider_state(name)
-                state["lastStatus"] = {**asdict(sample), "checkedAt": _checked_at(sample)}
-                deadline = _epoch_seconds(sample.reset_at)
-                if deadline is not None and deadline > self._clock():
-                    state["nextGreetingAt"] = deadline
-                    self._record(name, "active_window_observed", nextGreetingAt=deadline,
-                                 fiveHourPercent=_valid_quota_percent(sample.five_hour_percent))
-                self._save_state()
+            mode = action.get("mode")
+            if mode == "off" or not isinstance(mode, str) or mode not in ("greet", "continue"):
+                if mode != "off":
+                    self._reset_actions._replace_with_off(action)
+                self._observe_codex_off(sample)
                 return
             if action.get("mode") == "continue" and action.get("armed"):
                 state = self._provider_state(name)
@@ -1505,6 +1551,13 @@ class LimitResetService:
                 state = self._provider_state(name)
                 state["lastStatus"] = {**asdict(sample), "checkedAt": _checked_at(sample)}
                 self._save_state()
+                return
+            if action.get("mode") != "greet":
+                if not isinstance(action.get("mode"), str):
+                    self._reset_actions._replace_with_off(action)
+                elif action.get("mode") != "off":
+                    self._reset_actions._replace_with_off(action)
+                self._observe_codex_off(sample)
                 return
             state = self._provider_state(name)
             previous = state.get("lastStatus") or {}

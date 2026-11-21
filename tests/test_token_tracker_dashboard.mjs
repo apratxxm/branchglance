@@ -102,7 +102,7 @@ assert.equal(clockValue,"24");
 assert.match(dashboard.settingsHTML(),/Clock format/);
 assert.match(dashboard.settingsHTML(),/24-hour/);
 
-dashboard.state.policy={policyFile:"D:\\work\\sample-app\\policy.json",providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:true,collect:false,send:false}]};
+dashboard.state.policy={origin:"policy_file",policyFile:"ok",providers:[{name:"Codex",show:true,collect:true,send:false,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},{name:"Claude",show:true,collect:false,send:false,sendOrigin:"default",capabilities:{greet:true,continue:false}}]};
 dashboard.state.monitors=[{id:"display-1",label:"Laptop",selected:true}];dashboard.state.settingsLoaded=true;
 dashboard.state.identity={version:"1.0.0",build:"abc123"};
 const settings=dashboard.settingsHTML();
@@ -112,10 +112,10 @@ assert.match(dashboard.settingsHTML(),/v&lt;script&gt;/,"identity values are esc
 dashboard.state.identity=null;
 assert.match(dashboard.settingsHTML(),/Version unavailable/,"missing identity is described without fabricating a version");
 assert.match(settings,/Lock widget position/);assert.match(settings,/Keep widget open/);
-assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Display on \u00b7 Collection allowed \u00b7 Greeting unavailable \u00b7 Continuation unavailable/,"provider rows state effective permissions");assert.match(settings,/Display on \u00b7 Collection off/);assert.match(settings,/<span class="dash-setting-label">Center on screen<\/span>/,"one monitor is labelled for the placement action");assert.match(settings,/Moves the widget to the top center of the selected display/,"the position row describes the recenter action");assert.doesNotMatch(settings,/Move the widget back to the center/);
+assert.match(settings,/<span class="dash-setting-label">Codex<\/span>/);assert.match(settings,/Display on \u00b7 Collection allowed \u00b7 Greeting blocked \u00b7 Continuation blocked/,"send denial overrides advertised action capabilities");assert.match(settings,/Display off \u00b7 Collection off/);assert.match(settings,/<span class="dash-setting-label">Center on screen<\/span>/,"one monitor is labelled for the placement action");assert.match(settings,/Moves the widget to the top center of the selected display/,"the position row describes the recenter action");assert.doesNotMatch(settings,/Move the widget back to the center/);
 assert.doesNotMatch(settings,/Launch at startup|Always on top|Quiet hours|Check now|Open logs/,"controls without a backend stay out of the UI");
 assert.match(settings,/<span class="dash-setting-label">Codex<\/span>[\s\S]*?<input id="dash-plan-price"[^>]*data-dashboard-plan="Codex"[\s\S]*?<span class="dash-setting-label">Claude<\/span>[\s\S]*?<input(?! id="dash-plan-price")[^>]*data-dashboard-plan="Claude"/,"Codex is first and receives the shared plan input id by provider name");
-assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage data sources and history/);assert.match(settings,/<h2>Monthly plan prices<\/h2>/);assert.match(settings,/30 days of estimated API cost/);assert.doesNotMatch(settings,/dash-setting-description">Monthly/,"rows are label-only");assert.match(settings,/placeholder="Not set"/);assert.match(settings,/aria-label="Codex plan price per month in USD"/);assert.doesNotMatch(settings,/Set by policy file/);assert.match(settings,/Preview report/);assert.match(settings,/Review the local report before sharing\./);assert.match(settings,/Close<\/button>/);assert.match(settings,/Codex reset automation/);
+assert.match(settings,/reset_actions\.html\?embedded=1/);assert.match(settings,/Manage data sources and history/);assert.match(settings,/<h2>Monthly plan prices<\/h2>/);assert.match(settings,/Saved on this device\. Used to compare your plan price with 30 days of estimated API cost\. Clear a price to remove the comparison\./);assert.doesNotMatch(settings,/dash-setting-description">Monthly/,"rows are label-only");assert.match(settings,/placeholder="Not set"/);assert.match(settings,/aria-label="Codex plan price per month in USD"/);assert.match(settings,/Set by policy file/);assert.match(settings,/Preview report/);assert.match(settings,/Review the local report before sharing\./);assert.match(settings,/Close<\/button>/);assert.match(settings,/Codex reset automation/);assert.match(settings,/No chat text, file paths, account details or tokens\./,"privacy exclusions stay visible inside the report preview");
 assert.match(settingsCss,/\.dash-setting-row\+\.dash-setting-row\{border-top:1px solid var\(--d-edge\);\}/,"Settings rows use the hairline edge token");assert.match(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*background:var\(--d-codex\);/,"the on switch uses Codex indigo");assert.doesNotMatch(settingsCss,/\.dash-toggle\.is-on::after\{[^}]*#425df6/i,"the on switch has no hard-coded blue");
 assert.match(source,/open_reset_actions/);
 assert.doesNotMatch(source,/X-Branchglance-Settings-Token|settingsToken/,"dashboard never reads or stores the Claude settings token");
@@ -184,6 +184,39 @@ assert.match(dashboard.planCellsHTML("Codex"),/<button type="button" class="dash
   await new Promise(resolve=>globalThis.setTimeout(resolve,0));
   assert.equal(lockSwitch.focused,true,"focus lost to the page returns to the switch that settled");
   document.activeElement=null;delete window.pywebview;
+}
+
+// Placement actions use the widget's synchronization helpers and refresh the revision before the next write.
+{
+  const calls=[];let lock={locked:false,expanded:false,revision:10,keepOpen:false,keepOpenRevision:0};
+  let monitors=[{id:"display-1",selected:true,label:"Laptop"},{id:"display-2",selected:false,label:"Desktop"}];
+  window.pywebview={api:{
+    recenter:async()=>{lock={...lock,revision:lock.revision+1};return monitors;},
+    get_widget_lock:async()=>lock,get_monitors:async()=>monitors,
+    set_widget_lock:async(locked,_expanded,_height,revision)=>{calls.push(["lock",revision]);lock={...lock,locked,revision:revision+1};return lock;},
+    select_monitor:async id=>{calls.push(["native-select",id]);monitors=monitors.map(row=>({...row,selected:row.id===id}));return monitors;}
+  }};
+  let inspectionWidthRefreshes=0;
+  window.tokenTrackerRecenter=async()=>{await window.pywebview.api.recenter();return true;};
+  window.tokenTrackerSelectMonitor=async id=>{inspectionWidthRefreshes++;return window.pywebview.api.select_monitor(id);};
+  dashboard.state.lock=lock;dashboard.state.monitors=monitors;dashboard.state.settingsError=false;
+  await dashboard.recenterWidget();
+  assert.equal(dashboard.state.lock.revision,11,"Recenter refreshes the lock revision returned by the widget helper");
+  await dashboard.toggleSetting("lock");
+  assert.deepEqual(calls[0],["lock",11],"the next lock write uses the post-Recenter revision");
+  dashboard.state.lock={...lock,locked:false};
+  await dashboard.chooseMonitor("display-2");
+  assert.equal(inspectionWidthRefreshes,1,"monitor selection goes through the helper that refreshes inspection layout");
+  assert.equal(dashboard.state.monitors.find(row=>row.selected).id,"display-2");
+  window.pywebview.api.set_inspection_hotkey=async choice=>({ok:false,choice,status:"unavailable"});
+  window.pywebview.api.get_inspection_hotkey=async()=>({choice:"ctrl_alt_t",status:"unavailable"});
+  dashboard.state.inspection={choice:"ctrl_shift_t",status:"registered"};
+  await dashboard.setInspectionHotkey("ctrl_alt_t");
+  assert.deepEqual(dashboard.state.inspection,{choice:"ctrl_alt_t",status:"unavailable"},"shortcut readback reflects the persisted choice after registration failure");
+  assert.match(dashboard.settingsHTML(),/data-inspection-hotkey="ctrl_alt_t" aria-pressed="true"/);
+  assert.match(dashboard.settingsHTML(),/In use by another app/);
+  dashboard.state.monitors=[{id:"display-1",selected:true,label:"Laptop"}];dashboard.state.lock=null;
+  delete window.pywebview;delete window.tokenTrackerRecenter;delete window.tokenTrackerSelectMonitor;
 }
 
 // Persisted All migrates to the supported 30-day range; provider selection scopes each section.
@@ -276,12 +309,12 @@ assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
     before(...nodes){this.insert(this.parentNode.childNodes.indexOf(this),nodes);},
     after(...nodes){this.insert(this.parentNode.childNodes.indexOf(this)+1,nodes);}});
   const frameNode=src=>({getAttribute:name=>name==="src"?src:null});
-  const columns=src=>{const cols=mk("cols"),control={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}};const nodes=[mk("widget",{control}),mk("group",{frame:frameNode(src),querySelector(sel){return sel==="iframe.reset-embed"?this.frame:null;}}),mk("about")];nodes.forEach(n=>{n.parentNode=cols;cols.childNodes.push(n);});return cols;};
+  const columns=src=>{const cols=mk("cols"),control={dataset:{dashboardAction:"lock"},focus(){this.focused=true;}},inspection={dataset:{inspectionHotkey:"ctrl_alt_t"},focus(){this.focused=true;}};const nodes=[mk("widget",{control,inspection}),mk("group",{frame:frameNode(src),querySelector(sel){return sel==="iframe.reset-embed"?this.frame:null;}}),mk("about")];nodes.forEach(n=>{n.parentNode=cols;cols.childNodes.push(n);});return cols;};
   const find=(cols,name)=>cols?.childNodes.find(n=>n.name===name)||null;
   const root={dataset:{},addEventListener(){}};
   const insightPanel={_html:"",control:null,set innerHTML(value){this._html=value;this.control={dataset:{dashboardProvider:"Codex"},focus(){this.focused=true;}};},querySelectorAll(selector){return selector==="[data-dashboard-provider]"?[this.control]:[];},querySelector(){return null;}};
   let cols=null,replaced=0;
-  const settings={querySelector(selector){if(selector===".dash-reset-group")return find(cols,"group");if(selector==="iframe.reset-embed")return find(cols,"group")?.frame||null;if(selector.includes("data-dashboard-action"))return find(cols,"widget")?.control||null;return null;},replaceChildren(fragment){cols=fragment.cols;replaced++;}};
+  const settings={querySelector(selector){if(selector===".dash-reset-group")return find(cols,"group");if(selector==="iframe.reset-embed")return find(cols,"group")?.frame||null;if(selector.includes("data-dashboard-action"))return find(cols,"widget")?.control||null;if(selector.includes("data-inspection-hotkey"))return find(cols,"widget")?.inspection||null;return null;},replaceChildren(fragment){cols=fragment.cols;replaced++;}};
   const docs={activeElement:{dataset:{dashboardProvider:"Codex"}},querySelector(selector){return selector==="#dashboard-settings"?settings:selector==="#dashboard-insights"?insightPanel:selector==="#dashboard-view"?root:null;},querySelectorAll:()=>[],addEventListener(){}};
   const win={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},dispatchEvent(){}};
   const ctx={window:win,document:docs,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://localhost"},fetch:async()=>({ok:false}),setInterval:()=>1,clearInterval(){},requestAnimationFrame:fn=>fn(),Event};
@@ -301,6 +334,10 @@ assert.ok(insightCalls>callsBeforeRetry,"Refresh starts a retry after failure");
   assert.equal(settings.querySelector("iframe.reset-embed"),mountedFrame,"the reset form iframe remains the same mounted node");
   assert.deepEqual(cols.childNodes.map(n=>n.name),["widget","group","about"],"siblings are replaced in their original order");
   assert.equal(find(cols,"widget").control.focused,true,"settings rerender returns focus to the control that triggered it");
+  win.pywebview={api:{get_inspection_hotkey(){},set_inspection_hotkey(){}}};
+  docs.activeElement={dataset:{inspectionHotkey:"ctrl_alt_t"}};local.state.inspection={choice:"ctrl_alt_t",status:"unavailable"};local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
+  assert.equal(find(cols,"widget").inspection.focused,true,"inspection shortcut choice keeps focus across the status rerender");
+  assert.match(local.settingsHTML(),/In use by another app/,"an unavailable persisted shortcut reports its registration state beside the row");
   local.state.source="Claude";local.state.settingsRenderKey="";win.TokenTrackerDashboard.render();
   assert.equal(replaced,1,"Codex reset automation stays fixed when the dashboard source changes");
 }
@@ -506,10 +543,16 @@ assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\
 
 // Provider permissions do not speculate about how to enable a hidden provider.
 {
-  dashboard.state.policy={providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:false,collect:false,send:false}]};
+  dashboard.state.policy={schemaVersion:1,generation:"hidden",origin:"defaults",policyFile:"absent",providers:[{name:"Codex",show:true,collect:true,send:false,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},{name:"Claude",show:false,collect:false,send:false,sendOrigin:"default",capabilities:{greet:true,continue:false}}]};
   assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider|Add Claude to track its agents too/);assert.match(dashboard.settingsHTML(),/Display off/);
-  dashboard.state.policy={providers:[{name:"Codex",show:true,collect:true,send:false},{name:"Claude",show:true,collect:true,send:false}]};
+  dashboard.state.policy={schemaVersion:1,generation:"both",origin:"defaults",policyFile:"absent",providers:[{name:"Codex",show:true,collect:true,send:false,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},{name:"Claude",show:true,collect:true,send:false,sendOrigin:"default",capabilities:{greet:true,continue:false}}]};
   assert.doesNotMatch(dashboard.settingsHTML(),/dash-add-provider/);assert.match(dashboard.settingsHTML(),/Display on \u00b7 Collection allowed/);
+  dashboard.state.policy={schemaVersion:1,generation:"legacy",origin:"policy_file",policyFile:"ok",providers:[{name:"Codex",show:true,collect:true,send:true,sendOrigin:"legacy_global",capabilities:{greet:true,continue:true}}]};
+  assert.match(dashboard.settingsHTML(),/Greeting allowed \u00b7 Continuation blocked/,"legacy global permission grants greeting only");
+  dashboard.state.policy={schemaVersion:1,generation:"explicit",origin:"policy_file+environment",policyFile:"ok",providers:[{name:"Codex",show:true,collect:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}}]};
+  assert.match(dashboard.settingsHTML(),/Greeting allowed \u00b7 Continuation allowed/,"explicit Codex SEND grants both supported actions");
+  dashboard.state.policy={schemaVersion:1,generation:"denied",origin:"policy_file",policyFile:"ok",providers:[{name:"Codex",show:true,collect:true,send:false,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}}]};
+  assert.match(dashboard.settingsHTML(),/Greeting blocked \u00b7 Continuation blocked/,"a denied SEND grant overrides capability flags");
 }
 
 // Stage 2: lower bounds, empty cells, chart range, model folding and quota copy.

@@ -176,7 +176,7 @@ assert.equal(values.get("branchglancePlanPrice.Claude"),"40","an invalid numeric
 assert.match(dashboard.state.planError,/valid Claude price/);
 dashboard.setPlanPrice("Claude","");
 assert.equal(values.has("branchglancePlanPrice.Claude"),false,"an empty input clears the stored price");
-assert.equal(dashboard.state.settingsError,false,"clearing is not an error");
+assert.equal(dashboard.state.planError,"","clearing clears the plan-price error");
 assert.match(dashboard.planCellsHTML("Claude"),/data-dashboard-action="set-plan" data-dashboard-plan-provider="Claude"[^>]*>Set plan</,"a cleared price returns to Set plan");
 values.set("branchglancePlanPrice.Claude","20");
 assert.match(dashboard.planCellsHTML("Claude"),/>3\.4×</,"set 20 gives the multiple again");

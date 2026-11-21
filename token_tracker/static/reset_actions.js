@@ -9,7 +9,7 @@
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
     window.history?.replaceState?.(null,"",`${window.location.pathname}${window.location.search}`);
   } catch {}
-  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, actionReady: false, threadsReady: false, dirty: false, actionChanged: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0, ledger: null, purge: {} };
+  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, actionReady: false, threadsReady: false, dirty: false, actionChanged: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0, ledger: null, purge: {}, purgeSequence: 0, exportBusy: false, exportStatus: "", exportError: false };
   function setEmbeddedState(text,unavailable=false){if(!embedded)return;const box=$("#embedded-policy-state"),message=$("#embedded-policy-message"),retry=$("#embedded-policy-retry");if(box)box.hidden=false;if(message)message.textContent=text;if(retry)retry.hidden=!unavailable;}
   // Permission names follow the Providers line: display (shown), collecting, auto-send. Only permissions that are really off are named.
   const PERMISSION_LABELS=[["show","display"],["collect","collection"],["send","greeting"]];
@@ -138,6 +138,13 @@
     if(note){note.hidden=embedded;note.textContent=embedded?"":!state.policyReady?"Permission status is unavailable. No action settings were loaded.":!state.policy?.show||!state.policy?.collect?"Codex action settings are hidden because collection or display is disabled.":!state.canGreet&&!state.canContinue?"Automatic actions are disabled by startup permissions.":!state.canContinue?"Chat continuation requires explicit Codex send permission.":"";}
   }
   function savedMode() { return ["off","greet","continue"].includes(state.action?.mode)?state.action.mode:state.canGreet?"greet":state.canContinue?"continue":"off"; }
+  function validSavedAction(action){
+    if(!action||action.schemaVersion!==2||!(["off","greet","continue"].includes(action.mode))||typeof action.armed!=="boolean"||!Array.isArray(action.threadIds))return false;
+    if(action.threadIds.some(id=>typeof id!=="string"||id!==id.toLowerCase()||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))||new Set(action.threadIds).size!==action.threadIds.length)return false;
+    if(action.mode!=="continue"&&(action.threadIds.length!==0||action.armed))return false;
+    if(action.mode==="continue"&&action.threadIds.length===0)return false;
+    return action.lastRun==null||typeof action.lastRun==="object"&&!Array.isArray(action.lastRun);
+  }
   function render() {
     const cont=mode()==="continue"; $("#picker").hidden=!cont;
     const resetNote=$("#oneshot-note");
@@ -156,6 +163,9 @@
       $("#picker").hidden=policyFailed||mode()!=="continue";
       $("#save").textContent="Save";
       if(!state.policyReady)renderEmbeddedPolicy();
+      $("#saved-action-load-state").hidden=!state.actionChanged&&!state.actionLoadError;
+      if(state.actionChanged)setEmbeddedPart("#saved-action-load-state","Saved action changed elsewhere. Discard this draft to load it.");
+      else if(state.actionLoadError)setEmbeddedPart("#saved-action-load-state","Saved action is unavailable.",true);
     }
     const query=$("#search").value.trim().toLocaleLowerCase();
     const available=state.threads.filter(t=>t.status!=="archived"&&String(t.title||"").toLocaleLowerCase().includes(query));
@@ -174,7 +184,7 @@
   function renderSelection() {
     if(embedded)$("footer").hidden=!state.policyReady||!state.dirty;
     $("#selected-count").textContent=`${state.selected.size} selected`;
-    $("#save").disabled=state.busy||!state.policyReady||!state.actionReady||mode()==="greet"&&!state.canGreet||mode()==="continue"&&(!state.canContinue||!state.threadsReady);
+    $("#save").disabled=state.busy||!state.policyReady||!state.actionReady||state.actionChanged||mode()==="greet"&&!state.canGreet||mode()==="continue"&&(!state.canContinue||!state.threadsReady);
   }
   function renderLastRun(run) {
     const box=$("#last-run"); if(!run){box.hidden=true;box.textContent="";return;}
@@ -187,7 +197,8 @@
   function titleFor(id) { return state.threads.find(t=>t.id===id)?.title || id || "Unknown chat"; }
   async function load() {
     const draft=state.dirty?{mode:mode(),selected:new Set(state.selected)}:null;
-    state.busy=true;state.policyReady=false;state.actionReady=false;state.threadsReady=false;policyFailed=false; render(); message("Loading settings…");if(embedded)setEmbeddedState("Checking reset permissions…");
+    const previousSavedAction=state.action?JSON.stringify(state.action):null;
+    state.busy=true;state.policyReady=false;state.actionReady=false;state.actionLoadError=false;state.threadsReady=false;policyFailed=false; render(); message("Loading settings…");if(embedded)setEmbeddedState("Checking reset permissions…");
     try {
       const policyResponse=await fetch("/api/provider-policy",{cache:"no-store",signal:AbortSignal.timeout(10000)});
       if(!policyResponse.ok)throw new Error("Permission status is unavailable.");
@@ -196,28 +207,29 @@
       if(!state.policy.collect||!state.policy.show){state.action=null;state.threads=[];state.selected.clear();state.loaded=true;message("");return;}
       const response=await fetch("/api/reset-action",{cache:"no-store",signal:AbortSignal.timeout(10000)});
       const data=await response.json(); if(!response.ok||!data.ok)throw new Error(data.error||"Settings are unavailable.");
-      state.actionReady=true;state.threadsReady=data.threadsAvailable!==false;
       const action=data.action&&typeof data.action==="object"?{...data.action}:null;
-      if(state.dirty&&state.loaded&&JSON.stringify(action)!==JSON.stringify(state.action))state.actionChanged=true;
+      if(!validSavedAction(action))throw new Error("Saved action is malformed.");
+      state.actionReady=true;state.actionLoadError=false;state.threadsReady=data.threadsAvailable!==false;
+      if(draft&&state.loaded&&previousSavedAction!==JSON.stringify(action))state.actionChanged=true;
+      else if(!draft)state.actionChanged=false;
       const reusable=Boolean(state.canContinue&&action?.mode==="continue"&&action?.schemaVersion===2&&action?.armed===true);
       if(action){if(action.mode!=="continue"||!reusable)action.threadIds=[];if(!state.canContinue||action.mode==="continue"&&!reusable){if(action.lastRun?.targets)action.lastRun={...action.lastRun,targets:[]};}}
       state.action=action;state.threads=Array.isArray(data.threads)?data.threads:[];
       if(draft){const radio=document.querySelector(`input[name="mode"][value="${draft.mode}"]`);if(radio)radio.checked=true;state.selected=draft.selected;}
-      if(!state.loaded&&!state.dirty){
-        if(reusable&&Array.isArray(state.action?.threadIds))state.selected=new Set(state.action.threadIds);
-        const preferred=state.action?.mode==="continue"&&reusable?"continue":state.action?.mode==="greet"&&state.canGreet?"greet":state.canGreet?"greet":state.canContinue?"continue":"greet";
-        const radio=document.querySelector(`input[name="mode"][value="${preferred}"]`);if(radio)radio.checked=true;
+      if(!state.dirty){
+        state.selected=reusable?new Set(state.action.threadIds):new Set();
+        const radio=document.querySelector(`input[name="mode"][value="${state.action.mode}"]`);if(radio)radio.checked=true;
       }
       state.loaded=true;
       renderEmbeddedPolicy();
       const staleSelection=action?.mode==="continue"&&!reusable;
       const retry=state.actionChanged?"Saved action changed elsewhere. Discard this draft to load it.":staleSelection?"Saved chat selections were not restored. Re-select chats and save to arm a new one-shot action.":"";
-      message(retry,retry!=="");if(embedded){setEmbeddedPart("#saved-action-load-state","",false);setEmbeddedPart("#chat-list-state",data.threadsAvailable===false?"Chat list unavailable.":"",data.threadsAvailable===false);}
-    } catch(e) { if(!state.policyReady){policyFailed=true;state.canGreet=false;state.canContinue=false;state.action=null;state.threads=[];state.selected.clear();if(embedded)setEmbeddedState("Couldn't load reset permissions.",true);}else if(embedded)setEmbeddedPart("#saved-action-load-state","Saved action could not be loaded.",true);message(e.message||"Could not load settings. Retry to try again.",true); }
+      message(retry,retry!=="");if(embedded){setEmbeddedPart("#chat-list-state",data.threadsAvailable===false?"Chat list unavailable.":"",data.threadsAvailable===false);}
+    } catch(e) { if(!state.policyReady){policyFailed=true;state.canGreet=false;state.canContinue=false;state.action=null;state.threads=[];state.selected.clear();if(embedded)setEmbeddedState("Couldn't load reset permissions.",true);}else{state.actionReady=false;state.actionLoadError=true;}message(e.message||"Could not load settings. Retry to try again.",true); }
     finally { state.busy=false; render(); }
   }
   async function save() {
-    const chosenMode=mode(); if(!state.policyReady||!state.actionReady){message("Permission or saved action is unavailable. Action was not saved.",true);return;}
+    const chosenMode=mode(); if(!state.policyReady||!state.actionReady||state.actionChanged){message("Permission or saved action is unavailable or changed. Discard this draft before saving.",true);return;}
     if(chosenMode==="greet"&&!state.canGreet||chosenMode==="continue"&&(!state.canContinue||!state.threadsReady)){message("This action is disabled or chat candidates are unavailable.",true);return;}
     if(chosenMode==="continue"&&state.selected.size===0){message("Select at least one chat to continue.",true);return;}
     if(state.selected.size>20){message("Choose no more than 20 chats.",true);return;}
@@ -225,7 +237,8 @@
     try {
       const response=await fetch("/api/reset-action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:chosenMode,threadIds:chosenMode==="continue"?[...state.selected]:[]}),cache:"no-store",signal:AbortSignal.timeout(15000)});
       const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||"Could not save reset action.");
-      state.action=data.action;state.actionReady=true;state.selected=new Set(data.action?.schemaVersion===2&&data.action?.armed===true?data.action.threadIds||[]:[]);state.dirty=false;state.actionChanged=false;message("Choice saved.");
+      if(!validSavedAction(data.action))throw new Error("Saved action response was invalid.");
+      state.action=data.action;state.actionReady=true;state.actionLoadError=false;state.selected=new Set(data.action?.mode==="continue"&&data.action?.armed===true?data.action.threadIds||[]:[]);state.dirty=false;state.actionChanged=false;message("Choice saved. It runs only while startup permissions allow it.");
     } catch(e){message(e.message||"Could not save action. Your draft is still here.",true);}
     finally {state.busy=false;render();}
   }
@@ -237,14 +250,15 @@
     return "";
   }
   function renderLedger() {
-    const exportButton=$("#export-history"),exportNote=$("#export-note");if(exportButton)exportButton.disabled=!state.ledger||state.ledger.state!=="live";if(exportNote)exportNote.textContent=!state.ledger?"History status unavailable or starting.":state.ledger.state==="disabled"?"History is off. Turn on usage history before exporting.":"Exports visible saved history as a CSV file.";
+    const exportButton=$("#export-history"),exportNote=$("#export-note"),exportStatus=$("#export-status");if(exportButton)exportButton.disabled=state.exportBusy||!state.ledger||state.ledger.state!=="live";if(exportNote)exportNote.textContent=!state.ledger?"History status unavailable or starting.":state.ledger.state==="disabled"?"History is off. Turn on usage history before exporting.":"Exports visible saved history as a CSV file.";if(exportStatus){exportStatus.textContent=state.exportStatus;exportStatus.classList.toggle("error",state.exportError);}
     for(const provider of LEDGER_PROVIDERS){
       const flow=state.purge[provider]||{phase:"idle"},reason=ledgerReason(provider),busy=flow.phase==="deleting"||flow.phase==="pending";
       const reasonEl=document.querySelector(`[data-reason="${provider}"]`),button=document.querySelector(`[data-purge="${provider}"]`),status=document.querySelector(`[data-status="${provider}"]`);
       if(reasonEl){reasonEl.textContent=reason;reasonEl.hidden=!reason;}
       const confirm=document.querySelector(`[data-confirm="${provider}"]`);
       if(confirm)confirm.hidden=flow.phase!=="confirm";
-      if(button){button.disabled=Boolean(reason)||busy||flow.phase==="confirm";}
+      const confirmButton=confirm?.querySelector?.(`[data-confirm-purge="${provider}"]`),cancelButton=confirm?.querySelector?.(`[data-cancel-purge="${provider}"]`);if(confirmButton)confirmButton.dataset.confirmationId=flow.confirmationId||"";if(cancelButton)cancelButton.dataset.confirmationId=flow.confirmationId||"";
+      if(button){button.disabled=Boolean(reason)||busy||flow.phase==="confirm"||flow.phase==="checking";}
       if(status){
         const text=flow.phase==="deleting"?"Deleting…":flow.phase==="pending"?"Still deleting…":flow.phase==="done"?"Deleted":flow.phase==="error"?flow.text:"";
         status.textContent=text;status.classList.toggle("error",flow.phase==="error");
@@ -260,13 +274,40 @@
     renderLedger();
     return state.ledger;
   }
+  async function exportHistory(){
+    if(state.exportBusy||!state.ledger||state.ledger.state!=="live")return;
+    const api=window.pywebview?.api;
+    if(typeof api?.save_ledger_csv!=="function"){
+      window.location.href="/api/ledger/export?range=all&format=csv";
+      return;
+    }
+    state.exportBusy=true;state.exportStatus="Choose where to save the CSV.";state.exportError=false;renderLedger();
+    try{
+      const result=await api.save_ledger_csv();
+      if(result?.ok){state.exportStatus="Saved CSV.";}
+      else if(result?.cancelled){state.exportStatus="Export cancelled.";}
+      else throw new Error(result?.error||"Could not export saved history.");
+    }catch(error){state.exportStatus=error?.message||"Could not export saved history.";state.exportError=true;}
+    finally{state.exportBusy=false;renderLedger();}
+  }
   function purgeClick(provider) {
     const flow=state.purge[provider]||{phase:"idle"};
-    if(ledgerReason(provider)||flow.phase==="deleting"||flow.phase==="pending")return;
-    state.purge[provider]={phase:"confirm"};renderLedger();document.querySelector(`[data-cancel-purge="${provider}"]`)?.focus?.();
+    if(ledgerReason(provider)||flow.phase==="checking"||flow.phase==="deleting"||flow.phase==="pending")return;
+    state.purge[provider]={phase:"confirm",confirmationId:++state.purgeSequence};renderLedger();
   }
-  async function sendPurge(provider) {
-    state.purge[provider]={phase:"deleting"};renderLedger();
+  function cancelPurge(provider,confirmationId){
+    const flow=state.purge[provider];if(flow?.phase!=="confirm"||flow.confirmationId!==confirmationId)return;
+    state.purgeSequence++;state.purge[provider]={phase:"idle"};renderLedger();document.querySelector(`[data-purge="${provider}"]`)?.focus?.();
+  }
+  async function confirmPurge(provider,confirmationId) {
+    const flow=state.purge[provider];
+    if(flow?.phase!=="confirm"||flow.confirmationId!==confirmationId||ledgerReason(provider))return;
+    state.purge[provider]={phase:"checking",confirmationId};renderLedger();
+    await loadLedger();
+    if(state.purge[provider]?.phase!=="checking"||state.purge[provider]?.confirmationId!==confirmationId)return;
+    const reason=ledgerReason(provider);
+    if(reason){state.purge[provider]={phase:"error",text:reason};renderLedger();document.querySelector(`[data-status="${provider}"]`)?.focus?.();return;}
+    state.purge[provider]={phase:"deleting",confirmationId};renderLedger();
     try {
       const response=await fetch("/api/ledger/purge",{method:"POST",headers:{"Content-Type":"application/json","X-Branchglance-Settings-Token":settingsToken},body:JSON.stringify({provider}),cache:"no-store",signal:AbortSignal.timeout(15000)});
       const data=await response.json().catch(()=>({}));
@@ -302,8 +343,8 @@
   $("#search").addEventListener("input",()=>{state.page=0;render();}); $("#page-prev")?.addEventListener("click",()=>{state.page--;render();}); $("#page-next")?.addEventListener("click",()=>{state.page++;render();}); $("#refresh").addEventListener("click",reloadAll); $("#save").addEventListener("click",save);
   $("#embedded-policy-retry")?.addEventListener("click",reloadAll);
   $("#saved-action-retry")?.addEventListener("click",load);$("#chat-list-retry")?.addEventListener("click",load);
-  $("#cancel").addEventListener("click",()=>{if(embedded)discardDraft();else window.close();});$("#export-history")?.addEventListener("click",()=>{window.location.href="/api/ledger/export?range=all&format=csv";}); $("#claude-toggle").addEventListener("click",toggleClaude);
-  for(const provider of LEDGER_PROVIDERS){document.querySelector(`[data-purge="${provider}"]`)?.addEventListener("click",()=>purgeClick(provider));document.querySelector(`[data-cancel-purge="${provider}"]`)?.addEventListener("click",()=>{state.purge[provider]={phase:"idle"};renderLedger();});document.querySelector(`[data-confirm-purge="${provider}"]`)?.addEventListener("click",()=>sendPurge(provider));}
+  $("#cancel").addEventListener("click",()=>{if(embedded)discardDraft();else window.close();});$("#export-history")?.addEventListener("click",exportHistory); $("#claude-toggle").addEventListener("click",toggleClaude);
+  for(const provider of LEDGER_PROVIDERS){document.querySelector(`[data-purge="${provider}"]`)?.addEventListener("click",()=>purgeClick(provider));document.querySelector(`[data-cancel-purge="${provider}"]`)?.addEventListener("click",event=>cancelPurge(provider,event.currentTarget?.dataset?.confirmationId));document.querySelector(`[data-confirm-purge="${provider}"]`)?.addEventListener("click",event=>void confirmPurge(provider,event.currentTarget?.dataset?.confirmationId));}
   $('#claude-rearm')?.addEventListener('click',rearmClaudeGreeting);
   for(const name of ['live_usage','ledger','claude_send']) $(`[data-feature="${name}"]`)?.addEventListener('change',e=>changeFeature(name,e.target.checked));
   $('#statusline-toggle')?.addEventListener('click',toggleStatusline);
@@ -312,5 +353,5 @@
   if(embedded&&typeof ResizeObserver==="function"){const form=document.querySelector(".settings"),report=()=>window.parent.postMessage({type:"dashboard-reset-height",height:Math.ceil(form.getBoundingClientRect().height)},window.location.origin);new ResizeObserver(report).observe(form);report();}
   loadFeatures();
   load();loadClaude();loadLedger();loadClaudeGreeting();
-  if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude,discardDraft};
+  if(window.__RESET_ACTIONS_TEST__)window.__resetActionsTest={state,PAGE_SIZE,render,load,save,mode,esc,renderLastRun,loadClaude,renderClaude,toggleClaude,discardDraft,purgeClick,cancelPurge,confirmPurge,exportHistory,validSavedAction};
 })();
