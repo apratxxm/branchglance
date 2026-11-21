@@ -295,7 +295,7 @@
   function purgeClick(provider) {
     const flow=state.purge[provider]||{phase:"idle"};
     if(ledgerReason(provider)||flow.phase==="checking"||flow.phase==="deleting"||flow.phase==="pending")return;
-    state.purge[provider]={phase:"confirm",confirmationId:String(++state.purgeSequence)};renderLedger();
+    state.purge[provider]={phase:"confirm",confirmationId:String(++state.purgeSequence)};renderLedger();document.querySelector(`[data-cancel-purge="${provider}"]`)?.focus?.();
   }
   function cancelPurge(provider,confirmationId){
     const flow=state.purge[provider];if(flow?.phase!=="confirm"||flow.confirmationId!==confirmationId)return;

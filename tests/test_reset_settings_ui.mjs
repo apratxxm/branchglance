@@ -293,6 +293,7 @@ assert.equal(T.state.threads.length,0);
   node('[data-purge="Codex"]').onclick();
   const cancelButton=node('[data-cancel-purge="Codex"]'),cancelledId=cancelButton.dataset.confirmationId;
   assert.equal(typeof cancelledId,"string","the confirmation token uses the DOM dataset string type");
+  assert.equal(cancelButton.focused,true,"opening confirmation moves focus to Cancel");
   cancelButton.onclick({currentTarget:cancelButton});
   assert.equal(node('[data-purge="Codex"]').focused,true,"Cancel restores focus to the provider's delete action");
   node('[data-confirm-purge="Codex"]').onclick({currentTarget:{dataset:{confirmationId:cancelledId}}});

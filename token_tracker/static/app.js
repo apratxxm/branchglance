@@ -1272,7 +1272,11 @@ function syncBreath(el) {
 function watcherTone(watcher, name) {
   const w=watcher?.providers?.[name];
   if(!watcher||!w)return {tone:"mute",tip:""};
-  if(name==="Codex"&&(w.automationMode==="off"||w.phase==="off"))return {tone:"mute",tip:"Auto-greet off"};
+  if(name==="Codex"&&(w.automationMode==="off"||w.phase==="off")){
+    const error=w.lastPollError||watcher.persistenceError;
+    const detail=w.lastPollError?"Quota check error: "+w.lastPollError:watcher.persistenceError?"State could not be saved: "+watcher.persistenceError:"";
+    return error?{tone:"err",tip:"Auto-greet off · "+String(detail)}:{tone:"mute",tip:"Auto-greet off"};
+  }
   if(!watcher.enabled||!watcher.running)return {tone:"mute",tip:"Auto-greet off"};
   const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
   const tip=["Auto-greet",next?clock(next*1000):null,last?"last "+clock(last)+(verified?" ✓":""):null].filter(Boolean).join(" · ");
@@ -1395,17 +1399,18 @@ function renderGreeterStatus(providers) {
   const provider=providers.find(p=>p.name==="Codex"),watcher=state.watcher,w=watcher?.providers?.Codex;
   if(!provider||!watcher||!w){node.textContent="";node.className="greeter-status muted";return;}
   const automationOff=w.automationMode==="off"||w.phase==="off";
-  const error=watcher.persistenceError||w.lastPollError||w.lastError;
+  const offPollError=w.lastPollError,offPersistenceError=watcher.persistenceError;
+  const error=automationOff?(watcher.persistenceError||w.lastPollError):(watcher.persistenceError||w.lastPollError||w.lastError);
   const attempted=stamp(w.lastAttemptAt||w.lastTriggerAt);
   let label;
-  if(automationOff)label="Auto-greet off";
+  if(automationOff)label=offPollError?"Auto-greet off · Quota check error":offPersistenceError?"Auto-greet off · Status not saved":"Auto-greet off";
   else if(w.needsLogin||w.phase==="needs_login")label="Sign-in needed";
   else if(error)label=watcher.persistenceError?"Greeter state not saved":w.lastPollError?"Quota check error":"Greeter error";
   else if(!watcher.enabled||!watcher.running)label="Greeter stopped";
   else if(attempted)label="Last attempt "+runwayActivityAge({latest:attempted});
   else label="";
-  node.textContent=label;node.className="greeter-status"+(!automationOff&&(w.needsLogin||error)?" error":"");
-  node.title=automationOff?"Auto-greet off; quota tracking continues.":(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
+  node.textContent=label;node.className="greeter-status"+(error?" error":"");
+  node.title=automationOff?(offPollError?"Auto-greet off; quota check failed: "+String(offPollError):offPersistenceError?"Auto-greet off; status could not be saved: "+String(offPersistenceError):"Auto-greet off; quota tracking continues."):(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
 }
 document.addEventListener?.("pointerdown",event=>{const view=$("#dashboard-view");if(dashboardState.open&&view&&!view.contains?.(event.target))closeDashboard();});
 /* ---------- chat rows (layer 1) ---------- */
@@ -2004,7 +2009,7 @@ function watcherPopoverHTML(name) {
   if(!watcher||!w)return policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
   const automationOff=name==="Codex"&&(w.automationMode==="off"||w.phase==="off"),next=automationOff?null:safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
   const phase=automationOff?"off":!watcher.enabled?"off":!watcher.running?"stopped":esc(PHASES[w.phase]||w.phase);
-  const err=watcher.persistenceError||w.lastPollError||w.lastError;
+  const err=automationOff?(watcher.persistenceError||w.lastPollError):(watcher.persistenceError||w.lastPollError||w.lastError);
   const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);
   return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
 }
