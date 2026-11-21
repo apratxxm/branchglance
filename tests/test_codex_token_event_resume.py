@@ -262,6 +262,7 @@ def test_resume_cache_byte_accounting_tracks_replacements(tmp_path):
 
 
 def test_local_usage_reuses_first_record_and_recomputes_on_identity_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers, "_local_today", lambda: date(2026, 11, 21))
     path = tmp_path / "session.jsonl"
     path.write_bytes(_session_bytes())
     original_open = providers.Path.open
@@ -324,16 +325,43 @@ def test_resume_carries_inherited_baseline_and_cumulative_counter_state(tmp_path
     initial = providers.CodexProvider._token_events(path)
     assert [event["inherited"] for event in initial] == [True, False]
     with path.open("ab") as handle:
+        handle.write((json.dumps(_token_record(110, "2026-11-21T11:58:00Z")) + "\n").encode())
         handle.write((json.dumps(_token_record(130, "2026-11-21T12:02:00Z")) + "\n").encode())
     resumed = providers.CodexProvider._token_events(path)
     expected_path = tmp_path / "baseline-full.jsonl"
     expected_path.write_bytes(path.read_bytes())
     expected = providers.CodexProvider._token_events(expected_path)
     assert json.dumps(list(resumed), sort_keys=True) == json.dumps(list(expected), sort_keys=True)
-    assert [event["inherited"] for event in resumed] == [True, False, False]
+    assert [event["inherited"] for event in resumed] == [True, False, True, False]
     monkeypatch.setattr(providers, "_local_today", lambda: date(2026, 11, 21))
     usage = providers.CodexProvider()._local_usage(session_paths=(path,))
-    assert usage["totals"]["total_tokens"] == 50
+    assert usage["totals"]["total_tokens"] == 40
+
+
+def test_first_record_cache_watermark_comes_from_stable_opened_file(tmp_path, monkeypatch):
+    path = tmp_path / "first-record-race.jsonl"
+    path.write_bytes(b"{")
+    stale_stat = path.stat()
+    complete = (json.dumps(_record("session_meta", {"parent_thread_id": "parent"})) + "\n").encode()
+    original_open = providers.Path.open
+    completed = [False]
+
+    def complete_before_open(self, *args, **kwargs):
+        if self == path and not completed[0]:
+            completed[0] = True
+            with original_open(self, "wb") as handle:
+                handle.write(complete)
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(providers.Path, "open", complete_before_open)
+    assert providers._codex_is_subagent(path, stale_stat) is True
+    cached = providers._CODEX_FIRST_RECORD_CACHE[str(path.resolve())]
+    assert cached[1] == len(complete)
+
+    with original_open(path, "wb") as handle:
+        handle.write(b"{}")
+    assert providers._codex_is_subagent(path, path.stat()) is False
+    assert str(path.resolve()) not in providers._CODEX_FIRST_RECORD_CACHE
 
 
 def test_checkpoint_objects_are_included_in_cache_estimate_and_admission(tmp_path, monkeypatch):

@@ -483,7 +483,9 @@ def _codex_is_subagent(path: Path, stat: os.stat_result) -> bool:
             _CODEX_FIRST_RECORD_CACHE.pop(resolved, None)
     try:
         with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            opened_before = os.fstat(handle.fileno())
             line = handle.readline()
+            opened_after = os.fstat(handle.fileno())
             first = json.loads(line).get("payload") or {}
         source = first.get("source") or {}
         value = bool(first.get("parent_thread_id")) or _chat_source(source) in {"subagent", "review"}
@@ -491,8 +493,16 @@ def _codex_is_subagent(path: Path, stat: os.stat_result) -> bool:
         return False
     if not line.endswith("\n"):
         return value
+    try:
+        path_after = _stat_fresh(path)
+    except OSError:
+        return value
+    if (_fingerprint_of(opened_before) != _fingerprint_of(opened_after)
+            or _fingerprint_of(opened_after) != _fingerprint_of(path_after)):
+        return value
+    identity = (opened_after.st_dev, opened_after.st_ino)
     with _CODEX_FIRST_RECORD_CACHE_LOCK:
-        _CODEX_FIRST_RECORD_CACHE[resolved] = (identity, stat.st_size, value)
+        _CODEX_FIRST_RECORD_CACHE[resolved] = (identity, opened_after.st_size, value)
         _CODEX_FIRST_RECORD_CACHE.move_to_end(resolved)
         while len(_CODEX_FIRST_RECORD_CACHE) > _CODEX_FIRST_RECORD_CACHE_MAX:
             _CODEX_FIRST_RECORD_CACHE.popitem(last=False)
