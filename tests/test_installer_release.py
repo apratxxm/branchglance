@@ -1449,10 +1449,61 @@ def test_shortcut_temp_is_removed_when_the_rename_fails(tmp_path, monkeypatch):
         raise OSError(32, "sharing violation", str(destination))
 
     monkeypatch.setattr(windows, "move_file_ex", failing_move)
+    monkeypatch.setattr(windows, "_SHORTCUT_MOVE_DELAY", 0)
     with pytest.raises(OSError):
         adapter.replace_shortcut(startup / "Branchglance.lnk", target=str(target), arguments="--background",
                                  workdir=str(tmp_path), app_id="Branchglance.Test",
                                  description="Branchglance managed shortcut")
+    assert list(startup.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_rename_waits_out_a_brief_lock(tmp_path, monkeypatch):
+    # A scanner holding the new .lnk made setup fail with access denied (r21 install).
+    from branchglance_installer import windows
+    adapter = windows.WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+    real_move = windows.move_file_ex
+    failures = [5, 32]
+    attempts = []
+
+    def flaky_move(source, destination, **kwargs):
+        attempts.append(destination)
+        if failures:
+            code = failures.pop(0)
+            raise OSError(code, "transient lock", str(destination))
+        return real_move(source, destination, **kwargs)
+
+    monkeypatch.setattr(windows, "move_file_ex", flaky_move)
+    monkeypatch.setattr(windows, "_SHORTCUT_MOVE_DELAY", 0)
+    shortcut = startup / "Branchglance.lnk"
+    adapter.replace_shortcut(shortcut, target=str(target), arguments="--background", workdir=str(tmp_path),
+                             app_id="Branchglance.Test", description="Branchglance managed shortcut")
+    assert len(attempts) == 3
+    assert [p.name for p in startup.iterdir()] == ["Branchglance.lnk"]
+    assert adapter.read_shortcut(shortcut)["arguments"] == "--background"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_rename_does_not_retry_a_permanent_error(tmp_path, monkeypatch):
+    from branchglance_installer import windows
+    adapter = windows.WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+    attempts = []
+
+    def missing_path(source, destination, **_kwargs):
+        attempts.append(destination)
+        raise OSError(3, "path not found", str(destination))
+
+    monkeypatch.setattr(windows, "move_file_ex", missing_path)
+    with pytest.raises(OSError):
+        adapter.replace_shortcut(startup / "Branchglance.lnk", target=str(target), arguments="", workdir=str(tmp_path),
+                                 app_id="Branchglance.Test", description="Branchglance managed shortcut")
+    assert len(attempts) == 1
     assert list(startup.iterdir()) == []
 
 

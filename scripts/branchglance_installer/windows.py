@@ -139,6 +139,28 @@ def _app_id_key() -> _PROPERTYKEY:
     return _PROPERTYKEY(_GUID.parse(PKEY_AppUserModel_ID[0]), PKEY_AppUserModel_ID[1])
 
 
+_SHORTCUT_MOVE_TRANSIENT = {5, 32, 33}  # access denied, sharing violation, lock violation
+_SHORTCUT_MOVE_ATTEMPTS = 20
+_SHORTCUT_MOVE_DELAY = 0.1
+
+
+def _move_shortcut_into_place(temp: Path, path: Path) -> None:
+    """Rename the finished temp shortcut over ``path``, waiting out brief locks.
+
+    A scanner or the shell can hold a just-written .lnk open for a moment, which makes
+    MoveFileExW fail with access denied or a sharing violation; retry for about two seconds.
+    """
+    for attempt in range(_SHORTCUT_MOVE_ATTEMPTS):
+        try:
+            move_file_ex(temp, path)
+            return
+        except OSError as error:
+            code = getattr(error, "winerror", None) or error.errno
+            if code not in _SHORTCUT_MOVE_TRANSIENT or attempt == _SHORTCUT_MOVE_ATTEMPTS - 1:
+                raise
+            time.sleep(_SHORTCUT_MOVE_DELAY)
+
+
 def _remove_stale_shortcut_temps(path: Path) -> None:
     """Delete temp shortcuts an interrupted earlier write left beside ``path``.
 
@@ -234,7 +256,7 @@ class WindowsIntegrationAdapter:
                 if item is not None:
                     item.release()
         try:
-            move_file_ex(temp, path)
+            _move_shortcut_into_place(temp, path)
         except BaseException:
             # A failed rename must not leave the temp shortcut behind: in Startup it
             # would launch Branchglance a second time at every sign-in.
