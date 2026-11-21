@@ -618,6 +618,40 @@ def test_codex_local_usage_retains_full_fingerprint_and_prunes_stale_cache_accou
     assert cache._token_event_cache_bytes == cache._token_event_cache_sizes[full_key]
     assert cache._token_event_cache_bytes == sum(cache._token_event_cache_sizes.values())
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length paths")
+def test_codex_extended_length_path_shares_the_plain_path_cache_entry(tmp_path, isolated_token_event_cache):
+    # Codex thread rows name rollouts as \?\C:\...; the inventory uses C:\....
+    rollout = tmp_path / "rollout.jsonl"
+    _rollout(rollout, [{"type": "event_msg", "timestamp": _recent_test_timestamp(), "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 5}}}}])
+    plain = CodexProvider._token_events(rollout)
+    extended = Path(chr(92) * 2 + "?" + chr(92) + str(rollout.resolve()))
+    assert CodexProvider._token_events(extended) is plain
+    assert len(CodexProvider._token_event_cache) == 1
+
+
+def test_codex_refresh_keeps_matching_entries_outside_the_inventory(tmp_path, monkeypatch, isolated_token_event_cache):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    _rollout(sessions / "kept.jsonl", [{"type": "event_msg", "timestamp": _recent_test_timestamp(), "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 5}}}}])
+    elsewhere = tmp_path / "archived" / "thread-row.jsonl"
+    elsewhere.parent.mkdir()
+    _rollout(elsewhere, [{"type": "event_msg", "timestamp": _recent_test_timestamp(), "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 7}}}}])
+    retained = CodexProvider._token_events(elsewhere)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    CodexProvider()._local_usage()
+
+    # A thread row read after the refresh is a cache hit, not a full re-read.
+    assert CodexProvider._token_events(elsewhere) is retained
+    elsewhere.unlink()
+    CodexProvider()._local_usage()
+    assert not any(key[0].endswith("thread-row.jsonl") for key in CodexProvider._token_event_cache)
+    assert CodexProvider._token_event_cache_bytes == sum(CodexProvider._token_event_cache_sizes.values())
+
+
 
 def test_codex_local_usage_uses_pre_window_counter_as_a_baseline(tmp_path, monkeypatch):
     sessions = tmp_path / "sessions"; sessions.mkdir()

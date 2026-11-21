@@ -472,7 +472,7 @@ _CODEX_FIRST_RECORD_CACHE_LOCK = threading.Lock()
 
 def _codex_is_subagent(path: Path, stat: os.stat_result) -> bool:
     """Read and memoize the authoritative first-record agent marker."""
-    resolved = str(path.resolve())
+    resolved = _canonical_path_text(str(path.resolve()))
     identity = (stat.st_dev, stat.st_ino)
     with _CODEX_FIRST_RECORD_CACHE_LOCK:
         cached = _CODEX_FIRST_RECORD_CACHE.get(resolved)
@@ -595,6 +595,20 @@ def _stat_memoized(path: Path) -> os.stat_result:
     if isinstance(cached, OSError):
         raise cached
     return cached
+
+
+def _canonical_path_text(text: str) -> str:
+    """Drop the Windows extended-length prefix so both spellings of a file share one cache key.
+
+    Codex's thread list reports rollout paths in the extended-length form while the session
+    inventory uses the plain form; keyed separately, refresh pruning discarded the thread-row
+    entries every time and those transcripts were re-read in full on each refresh.
+    """
+    if text.startswith('\\\\?\\UNC\\'):
+        return '\\\\' + text[8:]
+    if text.startswith('\\\\?\\'):
+        return text[4:]
+    return text
 
 
 def _resolve_memoized(path: Path) -> str:
@@ -3586,7 +3600,7 @@ class CodexProvider:
         Each token_count is cumulative for its session. Callers must use deltas,
         not assign a session total to its final event date.
         """
-        resolved = str(path.resolve())
+        resolved = _canonical_path_text(str(path.resolve()))
         try:
             key = (resolved, *_stat_fingerprint(path))
         except OSError:
@@ -4188,7 +4202,7 @@ class CodexProvider:
                                      "hourlyModels": {}, "activeHours": [], "sessions": []}}
         for path in session_paths:
             try:
-                live_keys.add((str(path.resolve()), *_stat_fingerprint(path)))
+                live_keys.add((_canonical_path_text(str(path.resolve())), *_stat_fingerprint(path)))
                 stat = path.stat()
             except OSError:
                 continue
@@ -4256,9 +4270,25 @@ class CodexProvider:
                     if delta["total_tokens"] > 0:
                         models[model]["subagent_requests"] += 1
                 daily[local_date] += delta["total_tokens"]
+        # Inventory files keep only their current version. Entries for other paths (thread rows
+        # and archived sessions outside the inventory) stay while the file still matches its key;
+        # dropping them unconditionally made every refresh re-read those transcripts in full.
+        live_paths = {key[0] for key in live_keys}
+        with self._token_event_cache_lock:
+            outside = [key for key in self._token_event_cache if key[0] not in live_paths]
+        current: dict[str, tuple[int, ...] | None] = {}
+        for name in {key[0] for key in outside}:
+            try:
+                current[name] = _stat_fingerprint(Path(name))
+            except OSError:
+                current[name] = None
         with self._token_event_cache_lock:
             for key in list(self._token_event_cache):
-                if key not in live_keys:
+                if key[0] in live_paths:
+                    stale = key not in live_keys
+                else:
+                    stale = current.get(key[0], None) != tuple(key[1:])
+                if stale:
                     self._drop_token_event_cache_entry(key)
         return {"daily": daily, "totals": totals, "models": models, "rate": latest_rate,
                 "rateUpdatedAt": latest_rate_at or None, "paths": paths,
