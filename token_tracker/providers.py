@@ -334,6 +334,7 @@ CLAUDE_PRICING = {
     # 1M context is standard price on 4.6+ except Haiku 5.5 (see HAIKU_5_5_LONG_PROMPT below).
     "fable-5": (10, 1, 12.5, 20, 50),        # Claude Fable 5 (Mythos 5 shares this row)
     "fable-5.1": (10, .25, 12.5, 20, 50),    # Claude Fable 5.1 (Mythos 5.1 shares this row)
+    "fable-5.2": (8, .2, 10, 16, 40),        # Claude Fable 5.2 (platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-21)
     "opus-5": (5, .5, 6.25, 10, 25),         # Claude Opus 5
     "opus-5.5": (4, .2, 5, 8, 20),           # Claude Opus 5.5
     "opus-4.8": (5, .5, 6.25, 10, 25),       # Claude Opus 4.8
@@ -353,6 +354,7 @@ CODEX_PRICING = {
     # USD per 1M tokens: (input, cached input, output).
     # Source: https://developers.openai.com/api/docs/pricing (checked 2026-11-02, official OpenAI page).
     "gpt-6-astra": (10, 1, 50),
+    "gpt-6.2-sol": (2, .1, 10),  # checked 2026-11-21 on the same page
     "gpt-6.1-sol": (2, .1, 10), "gpt-6.1-terra": (1, .05, 5), "gpt-6-luna": (.1, .01, .5),
     "gpt-6-sol": (2, .2, 10),
     "gpt-5.6-sol": (4, .4, 20), "gpt-5.6-terra": (2, .2, 12), "gpt-5.6-luna": (.2, .02, 1.2),
@@ -363,7 +365,7 @@ CODEX_PRICING = {
 # input exceeds 272K tokens is priced at the input/cache multiplier and output multiplier for the
 # whole request. Rows with no long-context tier listed on that page are absent here.
 CODEX_LONG_CONTEXT = {name: (272_000, 2.0, 1.5) for name in
-                      ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol",
+                      ("gpt-6-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol",
                        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")}
 LONG_CONTEXT_SUFFIX = "|long-context"
 PRICE_BASIS = "Standard-tier list prices; Batch, Flex, Fast and data-residency billing are not recorded locally"
@@ -375,6 +377,7 @@ PRICE_MODEL_ALIASES = {
     "gpt-5.6": "gpt-5.6-sol",  # OpenAI routes the bare alias to Sol (developers.openai.com/api/docs/models/gpt-5.6-sol, checked 2026-11-02)
     "claude-fable-5": "fable-5", "claude-mythos-5": "fable-5",
     "claude-fable-5-1": "fable-5.1", "claude-mythos-5-1": "fable-5.1",
+    "claude-fable-5-2": "fable-5.2",
     "claude-opus-5": "opus-5", "claude-opus-5-5": "opus-5.5", "claude-opus-4-8": "opus-4.8",
     "claude-opus-4-7": "opus-4.7", "claude-opus-4-6": "opus-4.6", "claude-opus-4-5": "opus-4.5",
     "claude-sonnet-5": "sonnet-5", "claude-sonnet-5-5": "sonnet-5.5",

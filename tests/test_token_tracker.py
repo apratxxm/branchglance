@@ -6607,3 +6607,13 @@ def test_group_eviction_matches_sequential_calls_when_a_resumed_kind_becomes_unc
     group = run("group", grouped=True)
     assert group == sequential
     assert sequential[1] == ["unrelated", "cold"]
+
+
+def test_official_list_prices_for_gpt_6_2_sol_and_claude_fable_5_2():
+    # Official pricing pages checked 2026-11-21 (developers.openai.com/api/docs/pricing,
+    # platform.claude.com/docs/en/about-claude/pricing).
+    assert providers._price_for("gpt-6.2-sol", providers.CODEX_PRICING) == (2, .1, 10)
+    assert providers.CODEX_LONG_CONTEXT["gpt-6.2-sol"] == (272_000, 2.0, 1.5)
+    assert providers._price_for("claude-fable-5-2", providers.CLAUDE_PRICING) == (8, .2, 10, 16, 40)
+    assert not providers._model_unpriced("gpt-6.2-sol", providers.CODEX_PRICING)
+    assert not providers._model_unpriced("claude-fable-5-2", providers.CLAUDE_PRICING)
