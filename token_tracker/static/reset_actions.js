@@ -9,7 +9,7 @@
     settingsToken=new URLSearchParams((window.location?.hash||"").replace(/^#/g,"")).get("t")||"";
     window.history?.replaceState?.(null,"",`${window.location.pathname}${window.location.search}`);
   } catch {}
-  const state = { action: null, threads: [], selected: new Set(), busy: false, loaded: false, actionReady: false, threadsReady: false, dirty: false, actionChanged: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0, ledger: null, purge: {}, purgeSequence: 0, exportBusy: false, exportStatus: "", exportError: false };
+  const state = { action: null, serverActionFingerprint: null, threads: [], selected: new Set(), busy: false, loaded: false, actionReady: false, threadsReady: false, dirty: false, actionChanged: false, policy: null, policyReady: false, canGreet: false, canContinue: false, claude: null, claudeBusy: false, page: 0, ledger: null, purge: {}, purgeSequence: 0, exportBusy: false, exportStatus: "", exportError: false };
   function setEmbeddedState(text,unavailable=false){if(!embedded)return;const box=$("#embedded-policy-state"),message=$("#embedded-policy-message"),retry=$("#embedded-policy-retry");if(box)box.hidden=false;if(message)message.textContent=text;if(retry)retry.hidden=!unavailable;}
   // Permission names follow the Providers line: display (shown), collecting, auto-send. Only permissions that are really off are named.
   const PERMISSION_LABELS=[["show","display"],["collect","collection"],["send","greeting"]];
@@ -197,7 +197,6 @@
   function titleFor(id) { return state.threads.find(t=>t.id===id)?.title || id || "Unknown chat"; }
   async function load() {
     const draft=state.dirty?{mode:mode(),selected:new Set(state.selected)}:null;
-    const previousSavedAction=state.action?JSON.stringify(state.action):null;
     state.busy=true;state.policyReady=false;state.actionReady=false;state.actionLoadError=false;state.threadsReady=false;policyFailed=false; render(); message("Loading settings…");if(embedded)setEmbeddedState("Checking reset permissions…");
     try {
       const policyResponse=await fetch("/api/provider-policy",{cache:"no-store",signal:AbortSignal.timeout(10000)});
@@ -210,9 +209,11 @@
       const data=await response.json(); if(!response.ok||!data.ok)throw new Error(data.error||"Settings are unavailable.");
       const action=data.action&&typeof data.action==="object"?{...data.action}:null;
       if(!validSavedAction(action))throw new Error("Saved action is malformed.");
+      const serverActionFingerprint=JSON.stringify(action);
       state.actionReady=true;state.actionLoadError=false;state.threadsReady=data.threadsAvailable!==false;
-      if(draft&&state.loaded&&previousSavedAction!==JSON.stringify(action))state.actionChanged=true;
+      if(draft&&state.loaded&&state.serverActionFingerprint!==serverActionFingerprint)state.actionChanged=true;
       else if(!draft)state.actionChanged=false;
+      state.serverActionFingerprint=serverActionFingerprint;
       const reusable=Boolean(state.canContinue&&action?.mode==="continue"&&action?.schemaVersion===2&&action?.armed===true);
       if(action){if(action.mode!=="continue"||!reusable)action.threadIds=[];if(!state.canContinue||action.mode==="continue"&&!reusable){if(action.lastRun?.targets)action.lastRun={...action.lastRun,targets:[]};}}
       state.action=action;state.threads=Array.isArray(data.threads)?data.threads:[];
@@ -239,7 +240,7 @@
       const response=await fetch("/api/reset-action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:chosenMode,threadIds:chosenMode==="continue"?[...state.selected]:[]}),cache:"no-store",signal:AbortSignal.timeout(15000)});
       const data=await response.json();if(!response.ok||!data.ok)throw new Error(data.error||"Could not save reset action.");
       if(!validSavedAction(data.action))throw new Error("Saved action response was invalid.");
-      state.action=data.action;state.actionReady=true;state.actionLoadError=false;state.selected=new Set(data.action?.mode==="continue"&&data.action?.armed===true?data.action.threadIds||[]:[]);state.dirty=false;state.actionChanged=false;message("Choice saved. It runs only while startup permissions allow it.");
+      state.action=data.action;state.serverActionFingerprint=JSON.stringify(data.action);state.actionReady=true;state.actionLoadError=false;state.selected=new Set(data.action?.mode==="continue"&&data.action?.armed===true?data.action.threadIds||[]:[]);state.dirty=false;state.actionChanged=false;message("Choice saved. It runs only while startup permissions allow it.");
     } catch(e){message(e.message||"Could not save action. Your draft is still here.",true);}
     finally {state.busy=false;render();}
   }
@@ -294,7 +295,7 @@
   function purgeClick(provider) {
     const flow=state.purge[provider]||{phase:"idle"};
     if(ledgerReason(provider)||flow.phase==="checking"||flow.phase==="deleting"||flow.phase==="pending")return;
-    state.purge[provider]={phase:"confirm",confirmationId:++state.purgeSequence};renderLedger();
+    state.purge[provider]={phase:"confirm",confirmationId:String(++state.purgeSequence)};renderLedger();
   }
   function cancelPurge(provider,confirmationId){
     const flow=state.purge[provider];if(flow?.phase!=="confirm"||flow.confirmationId!==confirmationId)return;

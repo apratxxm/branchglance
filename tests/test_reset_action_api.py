@@ -378,8 +378,11 @@ def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypa
         requested.append((path, query))
         return 200, {"Content-Type": "text/csv; charset=utf-8"}, body
 
+    collision = tmp_path / "example.txt.csv"
+    collision.write_bytes(b"keep existing file")
+
     class SaveWindow:
-        selected = str(tmp_path / "saved-history")
+        selected = str(tmp_path / "example.txt")
 
         def create_file_dialog(self, dialog_type, **kwargs):
             requested.append((dialog_type, kwargs))
@@ -393,7 +396,8 @@ def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypa
     assert requested[0] == (widget.ledger_service.EXPORT_PATH, {"range": ["all"], "format": ["csv"]})
     assert requested[1][0] == widget.webview.FileDialog.SAVE
     assert requested[1][1]["save_filename"] == "branchglance-ledger-all.csv"
-    assert (tmp_path / "saved-history.csv").read_bytes() == body
+    assert (tmp_path / "example.txt").read_bytes() == body
+    assert collision.read_bytes() == b"keep existing file"
 
     SaveWindow.selected = None
     assert api.save_ledger_csv() == {"ok": False, "cancelled": True}

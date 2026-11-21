@@ -736,6 +736,12 @@ assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000-1
 assert.equal(T.resetView({...provider,weekly:{percent:78},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").countdown,"");
 assert.equal(T.watcherPopoverHTML('Codex'),'<p class="policy-notice" data-policy-warning hidden></p><button class="ghost" data-action="reset-settings">Reset action settings</button>');
 assert.equal(T.watcherTone(null,'Codex').tip,'');
+const offWatcher={enabled:true,running:true,providers:{Codex:{automationMode:"off",phase:"off",nextGreetingAt:fixedNow/1000+600,lastTriggerAt:fixedNow/1000,lastGreetingOutcome:"completed"}}};
+const offTone=T.watcherTone(offWatcher,"Codex");
+assert.equal(offTone.tone,"mute");assert.equal(offTone.tip,"Auto-greet off","Off overrides stale greeting schedules while the quota watcher is running");
+T.state.watcher=offWatcher;
+assert.match(T.watcherPopoverHTML("Codex"),/<dt>phase<\/dt><dd>off<\/dd>/);
+assert.doesNotMatch(T.watcherPopoverHTML("Codex"),/<dt>next<\/dt>/,"Off hides greeting schedule but keeps historical outcome data");
 T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:'<img src=x onerror=alert(1)>',lastTriggerAt:fixedNow/1000,lastVerifiedAt:fixedNow/1000,verificationEvidence:'usage_and_deadline'}}};
 const watcherMarkup=T.watcherPopoverHTML('Codex');
 assert.match(watcherMarkup,/&lt;img/);

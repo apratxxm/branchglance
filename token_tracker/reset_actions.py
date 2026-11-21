@@ -114,14 +114,20 @@ class ResetActionDispatcher:
         # Schema 1 and unversioned records with an explicit supported mode are
         # the only legacy shapes. Missing/unknown versions or modes fail closed.
         legacy_mode = state.get("mode")
-        if (not (version is None or type(version) is int and version == 1)
-                or not isinstance(legacy_mode, str) or legacy_mode not in {"greet", "continue"}):
+        legacy_version = "schemaVersion" not in state or type(version) is int and version == 1
+        if (not legacy_version or not isinstance(legacy_mode, str)
+                or legacy_mode not in {"greet", "continue"}
+                or "armed" in state and type(state["armed"]) is not bool):
             self._replace_with_off(state)
             return
         ids: list[str] = []
-        saved_ids = state.get("threadIds")
-        if saved_ids is None and legacy_mode == "greet":
+        if "threadIds" in state:
+            saved_ids = state["threadIds"]
+        elif legacy_mode == "greet":
             saved_ids = []
+        else:
+            self._replace_with_off(state)
+            return
         if isinstance(saved_ids, list):
             for item in saved_ids:
                 if not isinstance(item, str):

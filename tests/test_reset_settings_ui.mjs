@@ -28,7 +28,7 @@ assert.match(app,/window\.open\?\.\("\/reset_actions\.html","_blank","noopener"\
 
 const elements=new Map();
 const listenerCounts=new Map();
-function element(selector){if(!elements.has(selector))elements.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;listenerCounts.set(`${selector}:${type}`,(listenerCounts.get(`${selector}:${type}`)||0)+1);}});return elements.get(selector);}
+function element(selector){if(!elements.has(selector))elements.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,dataset:{},classList:{toggle(){}},querySelector:child=>element(child),addEventListener(type,fn){this[`on${type}`]=fn;listenerCounts.set(`${selector}:${type}`,(listenerCounts.get(`${selector}:${type}`)||0)+1);}});return elements.get(selector);}
 const radios=[];
 const makeRadio=(value,checked)=>{const radio={value,disabled:false,_checked:checked};Object.defineProperty(radio,"checked",{get(){return this._checked;},set(value){this._checked=value;if(value)for(const other of radios)if(other!==this)other._checked=false;}});radios.push(radio);return radio;};
 makeRadio("greet",true);makeRadio("continue",false);makeRadio("off",false);
@@ -43,7 +43,7 @@ const requestHeaders=[];
 const settingsToken="a-test-settings-token-with-no-url-leak";
 const location={hash:`#t=${settingsToken}`,pathname:"/reset_actions.html",search:""};
 const historyUrls=[];
-let failSave=false,failActionRead=false;
+let failSave=false,failActionRead=false,threadsAvailable=true;
 let policy={schemaVersion:1,generation:"codex-send-v1",providers:[
   {name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},
   {name:"Claude",collect:false,show:false,send:false,sendOrigin:"default",capabilities:{greet:false,continue:false}}
@@ -91,11 +91,11 @@ const context={document,window,AbortSignal:{timeout(){}},URLSearchParams,fetch:a
     return {ok:true,json:async()=>({ok:true,action:{schemaVersion:2,mode:calls.at(-1).mode,threadIds:calls.at(-1).threadIds,armed:calls.at(-1).mode==="continue",oneShot:true,lastRun:null}})};
   }
   if(url==="/api/reset-action"&&failActionRead)return {ok:false,json:async()=>({ok:false,error:"Read failed"})};
-  return {ok:true,json:async()=>({ok:true,action:actionRecord,threads:[
+  return {ok:true,json:async()=>({ok:true,action:actionRecord,threadsAvailable,threads:threadsAvailable?[
     {id:"11111111-1111-4111-8111-111111111111",title:"<img src=x onerror=alert(1)>",status:"idle"},
     {id:"22222222-2222-4222-8222-222222222222",title:"Busy chat",status:"active"},
     {id:"33333333-3333-4333-8333-333333333333",title:"Archived",status:"archived"}
-  ]})};
+  ]:[],error:threadsAvailable?undefined:"Chat list is unavailable."})};
 }};
 vm.createContext(context);vm.runInContext(source,context);
 await new Promise(resolve=>setTimeout(resolve,0));
@@ -204,6 +204,19 @@ assert.equal(T.state.actionChanged,false);
 actionRecord={schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null};
 await T.load();assert.equal(radios[0].checked,true,"a clean reload returns to the currently saved greeting mode");
 
+actionRecord={schemaVersion:2,mode:"continue",threadIds:["11111111-1111-4111-8111-111111111111"],armed:false,oneShot:true,
+  lastRun:{at:1,targets:[{threadId:"11111111-1111-4111-8111-111111111111",status:"queued"}]}};
+await T.load();
+assert.equal(T.state.action.threadIds.length,0,"the unarmed server selection is filtered from the view");
+radios[1].checked=false;radios[2].checked=true;T.state.dirty=true;
+threadsAvailable=false;await T.load();
+assert.equal(T.state.actionChanged,false,"the same validated server action is not stale after display filtering");
+assert.equal(element("#save").disabled,false,"Off can be saved while chat discovery is unavailable");
+const postsBeforeFilteredRetry=calls.length;await T.save();
+assert.equal(calls.length,postsBeforeFilteredRetry+1,"the unchanged server action does not block the Off save");
+assert.deepEqual(calls.at(-1),{mode:"off",threadIds:[]});
+threadsAvailable=true;actionRecord={schemaVersion:2,mode:"off",threadIds:[],armed:false,oneShot:true,lastRun:{at:1,targets:[]}};await T.load();
+
 radios[0].checked=false;radios[1].checked=true;T.state.selected=new Set(["11111111-1111-4111-8111-111111111111"]);failSave=true;await T.save();
 assert.equal(T.state.selected.size,1,"failed save retains the user's draft");
 assert.match(element("#message").textContent,/Could not save/);
@@ -248,7 +261,7 @@ assert.equal(T.state.threads.length,0);
 // Saved usage history: the delete button is gated by collection and ledger state, and sends only on the second click.
 {
   const nodes=new Map();
-  const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,dataset:{},focused:false,focus(){this.focused=true;},classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,dataset:{},focused:false,focus(){this.focused=true;},classList:{toggle(){}},querySelector:child=>node(child),addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
   const sent=[];
   const ledgerState={ok:true,state:"live",purging:[],lastPurge:null,collect:{Claude:true,Codex:false}};
   let currentLedger=ledgerState;
@@ -273,20 +286,25 @@ assert.equal(T.state.threads.length,0);
   assert.equal(node('[data-reason="Claude"]').hidden,false);
   assert.equal(node('[data-purge="Codex"]').disabled,false,"collection off and ledger on: delete is enabled");
   assert.equal(node('[data-reason="Codex"]').hidden,true);
-  await ledgerTest.confirmPurge("Codex",0);
+  node('[data-confirm-purge="Codex"]').onclick({currentTarget:{dataset:{confirmationId:"0"}}});
+  await settle();
   assert.equal(sent.length,0,"confirmation from idle is ignored");
 
-  ledgerTest.purgeClick("Codex");
-  const cancelledId=ledgerTest.state.purge.Codex.confirmationId;
-  ledgerTest.cancelPurge("Codex",cancelledId);
+  node('[data-purge="Codex"]').onclick();
+  const cancelButton=node('[data-cancel-purge="Codex"]'),cancelledId=cancelButton.dataset.confirmationId;
+  assert.equal(typeof cancelledId,"string","the confirmation token uses the DOM dataset string type");
+  cancelButton.onclick({currentTarget:cancelButton});
   assert.equal(node('[data-purge="Codex"]').focused,true,"Cancel restores focus to the provider's delete action");
-  await ledgerTest.confirmPurge("Codex",cancelledId);
+  node('[data-confirm-purge="Codex"]').onclick({currentTarget:{dataset:{confirmationId:cancelledId}}});
+  await settle();
   assert.equal(sent.length,0,"a stale confirmation after Cancel is ignored");
 
-  ledgerTest.purgeClick("Codex");
-  const ineligibleId=ledgerTest.state.purge.Codex.confirmationId;
+  node('[data-purge="Codex"]').onclick();
+  const ineligibleButton=node('[data-confirm-purge="Codex"]'),ineligibleId=ineligibleButton.dataset.confirmationId;
+  assert.equal(typeof ineligibleId,"string");
   currentLedger={...ledgerState,collect:{Claude:true,Codex:true}};
-  await ledgerTest.confirmPurge("Codex",ineligibleId);
+  ineligibleButton.onclick({currentTarget:ineligibleButton});
+  await settle();
   assert.equal(sent.length,0,"eligibility is checked again immediately before deletion");
   currentLedger=ledgerState;ledgerTest.state.ledger=ledgerState;ledgerTest.state.purge.Codex={phase:"idle"};ledgerTest.render();
 
@@ -294,10 +312,10 @@ assert.equal(T.state.threads.length,0);
   await settle();
   assert.equal(node('[data-confirm="Codex"]').hidden,false);
   assert.equal(sent.length,0,"the first click sends nothing");
-  const confirmId=ledgerTest.state.purge.Codex.confirmationId;
-  const firstConfirm=ledgerTest.confirmPurge("Codex",confirmId);
-  const duplicateConfirm=ledgerTest.confirmPurge("Codex",confirmId);
-  await Promise.all([firstConfirm,duplicateConfirm]);
+  const confirmButton=node('[data-confirm-purge="Codex"]'),confirmId=confirmButton.dataset.confirmationId;
+  assert.equal(typeof confirmId,"string","Delete receives the DOM dataset string type");
+  confirmButton.onclick({currentTarget:confirmButton});
+  confirmButton.onclick({currentTarget:confirmButton});
   await settle();
   assert.deepEqual(sent,[{url:"/api/ledger/purge",method:"POST",token:"ledger-test-token",body:{provider:"Codex"}}]);
   assert.equal(node('[data-status="Codex"]').textContent,"Deleted");
@@ -468,22 +486,23 @@ assert.match(resetCss,/\.mode:has\(input:disabled\) b,\.mode:has\(input:disabled
   const until=async(predicate,limit=200000)=>{for(let i=0;i<limit&&!predicate();i++)await pause();};
   const harness=(initialStatus,posts)=>{
     const nodes=new Map();
-    const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,dataset:{},classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+    const node=(selector)=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,dataset:{},classList:{toggle(){}},querySelector:child=>node(child),addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
     const statusRef={value:initialStatus};
+    const requests=[];
     const ctx={document:{querySelector:node,querySelectorAll:()=>[],addEventListener(){}},
       window:{__RESET_ACTIONS_TEST__:true,location:{hash:"#t=ledger-test-token",pathname:"/reset_actions.html",search:""},history:{replaceState(){}}},
       AbortSignal:{timeout(){}},URLSearchParams,clearTimeout,
       setTimeout:(fn,ms,...rest)=>realTimeout(fn,ms===2000?50:ms,...rest),
       fetch:async(url,options={})=>{
         if(url==="/api/ledger/status")return {ok:true,status:200,json:async()=>statusRef.value};
-        if(url==="/api/ledger/purge"){const reply=posts[JSON.parse(options.body).provider]();return {ok:reply.status<300,status:reply.status,json:async()=>reply.body};}
+        if(url==="/api/ledger/purge"){const provider=JSON.parse(options.body).provider;requests.push(provider);const reply=posts[provider]();return {ok:reply.status<300,status:reply.status,json:async()=>reply.body};}
         return {ok:false,status:404,json:async()=>({ok:false,error:"not used"})};
       }};
     vm.createContext(ctx);vm.runInContext(source,ctx);
-    return {node,statusRef,test:ctx.window.__resetActionsTest};
+    return {node,statusRef,test:ctx.window.__resetActionsTest,requests};
   };
   const idle={ok:true,state:"live",purging:[],lastPurge:{},collect:{Claude:false,Codex:false}};
-  const sendTwice=async(h,provider)=>{h.node(`[data-purge="${provider}"]`).onclick();await settle();assert.equal(h.node(`[data-confirm="${provider}"]`).hidden,false,"inline confirmation is shown");const id=h.test.state.purge[provider].confirmationId;await h.test.confirmPurge(provider,id);await settle();};
+  const sendTwice=async(h,provider)=>{h.node(`[data-purge="${provider}"]`).onclick();await settle();assert.equal(h.node(`[data-confirm="${provider}"]`).hidden,false,"inline confirmation is shown");const confirm=h.node(`[data-confirm-purge="${provider}"]`),id=confirm.dataset.confirmationId;assert.equal(typeof id,"string","the registered delete listener receives the DOM string token");const before=h.requests.length;confirm.onclick({currentTarget:confirm});confirm.onclick({currentTarget:confirm});await settle();assert.equal(h.requests.length,before+1,"duplicate registered clicks consume one confirmation");};
 
   // Sol's replay: Claude's purge fails and Codex's succeeds afterwards. Claude must never read as Deleted.
   const A=harness({...idle,purging:["Claude"]},{

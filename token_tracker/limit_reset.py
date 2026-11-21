@@ -1959,8 +1959,29 @@ class LimitResetService:
         with self._lock:
             now = self._clock()
             providers = self._state.get("providers", {})
+            reset_action = self._state.get("resetAction", default_action())
+            reset_mode = reset_action.get("mode") if isinstance(reset_action, dict) else "off"
+            if not isinstance(reset_mode, str) or reset_mode not in {"off", "greet", "continue"}:
+                reset_mode = "off"
             visible = lambda name: self._enabled_names is None or name in self._enabled_names
             provider_names = dict.fromkeys((*providers, *self.sources))
+            summaries = {}
+            for name in provider_names:
+                if not visible(name):
+                    continue
+                summary = self._provider_summary(providers.get(name, {}), now)
+                if name == "Codex":
+                    summary["automationMode"] = reset_mode
+                    if reset_mode == "off":
+                        summary.update(
+                            phase="off", armed=False, exhaustedAt=None,
+                            exhaustedSampleAt=None, nextGreetingAt=None,
+                            awaitingVerification=False, verificationDeadline=None,
+                            preSendResetAt=None, preSendPercent=None,
+                            verificationEvidence=None, unverifiedAttempts=0,
+                            nextRetryAt=None,
+                        )
+                summaries[name] = summary
             return {
                 "enabled": self.enabled,
                 "running": bool(self._thread and self._thread.is_alive()),
@@ -1970,9 +1991,6 @@ class LimitResetService:
                 "startedAt": self._started_at,
                 "persistenceError": self._persistence_error,
                 "enabledProviders": list(self._enabled_names) if self._enabled_names is not None else list(providers),
-                "providers": {
-                    name: self._provider_summary(providers.get(name, {}), now)
-                    for name in provider_names if visible(name)
-                },
+                "providers": summaries,
                 "events": [event for event in self._events if event.get("provider") is None or visible(event.get("provider"))][-25:],
             }

@@ -561,6 +561,8 @@ def test_existing_greeting_action_migrates_without_being_turned_off():
     {"schemaVersion": 2, "threadIds": [], "armed": False},
     {"schemaVersion": 2, "mode": "future", "threadIds": [], "armed": False},
     {"schemaVersion": 3, "mode": "greet", "threadIds": [], "armed": False},
+    {"schemaVersion": None, "mode": "greet", "threadIds": [], "armed": False},
+    {"schemaVersion": 1, "mode": "greet", "threadIds": [], "armed": "invalid"},
     {"mode": "future", "threadIds": [], "armed": False},
     {"schemaVersion": 2, "mode": "greet", "threadIds": [ONE], "armed": False},
 ])

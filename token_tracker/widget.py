@@ -2704,8 +2704,6 @@ class WidgetApp:
             if not selected:
                 return {"ok": False, "cancelled": True}
             target = Path(selected)
-            if target.suffix.lower() != ".csv":
-                target = target.with_suffix(target.suffix + ".csv" if target.suffix else ".csv")
             target.write_bytes(body)
             return {"ok": True}
         except Exception:

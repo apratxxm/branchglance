@@ -334,6 +334,9 @@ def test_settings_rerender_keeps_reset_form_loaded(page):
 def test_settings_reachable(page):
     open_settings(page)
     content = page.locator(ui.SETTINGS_SCROLLER)
+    frame = page.frame_locator(ui.RESET_FRAME)
+    expect(frame.locator("#saved-action-state")).to_be_visible()
+    expect(frame.locator("#saved-action-state")).to_have_text("No continuation scheduled")
     # The embedded reset form grows the page once it loads; measure after layout settles.
     content.evaluate("el => new Promise(resolve => { let last = -1, stable = 0; const tick = () => { const h = el.scrollHeight; stable = h === last ? stable + 1 : 0; last = h; if (stable >= 3) resolve(); else requestAnimationFrame(tick); }; tick(); })")
     size = content.evaluate("el => ({scroll: el.scrollHeight, client: el.clientHeight})")
@@ -572,6 +575,8 @@ def test_settings_keyboard_reaches_controls(page):
     expect(continuation).to_be_checked()
     page.keyboard.press("ArrowUp")
     expect(greet).to_be_checked()
+    page.keyboard.press("ArrowUp")
+    expect(off).to_be_checked()
     frame.get_by_role("button", name="Discard changes").click()
 
     page.locator(ui.SETTINGS_TAB).focus()
