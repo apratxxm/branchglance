@@ -3416,11 +3416,14 @@ class WidgetApp:
             completed = threading.Event()
 
             def create_on_gui():
+                # Never raise out of this callback: under BeginInvoke it runs in the WinForms
+                # message loop, where an exception would surface as an unhandled-exception dialog.
+                # The calling thread re-raises it after completion and runs the normal cleanup.
                 try:
                     created["ok"] = register_child(child, lambda: gui.create_window(child))
-                except Exception:
+                except Exception as error:
                     created["ok"] = False
-                    raise
+                    created["error"] = error
                 finally:
                     completed.set()
 
@@ -3438,6 +3441,8 @@ class WidgetApp:
                     raise TimeoutError("Settings native creation timed out")
             else:
                 create_on_gui()
+            if created.get("error") is not None:
+                raise created["error"]
             if not created["ok"]:
                 with suppress(ValueError):
                     webview.windows.remove(child)
