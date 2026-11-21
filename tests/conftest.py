@@ -24,6 +24,7 @@ def _isolated_product_state(tmp_path, monkeypatch):
     yield
     from token_tracker import providers
     providers._snapshot_shutdown = False
+    providers._PERSISTED_CATALOG = None
     import sys
     widget = sys.modules.get("token_tracker.widget")
     if widget is not None:

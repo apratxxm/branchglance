@@ -196,8 +196,47 @@ def _codex_identity_snapshot(ids: Iterable[Any] = (), limit: int = 200) -> dict[
             "failed_ids": failed_ids, "catalog_missing": False}
 
 
+_PERSISTED_CATALOG_LOCK = threading.Lock()
+_PERSISTED_CATALOG: tuple[tuple[Any, ...], float, list[dict[str, Any]]] | None = None
+_PERSISTED_CATALOG_MAX_AGE_SECONDS = 30.0
+
+
+def _catalog_file_stamp(path: Path) -> tuple[int, ...] | None:
+    try:
+        return _fingerprint_of(path.stat())
+    except FileNotFoundError:
+        return None
+
+
 def _persisted_codex_threads(limit: int = 200) -> list[dict[str, Any]]:
-    return _codex_identity_snapshot(limit=limit)["catalog"]
+    """The recent Codex thread catalog, re-queried only when the catalog files change.
+
+    Live polling asks for it every two seconds and each query read about 2 MB of SQLite
+    pages. Codex writes through the WAL, so the database and WAL stamps change on every
+    commit; a bounded age still re-queries in case a write leaves both stamps unchanged.
+    """
+    global _PERSISTED_CATALOG
+    root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    database = root / "state_5.sqlite"
+    try:
+        key = (str(database), limit, _catalog_file_stamp(database),
+               _catalog_file_stamp(database.with_name(database.name + "-wal")))
+    except OSError:
+        key = None
+    now = time.monotonic()
+    if key is not None and key[2] is not None:
+        with _PERSISTED_CATALOG_LOCK:
+            cached = _PERSISTED_CATALOG
+            if cached is not None and cached[0] == key and now - cached[1] < _PERSISTED_CATALOG_MAX_AGE_SECONDS:
+                return [dict(row) for row in cached[2]]
+    snapshot = _codex_identity_snapshot(limit=limit)
+    catalog = snapshot["catalog"]
+    with _PERSISTED_CATALOG_LOCK:
+        if key is not None and key[2] is not None and snapshot["status"] == "complete":
+            _PERSISTED_CATALOG = (key, now, [dict(row) for row in catalog])
+        else:
+            _PERSISTED_CATALOG = None
+    return catalog
 
 
 def _human_tokens(value: int | float | None) -> str:
@@ -1042,7 +1081,9 @@ def _codex_rollout_state(path_value: str | None) -> dict[str, Any]:
                 "telemetryUnavailable": True, **unavailable_execution}
     path = Path(path_value)
     try:
-        with path.open("rb") as handle:
+        # Unbuffered, so the readability probe transfers one byte rather than a full buffer;
+        # live polling runs it for every known rollout every two seconds.
+        with path.open("rb", buffering=0) as handle:
             handle.read(1)
         state = _codex_recorded_state(path)
     except (OSError, IsADirectoryError):

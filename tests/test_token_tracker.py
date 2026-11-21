@@ -5881,3 +5881,52 @@ def test_codex_local_usage_keeps_a_transcript_written_just_before_the_window(tmp
     os.utime(edge, (edge_epoch, edge_epoch))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     assert CodexProvider()._local_usage()["totals"]["total_tokens"] == 30
+
+
+def _catalog_home(tmp_path, monkeypatch):
+    home = tmp_path / "codex-catalog"; home.mkdir()
+    (home / "state_5.sqlite").write_bytes(b"db")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    calls = []
+    def snapshot(ids=(), limit=200):
+        calls.append(limit)
+        return {"status": "complete", "catalog": [{"id": f"t{len(calls)}", "path": "p"}], "by_id": {},
+                "no_match_ids": set(), "failed_ids": set(), "catalog_missing": False}
+    monkeypatch.setattr(providers, "_codex_identity_snapshot", snapshot)
+    return home, calls
+
+
+def test_persisted_codex_catalog_is_reused_until_the_database_or_wal_changes(tmp_path, monkeypatch):
+    home, calls = _catalog_home(tmp_path, monkeypatch)
+    first = providers._persisted_codex_threads()
+    first[0]["id"] = "mutated by caller"
+    assert providers._persisted_codex_threads() == [{"id": "t1", "path": "p"}]
+    assert calls == [200]
+    (home / "state_5.sqlite-wal").write_bytes(b"commit")
+    assert providers._persisted_codex_threads() == [{"id": "t2", "path": "p"}]
+    with (home / "state_5.sqlite-wal").open("ab") as handle:
+        handle.write(b"another commit")
+    assert providers._persisted_codex_threads() == [{"id": "t3", "path": "p"}]
+    (home / "state_5.sqlite").write_bytes(b"checkpointed")
+    assert providers._persisted_codex_threads() == [{"id": "t4", "path": "p"}]
+    assert providers._persisted_codex_threads(limit=5) == [{"id": "t5", "path": "p"}]
+    assert calls == [200, 200, 200, 200, 5]
+
+
+def test_persisted_codex_catalog_requeries_after_its_age_bound(tmp_path, monkeypatch):
+    _home, calls = _catalog_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(providers, "_PERSISTED_CATALOG_MAX_AGE_SECONDS", 0.0)
+    providers._persisted_codex_threads(); providers._persisted_codex_threads()
+    assert len(calls) == 2
+
+
+def test_persisted_codex_catalog_never_caches_a_failed_or_missing_read(tmp_path, monkeypatch):
+    home, calls = _catalog_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(providers, "_codex_identity_snapshot", lambda ids=(), limit=200: calls.append(limit) or {
+        "status": "unavailable", "catalog": [], "by_id": {}, "no_match_ids": set(), "failed_ids": set(),
+        "catalog_missing": False})
+    providers._persisted_codex_threads(); providers._persisted_codex_threads()
+    assert len(calls) == 2
+    (home / "state_5.sqlite").unlink()
+    providers._persisted_codex_threads(); providers._persisted_codex_threads()
+    assert len(calls) == 4
