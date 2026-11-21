@@ -1831,3 +1831,52 @@ def test_window_state_writes_from_many_threads_keep_every_key(tmp_path):
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored == {f"key{index}": index for index in range(24)}
     assert not list(tmp_path.glob("*.tmp")), "temporary files are cleaned up"
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_inspect_request_matching_a_stale_rect_ends_behind_queued_controls_frames(native_notch, monkeypatch):
+    """Asynchronous frames apply later in FIFO order; GetWindowRect can lag behind them."""
+    app, _monitors, rect, _calls = native_notch
+    app.set_notch(True, 170, False, "inspect")
+    inspect_rect = tuple(rect)
+    queued, fails = [], []
+
+    def place(width, height, x, y, *, asynchronous=False):
+        if fails:
+            return fails.pop()
+        if asynchronous:
+            queued.append([x, y, width, height])  # posted to the GUI thread, not yet applied
+        else:
+            rect[:] = [x, y, width, height]
+        return True
+
+    def pump():
+        while queued:
+            rect[:] = queued.pop(0)
+
+    monkeypatch.setattr(app, "_place", place)
+    monkeypatch.setattr(widget, "_notch_animation_enabled", lambda: True)
+    app._notch_thread = SimpleNamespace(join=lambda timeout=None: None)  # drive the animation inline
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1000.0)
+    app.set_notch(False, None, False, "controls")
+    assert app._notch_transition is not None
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1001.0)
+    app._animate_notch()
+    assert queued and tuple(queued[-1][2:]) == (328, 110), "the controls frame is queued, not applied"
+    assert tuple(rect) == inspect_rect, "GetWindowRect still reports the inspect rectangle"
+
+    app.set_notch(True, 170, False, "inspect")
+    pump()
+    assert tuple(rect) == inspect_rect, "the window must end at the latest (inspect) request"
+
+    # A failed corrective post leaves the request eligible: the next identical request repairs it.
+    app._notch_thread = SimpleNamespace(join=lambda timeout=None: None)
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1002.0)
+    app.set_notch(False, None, False, "controls")
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1003.0)
+    app._animate_notch()
+    fails.append(False)
+    app.set_notch(True, 170, False, "inspect")
+    app.set_notch(True, 170, False, "inspect")
+    pump()
+    assert tuple(rect) == inspect_rect

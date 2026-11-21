@@ -1371,6 +1371,9 @@ class WidgetApp:
             self._notch_reference_width = None
         self._widget_lock_render_position = None
         self._notch_native_frames = deque(maxlen=128)
+        # Last rectangle commanded for the window. Animation frames are posted
+        # asynchronously, so this can differ from GetWindowRect while frames wait.
+        self._notch_last_frame = None
         self._notch_placing = False
         self._notch_placement_ready = False
         self._notch_user_dragging = False
@@ -1892,6 +1895,7 @@ class WidgetApp:
 
     def _record_notch_frame(self, frame):
         now = time.monotonic()
+        self._notch_last_frame = tuple(frame[:4])
         self._notch_native_frames.append((*frame, now))
         self._notch_command_guard_until = now + NOTCH_EVENT_GUARD_SECONDS
 
@@ -2850,6 +2854,16 @@ class WidgetApp:
                     return
                 if start == native_target:
                     self._cancel_notch_transition()
+                    last_frame = getattr(self, "_notch_last_frame", None)
+                    if last_frame is not None and last_frame != native_target:
+                        # GetWindowRect already shows this target, but asynchronous frames
+                        # toward an earlier request (such as the controls height) may still
+                        # be queued on the GUI thread. Post the target behind them so the
+                        # window ends at this request; on failure keep the old frame so the
+                        # next identical request tries again.
+                        self._record_notch_frame(native_target)
+                        if not self._place(*native_target, asynchronous=True):
+                            self._notch_last_frame = last_frame
                     return notice
                 self._notch_transition = (start, native_target, time.monotonic(), duration)
                 self._notch_transition_notice = notice
