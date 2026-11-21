@@ -18,6 +18,8 @@ def _isolated_product_state(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     # Claude Code's config holds the selected account and its usage cache; never read the real one.
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    # Codex sessions and the app-server binary live under CODEX_HOME; never scan the real ones.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setattr(product, "legacy_webview_path", lambda environ=None: tmp_path / "no-legacy-webview")
     yield
     from token_tracker import providers
