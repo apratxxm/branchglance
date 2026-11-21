@@ -43,7 +43,7 @@ const requestHeaders=[];
 const settingsToken="a-test-settings-token-with-no-url-leak";
 const location={hash:`#t=${settingsToken}`,pathname:"/reset_actions.html",search:""};
 const historyUrls=[];
-let failSave=false;
+let failSave=false,failActionRead=false;
 let policy={schemaVersion:1,generation:"codex-send-v1",providers:[
   {name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}},
   {name:"Claude",collect:false,show:false,send:false,sendOrigin:"default",capabilities:{greet:false,continue:false}}
@@ -90,6 +90,7 @@ const context={document,window,AbortSignal:{timeout(){}},URLSearchParams,fetch:a
     if(failSave)return {ok:false,json:async()=>({error:"Could not save"})};
     return {ok:true,json:async()=>({ok:true,action:{schemaVersion:2,mode:calls.at(-1).mode,threadIds:calls.at(-1).threadIds,armed:calls.at(-1).mode==="continue",oneShot:true,lastRun:null}})};
   }
+  if(url==="/api/reset-action"&&failActionRead)return {ok:false,json:async()=>({ok:false,error:"Read failed"})};
   return {ok:true,json:async()=>({ok:true,action:actionRecord,threads:[
     {id:"11111111-1111-4111-8111-111111111111",title:"<img src=x onerror=alert(1)>",status:"idle"},
     {id:"22222222-2222-4222-8222-222222222222",title:"Busy chat",status:"active"},
@@ -173,8 +174,17 @@ actionRecord={schemaVersion:2,mode:"unknown",threadIds:[],armed:false,oneShot:tr
 const postsBeforeMalformed=calls.length;await T.load();
 assert.equal(T.state.actionReady,false,"malformed saved state does not enable writes");
 assert.equal(element("#save").disabled,true,"Save stays disabled for malformed state");
+assert.ok(radios.every(radio=>radio.disabled),"malformed saved state disables every mode radio");
 await T.save();assert.equal(calls.length,postsBeforeMalformed,"malformed state is never overwritten silently");
 actionRecord={schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null};await T.load();
+
+failActionRead=true;await T.load();
+assert.ok(radios.every(radio=>radio.disabled),"failed saved-action load disables every mode radio");
+assert.equal(element("#save").disabled,true,"failed saved-action load keeps Save blocked");
+assert.equal(T.state.actionLoadError,true);
+assert.equal(element("#message").textContent,"Read failed");
+failActionRead=false;await T.load();
+assert.equal(radios[0].checked,true,"a valid reload checks the saved greeting mode");
 
 radios[0].checked=false;radios[2].checked=true;T.state.dirty=true;await T.save();
 assert.deepEqual(calls[2],{mode:"off",threadIds:[]},"the saved Off option writes the backend Off mode");
@@ -350,7 +360,7 @@ assert.equal(T.state.threads.length,0);
   let policy={schemaVersion:1,generation:"auto-send-off",providers:[{name:"Codex",collect:true,show:true,send:false,sendOrigin:"default",capabilities:{greet:true,continue:true}}]};
   const doc={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector==='input[name="mode"][value="greet"]'?radios[0]:selector==='input[name="mode"][value="continue"]'?radios[1]:node(selector),getElementById:id=>node(`#${id}`),querySelectorAll:()=>[],addEventListener(){},documentElement:{classList:{add(){}}},body:{classList:{add(){}},dataset:{}}};
   const win={__RESET_ACTIONS_TEST__:true,location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage(){}},history:{replaceState(){}}};
-  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:null,threads:[]}:{ok:true}})};
+  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch:async url=>({ok:true,json:async()=>url==="/api/provider-policy"?policy:url==="/api/reset-action"?{ok:true,action:{schemaVersion:2,mode:"greet",threadIds:[],armed:false,oneShot:true,lastRun:null},threads:[],threadsAvailable:true}:{ok:true}})};
   vm.createContext(ctx);vm.runInContext(source,ctx);
   const settle=async()=>{for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));};
   await settle();
@@ -371,6 +381,28 @@ assert.equal(T.state.threads.length,0);
   assert.equal(node("#continue-help").textContent,"Needs Codex send turned on by environment variable. The policy file allows greetings only.","continue denial distinguishes greeting-only permission");
   assert.equal(node("#permission").textContent,"","no other denial text appears when only continue is blocked");
   assert.equal(node("#embedded-policy-state").hidden,true,"the permitted state shows no policy line");
+}
+
+// A reset-action read failure disables every mode and shows its own Retry message.
+{
+  const nodes=new Map(),node=selector=>{if(!nodes.has(selector))nodes.set(selector,{value:"",textContent:"",innerHTML:"",hidden:false,disabled:false,classList:{toggle(){}},addEventListener(type,fn){this[`on${type}`]=fn;}});return nodes.get(selector);};
+  const radios=[{value:"off",checked:false},{value:"greet",checked:false},{value:"continue",checked:false}];
+  let failRead=true;
+  const policy={schemaVersion:1,generation:"saved-action-read",providers:[{name:"Codex",collect:true,show:true,send:true,sendOrigin:"provider_env",capabilities:{greet:true,continue:true}}]};
+  const doc={querySelector:selector=>selector==='input[name="mode"]:checked'?radios.find(r=>r.checked):selector.startsWith('input[name="mode"][value=')?radios.find(r=>selector.includes(`value="${r.value}"`)):node(selector),getElementById:id=>node(`#${id}`),querySelectorAll:()=>[],addEventListener(){},documentElement:{classList:{add(){}}},body:{classList:{add(){}},dataset:{}}};
+  const win={location:{hash:"",pathname:"/reset_actions.html",search:"?embedded=1",origin:"http://localhost"},parent:{postMessage(){}},history:{replaceState(){}}};
+  const fetch=async url=>{if(url==="/api/provider-policy")return {ok:true,json:async()=>policy};if(url==="/api/reset-action")return failRead?{ok:false,json:async()=>({ok:false,error:"Read failed"})}:{ok:true,json:async()=>({ok:true,action:{schemaVersion:2,mode:"off",threadIds:[],armed:false,oneShot:true,lastRun:null},threads:[],threadsAvailable:true})};return {ok:true,json:async()=>({ok:true})};};
+  const ctx={document:doc,window:win,AbortSignal:{timeout(){}},URLSearchParams,setTimeout,clearTimeout,fetch};
+  vm.createContext(ctx);vm.runInContext(source,ctx);
+  for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
+  assert.ok(radios.every(radio=>radio.disabled),"saved action read failure disables all modes");
+  assert.equal(node("#save").disabled,true,"saved action read failure blocks Save");
+  assert.equal(node("#saved-action-load-message").textContent,"Saved action is unavailable.");
+  assert.equal(node("#saved-action-retry").hidden,false);
+  failRead=false;node("#saved-action-retry").onclick();
+  for(let i=0;i<8;i++)await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(radios[0].checked,true,"a valid reload checks the saved Off mode");
+  assert.ok(radios.every(radio=>radio.disabled===false),"valid policy and saved state restore only permission-allowed options");
 }
 
 // Chat checkboxes update in place: toggling one keeps focus on the same chat and does not rebuild the list.

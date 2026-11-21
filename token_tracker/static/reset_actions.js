@@ -112,7 +112,7 @@
     } finally { state.claudeBusy=false;renderClaude(); }
   }
   function mode() { return document.querySelector('input[name="mode"]:checked')?.value || "off"; }
-  function setEmbeddedPart(id,text,unavailable=false){if(!embedded)return;const box=$(id),message=$(id+"-message"),retry=$(id+"-retry");if(box)box.hidden=!text;if(message)message.textContent=text||"";if(retry)retry.hidden=!unavailable;}
+  function setEmbeddedPart(id,text,unavailable=false){if(!embedded)return;const box=$(id),key=id.replace(/-state$/,"");const message=$(key+"-message"),retry=$(key+"-retry");if(box)box.hidden=!text;if(message)message.textContent=text||"";if(retry)retry.hidden=!unavailable;}
   function readPolicy(value) {
     if(!value||value.schemaVersion!==1||typeof value.generation!=="string"||!value.generation||!Array.isArray(value.providers))return null;
     const codex=value.providers.find(provider=>provider?.name==="Codex");
@@ -151,21 +151,21 @@
     resetNote.textContent=cont?"Queues ‘continue’ once at the next detected reset. A queued chat has not necessarily started.":"";resetNote.hidden=!cont||policyFailed||!state.policyReady;
     const offRadio=document.querySelector('input[name="mode"][value="off"]');
     const greetRadio=document.querySelector('input[name="mode"][value="greet"]'),continueRadio=document.querySelector('input[name="mode"][value="continue"]');
-    if(offRadio)offRadio.disabled=state.busy||!state.policyReady||!state.actionReady;
-    if(greetRadio)greetRadio.disabled=state.busy||!state.policyReady||!state.canGreet;
-    if(continueRadio)continueRadio.disabled=state.busy||!state.policyReady||!state.canContinue;
-    if(!state.canGreet&&!state.canContinue&&greetRadio)greetRadio.checked=false;
-    else if(mode()==="continue"&&!state.canContinue&&state.canGreet&&greetRadio)greetRadio.checked=true;
-    else if(mode()==="greet"&&!state.canGreet&&state.canContinue&&continueRadio)continueRadio.checked=true;
+    const actionReadReady=state.actionReady&&!state.actionLoadError;
+    if(offRadio)offRadio.disabled=state.busy||!state.policyReady||!actionReadReady;
+    if(greetRadio)greetRadio.disabled=state.busy||!state.policyReady||!actionReadReady||!state.canGreet;
+    if(continueRadio)continueRadio.disabled=state.busy||!state.policyReady||!actionReadReady||!state.canContinue;
     updatePermissionCopy();
     if(embedded){
       $("#modes").hidden=policyFailed;$("#message").hidden=!state.policyReady;
       $("#picker").hidden=policyFailed||mode()!=="continue";
       $("#save").textContent="Save";
       if(!state.policyReady)renderEmbeddedPolicy();
-      $("#saved-action-load-state").hidden=!state.actionChanged&&!state.actionLoadError;
+      const actionUnavailable=state.policyReady&&state.policy?.collect&&state.policy?.show&&!state.actionReady;
+      $("#saved-action-load-state").hidden=!state.actionChanged&&!state.actionLoadError&&!actionUnavailable;
       if(state.actionChanged)setEmbeddedPart("#saved-action-load-state","Saved action changed elsewhere. Discard this draft to load it.");
       else if(state.actionLoadError)setEmbeddedPart("#saved-action-load-state","Saved action is unavailable.",true);
+      else if(actionUnavailable)setEmbeddedPart("#saved-action-load-state","Saved action is unavailable.");
     }
     const query=$("#search").value.trim().toLocaleLowerCase();
     const available=state.threads.filter(t=>t.status!=="archived"&&String(t.title||"").toLocaleLowerCase().includes(query));
@@ -205,6 +205,7 @@
       applyPolicy(await policyResponse.json());
       if(!state.policyReady)throw new Error("Permission status is unavailable.");
       if(!state.policy.collect||!state.policy.show){state.action=null;state.threads=[];state.selected.clear();state.loaded=true;message("");return;}
+      render();
       const response=await fetch("/api/reset-action",{cache:"no-store",signal:AbortSignal.timeout(10000)});
       const data=await response.json(); if(!response.ok||!data.ok)throw new Error(data.error||"Settings are unavailable.");
       const action=data.action&&typeof data.action==="object"?{...data.action}:null;

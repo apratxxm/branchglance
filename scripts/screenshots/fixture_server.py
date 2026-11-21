@@ -154,17 +154,22 @@ def fixtures(models=2, reset_continue=False, tree_space=False):
 
 
 def reset_action(reset_continue, iso):
-    if not reset_continue:
-        return {"ok": True, "action": {"mode": "greet", "armed": False}, "threads": []}
     titles = ["Refactor auth", "Implement token validation", "Review edge cases", "Update API docs", "Check examples",
               "Plan the billing migration", "Fix flaky session tests", "Draft release notes", "Profile the runner"]
-    threads = [{"id": f"t{index}", "title": title, "status": "idle" if index % 3 else "running"}
-               for index, title in enumerate(titles)]
-    action = {"mode": "continue", "schemaVersion": 2, "armed": True, "threadIds": ["t0", "t2", "t4"],
-              "lastRun": {"at": iso(90), "targets": [{"threadId": "t0", "status": "queued"},
-                                                     {"threadId": "t2", "status": "queued"},
-                                                     {"threadId": "t4", "status": "skipped", "reason": "chat archived"}]}}
-    return {"ok": True, "action": action, "threads": threads}
+    thread_ids = [f"00000000-0000-4000-8000-{index + 1:012x}" for index in range(len(titles))]
+    if not reset_continue:
+        action = {"schemaVersion": 2, "mode": "greet", "armed": False, "threadIds": [],
+                  "oneShot": True, "lastRun": None}
+        return {"ok": True, "action": action, "threads": [], "threadsAvailable": True}
+    threads = [{"id": thread_id, "title": title, "status": "idle" if index % 3 else "running"}
+               for index, (thread_id, title) in enumerate(zip(thread_ids, titles))]
+    selected = [thread_ids[0], thread_ids[2], thread_ids[4]]
+    action = {"mode": "continue", "schemaVersion": 2, "armed": True, "threadIds": selected,
+              "oneShot": True,
+              "lastRun": {"at": iso(90), "targets": [{"threadId": selected[0], "status": "queued"},
+                                                     {"threadId": selected[1], "status": "queued"},
+                                                     {"threadId": selected[2], "status": "skipped", "reason": "chat archived"}]}}
+    return {"ok": True, "action": action, "threads": threads, "threadsAvailable": True}
 
 
 class Handler(SimpleHTTPRequestHandler):
