@@ -998,8 +998,19 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                         if kind in extra_updates:
                             guards = guards_for(offset, before[0])
                         elif start_offset == 0:
+                            cursor_tail = cursor_tails.get(kind)
+                            if cursor_tail is not None:
+                                cursor_guard = hashlib.blake2s(cursor_tail).digest()
+                            elif offset == 0:
+                                cursor_guard = hashlib.blake2s(b"").digest()
+                            elif old_guards[kind] is not None:
+                                # The old cursor bytes were checked against the
+                                # current handle before suffix reuse.
+                                cursor_guard = old_guards[kind][1]
+                            else:
+                                cursor_guard = guards_for(offset, before[0])[1]
                             guards = (hashlib.blake2s(prefix).digest(),
-                                      hashlib.blake2s(cursor_tails.get(kind, b"")).digest())
+                                      cursor_guard)
                         else:
                             guards = guards_for(offset, before[0])
                         results[kind] = states[kind]
@@ -1025,35 +1036,32 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                             if kind not in failed:
                                 _jsonl_checkpoint_remove(item["key"])
 
-                    # Publish active states in request order before touching
-                    # warm hits. A publication can evict a validated warm hit;
-                    # the later touch restores it through the bounded LRU helper.
+                    # Recency and publications follow the requested kind order.
+                    # A publication can evict a later validated hit; that hit
+                    # is restored through the bounded helper when its turn arrives.
                     active_by_kind = {item["spec"]["kind"]: item for item in active}
                     for spec in reducers:
                         kind = spec["kind"]
                         item = active_by_kind.get(kind)
-                        if item is None or kind in failed or not stable:
+                        if not stable:
+                            continue
+                        if item is None:
+                            hit = warm_hits.get(kind)
+                            if hit is not None:
+                                touch_or_restore(*hit)
+                            continue
+                        if kind in failed:
+                            if item["old"] is not None:
+                                touch_or_restore(item["key"], item["old"])
                             continue
                         _jsonl_checkpoint_remove(item["key"])
                         publication = staged.get(kind)
                         if publication is not None:
                             state, offset, guards, extra = publication
                             _jsonl_cache_checkpoint(item["key"], state, offset, before, guards, extra)
-                    for spec in reducers:
-                        hit = warm_hits.get(spec["kind"])
-                        if hit is not None:
-                            touch_or_restore(*hit)
-                        item = active_by_kind.get(spec["kind"])
-                        if item is not None and spec["kind"] in failed and item["old"] is not None:
-                            touch_or_restore(item["key"], item["old"])
 
             if retry:
                 continue
-            if opened != before:
-                for spec in reducers:
-                    hit = warm_hits.get(spec["kind"])
-                    if hit is not None:
-                        touch_or_restore(*hit)
             unavailable = failed if opened == before else set()
             return format_results(results, unavailable)
 

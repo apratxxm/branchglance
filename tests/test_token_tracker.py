@@ -4251,27 +4251,118 @@ def test_grouped_failed_handle_check_still_refreshes_path_stat_for_next_single_r
 
 
 def test_grouped_lru_order_matches_cold_then_warm_single_calls(tmp_path, monkeypatch):
-    group_path, single_path = tmp_path / "lru-group.jsonl", tmp_path / "lru-single.jsonl"
-    group_path.write_bytes(b'{"value":1}\n')
-    single_path.write_bytes(b'{"value":1}\n')
-    group_warm, group_cold = f"group-lru-warm-{id(group_path)}", f"group-lru-cold-{id(group_path)}"
-    single_warm, single_cold = f"single-lru-warm-{id(single_path)}", f"single-lru-cold-{id(single_path)}"
     initial = lambda: {"values": []}
     reduce = lambda state, item: state["values"].append(item["value"])
     with monkeypatch.context() as patch:
         patch.setattr(providers, "_JSONL_CHECKPOINT_MAX_ENTRIES", 1)
-        gwarm = {"kind": group_warm, "initial_state": initial, "reduce_record": reduce}
-        gcold = {"kind": group_cold, "initial_state": initial, "reduce_record": reduce}
-        assert providers._incremental_jsonl_reduce_group(group_path, [gwarm])[group_warm] == {"values": [1]}
-        assert providers._incremental_jsonl_reduce_group(group_path, [gcold, gwarm]) == {
-            group_cold: {"values": [1]}, group_warm: {"values": [1]}}
-        group_keys = list(providers._JSONL_CHECKPOINTS)
-        assert group_keys == [(group_warm, str(group_path.resolve(strict=False)))]
+        for label, order, expected_last in (
+            ("warm-cold", ("warm", "cold"), "cold"),
+            ("cold-warm", ("cold", "warm"), "warm"),
+        ):
+            group_path = tmp_path / f"lru-group-{label}.jsonl"
+            single_path = tmp_path / f"lru-single-{label}.jsonl"
+            group_path.write_bytes(b'{"value":1}\n')
+            single_path.write_bytes(b'{"value":1}\n')
+            group_warm, group_cold = f"group-lru-warm-{label}-{id(group_path)}", f"group-lru-cold-{label}-{id(group_path)}"
+            single_warm, single_cold = f"single-lru-warm-{label}-{id(single_path)}", f"single-lru-cold-{label}-{id(single_path)}"
+            gwarm = {"kind": group_warm, "initial_state": initial, "reduce_record": reduce}
+            gcold = {"kind": group_cold, "initial_state": initial, "reduce_record": reduce}
+            group_specs = [gwarm if name == "warm" else gcold for name in order]
+            single_kinds = {"warm": single_warm, "cold": single_cold}
 
-        assert providers._incremental_jsonl_reduce(single_warm, single_path, initial, reduce) == {"values": [1]}
-        assert providers._incremental_jsonl_reduce(single_cold, single_path, initial, reduce) == {"values": [1]}
-        assert providers._incremental_jsonl_reduce(single_warm, single_path, initial, reduce) == {"values": [1]}
-        assert list(providers._JSONL_CHECKPOINTS) == [(single_warm, str(single_path.resolve(strict=False)))]
+            assert providers._incremental_jsonl_reduce_group(group_path, [gwarm])[group_warm] == {"values": [1]}
+            grouped = providers._incremental_jsonl_reduce_group(group_path, group_specs)
+            assert grouped == {group_warm: {"values": [1]}, group_cold: {"values": [1]}}
+            group_keys = list(providers._JSONL_CHECKPOINTS)
+            assert group_keys == [(f"group-lru-{expected_last}-{label}-{id(group_path)}",
+                                   str(group_path.resolve(strict=False)))]
+
+            assert providers._incremental_jsonl_reduce(single_warm, single_path, initial, reduce) == {"values": [1]}
+            single_results = {}
+            for name in order:
+                kind = single_kinds[name]
+                single_results[kind] = providers._incremental_jsonl_reduce(kind, single_path, initial, reduce)
+            assert single_results == {single_warm: {"values": [1]}, single_cold: {"values": [1]}}
+            assert list(providers._JSONL_CHECKPOINTS) == [(single_kinds[expected_last],
+                                                           str(single_path.resolve(strict=False)))]
+
+
+def test_grouped_resumed_cursor_guard_is_retained_when_cold_kind_scans_from_zero(tmp_path):
+    path = tmp_path / "mixed-offset-incomplete.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    warm_kind, cold_kind = f"group-cursor-warm-{id(path)}", f"group-cursor-cold-{id(path)}"
+    single_warm, single_cold = f"single-cursor-warm-{id(path)}", f"single-cursor-cold-{id(path)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    warm_spec = {"kind": warm_kind, "initial_state": initial, "reduce_record": reduce}
+    cold_spec = {"kind": cold_kind, "initial_state": initial, "reduce_record": reduce}
+    assert providers._incremental_jsonl_reduce(warm_kind, path, initial, reduce) == {"values": [1]}
+    assert providers._incremental_jsonl_reduce(single_warm, path, initial, reduce) == {"values": [1]}
+    first_offset = path.stat().st_size
+    with path.open("ab") as handle:
+        handle.write(b'{"value":2')
+
+    grouped = providers._incremental_jsonl_reduce_group(path, [warm_spec, cold_spec])
+    single = providers._incremental_jsonl_reduce(single_warm, path, initial, reduce)
+    assert grouped[warm_kind] == single == {"values": [1]}
+    warm_checkpoint = providers._JSONL_CHECKPOINTS[(warm_kind, str(path.resolve(strict=False)))]
+    single_checkpoint = providers._JSONL_CHECKPOINTS[(single_warm, str(path.resolve(strict=False)))]
+    assert warm_checkpoint["offset"] == single_checkpoint["offset"] == first_offset
+    assert warm_checkpoint["prefix"] == single_checkpoint["prefix"]
+    assert warm_checkpoint["cursor"] == single_checkpoint["cursor"]
+    assert providers._JSONL_CHECKPOINTS[(cold_kind, str(path.resolve(strict=False)))]["offset"] == first_offset
+
+    with path.open("ab") as handle:
+        handle.write(b"}\n")
+    grouped = providers._incremental_jsonl_reduce_group(path, [warm_spec, cold_spec])
+    singles = {
+        single_warm: providers._incremental_jsonl_reduce(single_warm, path, initial, reduce),
+        single_cold: providers._incremental_jsonl_reduce(single_cold, path, initial, reduce),
+    }
+    assert grouped == {warm_kind: {"values": [1, 2]}, cold_kind: {"values": [1, 2]}}
+    assert singles == {single_warm: {"values": [1, 2]}, single_cold: {"values": [1, 2]}}
+
+
+def test_final_validation_failure_does_not_restore_an_evicted_warm_checkpoint(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "evicted-warm.jsonl"
+    other = tmp_path / "evictor.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    other.write_bytes(b'{"value":8}\n')
+    warm_kind = f"group-evicted-warm-{id(path)}"
+    cold_kind = f"group-evicted-cold-{id(path)}"
+    evict_kind = f"group-evictor-{id(other)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    warm_spec = {"kind": warm_kind, "initial_state": initial, "reduce_record": reduce}
+    entered_scan, release_scan = threading.Event(), threading.Event()
+
+    def blocking_reduce(state, item):
+        if not entered_scan.is_set():
+            entered_scan.set()
+            assert release_scan.wait(timeout=5)
+        state["values"].append(item["value"])
+
+    cold_spec = {"kind": cold_kind, "initial_state": initial, "reduce_record": blocking_reduce}
+    warm_key = (warm_kind, str(path.resolve(strict=False)))
+    cold_key = (cold_kind, str(path.resolve(strict=False)))
+    with monkeypatch.context() as patch:
+        patch.setattr(providers, "_JSONL_CHECKPOINT_MAX_ENTRIES", 1)
+        assert providers._incremental_jsonl_reduce_group(path, [warm_spec])[warm_kind] == {"values": [1]}
+        assert warm_key in providers._JSONL_CHECKPOINTS
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = pool.submit(providers._incremental_jsonl_reduce_group, path, [cold_spec, warm_spec])
+            assert entered_scan.wait(timeout=5)
+            assert providers._incremental_jsonl_reduce(evict_kind, other, initial, reduce) == {"values": [8]}
+            assert warm_key not in providers._JSONL_CHECKPOINTS
+            with path.open("ab") as handle:
+                handle.write(b'{"value":2}\n')
+            release_scan.set()
+            assert pending.result()[warm_kind] == {"values": [1]}
+        assert warm_key not in providers._JSONL_CHECKPOINTS
+        assert cold_key not in providers._JSONL_CHECKPOINTS
+        assert providers._incremental_jsonl_reduce(warm_kind, path, initial, reduce) == {"values": [1, 2]}
 
 
 def test_claude_single_kind_readers_use_the_canonical_group_specs(monkeypatch, tmp_path):
