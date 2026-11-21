@@ -209,7 +209,8 @@ def test_insights_quota_columns_align_in_missing_and_peak_states(page, height, q
           const live = [...quota.querySelectorAll(':scope > table.dash-quota-table tbody tr:first-child td')];
           const peak = [...quota.querySelectorAll('.dash-quota-peak tbody tr:first-child td')];
           // Compare rendered text edges on both sides; cell boxes include padding that text does not.
-          const textRight = cell => { const range = document.createRange(); range.selectNodeContents(cell.firstChild); return range.getBoundingClientRect().right; };
+          // Peak cells start with a screen-reader window label (sr-only); measure the visible value.
+          const textRight = cell => { const visible = [...cell.childNodes].find(node => !(node.classList && node.classList.contains('sr-only'))); const range = document.createRange(); range.selectNodeContents(visible); return range.getBoundingClientRect().right; };
           return {liveRight: live.map(textRight), peakRight: peak.map(textRight)};
         }""")
         assert len(alignment["liveRight"]) == 2 and len(alignment["peakRight"]) == 2, (height, quota_state, alignment)
