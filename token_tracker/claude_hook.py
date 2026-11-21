@@ -35,6 +35,115 @@ STDIN_TIMEOUT_SECONDS = 2.0
 PROCESS_DEADLINE_SECONDS = 5.0
 DROP_LOG_NAME = "dropped.jsonl"
 MAX_DROP_LOG_BYTES = 64 * 1024
+_WINDOWS_HOOK_LOCK = threading.RLock()
+_WINDOWS_HOOK_TYPES = None
+_WINDOWS_HOOK_APIS = {}
+_WINDOWS_HOOK_API_FACTORY = None
+
+
+def _windows_hook_types():
+    """Build Windows hook structures once; ctypes retains pointer types forever."""
+    global _WINDOWS_HOOK_TYPES
+    import ctypes
+    import ctypes.wintypes as wt
+    with _WINDOWS_HOOK_LOCK:
+        if _WINDOWS_HOOK_TYPES is None:
+            class ProcessEntry(ctypes.Structure):
+                _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                            ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wt.DWORD),
+                            ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
+                            ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                            ("szExeFile", ctypes.c_char * 260)]
+
+            class UNICODE_STRING(ctypes.Structure):
+                _fields_ = [("Length", wt.USHORT), ("MaximumLength", wt.USHORT), ("Buffer", wt.LPWSTR)]
+
+            class OBJECT_ATTRIBUTES(ctypes.Structure):
+                _fields_ = [("Length", wt.ULONG), ("RootDirectory", wt.HANDLE),
+                            ("ObjectName", ctypes.POINTER(UNICODE_STRING)), ("Attributes", wt.ULONG),
+                            ("SecurityDescriptor", ctypes.c_void_p), ("SecurityQualityOfService", ctypes.c_void_p)]
+
+            class IO_STATUS_BLOCK(ctypes.Structure):
+                _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+            class ATTR_TAG(ctypes.Structure):
+                _fields_ = [("attributes", wt.DWORD), ("tag", wt.DWORD)]
+
+            _WINDOWS_HOOK_TYPES = (ProcessEntry, UNICODE_STRING, OBJECT_ATTRIBUTES, IO_STATUS_BLOCK, ATTR_TAG)
+        return _WINDOWS_HOOK_TYPES
+
+
+def _windows_hook_api(key: str):
+    """Cache per-operation DLL bindings; avoid per-call signature setup in hot paths."""
+    global _WINDOWS_HOOK_API_FACTORY
+    import ctypes
+    import ctypes.wintypes as wt
+    with _WINDOWS_HOOK_LOCK:
+        factory = ctypes.WinDLL
+        if _WINDOWS_HOOK_API_FACTORY is not factory:
+            _WINDOWS_HOOK_APIS.clear()
+            _WINDOWS_HOOK_API_FACTORY = factory
+        if key in _WINDOWS_HOOK_APIS:
+            return _WINDOWS_HOOK_APIS[key]
+        if key == "process":
+            ProcessEntry = _windows_hook_types()[0]
+            kernel = factory("kernel32", use_last_error=True)
+            kernel.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+            kernel.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+            kernel.Process32First.argtypes = [wt.HANDLE, ctypes.POINTER(ProcessEntry)]
+            kernel.Process32First.restype = wt.BOOL
+            kernel.Process32Next.argtypes = [wt.HANDLE, ctypes.POINTER(ProcessEntry)]
+            kernel.Process32Next.restype = wt.BOOL
+            kernel.CloseHandle.argtypes = [wt.HANDLE]
+            api = kernel
+        elif key == "probe":
+            kernel = factory("kernel32", use_last_error=True)
+            kernel.OpenProcess.restype = ctypes.c_void_p
+            kernel.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(wt.FILETIME)] * 4
+            kernel.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.DWORD)]
+            api = kernel
+        elif key == "retention":
+            _unicode, OBJECT_ATTRIBUTES, IO_STATUS_BLOCK, ATTR_TAG = _windows_hook_types()[1:]
+            kernel = factory("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
+            kernel.CreateFileW.restype = wt.HANDLE
+            kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
+            kernel.CreateMutexW.restype = wt.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+            kernel.WaitForSingleObject.restype = wt.DWORD
+            kernel.ReleaseMutex.argtypes = [wt.HANDLE]
+            kernel.CloseHandle.argtypes = [wt.HANDLE]
+            kernel.GetFileInformationByHandleEx.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+            kernel.GetFileInformationByHandleEx.restype = wt.BOOL
+            kernel.SetFileInformationByHandle.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+            kernel.SetFileInformationByHandle.restype = wt.BOOL
+            kernel.GetFileType.argtypes = [wt.HANDLE]
+            kernel.GetFileType.restype = wt.DWORD
+            ntdll = factory("ntdll")
+            ntdll.NtCreateFile.argtypes = [ctypes.POINTER(wt.HANDLE), wt.ULONG,
+                                           ctypes.POINTER(OBJECT_ATTRIBUTES), ctypes.POINTER(IO_STATUS_BLOCK),
+                                           ctypes.c_void_p, wt.ULONG, wt.ULONG, wt.ULONG, wt.ULONG,
+                                           ctypes.c_void_p, wt.ULONG]
+            ntdll.NtCreateFile.restype = ctypes.c_long
+            api = (kernel, ntdll)
+        elif key == "append":
+            kernel = factory("kernel32", use_last_error=True)
+            kernel.CreateFileW.restype = wt.HANDLE
+            kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p,
+                                           wt.DWORD, wt.DWORD, wt.HANDLE]
+            kernel.GetFileSizeEx.argtypes = [wt.HANDLE, ctypes.POINTER(ctypes.c_longlong)]
+            kernel.GetFileSizeEx.restype = wt.BOOL
+            kernel.WriteFile.argtypes = [wt.HANDLE, ctypes.c_char_p, wt.DWORD,
+                                         ctypes.POINTER(wt.DWORD), ctypes.c_void_p]
+            kernel.WriteFile.restype = wt.BOOL
+            kernel.CloseHandle.argtypes = [wt.HANDLE]
+            api = kernel
+        else:
+            raise ValueError("unknown Windows hook API")
+        _WINDOWS_HOOK_APIS[key] = api
+        return api
 
 # Field-specific identifier formats. Observed Claude Code values: session and
 # prompt ids are UUIDs, agent ids are alphanumeric, tool-use ids are
@@ -106,15 +215,8 @@ def _process_table() -> dict[int, tuple[int, str]]:
     import ctypes
     import ctypes.wintypes as wt
 
-    class ProcessEntry(ctypes.Structure):
-        _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
-                    ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wt.DWORD),
-                    ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
-                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
-                    ("szExeFile", ctypes.c_char * 260)]
-
-    kernel = ctypes.windll.kernel32
-    kernel.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    ProcessEntry = _windows_hook_types()[0]
+    kernel = _windows_hook_api("process")
     snapshot = kernel.CreateToolhelp32Snapshot(2, 0)
     table: dict[int, tuple[int, str]] = {}
     if not snapshot or snapshot == ctypes.c_void_p(-1).value:
@@ -141,12 +243,7 @@ def probe_process(pid: int) -> tuple[str, int | None]:
     try:
         import ctypes
         import ctypes.wintypes as wt
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel.OpenProcess.restype = ctypes.c_void_p
-        kernel.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
-        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-        kernel.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(wt.FILETIME)] * 4
-        kernel.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(wt.DWORD)]
+        kernel = _windows_hook_api("probe")
         handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
             # ERROR_INVALID_PARAMETER means no such process; anything else
@@ -336,36 +433,8 @@ def _retention_windows(directory: str, today: date) -> None:
     import ctypes
     import ctypes.wintypes as wt
 
-    class UNICODE_STRING(ctypes.Structure):
-        _fields_ = [("Length", wt.USHORT), ("MaximumLength", wt.USHORT), ("Buffer", wt.LPWSTR)]
-    class OBJECT_ATTRIBUTES(ctypes.Structure):
-        _fields_ = [("Length", wt.ULONG), ("RootDirectory", wt.HANDLE),
-                    ("ObjectName", ctypes.POINTER(UNICODE_STRING)), ("Attributes", wt.ULONG),
-                    ("SecurityDescriptor", ctypes.c_void_p), ("SecurityQualityOfService", ctypes.c_void_p)]
-    class IO_STATUS_BLOCK(ctypes.Structure):
-        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
-    class ATTR_TAG(ctypes.Structure):
-        _fields_ = [("attributes", wt.DWORD), ("tag", wt.DWORD)]
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
-    kernel.CreateFileW.restype = wt.HANDLE
-    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
-    kernel.CreateMutexW.restype = wt.HANDLE
-    kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
-    kernel.WaitForSingleObject.restype = wt.DWORD
-    kernel.ReleaseMutex.argtypes = [wt.HANDLE]
-    kernel.CloseHandle.argtypes = [wt.HANDLE]
-    kernel.GetFileInformationByHandleEx.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
-    kernel.GetFileInformationByHandleEx.restype = wt.BOOL
-    kernel.SetFileInformationByHandle.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
-    kernel.SetFileInformationByHandle.restype = wt.BOOL
-    kernel.GetFileType.argtypes = [wt.HANDLE]
-    kernel.GetFileType.restype = wt.DWORD
-    ntdll = ctypes.WinDLL("ntdll")
-    ntdll.NtCreateFile.argtypes = [ctypes.POINTER(wt.HANDLE), wt.ULONG, ctypes.POINTER(OBJECT_ATTRIBUTES),
-                                  ctypes.POINTER(IO_STATUS_BLOCK), ctypes.c_void_p, wt.ULONG, wt.ULONG,
-                                  wt.ULONG, wt.ULONG, ctypes.c_void_p, wt.ULONG]
-    ntdll.NtCreateFile.restype = ctypes.c_long
+    UNICODE_STRING, OBJECT_ATTRIBUTES, IO_STATUS_BLOCK, ATTR_TAG = _windows_hook_types()[1:]
+    kernel, ntdll = _windows_hook_api("retention")
     mutex = kernel.CreateMutexW(None, False, "Local\\BranchglanceClaudeEventRetention")
     if not mutex:
         return
@@ -482,14 +551,7 @@ def _append_windows(path: str, line: bytes, cap: int) -> str:
     import ctypes
     import ctypes.wintypes as wt
 
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateFileW.restype = wt.HANDLE
-    kernel.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.HANDLE]
-    kernel.GetFileSizeEx.argtypes = [wt.HANDLE, ctypes.POINTER(ctypes.c_longlong)]
-    kernel.GetFileSizeEx.restype = wt.BOOL
-    kernel.WriteFile.argtypes = [wt.HANDLE, ctypes.c_char_p, wt.DWORD, ctypes.POINTER(wt.DWORD), ctypes.c_void_p]
-    kernel.WriteFile.restype = wt.BOOL
-    kernel.CloseHandle.argtypes = [wt.HANDLE]
+    kernel = _windows_hook_api("append")
     file_append_data, file_read_attributes = 0x0004, 0x0080
     share_all = 0x1 | 0x2 | 0x4  # read, write, delete
     open_always, normal = 4, 0x80

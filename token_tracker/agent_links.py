@@ -43,6 +43,89 @@ _UNLINKED_LOCK = threading.Lock()
 _UNLINKED_EXECUTIONS: dict[tuple[str, int, int], dict[str, Any]] = {}
 _RUN_ROWS: dict[tuple[str, int, int], dict[str, Any]] = {}
 _CLAUDE_PROCESS_LINKS: dict[str, dict[str, Any]] = {}
+_WINDOWS_RECEIPT_LOCK = threading.RLock()
+_WINDOWS_RECEIPT_TYPES = None
+_WINDOWS_RECEIPT_APIS = {}
+_WINDOWS_RECEIPT_API_FACTORY = None
+
+
+def _windows_receipt_types():
+    """Create receipt-related Windows structures once, before POINTER sees them."""
+    global _WINDOWS_RECEIPT_TYPES
+    with _WINDOWS_RECEIPT_LOCK:
+        if _WINDOWS_RECEIPT_TYPES is None:
+            from ctypes import wintypes
+
+            class GUID(ctypes.Structure):
+                _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                            ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+            class FILETIME(ctypes.Structure):
+                _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+            class INFO(ctypes.Structure):
+                _fields_ = [("attributes", wintypes.DWORD), ("created", FILETIME),
+                            ("accessed", FILETIME), ("written", FILETIME),
+                            ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD),
+                            ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
+                            ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
+
+            class SECURITY_ATTRIBUTES(ctypes.Structure):
+                _fields_ = [("length", wintypes.DWORD), ("descriptor", ctypes.c_void_p),
+                            ("inherit", wintypes.BOOL)]
+
+            _WINDOWS_RECEIPT_TYPES = (GUID, FILETIME, INFO, SECURITY_ATTRIBUTES)
+        return _WINDOWS_RECEIPT_TYPES
+
+
+def _windows_receipt_api(key: str):
+    """Cache per-operation DLLs so their function signatures remain independent."""
+    global _WINDOWS_RECEIPT_API_FACTORY
+    with _WINDOWS_RECEIPT_LOCK:
+        factory = ctypes.WinDLL
+        if _WINDOWS_RECEIPT_API_FACTORY is not factory:
+            _WINDOWS_RECEIPT_APIS.clear()
+            _WINDOWS_RECEIPT_API_FACTORY = factory
+        if key in _WINDOWS_RECEIPT_APIS:
+            return _WINDOWS_RECEIPT_APIS[key]
+        from ctypes import wintypes
+        if key == "known_folder":
+            shell = factory("shell32", use_last_error=True)
+            ole = factory("ole32", use_last_error=True)
+            GUID = _windows_receipt_types()[0]
+            shell.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
+                                                   ctypes.POINTER(ctypes.c_void_p)]
+            shell.SHGetKnownFolderPath.restype = ctypes.c_long
+            ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+            api = (shell, ole)
+        elif key == "file_identity":
+            kernel = factory("kernel32", use_last_error=True)
+            INFO = _windows_receipt_types()[2]
+            kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(INFO)]
+            kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+            api = kernel
+        elif key == "private_inbox":
+            kernel = factory("kernel32", use_last_error=True)
+            advapi = factory("advapi32", use_last_error=True)
+            SECURITY_ATTRIBUTES = _windows_receipt_types()[3]
+            advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+                wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+            advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+            kernel.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(SECURITY_ATTRIBUTES)]
+            kernel.CreateDirectoryW.restype = wintypes.BOOL
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                           ctypes.POINTER(SECURITY_ATTRIBUTES), wintypes.DWORD,
+                                           wintypes.DWORD, wintypes.HANDLE]
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.LocalFree.argtypes = [ctypes.c_void_p]
+            advapi.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+            advapi.SetFileSecurityW.restype = wintypes.BOOL
+            api = (kernel, advapi)
+        else:
+            raise ValueError("unknown Windows receipt API")
+        _WINDOWS_RECEIPT_APIS[key] = api
+        return api
 _CLAUDE_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
 _RECEIPT_CONFLICTS: set[tuple[str, int, int]] = set()
 _CODEX_LINK_CONTRADICTIONS: set[tuple[str, int, int]] = set()
@@ -954,17 +1037,10 @@ def _known_local_app_data() -> Path:
     if os.name != "nt":
         raise OSError("Windows known folder unavailable")
     from ctypes import wintypes
-    class GUID(ctypes.Structure):
-        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
-                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+    GUID = _windows_receipt_types()[0]
     folder = GUID(0xF1B32785, 0x6FBA, 0x4FCF,
                   (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91))
-    shell = ctypes.WinDLL("shell32", use_last_error=True)
-    ole = ctypes.WinDLL("ole32", use_last_error=True)
-    shell.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
-                                           ctypes.POINTER(ctypes.c_void_p)]
-    shell.SHGetKnownFolderPath.restype = ctypes.c_long
-    ole.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    shell, ole = _windows_receipt_api("known_folder")
     value = ctypes.c_void_p()
     # Ask for the real folder even from inside a packaged (MSIX) process, so a
     # receipt can never land in a package-private copy the widget doesn't read.
@@ -1012,18 +1088,8 @@ def _file_identity(fd: int) -> tuple[int, int, int] | None:
         info = os.fstat(fd)
         return (info.st_dev, info.st_ino, 0)
     import msvcrt
-    from ctypes import wintypes
-    class FILETIME(ctypes.Structure):
-        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
-    class INFO(ctypes.Structure):
-        _fields_ = [("attributes", wintypes.DWORD), ("created", FILETIME),
-                    ("accessed", FILETIME), ("written", FILETIME),
-                    ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD),
-                    ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
-                    ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(INFO)]
-    kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+    INFO = _windows_receipt_types()[2]
+    kernel = _windows_receipt_api("file_identity")
     info = INFO()
     if not kernel.GetFileInformationByHandle(msvcrt.get_osfhandle(fd), ctypes.byref(info)):
         return None
@@ -1041,29 +1107,13 @@ def _create_private_inbox(directory: Path, file: Path) -> None:
         return
     from ctypes import wintypes
     from .product import current_user_sid
-    class SECURITY_ATTRIBUTES(ctypes.Structure):
-        _fields_ = [("length", wintypes.DWORD), ("descriptor", ctypes.c_void_p),
-                    ("inherit", wintypes.BOOL)]
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
-    advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    SECURITY_ATTRIBUTES = _windows_receipt_types()[3]
+    kernel, advapi = _windows_receipt_api("private_inbox")
     descriptor = ctypes.c_void_p()
     sddl = f"D:P(A;OICI;GA;;;{current_user_sid()})(A;OICI;GA;;;SY)"
     if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
         raise ctypes.WinError(ctypes.get_last_error())
     attrs = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), descriptor, False)
-    kernel.CreateDirectoryW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(SECURITY_ATTRIBUTES)]
-    kernel.CreateDirectoryW.restype = wintypes.BOOL
-    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-                                   ctypes.POINTER(SECURITY_ATTRIBUTES), wintypes.DWORD,
-                                   wintypes.DWORD, wintypes.HANDLE]
-    kernel.CreateFileW.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    advapi.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
-    advapi.SetFileSecurityW.restype = wintypes.BOOL
     try:
         if not kernel.CreateDirectoryW(str(directory), ctypes.byref(attrs)) and ctypes.get_last_error() != 183:
             raise ctypes.WinError(ctypes.get_last_error())

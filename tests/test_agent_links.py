@@ -1776,10 +1776,12 @@ def test_known_folder_lookup_disables_package_redirection(monkeypatch):
         CoTaskMemFree = Fn(lambda _ptr: None)
 
     real = ctypes.WinDLL
-    monkeypatch.setattr(ctypes, "WinDLL", lambda name, **kw: Shell() if name == "shell32"
+    with monkeypatch.context() as context:
+        context.setattr(ctypes, "WinDLL", lambda name, **kw: Shell() if name == "shell32"
                         else Ole() if name == "ole32" else real(name, **kw))
-    assert str(agent_links._known_local_app_data()) == r"C:\Users\someone\AppData\Local"
-    assert seen == [agent_links.KF_FLAG_NO_PACKAGE_REDIRECTION] and seen[0] == 0x10000
+        assert str(agent_links._known_local_app_data()) == r"C:\Users\someone\AppData\Local"
+        assert seen == [agent_links.KF_FLAG_NO_PACKAGE_REDIRECTION] and seen[0] == 0x10000
+    assert str(agent_links._known_local_app_data()) != r"C:\Users\someone\AppData\Local"
 
 
 def test_current_run_is_not_retained_again_when_its_claude_parent_leaves_the_list(monkeypatch):
