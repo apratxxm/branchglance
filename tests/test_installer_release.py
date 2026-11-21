@@ -2209,3 +2209,65 @@ def test_bg_codex_restore_destination_race_keeps_foreign_and_backup(tmp_path, mo
         ReleaseOps(root).recover()
     assert (root / "bg-codex.exe").read_bytes() == b"foreign"
     assert (root / entry["backup"]).read_bytes() == b"old"
+
+
+def _install_while_old_wrapper_runs(tmp_path, root, source, monkeypatch):
+    from branchglance_installer import core
+    real_delete = core._delete_wrapper
+    def running_image(path, expected):
+        if Path(path).name.startswith("bg-codex.exe.old-"):
+            raise PermissionError(5, "Access is denied", str(path))
+        return real_delete(path, expected)
+    with monkeypatch.context() as patch:
+        patch.setattr(core, "_delete_wrapper", running_image)
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+            _release(tmp_path, "r2", version="1.0.1", build_id="b"), "1.0.1", "b")
+
+
+def _wrapper_backups(root):
+    return sorted(p.name for p in root.iterdir() if p.name.startswith("bg-codex.exe.old-"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
+def test_bg_codex_backup_kept_while_running_is_deleted_by_the_next_install(tmp_path, monkeypatch):
+    from branchglance_installer.core import read_owned_ledger
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "r1"), "1.0.0", "a")
+    source.write_bytes(b"second wrapper")
+    # A running Codex session keeps the old wrapper's image mapped: it can be renamed aside
+    # but not deleted, so the install has to keep its backup.
+    _install_while_old_wrapper_runs(tmp_path, root, source, monkeypatch)
+    kept = _wrapper_backups(root)
+    assert len(kept) == 1 and kept[0] in read_owned_ledger(root)["tools"]
+    source.write_bytes(b"third wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+        _release(tmp_path, "r3", version="1.0.2", build_id="c"), "1.0.2", "c")
+    assert (root / "bg-codex.exe").read_bytes() == b"third wrapper"
+    assert _wrapper_backups(root) == []
+    tools = read_owned_ledger(root)["tools"]
+    assert not any(name.startswith("bg-codex.exe.old-") for name in tools)
+    assert set(read_owned_ledger(root).get("wrapperFiles", {})) <= set(tools)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
+def test_bg_codex_retained_backup_replaced_by_a_foreign_file_is_kept(tmp_path, monkeypatch):
+    from branchglance_installer.core import read_owned_ledger
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "r1"), "1.0.0", "a")
+    source.write_bytes(b"second wrapper")
+    _install_while_old_wrapper_runs(tmp_path, root, source, monkeypatch)
+    (backup_name,) = _wrapper_backups(root)
+    (root / backup_name).unlink()
+    (root / backup_name).write_bytes(b"someone else's file")
+    source.write_bytes(b"third wrapper")
+    # The install's ownership check refuses before any retry can touch the replaced name.
+    with pytest.raises(SafetyError, match="Wrapper ownership cannot be verified"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+            _release(tmp_path, "r3", version="1.0.2", build_id="c"), "1.0.2", "c")
+    assert (root / backup_name).read_bytes() == b"someone else's file"
+    assert backup_name in read_owned_ledger(root)["tools"]
+    assert (root / "bg-codex.exe").read_bytes() == b"second wrapper"

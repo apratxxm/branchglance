@@ -1370,6 +1370,28 @@ class ReleaseOps:
                 ledger["tools"].remove(backup)
                 ledger.get("wrapperFiles", {}).pop(backup, None)
                 self._save_ledger(ledger)
+        self._retry_retained_wrapper_backups()
+
+    def _retry_retained_wrapper_backups(self) -> None:
+        """Delete wrapper backups that an earlier install had to keep because they were running.
+
+        A Codex session holding the old bg-codex.exe makes its backup undeletable at install
+        time; the ownership ledger keeps the exact name, and without a retry every update while
+        Codex runs left another copy behind. Ownership is re-verified before each delete.
+        """
+        ledger = self._ledger()
+        for name in list(ledger["tools"]):
+            if not re.fullmatch(r"bg-codex\.exe\.old-[0-9a-f]{32}", name):
+                continue
+            path = safe_child(self.root, name)
+            try:
+                if os.path.lexists(path):
+                    _delete_wrapper(path, ledger.get("wrapperFiles", {}).get(name))
+            except (OSError, SafetyError):
+                continue  # still running or no longer ours; keep the recorded name
+            ledger["tools"].remove(name)
+            ledger.get("wrapperFiles", {}).pop(name, None)
+            self._save_ledger(ledger)
 
     def install(self, staged: Path, version: str, build_id: str) -> dict:
         require_owned_root(self.root)
