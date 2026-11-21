@@ -1435,6 +1435,48 @@ def test_real_shell_link_adapter_uses_only_temp_shortcuts_and_removes_them(tmp_p
         assert adapter.read_shortcut(path) is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_temp_is_removed_when_the_rename_fails(tmp_path, monkeypatch):
+    from pathlib import Path
+    from branchglance_installer import windows
+    adapter = windows.WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+
+    def failing_move(source, destination, **_kwargs):
+        assert Path(source).is_file()
+        raise OSError(32, "sharing violation", str(destination))
+
+    monkeypatch.setattr(windows, "move_file_ex", failing_move)
+    with pytest.raises(OSError):
+        adapter.replace_shortcut(startup / "Branchglance.lnk", target=str(target), arguments="--background",
+                                 workdir=str(tmp_path), app_id="Branchglance.Test",
+                                 description="Branchglance managed shortcut")
+    assert list(startup.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_write_sweeps_only_its_own_stale_temps(tmp_path):
+    from branchglance_installer.windows import WindowsIntegrationAdapter
+    adapter = WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    stale = startup / ".Branchglance.4465ed9ac138417983c726c7c7dcd3e4.tmp.lnk"
+    stale.write_bytes(b"left by an interrupted install")
+    keep = [startup / ".Branchglance.not-a-uuid.tmp.lnk", startup / ".Other.4465ed9ac138417983c726c7c7dcd3e4.tmp.lnk",
+            startup / "Branchglance.4465ed9ac138417983c726c7c7dcd3e4.tmp.lnk", startup / "Other.lnk"]
+    for path in keep:
+        path.write_bytes(b"not ours")
+    adapter.replace_shortcut(startup / "Branchglance.lnk", target=str(target), arguments="--background",
+                             workdir=str(tmp_path), app_id="Branchglance.Test",
+                             description="Branchglance managed shortcut")
+    assert not stale.exists()
+    assert sorted(p.name for p in startup.iterdir()) == sorted([*(p.name for p in keep), "Branchglance.lnk"])
+
+
 @pytest.mark.skipif(sys.platform != "win32" or os.environ.get("BRANCHGLANCE_SKIP_REAL_REGISTRY_WRITE") == "1",
                     reason="HKCU adapter contract unavailable in this sandbox")
 def test_real_registry_adapter_uses_and_deletes_only_a_throwaway_test_key():
