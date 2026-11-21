@@ -19,7 +19,7 @@ TWO = "22222222-2222-4222-8222-222222222222"
 
 class Service:
     def __init__(self):
-        self.action = {"mode": "greet", "threadIds": [], "armed": False, "oneShot": True, "lastRun": None}
+        self.action = {"mode": "off", "threadIds": [], "armed": False, "oneShot": True, "lastRun": None}
         self.configure_calls = []
         self.error = None
 
@@ -93,6 +93,7 @@ def test_get_returns_action_and_candidates_and_candidate_failure_preserves_actio
     {"mode": "greet", "threadIds": [], "prompt": "x"}, {"mode": "other", "threadIds": []},
     {"mode": "continue", "threadIds": ["bad"]}, {"mode": "continue", "threadIds": [ONE] * 21},
     {"mode": "continue", "threadIds": []}, {"mode": [], "threadIds": []},
+    {"mode": "off", "threadIds": [ONE]},
 ])
 def test_rejects_invalid_body_without_configuring(api, body):
     service, port = api
@@ -184,6 +185,16 @@ def test_reset_configuration_requires_explicit_send_before_service_call(api, mon
     status, body = request(port, "/api/reset-action", {"mode": "greet", "threadIds": []})
     assert status == 403 and "SEND" in body["error"]
     assert service.configure_calls == []
+
+
+def test_off_mode_can_be_saved_without_send_permission(api, monkeypatch):
+    service, port = api
+    policies = dict(provider_policy.POLICIES)
+    policies["Codex"] = replace(policies["Codex"], send=False, send_origin="default")
+    monkeypatch.setattr(provider_policy, "POLICIES", policies)
+    status, body = request(port, "/api/reset-action", {"mode": "off", "threadIds": []})
+    assert status == 200 and body["action"]["mode"] == "off" and body["action"]["armed"] is False
+    assert service.configure_calls == [("off", [])]
 
 
 def test_service_provider_policy_error_maps_to_generic_forbidden(api):
@@ -355,3 +366,42 @@ def test_identity_reports_product_build_pid_and_state_root(api):
 def test_sensitive_get_rejects_foreign_origin(api, path):
     _, port = api
     assert request(port, path, headers={"Origin": "https://evil.example"})[0] == 403
+
+
+def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypatch, tmp_path):
+    from token_tracker import widget
+
+    requested = []
+    body = b"provider,coverageStatus\r\nCodex,complete\r\n"
+
+    def export(path, query):
+        requested.append((path, query))
+        return 200, {"Content-Type": "text/csv; charset=utf-8"}, body
+
+    collision = tmp_path / "example.txt.csv"
+    collision.write_bytes(b"keep existing file")
+
+    class SaveWindow:
+        selected = str(tmp_path / "example.txt")
+
+        def create_file_dialog(self, dialog_type, **kwargs):
+            requested.append((dialog_type, kwargs))
+            return self.selected
+
+    monkeypatch.setattr(widget.ledger_service, "http_response", export)
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app.window = SaveWindow()
+    api = widget.WindowApi(None, None, None, on_save_ledger_csv=app.save_ledger_csv)
+    assert api.save_ledger_csv() == {"ok": True}
+    assert requested[0] == (widget.ledger_service.EXPORT_PATH, {"range": ["all"], "format": ["csv"]})
+    assert requested[1][0] == widget.webview.FileDialog.SAVE
+    assert requested[1][1]["save_filename"] == "branchglance-ledger-all.csv"
+    assert (tmp_path / "example.txt").read_bytes() == body
+    assert collision.read_bytes() == b"keep existing file"
+
+    SaveWindow.selected = None
+    assert api.save_ledger_csv() == {"ok": False, "cancelled": True}
+    dialog_calls = len(requested)
+    monkeypatch.setattr(widget.ledger_service, "http_response", lambda *_args: (503, {}, b""))
+    assert api.save_ledger_csv() == {"ok": False, "error": "Saved history is unavailable or starting."}
+    assert len(requested) == dialog_calls, "an unavailable filtered export does not open the native dialog"

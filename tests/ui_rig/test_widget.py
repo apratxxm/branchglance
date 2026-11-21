@@ -334,6 +334,11 @@ def test_settings_rerender_keeps_reset_form_loaded(page):
 def test_settings_reachable(page):
     open_settings(page)
     content = page.locator(ui.SETTINGS_SCROLLER)
+    frame = page.frame_locator(ui.RESET_FRAME)
+    expect(frame.locator("#saved-action-state")).to_be_visible()
+    expect(frame.locator("#saved-action-state")).to_have_text("No continuation scheduled")
+    # The embedded reset form grows the page once it loads; measure after layout settles.
+    content.evaluate("el => new Promise(resolve => { let last = -1, stable = 0; const tick = () => { const h = el.scrollHeight; stable = h === last ? stable + 1 : 0; last = h; if (stable >= 3) resolve(); else requestAnimationFrame(tick); }; tick(); })")
     size = content.evaluate("el => ({scroll: el.scrollHeight, client: el.clientHeight})")
     assert size["scroll"] > size["client"]
     assert content.evaluate("el => ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)")
@@ -533,13 +538,13 @@ def test_horizontal_layout(page):
 
 
 def test_settings_keyboard_reaches_controls(page):
-    # The shared fixture denies automatic actions; grant greet only to the embedded test frame.
+    # The shared fixture denies automatic actions; grant all reset choices to the embedded test frame.
     def reset_frame_policy(route):
         if urlsplit(route.request.frame.url).path == "/reset_actions.html":
             route.fulfill(json={"schemaVersion": 1, "generation": "ui-rig-reset-frame",
                                 "providers": [{"name": "Codex", "collect": True, "show": True,
                                                "send": True, "sendOrigin": "provider_env",
-                                               "capabilities": {"greet": True, "continue": False}}]})
+                                               "capabilities": {"greet": True, "continue": True}}]})
         else:
             route.continue_()
 
@@ -549,10 +554,31 @@ def test_settings_keyboard_reaches_controls(page):
     frame = page.frame_locator(ui.RESET_FRAME)
     # Count the embedded form only after it has rendered, or the expected total races its load.
     expect(frame.locator(ui.INTERACTIVE).filter(visible=True).first).to_be_visible()
+    # Loading state shows its own controls; count only once the saved mode is selected and every granted mode is enabled.
+    expect(frame.locator('input[name="mode"]:checked')).to_have_count(1)
+    expect(frame.locator('input[name="mode"]:not([disabled])')).to_have_count(3)
     inner = frame.locator(ui.INTERACTIVE).filter(visible=True)
-    expected_outer, expected_inner = controls.count(), inner.count()
+    expected_outer = controls.count()
+    enabled_radios = frame.locator('input[name="mode"]:not([disabled])')
+    radio_count = enabled_radios.count()
+    expected_inner = inner.count() - radio_count + (1 if radio_count else 0)
     expected = expected_outer + expected_inner
     assert expected_outer > 0
+
+    off = frame.locator('input[name="mode"][value="off"]')
+    greet = frame.locator('input[name="mode"][value="greet"]')
+    continuation = frame.locator('input[name="mode"][value="continue"]')
+    off.focus()
+    page.keyboard.press("ArrowDown")
+    expect(greet).to_be_checked()
+    page.keyboard.press("ArrowDown")
+    expect(continuation).to_be_checked()
+    page.keyboard.press("ArrowUp")
+    expect(greet).to_be_checked()
+    page.keyboard.press("ArrowUp")
+    expect(off).to_be_checked()
+    frame.get_by_role("button", name="Discard changes").click()
+
     page.locator(ui.SETTINGS_TAB).focus()
     seen = set()
     for _ in range(100):
@@ -564,7 +590,10 @@ def test_settings_keyboard_reaches_controls(page):
                 seen.add(("outer", index))
         inner_index = inner.evaluate_all("els => els.indexOf(document.activeElement)")
         if inner_index >= 0 and page.locator(ui.RESET_FRAME).evaluate("el => document.activeElement === el"):
-            seen.add(("frame", inner_index))
+            if inner.nth(inner_index).get_attribute("name") == "mode":
+                seen.add(("frame", "mode-radio-group"))
+            else:
+                seen.add(("frame", inner_index))
     assert len(seen) == expected, (len(seen), expected)
 
 

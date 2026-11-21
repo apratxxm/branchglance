@@ -50,6 +50,6 @@ test("public settings copy states the explicit auto-actions prerequisite", () =>
   const settingsPath = new URL("../token_tracker/static/reset_actions.js", import.meta.url);
   if (!fs.existsSync(settingsPath)) return;
   const settings = fs.readFileSync(settingsPath, "utf8");
-  assert.match(settings, /Choice saved\. It runs at the next reset only while auto actions are enabled\./);
+  assert.match(settings, /Choice saved\. It runs only while startup permissions allow it\./);
   assert.doesNotMatch(settings, /This action is armed for the next genuine reset/);
 });
