@@ -74,14 +74,16 @@ class Ledger:
             else:
                 try:
                     store.quick_check(conn)
-                    store.migrate(conn)
-                    return conn
-                except sqlite3.OperationalError:
-                    conn.close()
-                    raise
                 except sqlite3.DatabaseError:
                     conn.close()
                     self.recovery = self._begin_recovery("corrupt")
+                else:
+                    try:
+                        store.migrate(conn)
+                    except BaseException:
+                        conn.close()
+                        raise
+                    return conn
         return self._open_replacement()
 
     def _open_replacement(self) -> sqlite3.Connection:
@@ -222,10 +224,13 @@ class Ledger:
     def _payload(conn: sqlite3.Connection, now: float, start: float, end: float, *,
                  show: Mapping[str, bool] | None, time_zone: str, plan_fee_usd: float | None) -> dict[str, Any]:
         with store.snapshot(conn):
+            schema = int(store.meta_value(conn, LEDGER_SCHEMA_VERSION_KEY) or 0)
+            target = max(store.MIGRATIONS)
+            if schema != target:
+                raise LedgerUnavailable(f"ledger schema {schema} is incompatible with supported schema {target}")
             raw = store.summary_rows(conn, _hour(start), int(end))
             coverage = Ledger._coverage(conn, now, show)
             revision = int(store.meta_value(conn, "revision") or 0)
-            schema = int(store.meta_value(conn, LEDGER_SCHEMA_VERSION_KEY) or 0)
         rows = Ledger._rows(raw, show)
         totals = {"requests": 0, "inputTotal": 0, "outputTotal": 0, "totalTokens": 0, "knownCostUsd": None,
                   "costComplete": True, "unpricedTokens": 0}

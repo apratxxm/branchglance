@@ -663,6 +663,7 @@ class Ingestor:
             if fields is None:
                 omissions.append((omission_key, True, message_key, epoch))
                 continue
+            prompt_evidence = model_mod.claude_prompt_evidence(usage)
             if epoch is None:
                 unknown += 1
                 omissions.append((omission_key, True, message_key, epoch))
@@ -673,7 +674,8 @@ class Ingestor:
             facts.append({
                 "provider": model_mod.CLAUDE, "fact_key": model_mod.fact_key(model_mod.CLAUDE, identity),
                 "thread_id": state["thread"], "model": claude_provider.public_model(message.get("model")) or "unknown",
-                "price_tier": model_mod.STANDARD_TIER, "hour": _hour(epoch), "fields": fields, "merge": True,
+                "price_tier": model_mod.claude_price_tier(claude_provider.public_model(message.get("model")) or "unknown", prompt_evidence),
+                "prompt_evidence": prompt_evidence, "hour": _hour(epoch), "fields": fields, "merge": True,
                 "segment": dict(state["segment"]) if state["segment"] else None,
             })
         threads: dict[str, Any] = {}

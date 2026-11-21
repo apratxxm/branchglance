@@ -992,7 +992,7 @@ def _claude_and_codex_rows(ledger):
             for table in tables}
 
 
-def test_schema_three_clears_codex_keeps_claude_and_reingests(tmp_path):
+def test_schema_three_clears_codex_keeps_claude_and_reingests(tmp_path, monkeypatch):
     ledger, claude, codex = open_ledger(tmp_path)
     write_jsonl(claude_file(claude, 's1'), claude_lines((10, 'msg_a', 5)))
     write_jsonl(codex_file(codex, 'T1'), codex_meta('T1', 10) + [codex_count(11, input_tokens=10, output_tokens=5)])
@@ -1005,6 +1005,7 @@ def test_schema_three_clears_codex_keeps_claude_and_reingests(tmp_path):
     raw.execute("UPDATE meta SET value='2' WHERE key='schemaVersion'")  # the previous version's ledger
     raw.execute("INSERT INTO overrides(provider, thread_id, kind) VALUES('Codex', 'T1', 'review')")  # a user decision
     raw.close()
+    monkeypatch.setattr(store, "MIGRATIONS", {version: steps for version, steps in store.MIGRATIONS.items() if version <= 3})
     ledger = Ledger(tmp_path / 'data', claude_root=claude, codex_root=codex, clock=clock_at(3600))
     assert ledger.health()['schemaVersion'] == 3
     assert ledger.conn.execute("SELECT COUNT(*) FROM facts WHERE provider='Codex'").fetchone()[0] == 0
@@ -1015,6 +1016,85 @@ def test_schema_three_clears_codex_keeps_claude_and_reingests(tmp_path):
     ledger.ingest(ALL)
     assert summary(ledger)['totals']['totalTokens'] == codex_total
     assert _claude_and_codex_rows(ledger)['facts'] == claude_before['facts']
+
+
+def _seed_schema_three_facts(conn):
+    def fact(provider, key, thread, model, tier, total):
+        conn.execute(
+            "INSERT INTO facts(provider,fact_key,thread_id,model,price_tier,hour,kind,rule,slug,classification_version,"
+            "segment_turn,input_total,output_total,total,cached_read,cache_write_5m,cache_write_1h,cache_write_unknown,"
+            "reasoning_output,revisions) VALUES(?,?,?,?,?,0,'lead','default',NULL,1,NULL,?,0,?,NULL,NULL,NULL,NULL,NULL,0)",
+            (provider,key,thread,model,tier,total,total))
+    fact('Claude','c-long','C1','claude-haiku-5-5','standard',100001)
+    fact('Claude','c-old-long','C4','claude-haiku-5-5','long-context',40)
+    fact('Claude','c-short','C2','claude-sonnet-4-5','standard',40)
+    fact('Codex','x-long','X1','gpt-5-codex','long-context',70)
+
+
+def test_schema_four_migrates_prompt_tiers_and_preserves_other_state(tmp_path, monkeypatch):
+    original = store.MIGRATIONS.copy()
+    monkeypatch.setattr(store, 'MIGRATIONS', {v: steps for v, steps in original.items() if v <= 3})
+    ledger, claude, codex = open_ledger(tmp_path)
+    with store.transaction(ledger.conn):
+        _seed_schema_three_facts(ledger.conn)
+        ledger.conn.execute("INSERT INTO overrides VALUES('Claude','C1','review')")
+        store.stage_observation(ledger.conn, 'source', 1, 1, {
+            'provider':'Claude','fact_key':'staged','thread_id':'C3','model':'claude-haiku-5-5',
+            'price_tier':'standard','prompt_evidence':100001,'hour':0,'kind':'lead','rule':'default',
+            'classification_version':1,'merge':True,'fields':{'input_total':100001,'output_total':0,'total':100001,
+            'cached_read':None,'cache_write_5m':None,'cache_write_1h':None,'cache_write_unknown':None,'reasoning_output':None}})
+        ledger.conn.execute("UPDATE meta SET value='30' WHERE key='revision'")
+        store.rebuild_rollups(ledger.conn, store.load_overrides(ledger.conn))
+    staged_before = ledger.conn.execute("SELECT observation FROM provisional_facts").fetchall()
+    codex_before = ledger.conn.execute("SELECT provider,fact_key,thread_id,model,price_tier,hour,kind,rule,slug,"
+                                       "classification_version,segment_turn,input_total,output_total,total,cached_read,"
+                                       "cache_write_5m,cache_write_1h,cache_write_unknown,reasoning_output,revisions "
+                                       "FROM facts WHERE provider='Codex'").fetchall()
+    ledger.close()
+    monkeypatch.setattr(store, 'MIGRATIONS', original)
+    upgraded = Ledger(tmp_path / 'data', claude_root=claude, codex_root=codex, clock=clock_at(3600))
+    assert upgraded.health()['schemaVersion'] == 4
+    assert upgraded.conn.execute("SELECT value FROM meta WHERE key='revision'").fetchone() == ('31',)
+    assert upgraded.conn.execute("SELECT fact_key,price_tier,prompt_peak FROM facts WHERE provider='Claude' ORDER BY fact_key").fetchall() == [
+        ('c-long','long-context',100001), ('c-old-long','standard',40), ('c-short','standard',40)]
+    assert upgraded.conn.execute("SELECT provider,fact_key,thread_id,model,price_tier,hour,kind,rule,slug,"
+                                 "classification_version,segment_turn,input_total,output_total,total,cached_read,"
+                                 "cache_write_5m,cache_write_1h,cache_write_unknown,reasoning_output,revisions "
+                                 "FROM facts WHERE provider='Codex'").fetchall() == codex_before
+    assert upgraded.conn.execute("SELECT provider,thread_id,kind FROM overrides").fetchall() == [('Claude','C1','review')]
+    assert upgraded.conn.execute("SELECT observation FROM provisional_facts").fetchall() == staged_before
+    expected = upgraded.conn.execute("SELECT * FROM hourly ORDER BY 1,2,3,4,5,6").fetchall()
+    with store.transaction(upgraded.conn):
+        store.rebuild_rollups(upgraded.conn, store.load_overrides(upgraded.conn))
+    assert upgraded.conn.execute("SELECT * FROM hourly ORDER BY 1,2,3,4,5,6").fetchall() == expected
+    upgraded.close()
+
+
+def test_migration_failure_keeps_schema_three_file_in_place(tmp_path, monkeypatch):
+    import sqlite3
+    original = store.MIGRATIONS.copy()
+    monkeypatch.setattr(store, 'MIGRATIONS', {v: steps for v, steps in original.items() if v <= 3})
+    ledger, claude, codex = open_ledger(tmp_path)
+    with store.transaction(ledger.conn):
+        _seed_schema_three_facts(ledger.conn)
+        ledger.conn.execute("UPDATE meta SET value='12' WHERE key='revision'")
+    ledger.close()
+
+    def fail_after_write(conn):
+        conn.execute("UPDATE facts SET input_total=0 WHERE provider='Claude'")
+        raise sqlite3.IntegrityError('injected migration failure')
+    monkeypatch.setattr(store, 'MIGRATIONS', {**original, 4: (fail_after_write,)})
+    data = tmp_path / 'data'
+    db_path = data / store.DB_NAME
+    with pytest.raises(sqlite3.IntegrityError, match='injected migration failure'):
+        Ledger(data, claude_root=claude, codex_root=codex, clock=clock_at(3600))
+    assert db_path.exists()
+    assert not list(data.glob(store.DB_NAME + '.corrupt-*'))
+    conn = sqlite3.connect(db_path)
+    assert conn.execute("SELECT value FROM meta WHERE key='schemaVersion'").fetchone() == ('3',)
+    assert conn.execute("SELECT input_total FROM facts WHERE provider='Claude' ORDER BY fact_key").fetchall() == [(100001,), (40,), (40,)]
+    assert 'prompt_peak' not in {row[1] for row in conn.execute('PRAGMA table_info(facts)')}
+    conn.close()
 
 
 def _own_first_counter(seconds: int, total: int) -> dict:
