@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import functools
-import json
 import hashlib
+import json
 import math
 import os
 import re
@@ -15,6 +15,7 @@ from collections import OrderedDict, defaultdict
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -401,6 +402,11 @@ class _CompactTokenEvents:
     def __init__(self) -> None:
         self._rows: list[tuple[Any, ...]] = []
 
+    def copy(self) -> "_CompactTokenEvents":
+        copied = _CompactTokenEvents()
+        copied._rows = self._rows.copy()
+        return copied
+
     def append(self, timestamp: Any, rate_limits: Any, model: Any, usage: Any, last: Any,
                inherited: bool) -> None:
         if self._rows:
@@ -445,6 +451,45 @@ class _CompactTokenEvents:
 
 _FILE_MEMO: dict[tuple[str, str], tuple[tuple[int, ...], Any]] = {}
 _FILE_MEMO_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _TokenEventResume:
+    offset: int
+    complete_rows: int
+    model: Any
+    started: float | None
+    identity: tuple[int, int]
+    digest: bytes
+
+
+_CODEX_FIRST_RECORD_CACHE_MAX = 4096
+_CODEX_FIRST_RECORD_CACHE: OrderedDict[str, tuple[tuple[int, int], int, bool]] = OrderedDict()
+_CODEX_FIRST_RECORD_CACHE_LOCK = threading.Lock()
+
+
+def _codex_is_subagent(path: Path, stat: os.stat_result) -> bool:
+    """Read and memoize the authoritative first-record agent marker."""
+    resolved = str(path.resolve())
+    identity = (stat.st_dev, stat.st_ino)
+    with _CODEX_FIRST_RECORD_CACHE_LOCK:
+        cached = _CODEX_FIRST_RECORD_CACHE.get(resolved)
+        if cached is not None and cached[0] == identity and stat.st_size >= cached[1]:
+            _CODEX_FIRST_RECORD_CACHE.move_to_end(resolved)
+            return cached[2]
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            first = json.loads(handle.readline()).get("payload") or {}
+        source = first.get("source") or {}
+        value = bool(first.get("parent_thread_id")) or _chat_source(source) in {"subagent", "review"}
+    except (OSError, ValueError, AttributeError):
+        return False
+    with _CODEX_FIRST_RECORD_CACHE_LOCK:
+        _CODEX_FIRST_RECORD_CACHE[resolved] = (identity, stat.st_size, value)
+        _CODEX_FIRST_RECORD_CACHE.move_to_end(resolved)
+        while len(_CODEX_FIRST_RECORD_CACHE) > _CODEX_FIRST_RECORD_CACHE_MAX:
+            _CODEX_FIRST_RECORD_CACHE.popitem(last=False)
+    return value
 
 
 class _TimedProjection:
@@ -3377,8 +3422,9 @@ class CodexProvider:
     _TOKEN_EVENT_CACHE_MAX_BYTES = 48 * 1024 * 1024
     _TOKEN_EVENT_CACHE_ENTRY_OVERHEAD = 256
     _TOKEN_EVENT_PATH_LOCK_MAX = 512
-    _token_event_cache: OrderedDict[tuple[str, int, int, int, int, int], list[dict[str, Any]]] = OrderedDict()
+    _token_event_cache: OrderedDict[tuple[str, int, int, int, int, int], _CompactTokenEvents] = OrderedDict()
     _token_event_cache_sizes: dict[tuple[str, int, int, int, int, int], int] = {}
+    _token_event_resume: dict[tuple[str, int, int, int, int, int], _TokenEventResume] = {}
     _token_event_cache_bytes = 0
     _token_event_cache_lock = threading.Lock()
     _token_event_path_locks: OrderedDict[str, tuple[threading.Lock, int]] = OrderedDict()
@@ -3553,39 +3599,122 @@ class CodexProvider:
                     cls._token_event_cache.move_to_end(key)
                     return cached
 
-            events = _CompactTokenEvents()
-            model = None
-            started: float | None = None
-            try:
-                with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                    for line in handle:
-                        _raise_if_snapshot_shutdown()
-                        try:
-                            item = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        payload = item.get("payload") or {}
-                        if item.get("type") == "session_meta":
-                            if started is None:
-                                started = _timestamp_epoch(payload.get("timestamp"))
-                            continue
-                        if item.get("type") == "turn_context":
-                            model = payload.get("model") or model
-                            continue
+            identity = (key[3], key[4])
+            resume: _TokenEventResume | None = None
+            previous_key: tuple[str, int, int, int, int, int] | None = None
+            with cls._token_event_cache_lock:
+                candidates = [item for item in cls._token_event_cache if item[0] == resolved]
+                if candidates:
+                    previous_key = candidates[-1]
+                    candidate = cls._token_event_resume.get(previous_key)
+                    if (candidate is not None and candidate.identity == identity
+                            and key[1] >= candidate.offset):
+                        resume = candidate
+
+            def digest_before(handle: Any, offset: int) -> bytes:
+                start = max(0, offset - 4096)
+                handle.seek(start)
+                value = hashlib.blake2s(handle.read(offset - start), digest_size=16).digest()
+                handle.seek(offset)
+                return value
+
+            def consume(handle: Any, events: _CompactTokenEvents, model: Any,
+                        started: float | None, offset: int) -> tuple[Any, float | None, int, int, bytes]:
+                handle.seek(offset)
+                consumed = offset
+                complete_rows = len(events._rows)
+
+                def parse_line(line: bytes, *, committed: bool) -> tuple[Any, float | None]:
+                    try:
+                        item = json.loads(line.decode("utf-8", errors="ignore"))
+                    except json.JSONDecodeError:
+                        return model, started
+                    if not isinstance(item, dict):
+                        return model, started
+                    payload = item.get("payload") or {}
+                    if not isinstance(payload, dict):
+                        return model, started
+                    next_model, next_started = model, started
+                    if item.get("type") == "session_meta":
+                        if next_started is None:
+                            next_started = _timestamp_epoch(payload.get("timestamp"))
+                    elif item.get("type") == "turn_context":
+                        next_model = payload.get("model") or next_model
+                    else:
                         info = payload.get("info") or {}
-                        if info.get("total_token_usage"):
+                        if isinstance(info, dict) and info.get("total_token_usage"):
                             recorded = _timestamp_epoch(item.get("timestamp"))
                             events.append(
                                 item.get("timestamp"), payload.get("rate_limits"), model,
                                 info["total_token_usage"],
                                 info.get("last_token_usage") if isinstance(info.get("last_token_usage"), dict) else None,
-                                # Counters copied from a source thread before this
-                                # session began are a baseline, never new usage.
                                 started is not None and recorded is not None and recorded < started,
                             )
-            except OSError:
-                return []
+                    return (next_model, next_started) if committed else (model, started)
 
+                while True:
+                    _raise_if_snapshot_shutdown()
+                    line = handle.readline()
+                    if not line:
+                        break
+                    if not line.endswith(b"\n"):
+                        # Keep the offset before this tail. If it is already a complete
+                        # JSON record, expose it provisionally for legacy readers; a
+                        # later append replays it from the committed boundary once.
+                        parse_line(line, committed=False)
+                        break
+                    consumed = handle.tell()
+                    model, started = parse_line(line, committed=True)
+                    complete_rows = len(events._rows)
+                return model, started, consumed, complete_rows, digest_before(handle, consumed)
+
+            def consume_path() -> tuple[Any, float | None, int, int, bytes]:
+                with path.open("rb") as handle:
+                    file_stat = os.fstat(handle.fileno())
+                    if (file_stat.st_dev, file_stat.st_ino) != identity:
+                        raise OSError("session file identity changed during read")
+                    return consume(handle, events, None, None, 0)
+
+            events = _CompactTokenEvents()
+            model = None
+            started: float | None = None
+            offset = 0
+            used_resume = False
+            try:
+                if resume is not None and previous_key is not None:
+                    prior = cls._token_event_cache.get(previous_key)
+                    if isinstance(prior, _CompactTokenEvents):
+                        with path.open("rb") as handle:
+                            current = os.fstat(handle.fileno())
+                            if ((current.st_dev, current.st_ino) == identity
+                                    and current.st_size >= resume.offset
+                                    and digest_before(handle, resume.offset) == resume.digest):
+                                events = prior.copy()
+                                del events._rows[resume.complete_rows:]
+                                model, started = resume.model, resume.started
+                                model, started, offset, complete_rows, event_digest = consume(
+                                    handle, events, model, started, resume.offset)
+                                used_resume = True
+                if not used_resume:
+                    events = _CompactTokenEvents()
+                    model, started, offset, complete_rows, event_digest = consume_path()
+            except OSError:
+                if used_resume:
+                    try:
+                        events = _CompactTokenEvents()
+                        model, started, offset, complete_rows, event_digest = consume_path()
+                    except OSError:
+                        return []
+                else:
+                    return []
+
+            event_resume = _TokenEventResume(
+                offset, complete_rows, model, started, identity,
+                event_digest,
+            )
+
+            # The existing per-entry overhead budget covers the small resume
+            # record and digest as well as the cache key/container bookkeeping.
             retained_bytes = cls._estimate_token_event_cache_entry_bytes(key, events)
             try:
                 unchanged = key == (resolved, *_stat_fingerprint(path))
@@ -3601,10 +3730,11 @@ class CodexProvider:
                 if unchanged and retained_bytes <= cls._TOKEN_EVENT_CACHE_MAX_BYTES:
                     while (cls._token_event_cache
                            and cls._token_event_cache_bytes + retained_bytes > cls._TOKEN_EVENT_CACHE_MAX_BYTES):
-                        oldest, _ = cls._token_event_cache.popitem(last=False)
-                        cls._token_event_cache_bytes -= cls._token_event_cache_sizes.pop(oldest, 0)
+                        oldest = next(iter(cls._token_event_cache))
+                        cls._drop_token_event_cache_entry(oldest)
                     cls._token_event_cache[key] = events
                     cls._token_event_cache_sizes[key] = retained_bytes
+                    cls._token_event_resume[key] = event_resume
                     cls._token_event_cache_bytes += retained_bytes
             return events
         finally:
@@ -3642,6 +3772,7 @@ class CodexProvider:
     @classmethod
     def _drop_token_event_cache_entry(cls, key: tuple[str, int, int, int, int, int]) -> None:
         cls._token_event_cache.pop(key, None)
+        cls._token_event_resume.pop(key, None)
         cls._token_event_cache_bytes -= cls._token_event_cache_sizes.pop(key, 0)
 
     @classmethod
@@ -4014,14 +4145,7 @@ class CodexProvider:
             # Session metadata is the authoritative local signal for child
             # sessions. Keep this read to the first record; transcript bodies
             # are already scanned once below for token counters.
-            is_subagent = False
-            try:
-                with path.open("r", encoding="utf-8", errors="ignore") as handle:
-                    first = json.loads(handle.readline()).get("payload") or {}
-                source = first.get("source") or {}
-                is_subagent = bool(first.get("parent_thread_id")) or _chat_source(source) in {"subagent", "review"}
-            except (OSError, ValueError, AttributeError):
-                pass
+            is_subagent = _codex_is_subagent(path, stat)
             events = self._token_events(path)
             if not events:
                 continue
