@@ -129,6 +129,27 @@ def test_purge_recomputes_global_aggregates_and_clears_verifying(tmp_path):
     assert store.meta_value(conn, "observedFrom:Claude") is None
 
 
+def test_provider_purge_removes_open_verification_debt(tmp_path):
+    ledger, _data = make_ledger(tmp_path)
+    row = ledger.conn.execute("SELECT path_key FROM sources WHERE provider='Claude' LIMIT 1").fetchone()
+    cursor = store.load_source(ledger.conn, "Claude", row[0])
+    cursor["state"]["verification_debt"] = {
+        "open": True, "generation": cursor["generation"], "first_deferred_epoch": 1,
+        "last_change_epoch": 1, "last_stamp": cursor["state"].get("file_stamp"),
+        "last_size": cursor["byte_offset"],
+    }
+    with store.transaction(ledger.conn) as conn:
+        store.save_source(conn, "Claude", row[0], generation=cursor["generation"],
+                          byte_offset=cursor["byte_offset"], head_key=cursor["head_key"], state=cursor["state"])
+    assert store.verification_debt_bytes(ledger.conn, ["Claude"]) > 0
+    assert ledger.summary(HOUR_START, DAY_END, show={"Claude": True, "Codex": False})["coverage"]["status"] == "verifying"
+
+    ledger.purge("Claude")
+
+    assert store.verification_debt_bytes(ledger.conn, ["Claude"]) == 0
+    assert ledger.conn.execute("SELECT COUNT(*) FROM sources WHERE provider='Claude'").fetchone()[0] == 0
+
+
 def test_purging_every_provider_drops_the_global_clock(tmp_path):
     ledger, _data = make_ledger(tmp_path)
     conn = ledger.conn

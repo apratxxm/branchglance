@@ -454,14 +454,33 @@ def provisional_exists(conn: sqlite3.Connection, providers: list[str]) -> bool:
                         providers).fetchone() is not None
 
 
+def verification_debt_bytes(conn: sqlite3.Connection, providers: list[str]) -> int:
+    """Consumed prefix bytes with open deferred exact-verification markers."""
+    if not providers:
+        return 0
+    placeholders = ",".join("?" for _ in providers)
+    total = 0
+    for offset, raw in conn.execute(f"SELECT byte_offset, state FROM sources WHERE provider IN ({placeholders})", providers):
+        try:
+            state = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if state.get("verification_debt"):
+            total += max(1, int(offset))
+    return total
+
+
 def unverified_sources(conn: sqlite3.Connection, provider: str) -> list[dict[str, Any]]:
     """Persisted sources of one provider whose state holds provisional facts or an open verification."""
     rows = conn.execute("SELECT path_key, generation, byte_offset, head_key, state FROM sources WHERE provider=? "
-                        "AND (state LIKE '%\"verify\"%' OR state LIKE '%\"provisional\"%')", (provider,)).fetchall()
+                        "AND (state LIKE '%\"verify\"%' OR state LIKE '%\"provisional\"%' "
+                        "OR state LIKE '%\"verification_debt\"%' "
+                        "OR state LIKE '%\"ordered_tail_pending\"%')", (provider,)).fetchall()
     found = []
     for path_key, generation, byte_offset, head_key, text in rows:
         state = json.loads(text)
-        if state.get("verify") or state.get("provisional"):
+        if (state.get("verify") or state.get("provisional") or state.get("verification_debt")
+                or state.get("ordered_tail_pending")):
             found.append({"path_key": path_key, "generation": generation, "byte_offset": byte_offset,
                           "head_key": head_key, "state": state})
     return found

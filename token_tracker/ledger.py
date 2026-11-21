@@ -356,6 +356,7 @@ class Ledger:
         else:
             pending = sum(int(store.meta_value(conn, "pendingBytes:" + name) or 0) for name in allowed)
             verifying = sum(int(store.meta_value(conn, "verifyingBytes:" + name) or 0) for name in allowed)
+        verifying = max(verifying, store.verification_debt_bytes(conn, allowed))
         collected = set(json.loads(store.meta_value(conn, "collected") or "[]"))
         selected = allowed + ["*"]
         placeholders = ",".join("?" for _ in selected)
@@ -383,7 +384,7 @@ class Ledger:
             unknown_kinds = dict(conn.execute(
                 f"SELECT kind, COUNT(*) FROM ledger_unknown_kinds WHERE provider IN ({placeholders}) "
                 "GROUP BY kind ORDER BY kind", selected))
-        if verifying or store.provisional_exists(conn, allowed):
+        if verifying or store.provisional_exists(conn, allowed) or store.verification_debt_bytes(conn, allowed):
             # Staged usage is unconfirmed even when an interrupted run left the coverage meta behind.
             status = "verifying"
         elif gap_count or counts.get("readFailures") or omissions:
