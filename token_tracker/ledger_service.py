@@ -300,9 +300,12 @@ class LedgerService:
                             break
                         continue  # a queued purge ended this pass: run it at the top of the loop
                     duration = self._monotonic() - began
-                    # Scheduling uses every collected provider's backlog, not the shown subset.
-                    internal = int(result["pendingBytes"])
-                    progressing = result["bytesRead"] > 0 and internal > 0
+                    # Scheduling is separate from API coverage: deferred debt must not keep the worker hot.
+                    budget = int(self._budget or 0)
+                    progressing = bool(
+                        (result.get("cursorAdvanced") and int(result.get("actionableBytes") or 0) > budget)
+                        or (result.get("verificationAdvanced")
+                            and int(result.get("verificationRemaining") or 0) > budget))
                     self._succeed(self._ledger.pending_bytes(self.show), progressing)
                     backoff = BACKOFF_START_SECONDS
                     wait = max(MIN_BACKFILL_PAUSE_SECONDS, BACKFILL_DUTY_MULTIPLIER * duration) if progressing \

@@ -77,7 +77,7 @@ def test_backfill_progresses_then_goes_live(tmp_path):
     def waiter(seconds):
         waits.append(seconds)
         states.append(holder["service"].health()["state"])
-        return seconds == LIVE_INTERVAL_SECONDS or len(waits) >= 20
+        return waits.count(LIVE_INTERVAL_SECONDS) >= 2 or len(waits) >= 20
 
     service = LedgerService(data_dir=data, claude_root=claude, codex_root=codex, policies=policies_for(),
                             environ={ENV_FLAG: "1"}, waiter=waiter, budget_bytes=300)
@@ -114,10 +114,57 @@ def test_unfinished_tail_waits_at_live_cadence_instead_of_spinning(tmp_path):
     service.start()
     service._thread.join(20)
     assert waits.pop(0) == STARTUP_DELAY_SECONDS and states.pop(0) == "starting"
-    assert waits[0] < LIVE_INTERVAL_SECONDS  # the first pass read a complete line: backfill cadence
-    assert waits[1:] == [LIVE_INTERVAL_SECONDS] * 3
-    assert states[1:] == ["live"] * 3
+    assert waits == [LIVE_INTERVAL_SECONDS] * 4  # old: fast, then live; new: all live while only an incomplete tail remains
+    assert states == ["live"] * 4
     assert service.health()["pendingBytes"] > 0
+
+
+@pytest.mark.parametrize(
+    "result, expected",
+    [
+        ({"cursorAdvanced": True, "actionableBytes": 299}, LIVE_INTERVAL_SECONDS),
+        ({"cursorAdvanced": True, "actionableBytes": 300}, LIVE_INTERVAL_SECONDS),
+        ({"cursorAdvanced": True, "actionableBytes": 301}, 0.2),
+        ({"verificationAdvanced": True, "verificationRemaining": 301}, 0.2),
+        ({"bytesRead": 10000, "pendingBytes": 20000}, LIVE_INTERVAL_SECONDS),  # discarded work
+        ({"pendingBytes": 20000}, LIVE_INTERVAL_SECONDS),  # debt-only backlog
+    ],
+)
+def test_cadence_requires_actionable_progress_beyond_one_budget(tmp_path, result, expected):
+    class ScriptedLedger:
+        def ingest(self, *_args, **_kwargs):
+            return {"bytesRead": 0, "pendingBytes": 20000, **result}
+
+        def pending_bytes(self, _show):
+            return 20000
+
+        def close(self):
+            pass
+
+    waits = []
+    service = LedgerService(data_dir=tmp_path / "data", claude_root=tmp_path / "claude",
+                            codex_root=tmp_path / "codex", policies=policies_for(),
+                            environ={ENV_FLAG: "1"}, waiter=lambda seconds: waits.append(seconds) or len(waits) >= 2,
+                            monotonic=lambda: 1.0, budget_bytes=300,
+                            ledger_factory=lambda *_args, **_kwargs: ScriptedLedger())
+    service.start()
+    service._thread.join(10)
+    assert waits == [STARTUP_DELAY_SECONDS, expected]
+
+
+def test_real_ingestor_cadence_counts_unvisited_source_from_offset_zero(tmp_path):
+    data, claude, codex = make_roots(tmp_path)
+    first = claude_file(claude, "a-small")
+    later = claude_file(claude, "z-unseen-backfill")
+    write_jsonl(first, [claude_response(60, "small", output=1)])
+    write_jsonl(later, [{"type": "user", "message": {"content": "x" * 12000}} for _ in range(2)])
+    budget = first.stat().st_size
+    ledger = Ledger(data, claude_root=claude, codex_root=codex, clock=clock_at(3600))
+    result = ledger.ingest({"Claude": True, "Codex": False}, budget_bytes=budget)
+    assert result["filesVisited"] == 1
+    assert result["cursorAdvanced"] is True
+    assert result["actionableBytes"] >= later.stat().st_size
+    assert result["actionableBytes"] > budget
 
 
 # ------------------------------------------------------------------ errors and backoff
@@ -248,6 +295,9 @@ def test_should_stop_inside_verification_leaves_cursor_and_totals_unchanged(tmp_
         offset = store.load_source(ledger.conn, "Claude", key)["byte_offset"]
         with path.open("a", encoding="utf-8") as handle:  # changed file stamp: the next pass must verify the prefix
             handle.write(json.dumps(claude_response(62, "m3", output=5)) + "\n")
+        ledger.ingest(ALL)  # persist debt before the deferred verification becomes due
+        ledger._ingestor.clock = clock_at(3720)
+        ledger.clock = clock_at(3720)
         calls = {"n": 0}
 
         def stop_inside_verification():

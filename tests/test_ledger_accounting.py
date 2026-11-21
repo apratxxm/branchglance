@@ -208,6 +208,9 @@ def test_claude_revision_reconciles_unsplit_cache_writes(tmp_path):
     assert total_tokens(ledger) == 55
     append_jsonl(path, [split, unsplit])  # A later copied older revision must not restore the overlap.
     ledger.ingest(ALL)
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
+    ledger.ingest(ALL)
     row = rows_by_key(ledger)[CLAUDE_LEAD]
     assert row["requests"] == 1
     assert row["inputTotal"] == 50
@@ -392,7 +395,9 @@ def test_show_policy_hides_other_provider_coverage(tmp_path):
 
 
 def test_missing_usage_resolves_only_for_matching_message_id(tmp_path):
-    ledger, claude, _ = open_ledger(tmp_path)
+    data, claude, codex = make_roots(tmp_path)
+    ledger = Ledger(data, claude_root=claude, codex_root=codex,
+                    clock=clock_at(3600))
     path = claude_file(claude, "omissions")
     first = claude_response(10, "one", output=1)
     second = claude_response(10, "two", output=1)
@@ -401,11 +406,34 @@ def test_missing_usage_resolves_only_for_matching_message_id(tmp_path):
     write_jsonl(path, [first, second])
     ledger.ingest(ALL)
     assert ledger.coverage()["status"] == "partial"
+    one_key = ledger_model.fact_key(ledger_model.CLAUDE, "message", "one")
+    two_key = ledger_model.fact_key(ledger_model.CLAUDE, "message", "two")
+    assert ledger.conn.execute("SELECT COUNT(*) FROM ledger_omissions WHERE message_key=?", (one_key,)).fetchone()[0] == 1
+    assert ledger.conn.execute("SELECT COUNT(*) FROM ledger_omissions WHERE message_key=?", (two_key,)).fetchone()[0] == 1
     append_jsonl(path, [claude_response(20, "one", output=4)])
     ledger.ingest(ALL)
-    assert ledger.coverage()["status"] == "partial"
+    assert ledger.coverage()["status"] == "verifying"
+    assert ledger.conn.execute('SELECT COUNT(*) FROM ledger_omissions').fetchone()[0] == 2
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
+    for _ in range(100):
+        if not ledger.ingest(ALL)["pendingBytes"]:
+            break
+    assert ledger.conn.execute('SELECT COUNT(*) FROM ledger_omissions').fetchone()[0] == 1
+    assert ledger.conn.execute("SELECT COUNT(*) FROM ledger_omissions WHERE message_key=?", (one_key,)).fetchone()[0] == 0
+    assert ledger.conn.execute("SELECT COUNT(*) FROM ledger_omissions WHERE message_key=?", (two_key,)).fetchone()[0] == 1
+    assert ledger.conn.execute("SELECT 1 FROM ledger_message_evidence WHERE message_key=?", (one_key,)).fetchone() is not None
+    assert ledger.conn.execute("SELECT 1 FROM ledger_message_evidence WHERE message_key=?", (two_key,)).fetchone() is None
     append_jsonl(path, [claude_response(30, "two", output=7)])
     ledger.ingest(ALL)
+    assert ledger.coverage()["status"] == "verifying"
+    assert ledger.conn.execute('SELECT COUNT(*) FROM ledger_omissions').fetchone()[0] == 1
+    ledger._ingestor.clock = clock_at(3840)
+    ledger.clock = clock_at(3840)
+    for _ in range(100):
+        if not ledger.ingest(ALL)["pendingBytes"]:
+            break
+    assert ledger.conn.execute('SELECT COUNT(*) FROM ledger_omissions').fetchone()[0] == 0
     assert ledger.coverage()["status"] == "complete"
 
 
@@ -430,6 +458,10 @@ def test_malformed_record_remains_partial_until_source_replacement(tmp_path):
     ledger.ingest(ALL)
     assert ledger.coverage()["status"] == "partial"
     write_jsonl(path, [claude_response(20, "corrected", output=7)])
+    ledger.ingest(ALL)
+    assert ledger.coverage()["status"] == "verifying"
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
     ledger.ingest(ALL)
     # The malformed omission is resolved, but the replacement gap is retained.
     coverage = ledger.coverage()
@@ -474,13 +506,19 @@ def test_same_size_middle_rewrite_replays_response_revision(tmp_path):
     changed = original.replace(b'"output_tokens": 5', b'"output_tokens": 9')
     assert len(changed) == len(original) and changed[:512] == original[:512]
     path.write_bytes(changed)
-    while ledger.ingest(ALL, budget_bytes=256)["pendingBytes"]:
-        pass
+    ledger.ingest(ALL, budget_bytes=256)
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
+    for _ in range(100):
+        if not ledger.ingest(ALL, budget_bytes=256)["pendingBytes"]:
+            break
+    else:
+        pytest.fail("same-size rewrite replay did not finish after exact verification became due")
     assert ledger.summary(HOUR_START, DAY_END, show=ALL)["totals"]["outputTotal"] == 9
     assert ledger.coverage()["replacements"] == 1
 
 
-def test_provisional_revision_rolls_back_when_tail_is_rewritten(tmp_path, monkeypatch):
+def test_deferred_revision_tail_is_ignored_when_rewritten_before_verification(tmp_path, monkeypatch):
     from token_tracker import ledger_ingest
     monkeypatch.setattr(ledger_ingest, "_HASH_CHUNK", 32)
     ledger, claude, _ = open_ledger(tmp_path)
@@ -489,24 +527,25 @@ def test_provisional_revision_rolls_back_when_tail_is_rewritten(tmp_path, monkey
     write_jsonl(path, [filler, claude_response(1, "same", output=5)])
     ledger.ingest(ALL)
     append_jsonl(path, [claude_response(2, "same", output=9)])
-    for _ in range(20):
-        ledger.ingest(ALL, budget_bytes=16)
-        if rows_by_key(ledger)[CLAUDE_LEAD]["outputTotal"] == 9:
-            break
-    assert rows_by_key(ledger)[CLAUDE_LEAD]["outputTotal"] == 9
+    ledger.ingest(ALL, budget_bytes=16)
+    assert rows_by_key(ledger)[CLAUDE_LEAD]["outputTotal"] == 5
     assert ledger.coverage()["status"] == "verifying"
+    assert ledger.conn.execute("SELECT COUNT(*) FROM provisional_facts").fetchone()[0] == 0
     old = path.read_bytes()
     path.write_bytes(old.replace(b'"output_tokens": 9', b'"output_tokens": 3'))
+    ledger.ingest(ALL, budget_bytes=32)  # observe the newer stamp before moving fake time
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
     for _ in range(500):
         if not ledger.ingest(ALL, budget_bytes=32)["pendingBytes"]:
             break
     else:
-        pytest.fail("rewrite replay did not finish")
+        pytest.fail("deferred-tail verification did not finish")
     assert rows_by_key(ledger)[CLAUDE_LEAD]["outputTotal"] == 5
-    assert ledger.coverage()["replacements"] == 1
+    assert ledger.coverage()["replacements"] == 0
 
 
-def test_provisional_fact_and_verifying_coverage_survive_restart(tmp_path, monkeypatch):
+def test_factless_verification_debt_survives_restart(tmp_path, monkeypatch):
     from token_tracker import ledger_ingest
     monkeypatch.setattr(ledger_ingest, "_HASH_CHUNK", 32)
     ledger, claude, codex = open_ledger(tmp_path)
@@ -515,21 +554,21 @@ def test_provisional_fact_and_verifying_coverage_survive_restart(tmp_path, monke
     write_jsonl(path, [filler, claude_response(1, "first", output=5)])
     ledger.ingest(ALL)
     append_jsonl(path, [claude_response(2, "next", output=9)])
-    for _ in range(20):
-        ledger.ingest(ALL, budget_bytes=16)
-        if total_requests(ledger) == 2:
-            break
-    assert total_requests(ledger) == 2
+    ledger.ingest(ALL, budget_bytes=16)
+    assert total_requests(ledger) == 1
+    assert ledger.conn.execute("SELECT COUNT(*) FROM provisional_facts").fetchone()[0] == 0
     assert ledger.coverage()["status"] == "verifying"
     ledger.close()
     ledger = Ledger(tmp_path / "data", claude_root=claude, codex_root=codex, clock=clock_at(3600))
-    assert total_requests(ledger) == 2
+    assert total_requests(ledger) == 1
     assert ledger.coverage()["status"] == "verifying"
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
     for _ in range(1000):
         if not ledger.ingest(ALL, budget_bytes=128)["pendingBytes"]:
             break
     else:
-        pytest.fail("provisional promotion did not finish")
+        pytest.fail("deferred exact verification did not finish")
     assert total_requests(ledger) == 2
     assert ledger.coverage()["status"] == "complete"
 
