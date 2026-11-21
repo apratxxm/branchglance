@@ -14,11 +14,25 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows ctypes APIs")
 
 
 def _assert_pointer_cache_stable(call):
-    call()
-    baseline = len(ctypes._pointer_type_cache)
-    for _ in range(3):
+    # Count product struct types handed to ctypes.POINTER rather than the size of the
+    # global cache, which moved onto each type in Python 3.14 (Sol C-801).
+    real_pointer = ctypes.POINTER
+    seen = set()
+
+    def recording_pointer(cls):
+        if str(getattr(cls, "__module__", "")).startswith("token_tracker"):
+            seen.add(cls)
+        return real_pointer(cls)
+
+    ctypes.POINTER = recording_pointer
+    try:
         call()
-    assert len(ctypes._pointer_type_cache) == baseline
+        baseline = set(seen)
+        for _ in range(3):
+            call()
+    finally:
+        ctypes.POINTER = real_pointer
+    assert seen == baseline
 
 
 def test_agent_links_windows_receipt_types_do_not_accumulate(tmp_path):
