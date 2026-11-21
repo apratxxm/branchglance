@@ -355,13 +355,14 @@ def test_first_record_cache_watermark_comes_from_stable_opened_file(tmp_path, mo
 
     monkeypatch.setattr(providers.Path, "open", complete_before_open)
     assert providers._codex_is_subagent(path, stale_stat) is True
-    cached = providers._CODEX_FIRST_RECORD_CACHE[str(path.resolve())]
+    cache_key = providers._canonical_path_text(str(path.resolve()))
+    cached = providers._CODEX_FIRST_RECORD_CACHE[cache_key]
     assert cached[1] == len(complete)
 
     with original_open(path, "wb") as handle:
         handle.write(b"{}")
     assert providers._codex_is_subagent(path, path.stat()) is False
-    assert str(path.resolve()) not in providers._CODEX_FIRST_RECORD_CACHE
+    assert cache_key not in providers._CODEX_FIRST_RECORD_CACHE
 
 
 def test_checkpoint_objects_are_included_in_cache_estimate_and_admission(tmp_path, monkeypatch):

@@ -516,7 +516,7 @@ def test_codex_token_event_cache_evicts_by_48mib_budget_and_accounts_bytes(
     cache._token_events(rollouts[0])  # Touch first so second is least recently used.
     cache._token_events(rollouts[2])  # 55 MiB forces only the second entry out.
 
-    resolved = [str(path.resolve()) for path in rollouts]
+    resolved = [providers._canonical_path_text(str(path.resolve())) for path in rollouts]
     retained_keys = set(cache._token_event_cache)
     assert any(key[0] == resolved[0] for key in retained_keys)
     assert not any(key[0] == resolved[1] for key in retained_keys)
@@ -651,6 +651,131 @@ def test_codex_refresh_keeps_matching_entries_outside_the_inventory(tmp_path, mo
     assert not any(key[0].endswith("thread-row.jsonl") for key in CodexProvider._token_event_cache)
     assert CodexProvider._token_event_cache_bytes == sum(CodexProvider._token_event_cache_sizes.values())
 
+
+
+def test_codex_prune_does_not_seed_build_stat_memo_before_thread_row_read(
+    tmp_path, monkeypatch, isolated_token_event_cache
+):
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    inventory = sessions / "inventory.jsonl"
+    outside = tmp_path / "archived" / "thread-row.jsonl"
+    outside.parent.mkdir()
+    stamp = _recent_test_timestamp()
+    _rollout(inventory, [])
+    _rollout(outside, [{"type": "event_msg", "timestamp": stamp, "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 5}}}}])
+    CodexProvider._token_events(outside)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    real_stat = Path.stat
+    outside_text = providers._canonical_path_text(str(outside.resolve()))
+    appended = False
+
+    def append_after_prune_stat(path, *args, **kwargs):
+        nonlocal appended
+        stat = real_stat(path, *args, **kwargs)
+        if str(path) == outside_text and not appended:
+            with outside.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"type": "event_msg", "timestamp": stamp, "payload": {
+                    "type": "token_count", "info": {"total_token_usage": {"total_tokens": 12}}}}) + "\n")
+            appended = True
+        return stat
+
+    monkeypatch.setattr(Path, "stat", append_after_prune_stat)
+    with providers._build_scope():
+        CodexProvider()._local_usage(session_paths=(inventory,))
+        event = CodexProvider._last_token_event(str(outside))
+
+    assert appended
+    assert event["total_token_usage"]["total_tokens"] == 12
+
+
+def test_codex_prune_leaves_entries_added_after_its_snapshot(
+    tmp_path, monkeypatch, isolated_token_event_cache
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    stamp = _recent_test_timestamp()
+    _rollout(first, [{"type": "event_msg", "timestamp": stamp, "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 5}}}}])
+    _rollout(second, [{"type": "event_msg", "timestamp": stamp, "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 7}}}}])
+    CodexProvider._token_events(first)
+    stat_entered, release_stat = threading.Event(), threading.Event()
+    real_stat = Path.stat
+    first_text = providers._canonical_path_text(str(first.resolve()))
+
+    def pause_after_first_stat(path, *args, **kwargs):
+        stat = real_stat(path, *args, **kwargs)
+        if str(path) == first_text:
+            stat_entered.set()
+            assert release_stat.wait(2)
+        return stat
+
+    monkeypatch.setattr(Path, "stat", pause_after_first_stat)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pruning = pool.submit(CodexProvider()._local_usage, session_paths=())
+        assert stat_entered.wait(1)
+        second_events = CodexProvider._token_events(second)
+        release_stat.set()
+        pruning.result(timeout=2)
+
+    assert CodexProvider._token_events(second) is second_events
+    assert any(key[0] == providers._canonical_path_text(str(second.resolve()))
+               for key in CodexProvider._token_event_cache)
+    assert CodexProvider._token_event_cache_bytes == sum(CodexProvider._token_event_cache_sizes.values())
+
+
+def test_codex_empty_inventory_prunes_deleted_outside_entries(tmp_path, monkeypatch, isolated_token_event_cache):
+    outside = tmp_path / "archived.jsonl"
+    _rollout(outside, [{"type": "event_msg", "timestamp": _recent_test_timestamp(), "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 7}}}}])
+    CodexProvider._token_events(outside)
+    outside.unlink()
+    usage = CodexProvider()._local_usage(session_paths=())
+
+    assert not usage["daily"]
+    assert not usage["totals"]
+    assert not usage["models"]
+    assert usage["rate"] is None
+    assert usage["paths"] == []
+    assert usage["insightsData"] == {"trackingWindowDays": 31, "dailyModels": {}, "hourlyModels": {},
+                                      "activeHours": [], "sessions": []}
+    assert not CodexProvider._token_event_cache
+    assert CodexProvider._token_event_cache_bytes == 0
+
+
+def test_codex_canonical_path_text_preserves_device_namespaces_and_case():
+    assert providers._canonical_path_text(r"C:\Users\MixedCase\rollout.jsonl") == \
+        r"\\?\C:\Users\MixedCase\rollout.jsonl"
+    assert providers._canonical_path_text(r"\\server\Share\MixedCase.jsonl") == \
+        r"\\?\UNC\server\Share\MixedCase.jsonl"
+    assert providers._canonical_path_text(r"\\.\pipe\Codex") == r"\\.\pipe\Codex"
+    assert providers._canonical_path_text(r"\\?\GLOBALROOT\Device\HarddiskVolume1\file") == \
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\file"
+    assert providers._canonical_path_text(r"\\?\Volume{GUID}\file") == r"\\?\Volume{GUID}\file"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-length paths")
+def test_codex_extended_only_trailing_period_path_has_distinct_cache_identity(
+    tmp_path, isolated_token_event_cache
+):
+    plain = tmp_path / "trailing.jsonl"
+    extended = Path("\\\\?\\" + str(tmp_path.resolve()) + "\\trailing.jsonl.")
+    _rollout(plain, [{"type": "event_msg", "timestamp": _recent_test_timestamp(), "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 3}}}}])
+    _rollout(extended, [{"type": "event_msg", "timestamp": _recent_test_timestamp(), "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 8}}}}])
+
+    plain_events = CodexProvider._token_events(plain)
+    extended_events = CodexProvider._token_events(extended)
+
+    assert plain_events is not extended_events
+    assert plain_events[-1]["usage"]["total_tokens"] == 3
+    assert extended_events[-1]["usage"]["total_tokens"] == 8
+    assert len(CodexProvider._token_event_cache) == 2
 
 
 def test_codex_local_usage_uses_pre_window_counter_as_a_baseline(tmp_path, monkeypatch):

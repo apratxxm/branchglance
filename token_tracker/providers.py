@@ -598,16 +598,18 @@ def _stat_memoized(path: Path) -> os.stat_result:
 
 
 def _canonical_path_text(text: str) -> str:
-    """Drop the Windows extended-length prefix so both spellings of a file share one cache key.
+    """Normalize ordinary Windows paths to extended spelling without changing path meaning.
 
     Codex's thread list reports rollout paths in the extended-length form while the session
     inventory uses the plain form; keyed separately, refresh pruning discarded the thread-row
     entries every time and those transcripts were re-read in full on each refresh.
     """
-    if text.startswith('\\\\?\\UNC\\'):
-        return '\\\\' + text[8:]
-    if text.startswith('\\\\?\\'):
-        return text[4:]
+    if text.startswith('\\\\?\\') or text.startswith('\\\\.\\'):
+        return text
+    if text.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + text[2:]
+    if len(text) >= 3 and text[1] == ':' and text[2] == '\\':
+        return '\\\\?\\' + text
     return text
 
 
@@ -3601,8 +3603,9 @@ class CodexProvider:
         not assign a session total to its final event date.
         """
         resolved = _canonical_path_text(str(path.resolve()))
+        canonical_path = Path(resolved)
         try:
-            key = (resolved, *_stat_fingerprint(path))
+            key = (resolved, *_stat_fingerprint(canonical_path))
         except OSError:
             with cls._token_event_cache_lock:
                 for cached_key in [item for item in cls._token_event_cache if item[0] == resolved]:
@@ -3618,7 +3621,7 @@ class CodexProvider:
         try:
             try:
                 # The file may have grown while this caller waited for its path lock.
-                key = (resolved, *_stat_fingerprint(path))
+                key = (resolved, *_stat_fingerprint(canonical_path))
             except OSError:
                 with cls._token_event_cache_lock:
                     for cached_key in [item for item in cls._token_event_cache if item[0] == resolved]:
@@ -4195,11 +4198,6 @@ class CodexProvider:
         paths: list[Path] = []
         if session_paths is None:
             session_paths = _codex_session_inventory()
-        if not session_paths:
-            return {"daily": daily, "totals": totals, "models": models, "rate": latest_rate,
-                    "rateUpdatedAt": None, "paths": paths,
-                    "insightsData": {"trackingWindowDays": days, "dailyModels": {},
-                                     "hourlyModels": {}, "activeHours": [], "sessions": []}}
         for path in session_paths:
             try:
                 live_keys.add((_canonical_path_text(str(path.resolve())), *_stat_fingerprint(path)))
@@ -4275,20 +4273,22 @@ class CodexProvider:
         # dropping them unconditionally made every refresh re-read those transcripts in full.
         live_paths = {key[0] for key in live_keys}
         with self._token_event_cache_lock:
-            outside = [key for key in self._token_event_cache if key[0] not in live_paths]
+            outside = [(key, entry) for key, entry in self._token_event_cache.items()
+                       if key[0] not in live_paths]
         current: dict[str, tuple[int, ...] | None] = {}
-        for name in {key[0] for key in outside}:
+        for name in {key[0] for key, _entry in outside}:
             try:
-                current[name] = _stat_fingerprint(Path(name))
+                # Validation must not seed the per-build memo used by thread-row readers.
+                current[name] = _fingerprint_of(Path(name).stat())
             except OSError:
                 current[name] = None
         with self._token_event_cache_lock:
             for key in list(self._token_event_cache):
-                if key[0] in live_paths:
-                    stale = key not in live_keys
-                else:
-                    stale = current.get(key[0], None) != tuple(key[1:])
-                if stale:
+                if key[0] in live_paths and key not in live_keys:
+                    self._drop_token_event_cache_entry(key)
+            for key, entry in outside:
+                if (self._token_event_cache.get(key) is entry
+                        and current.get(key[0], None) != tuple(key[1:])):
                     self._drop_token_event_cache_entry(key)
         return {"daily": daily, "totals": totals, "models": models, "rate": latest_rate,
                 "rateUpdatedAt": latest_rate_at or None, "paths": paths,
