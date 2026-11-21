@@ -10,12 +10,14 @@ import math
 import os
 import secrets
 import socket
+import subprocess
 import threading
 import time
 import unicodedata
 from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 _shutdown_trace_file = None
@@ -47,6 +49,67 @@ from . import ledger_service
 _WAIT_OBJECT_0 = 0x0
 _WAIT_ABANDONED = 0x80
 _WAIT_TIMEOUT = 0x102
+
+
+class BridgeAuthority:
+    """Per-window bridge lease tied to this listener and one trusted document load."""
+
+    def __init__(self, page_paths):
+        self._lock = threading.RLock()
+        self._page_paths = frozenset(page_paths)
+        self._port = None
+        self._generation = 0
+        self._admitted = False
+        self._shutting_down = False
+
+    @property
+    def generation(self):
+        with self._lock:
+            return self._generation
+
+    def enable(self, port):
+        with self._lock:
+            self._port = int(port)
+            self._admitted = True
+
+    def revoke(self):
+        with self._lock:
+            self._shutting_down = True
+            self._admitted = False
+            self._generation += 1
+
+    def navigation_started(self):
+        with self._lock:
+            self._generation += 1
+            return self._generation
+
+    def trusted_url(self, value):
+        with self._lock:
+            port = self._port
+            if not port or not isinstance(value, str):
+                return False
+            try:
+                parsed = urlsplit(value)
+                return (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+                        and parsed.port == port and not parsed.username and not parsed.password
+                        and parsed.path in self._page_paths and not parsed.query)
+            except (ValueError, TypeError):
+                return False
+
+    def admits(self, sender_url, current_url, generation):
+        with self._lock:
+            return (self._admitted and not self._shutting_down
+                    and type(generation) is int and generation == self._generation
+                    and self.trusted_url(sender_url) and self.trusted_url(current_url)
+                    and urlsplit(sender_url).path == urlsplit(current_url).path)
+
+
+def _external_http_url(value):
+    try:
+        parsed = urlsplit(str(value))
+        return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
+    except (TypeError, ValueError):
+        return False
 
 
 def claim_install_mutex(timeout: float = 20.0) -> tuple[object | None, str]:
@@ -807,10 +870,13 @@ def _advance_notch_deadline(deadline, now, interval=NOTCH_FRAME_INTERVAL):
 class SettingsWindowApi:
     """The Settings window's only bridge: saving the history CSV through the native file dialog."""
 
-    def __init__(self, on_save_ledger_csv) -> None:
+    def __init__(self, on_save_ledger_csv, can_dispatch=None) -> None:
         self._save_ledger_csv = on_save_ledger_csv
+        self._can_dispatch = can_dispatch
 
-    def save_ledger_csv(self):
+    def save_ledger_csv(self, generation=None):
+        if not self._can_dispatch or not self._can_dispatch(generation):
+            return {"ok": False, "error": "Settings window is no longer trusted."}
         return self._save_ledger_csv() if self._save_ledger_csv else {"ok": False, "error": "Native file saving is unavailable."}
 
 
@@ -820,7 +886,7 @@ class WindowApi:
                  on_lock=None, on_get_lock=None, on_reset_actions=None,
                  on_keep_open=None, on_get_keep_open=None, on_compact_profile=None,
                  on_set_monitor_name=None, on_get_inspection_hotkey=None, on_set_inspection_hotkey=None,
-                 on_save_ledger_csv=None) -> None:
+                 on_queue_message=None, on_open_thread=None) -> None:
         self._minimize = on_minimize
         self._toggle_maximize = on_toggle_maximize
         self._close = on_close
@@ -842,10 +908,19 @@ class WindowApi:
         self._set_monitor_name = on_set_monitor_name
         self._get_inspection_hotkey = on_get_inspection_hotkey
         self._set_inspection_hotkey = on_set_inspection_hotkey
-        self._save_ledger_csv = on_save_ledger_csv
+        self._queue_message = on_queue_message
+        self._open_thread = on_open_thread
 
-    def open_reset_actions(self):
-        return self._open_reset_actions() if self._open_reset_actions else False
+    def queue_message(self, thread, message, generation=None):
+        return self._queue_message(thread, message, generation) if self._queue_message else {"ok": False, "error": "Queue is unavailable."}
+
+    def open_thread(self, thread, generation=None):
+        return self._open_thread(thread, generation) if self._open_thread else {"ok": False, "error": "Open in Codex is unavailable."}
+
+    def open_reset_actions(self, generation=None):
+        if not self._open_reset_actions:
+            return False
+        return self._open_reset_actions() if generation is None else self._open_reset_actions(generation)
 
     def begin_drag(self, intent=None):
         if intent is None:
@@ -878,9 +953,6 @@ class WindowApi:
 
     def set_inspection_hotkey(self, choice):
         return self._set_inspection_hotkey(choice) if self._set_inspection_hotkey else None
-
-    def save_ledger_csv(self):
-        return self._save_ledger_csv() if self._save_ledger_csv else {"ok": False, "error": "Native file saving is unavailable."}
 
     def recenter(self):
         return self._recenter() if self._recenter else None
@@ -1009,6 +1081,9 @@ class WidgetApp:
         self.reset_actions_window = None
         self._reset_actions_token = None
         self._reset_actions_lock = threading.Lock()
+        self._bridge_authority = BridgeAuthority({"/runway.html", "/dashboard.html"})
+        self._settings_bridge_authority = None
+        self._bridge_native_ids = set()
         self.start_hidden = bool(start_hidden)
         self.visible = not self.start_hidden
         self.server: ThreadingHTTPServer | None = None
@@ -2634,6 +2709,12 @@ class WidgetApp:
                     self._notch_thread.start()
 
     def quit(self, *_args) -> None:
+        authority = getattr(self, "_bridge_authority", None)
+        if authority is not None:
+            authority.revoke()
+        settings_authority = getattr(self, "_settings_bridge_authority", None)
+        if settings_authority is not None:
+            settings_authority.revoke()
         _arm_shutdown_trace()
         from .providers import stop_snapshot_workers
         stop_snapshot_workers()
@@ -2707,6 +2788,75 @@ class WidgetApp:
                 return False
             return self._open_reset_actions_locked()
 
+    def _main_bridge_allowed(self, generation) -> bool:
+        authority = getattr(self, "_bridge_authority", None)
+        window = getattr(self, "window", None)
+        if not authority or not window or self.quitting:
+            return False
+        try:
+            current = window.get_current_url()
+        except Exception:
+            return False
+        return authority.admits(current, current, generation)
+
+    def _open_reset_actions_from_bridge(self, generation=None):
+        if not self._main_bridge_allowed(generation):
+            return False
+        with self._lifecycle:
+            if not self._main_bridge_allowed(generation) or self.quitting:
+                return False
+            return self._open_reset_actions_locked()
+
+    def queue_message(self, thread, message, generation=None):
+        if not self._main_bridge_allowed(generation):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
+            return {"ok": False, "error": "invalid thread id"}
+        if not isinstance(message, str) or not message.strip() or len(message) > server_module.QUEUE_MESSAGE_LIMIT:
+            return {"ok": False, "error": "message must be 1 to 2000 characters"}
+        if not server_module._codex_queue_allowed():
+            return {"ok": False, "error": "Explicit Codex SEND consent is required."}
+        if not server_module._is_collected_codex_thread(thread):
+            return {"ok": False, "error": "unknown Codex thread"}
+        if not self._main_bridge_allowed(generation):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        try:
+            server_module.queue_codex_message(thread, message)
+        except FileNotFoundError:
+            return {"ok": False, "error": "Codex CLI unavailable"}
+        except OSError:
+            return {"ok": False, "error": "Could not start Codex CLI"}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "status": "unknown", "error": "queue status unknown; check the Codex task"}
+        except subprocess.CalledProcessError:
+            return {"ok": False, "error": "Codex CLI rejected the queue request"}
+        return {"ok": True, "status": "queued", "detail": "Queued for the next turn. This does not answer the pending question."}
+
+    def open_thread(self, thread, generation=None):
+        if not self._main_bridge_allowed(generation):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
+            return {"ok": False, "error": "invalid thread id"}
+        if not server_module._codex_allows("show"):
+            return {"ok": False, "error": "Codex is not enabled."}
+        if not server_module._is_collected_codex_thread(thread):
+            return {"ok": False, "error": "unknown Codex thread"}
+        if not self._main_bridge_allowed(generation):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        try:
+            url = f"codex://threads/{thread}"
+            startfile = getattr(os, "startfile", None)
+            if startfile is None and os.name != "nt":
+                subprocess.run(["/usr/bin/open", url], check=True, timeout=10,
+                               stdin=subprocess.DEVNULL, capture_output=True)
+            elif startfile is not None:
+                startfile(url)
+            else:
+                return {"ok": False, "error": "Codex opener is unavailable."}
+            return {"ok": True}
+        except (AttributeError, TypeError, OSError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "error": str(exc)[:120]}
+
     def save_ledger_csv(self) -> dict:
         try:
             status, _headers, body = ledger_service.http_response(
@@ -2747,6 +2897,8 @@ class WidgetApp:
                 self.reset_actions_window = None
         try:
             token = secrets.token_urlsafe(32)
+            self._settings_bridge_authority = BridgeAuthority({"/reset_actions.html"})
+            self._settings_bridge_authority.enable(self.server.server_address[1])
             with self._reset_actions_lock:
                 server_module.set_settings_token(token)
                 self._reset_actions_token = token
@@ -2754,9 +2906,13 @@ class WidgetApp:
                 "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
                 width=440, height=540, min_size=(360, 360), resizable=True,
                 background_color="#111316",
-                js_api=SettingsWindowApi(self.save_ledger_csv),
+                js_api=SettingsWindowApi(self.save_ledger_csv,
+                                         lambda generation: self._settings_bridge_allowed(generation)),
             )
             self.reset_actions_window = child
+
+            child.events.loaded += lambda *_: self._install_native_authority(
+                child, self._settings_bridge_authority, settings=True)
 
             def on_closed(*_args):
                 with self._reset_actions_lock:
@@ -2765,6 +2921,9 @@ class WidgetApp:
                     if self._reset_actions_token == token:
                         self._reset_actions_token = None
                         server_module.set_settings_token(None)
+                        authority = self._settings_bridge_authority
+                        if authority is not None:
+                            authority.revoke()
 
             child.events.closed += on_closed
             return True
@@ -2776,6 +2935,81 @@ class WidgetApp:
             logging.getLogger(__name__).warning("Could not open reset action settings")
             self.reset_actions_window = None
             return False
+
+    def _settings_bridge_allowed(self, generation):
+        authority = getattr(self, "_settings_bridge_authority", None)
+        window = getattr(self, "reset_actions_window", None)
+        if not authority or not window or self.quitting:
+            return False
+        try:
+            current = window.get_current_url()
+        except Exception:
+            return False
+        return authority.admits(current, current, generation)
+
+    def _install_native_authority(self, window, authority, *, settings=False):
+        """Guard Edge WebView bridge messages and navigations at their native event source."""
+        if authority is None or not authority._admitted:
+            return
+        native = getattr(window, "native", None)
+        if native is None:
+            authority.revoke()
+            return
+        native_id = id(native)
+        try:
+            if native_id not in self._bridge_native_ids:
+                original_notify = native.on_script_notify
+
+                def guarded_notify(sender, args):
+                    try:
+                        source = str(args.Source)
+                        current = window.get_current_url()
+                        generation = authority.generation
+                        if not authority.admits(source, current, generation):
+                            return
+                    except Exception:
+                        return
+                    return original_notify(sender, args)
+
+                native.webview.WebMessageReceived -= original_notify
+                native.webview.WebMessageReceived += guarded_notify
+                native.on_script_notify = guarded_notify
+
+                def navigation_starting(_sender, args):
+                    generation = authority.navigation_started()
+                    target = str(args.Uri)
+                    if authority.trusted_url(target):
+                        return
+                    args.Cancel = True
+                    if authority.trusted_url(window.get_current_url()):
+                        window.evaluate_js("window.__branchglanceDocumentGeneration=" + str(generation))
+                    if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
+                        import webbrowser
+                        webbrowser.open(target)
+
+                native.webview.NavigationStarting += navigation_starting
+
+                def new_window_requested(_sender, args):
+                    args.set_Handled(True)
+                    target = str(args.get_Uri())
+                    if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
+                        import webbrowser
+                        webbrowser.open(target)
+
+                core = native.webview.CoreWebView2
+                core.NewWindowRequested -= native.on_new_window_request
+                core.NewWindowRequested += new_window_requested
+
+                def navigation_completed(_sender, _args):
+                    if authority.trusted_url(window.get_current_url()):
+                        window.evaluate_js("window.__branchglanceDocumentGeneration=" + str(authority.generation))
+
+                native.webview.NavigationCompleted += navigation_completed
+                self._bridge_native_ids.add(native_id)
+            if authority.trusted_url(window.get_current_url()):
+                window.evaluate_js("window.__branchglanceDocumentGeneration=" + str(authority.generation))
+        except Exception:
+            authority.revoke()
 
     def _startup_step(self, action):
         """Run one startup acquisition unless a shutdown was requested; serialized with quit()."""
@@ -2861,6 +3095,7 @@ class WidgetApp:
                          f"({HTTP_PORT}) is in use by another program. If another Branchglance instance "
                          "is running, quit it from its tray icon and start Branchglance again.")
             return
+        self._bridge_authority.enable(self.server.server_address[1])
         self._startup_step(self.limit_reset.start)
         self._startup_step(self.ledger.start)
         self._startup_step(self._create_main_window)
@@ -2891,15 +3126,17 @@ class WidgetApp:
             js_api=WindowApi(self.minimize, self.toggle_maximize, self.hide, self.size, self.resize,
                              self.fit_opening_size, self.set_notch, self.get_monitors, self.select_monitor, self.recenter,
                              self.begin_drag, self.end_drag, on_lock=self.set_widget_lock,
-                             on_get_lock=self.get_widget_lock, on_reset_actions=self.open_reset_actions,
+                             on_get_lock=self.get_widget_lock, on_reset_actions=self._open_reset_actions_from_bridge,
                              on_keep_open=self.set_keep_open, on_get_keep_open=self.get_keep_open,
-                              on_compact_profile=lambda: self.compact_profile,
+                             on_compact_profile=lambda: self.compact_profile,
                              on_set_monitor_name=self.set_monitor_name,
                              on_get_inspection_hotkey=self.get_inspection_hotkey,
                              on_set_inspection_hotkey=self.set_inspection_hotkey,
-                             on_save_ledger_csv=self.save_ledger_csv),
+                             on_queue_message=self.queue_message, on_open_thread=self.open_thread),
         )
         self.window.events.before_show += self._set_native_background_fallback
+        self.window.events.loaded += lambda *_: self._install_native_authority(
+            self.window, self._bridge_authority, settings=False)
         self.window.events.closing += self.on_closing
         # The native Handle does not exist until the GUI backend has loaded.
         self.window.events.loaded += self.apply_native_window_region

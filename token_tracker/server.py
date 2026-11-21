@@ -62,7 +62,25 @@ def _settings_token_matches(provided: str | None) -> bool:
 
 def _settings_token_matches_locked(provided: str | None) -> bool:
     expected = _SETTINGS_TOKEN
-    return bool(expected and provided and hmac.compare_digest(expected, provided))
+    if not isinstance(expected, str) or not isinstance(provided, str):
+        return False
+    try:
+        expected_bytes = expected.encode("ascii")
+        provided_bytes = provided.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return bool(expected_bytes and len(provided_bytes) == len(expected_bytes)
+                and hmac.compare_digest(expected_bytes, provided_bytes))
+
+
+def _settings_header_matches_locked(headers) -> bool:
+    values = headers.get_all("X-Branchglance-Settings-Token", [])
+    return len(values) == 1 and _settings_token_matches_locked(values[0])
+
+
+def _settings_header_matches(headers) -> bool:
+    with _SETTINGS_TOKEN_LOCK:
+        return _settings_header_matches_locked(headers)
 
 
 def _codex_policy():
@@ -1197,6 +1215,10 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(STATIC), **kwargs)
 
+    def end_headers(self):
+        self.send_header("Content-Security-Policy", "frame-src 'self'")
+        super().end_headers()
+
     def do_GET(self):
         if not self._valid_local_host():
             self._send_json({"ok": False, "error": "local Host required"}, 403)
@@ -1207,8 +1229,6 @@ class Handler(SimpleHTTPRequestHandler):
         if self._get_provider_state(parsed):
             return
         if self._get_usage(parsed):
-            return
-        if self._get_open(parsed):
             return
         if self._get_codex_state(parsed):
             return
@@ -1516,14 +1536,14 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        settings_mutation = parsed.path in {"/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}
+        settings_mutation = parsed.path in {"/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}
         if not self._valid_local_host():
             if settings_mutation:
                 self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                 return
             self._reject_post(parsed.path, {"ok": False, "error": "local Host required"}, 403)
             return
-        if parsed.path not in {"/api/queue", "/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}:
+        if parsed.path not in {"/api/reset-action", "/api/claude-collection", "/api/ledger/purge", "/api/claude-greeting-rearm", "/api/features", "/api/statusline"}:
             self._reject_post(parsed.path, {"ok": False, "error": "not found"}, 404)
             return
         if not self._same_origin_request():
@@ -1532,8 +1552,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._reject_post(parsed.path, {"ok": False, "error": "same-origin request required"}, 403)
             return
-        if settings_mutation and (parsed.query or not _settings_token_matches(
-                self.headers.get("X-Branchglance-Settings-Token"))):
+        if settings_mutation and (parsed.query or not _settings_header_matches(self.headers)):
             self._reject_post(parsed.path, {"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
             return
         if self.headers.get_content_type() != "application/json":
@@ -1546,7 +1565,7 @@ class Handler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "-1"))
         except ValueError:
             length = -1
-        size_limit = QUEUE_MESSAGE_LIMIT + 512 if parsed.path == "/api/queue" else 4096
+        size_limit = 4096
         if length < 0 or length > size_limit:
             self._reject_post(parsed.path, {"ok": False, "error": "invalid request size"}, 413)
             return
@@ -1557,7 +1576,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if parsed.path in {"/api/features", "/api/statusline"}:
             with _SETTINGS_TOKEN_LOCK:
-                if not _settings_token_matches_locked(self.headers.get("X-Branchglance-Settings-Token")):
+                if not _settings_header_matches_locked(self.headers):
                     self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                     return
                 try:
@@ -1610,16 +1629,15 @@ class Handler(SimpleHTTPRequestHandler):
                     return
             self._send_json({"ok": True})
             return
-        if settings_mutation:
+        if settings_mutation and parsed.path != "/api/reset-action":
             action = body.get("action") if isinstance(body, dict) else None
             if not isinstance(action, str) or action not in {"enable", "disable"} or set(body) != {"action"}:
                 self._send_json({"ok": False, "error": "Expected action enable or disable."}, 400)
                 return
             from . import claude_collection
             operation = claude_collection.enable if action == "enable" else claude_collection.disable
-            provided_token = self.headers.get("X-Branchglance-Settings-Token")
             with _SETTINGS_TOKEN_LOCK:
-                if not _settings_token_matches_locked(provided_token):
+                if not _settings_header_matches_locked(self.headers):
                     self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
                     return
                 with _CLAUDE_COLLECTION_LOCK:
@@ -1632,6 +1650,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(result, 200 if result.get("ok") else 409)
             return
         if parsed.path == "/api/reset-action":
+            with _SETTINGS_TOKEN_LOCK:
+                if not _settings_header_matches_locked(self.headers):
+                    self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                    return
             service = self.reset_service
             if service is None:
                 self._send_json({"ok": False, "error": "Reset action service is unavailable."}, 503)
@@ -1646,15 +1668,16 @@ class Handler(SimpleHTTPRequestHandler):
                     or (mode in {"off", "greet"} and thread_ids) or (mode == "continue" and not thread_ids)):
                 self._send_json({"ok": False, "error": "Invalid reset action mode or chat IDs."}, 400)
                 return
-            if mode == "off":
-                if not _codex_allows("collect") or not _codex_allows("show"):
-                    self._send_json({"ok": False, "error": "Codex collection and display must be enabled to change reset settings."}, 403)
-                    return
-            elif not _codex_queue_allowed():
+            if mode in {"greet", "continue"} and not _codex_queue_allowed():
                 self._send_json({"ok": False, "error": "Explicit Codex SEND consent is required."}, 403)
                 return
             try:
-                action = service.configure_reset_action(mode, thread_ids)
+                self._before_reset_action_commit()
+                with _SETTINGS_TOKEN_LOCK:
+                    if not _settings_header_matches_locked(self.headers):
+                        self._send_json({"ok": False, "error": _SETTINGS_AUTH_MESSAGE}, 403)
+                        return
+                    action = service.configure_reset_action(mode, thread_ids)
             except Exception as exc:
                 from .provider_policy import ProviderPolicyError
                 if isinstance(exc, ProviderPolicyError):
@@ -1675,37 +1698,11 @@ class Handler(SimpleHTTPRequestHandler):
                 action = _without_codex_thread_ids(action)
             self._send_json({"ok": True, "action": action})
             return
-        thread = body.get("thread") if isinstance(body, dict) else None
-        message = body.get("message") if isinstance(body, dict) else None
-        if not isinstance(thread, str) or not THREAD_ID.fullmatch(thread):
-            self._send_json({"ok": False, "error": "invalid thread id"}, 400)
-            return
-        if not isinstance(message, str) or not message.strip() or len(message) > QUEUE_MESSAGE_LIMIT:
-            self._send_json({"ok": False, "error": "message must be 1 to 2000 characters"}, 400)
-            return
-        if not _codex_queue_allowed():
-            self._send_json({"ok": False, "error": "Explicit Codex SEND consent is required."}, 403)
-            return
-        if not _is_collected_codex_thread(thread):
-            self._send_json({"ok": False, "error": "unknown Codex thread"}, 404)
-            return
-        try:
-            queue_codex_message(thread, message)
-        except FileNotFoundError:
-            self._send_json({"ok": False, "error": "Codex CLI unavailable"}, 503)
-            return
-        except OSError:
-            self._send_json({"ok": False, "error": "Could not start Codex CLI"}, 503)
-            return
-        except subprocess.TimeoutExpired:
-            # The CLI may have accepted the message before timing out. Do not claim either failure
-            # or delivery when the outcome is indeterminate.
-            self._send_json({"ok": False, "status": "unknown", "error": "queue status unknown; check the Codex task"}, 504)
-            return
-        except subprocess.CalledProcessError:
-            self._send_json({"ok": False, "error": "Codex CLI rejected the queue request"}, 502)
-            return
-        self._send_json({"ok": True, "status": "queued", "detail": "Queued for the next turn. This does not answer the pending question."})
+        self._reject_post(parsed.path, {"ok": False, "error": "not found"}, 404)
+
+    def _before_reset_action_commit(self):
+        """A synchronization seam for lifecycle tests; production work is intentionally empty."""
+        return None
 
     def _purge_ledger(self, body) -> None:
         """POST /api/ledger/purge: delete one provider's saved ledger history through the widget's single writer."""
@@ -1811,7 +1808,7 @@ class Handler(SimpleHTTPRequestHandler):
     def _reject_post(self, path: str, value, status: int) -> None:
         self.close_connection = True
         lengths = self.headers.get_all("Content-Length", [])
-        limit = QUEUE_MESSAGE_LIMIT + 512 if path == "/api/queue" else 4096
+        limit = 4096
         digits = lengths[0].lstrip("0") or "0" if len(lengths) == 1 else ""
         # Drain a small body before replying: closing with unread request data
         # makes the OS reset the connection, so the client may never see the status.

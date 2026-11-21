@@ -320,6 +320,7 @@ def test_widget_starts_ledger_after_http_and_stops_it_on_quit(monkeypatch):
 
     calls = []
     app = widget.WidgetApp()
+    app.server = type("BoundServer", (), {"server_address": ("127.0.0.1", 8765)})()
     app.limit_reset = Recorder(calls, "reset")
     app.ledger = Recorder(calls, "ledger")
     monkeypatch.setattr(app, "start_http", lambda: calls.append("http") or True)

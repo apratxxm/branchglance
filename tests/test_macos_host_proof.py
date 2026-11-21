@@ -72,6 +72,37 @@ def test_proof_framing_and_rejection(capsys):
         assert value not in logs.out + logs.err
 
 
+def test_macos_host_keeps_known_open_http_gap_while_shared_handler_returns_404(monkeypatch):
+    from token_tracker import server
+
+    thread_id = "01234567-89ab-cdef-0123-456789abcdef"
+    opened = []
+    monkeypatch.setattr(server.Handler, "_open_request_allowed", lambda _self: True)
+    monkeypatch.setattr(server, "_codex_allows", lambda _action: True)
+    monkeypatch.setattr(server, "_is_collected_codex_thread", lambda _thread: True)
+    monkeypatch.setattr(server.os, "startfile", lambda value: opened.append(value), raising=False)
+    servers = [ThreadingHTTPServer(("127.0.0.1", 0), proof_handler(KEY)),
+               ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)]
+    threads = [threading.Thread(target=httpd.serve_forever, daemon=True) for httpd in servers]
+    for worker in threads:
+        worker.start()
+    try:
+        for index, expected in enumerate((200, 404)):
+            httpd = servers[index]
+            conn = http.client.HTTPConnection("127.0.0.1", httpd.server_port, timeout=2)
+            conn.request("GET", f"/api/open?thread={thread_id}", headers={"Host": f"127.0.0.1:{httpd.server_port}"})
+            response = conn.getresponse()
+            body = response.read()
+            assert response.status == expected
+            if index == 0:
+                assert json.loads(body) == {"ok": True}
+            conn.close()
+        assert opened == [f"codex://threads/{thread_id}"]
+    finally:
+        for httpd, worker in zip(servers, threads):
+            httpd.shutdown(); worker.join(timeout=3); httpd.server_close()
+
+
 def test_missing_secret_and_prebound_port(tmp_path):
     env = os.environ.copy()
     env.pop("BRANCHGLANCE_MACOS_HOST_SECRET", None)

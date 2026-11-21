@@ -9,6 +9,7 @@ from token_tracker import widget
 class Events:
     def __init__(self):
         self.closed = Callback()
+        self.loaded = Callback()
 
 
 class Callback:
@@ -44,6 +45,7 @@ def test_window_api_callback_is_optional_and_additive():
 
 def test_native_settings_window_reuses_and_clears_reference(monkeypatch):
     app = widget.WidgetApp()
+    app.server = types.SimpleNamespace(server_address=("127.0.0.1", 8765))
     children = [Child(), Child()]
     calls = []
     tokens = []

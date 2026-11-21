@@ -24,7 +24,8 @@ assert.match(frameCss,/\.settings-embedded \.mode\+\.mode\{border-top:1px solid 
 assert.match(frameCss,/\.settings-embedded #oneshot-note\{padding-top:8px;border-top:1px solid var\(--d-edge\);color:var\(--d-sub\);font-size:12px;\}/,"the conditional reset footer is a quiet Settings note");
 assert.match(app,/data-action="reset-settings"/);
 assert.match(app,/api\?\.open_reset_actions/);
-assert.match(app,/window\.open\?\.\("\/reset_actions\.html","_blank","noopener"\)/);
+assert.match(app,/__branchglanceDocumentGeneration/);
+assert.doesNotMatch(app,/window\.open\?\.\("\/reset_actions\.html"/,"Settings can open only through the trusted native bridge");
 
 const elements=new Map();
 const listenerCounts=new Map();

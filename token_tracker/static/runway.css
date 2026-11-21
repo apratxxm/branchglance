@@ -156,6 +156,7 @@ body:not(.phone).notch-expanded .chat-list{opacity:1;transform:none;transition:o
 .ic-check{display:none}
 .opened .ic-check,.copied .ic-check{display:inline;color:var(--green)}
 .q-queue{color:var(--muted)}
+.q-queue{display:none}html.queue-capable .q-queue{display:inline-flex}
 .runway-full-field{margin:9px 0;display:flex;flex-direction:column;gap:3px;font-size:13px;line-height:1.45;overflow-wrap:anywhere}
 .runway-field-label,.f-l{color:var(--muted);font-size:12px}
 .runway-state-note{padding:7px 9px;margin:7px 0;border-left:2px solid var(--orange);background:var(--card);color:var(--ink);font-size:12px;overflow-wrap:anywhere}.facts{display:grid;grid-template-columns:1.5fr 1fr;gap:8px;border-top:1px solid #353535;padding-top:8px}

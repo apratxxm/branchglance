@@ -114,7 +114,7 @@ const luminance=hex=>{const rgb=hex.match(/[\da-f]{2}/gi).map(channel=>parseInt(
 const contrast=(a,b)=>{const values=[luminance(a),luminance(b)].sort((x,y)=>y-x);return (values[0]+.05)/(values[1]+.05);};
 for(const color of [cssVars.ink,cssVars.muted,cssVars.green,cssVars.orange,cssVars.red])for(const surface of [cssVars.paper,cssVars.card,"#282116"])assert.ok(contrast(color,surface)>=4.5,`${color} must meet 4.5:1 on ${surface}`);
 
-const nodes=new Map(),saved=new Map(),scheduledTimers=new Map(),openRequests=[],dragRegionNodes=[],fixedNow=new Date("2026-10-06T12:00:00Z").getTime();let timerSequence=0,testNow=fixedNow;
+const nodes=new Map(),saved=new Map(),scheduledTimers=new Map(),openRequests=[],bridgeOpens=[],dragRegionNodes=[],fixedNow=new Date("2026-10-06T12:00:00Z").getTime();let timerSequence=0,testNow=fixedNow;
 const fakeSetTimeout=(callback,delay)=>{const id=++timerSequence;scheduledTimers.set(id,{callback,delay});return id;};
 const fakeClearTimeout=id=>scheduledTimers.delete(id);
 const node=selector=>{
@@ -127,6 +127,8 @@ class TestDate extends Date {constructor(...args){super(...(args.length?args:[te
 const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},document:{querySelector:node,querySelectorAll(selector){return selector==='.pywebview-drag-region'?dragRegionNodes:[];},documentElement:{style:{setProperty(key,value){this[key]=value;}}},hidden:false,activeElement:null},
   localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))},fetch:async url=>{openRequests.push(String(url));return {ok:true,json:async()=>({ok:true})};},Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,setTimeout:fakeSetTimeout,clearTimeout:fakeClearTimeout,setInterval(){return 0;}};
 context.window.addEventListener=()=>{};context.document.addEventListener=()=>{};
+context.window.__branchglanceDocumentGeneration=4;
+context.window.pywebview={api:{open_thread:async(thread,generation)=>{bridgeOpens.push([thread,generation]);return {ok:true};}}};
 vm.createContext(context);vm.runInContext(app,context);
 const T=context.window.__tokenTrackerTest,ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
 assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times" aria-label="Resumed 2 times">↻2<\/span>/);
@@ -974,14 +976,16 @@ assert.match(exactPanel,/Queue this as a message for the next turn\. It will not
 assert.match(exactPanel,/data-action="close-popover"/);
 const questionButton={dataset:{action:"runway-question",key:"Codex:exact-ask"},getBoundingClientRect:()=>({left:12,bottom:36})};
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?questionButton:null}});
-assert.deepEqual(openRequests,["/api/open?thread=exact-ask"]);
+await Promise.resolve();
+assert.deepEqual(bridgeOpens,[["exact-ask",4]]);
 assert.equal(T.state.popover,null);assert.equal(T.notch.manual,false);
 const ownAsk={...questionParent,status:"needs-input",pendingQuestion:"Own question"};
 T.render({...snapshot,providers:[{...provider,chats:[ownAsk,exactAsk]}]});
 assert.match(T.rowHTML(T.state.forest.roots.find(chat=>chat.id==="question-parent")),/runway-refined-status t-attn[^>]*data-own-waiting="true"[^>]*>.*?runway-waiting-link[^>]*data-key="Codex:question-parent"[^>]*>Waiting<\/button>/s);
 const ownButton={dataset:{action:"runway-question",key:"Codex:question-parent"}};
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?ownButton:null}});
-assert.equal(openRequests.at(-1),"/api/open?thread=question-parent","the parent's own pending question takes precedence");
+await Promise.resolve();
+assert.equal(bridgeOpens.at(-1)[0],"question-parent","the parent's own pending question takes precedence");
 const noTextWait={...exactAsk,pendingQuestion:"",status:"needs-input"};
 T.render({...snapshot,providers:[{...provider,chats:[questionParent,noTextWait]}]});
 assert.match(T.rowHTML(T.state.forest.roots.find(chat=>chat.id==="question-parent")),/runway-refined-status t-live[^>]*>.*?runway-state-word">Running/);
@@ -993,8 +997,10 @@ assert.equal((noTextChild.match(/>Waiting<\/button>/g)||[]).length,1,"a waiting 
 const staleButton={dataset:{action:"runway-question",key:"Codex:exact-ask"}};
 T.render({...snapshot,providers:[{...provider,chats:[questionParent,{...noTextWait,status:"running"}]}]});
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?staleButton:null}});
-assert.equal(openRequests.length,2,"resolved waiting indicators safely ignore stale clicks");
-assert.ok(openRequests.every(url=>url.startsWith("/api/open?thread=")),"desktop Waiting text issues only exact-chat open requests");
+await Promise.resolve();
+assert.equal(bridgeOpens.length,2,"resolved waiting indicators safely ignore stale clicks");
+assert.ok(bridgeOpens.every(([thread])=>thread==="exact-ask"||thread==="question-parent"),"desktop Waiting text passes only exact-chat ids to the native bridge");
+assert.deepEqual(openRequests,[],"the native Windows bridge path does not issue HTTP open requests");
 const futureMessage={...child,parentId:"question-parent",latestMessageAt:new Date(fixedNow+5000).toISOString()};
 assert.equal(T.runwayAgentHasNewMessage(futureMessage),false);
 assert.match(T.runwayQuestionPopover({...exactAsk,pendingQuestionId:"q2"}),/Continue &lt;now&gt;\?/);

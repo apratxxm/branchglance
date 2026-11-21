@@ -17,7 +17,6 @@ ROUTES = {
         "/api/stats", "/api/insights", "/api/ledger/status", "/api/ledger",
         "/api/ledger/export", "/api/live", "/api/today",
     ),
-    "_get_open": ("/api/open",),
     "_get_codex_state": ("/api/limit-reset", "/api/quota"),
     "_get_reset_action": ("/api/reset-action",),
 }
@@ -79,14 +78,14 @@ def test_get_helpers_own_exactly_their_dispatcher_routes(owner, routes, monkeypa
 
 def test_get_unknown_path_falls_through_to_static_handler(monkeypatch):
     handler = object.__new__(server.Handler)
-    handler.path = "/not-a-route"
+    handler.path = "/api/open?thread=01234567-89ab-cdef-0123-456789abcdef"
     served = []
     monkeypatch.setattr(server.Handler, "_valid_local_host", lambda self: True)
     monkeypatch.setattr(server.SimpleHTTPRequestHandler, "do_GET", lambda self: served.append(self.path))
 
     server.Handler.do_GET(handler)
 
-    assert served == ["/not-a-route"]
+    assert served == ["/api/open?thread=01234567-89ab-cdef-0123-456789abcdef"]
 
 
 def _allow_success_paths(monkeypatch):
@@ -129,8 +128,7 @@ def test_get_helpers_own_success_exits(owner, routes, monkeypatch):
     handler.reset_service = SimpleNamespace(status=lambda: {}, get_reset_action=lambda: {})
     method = getattr(server.Handler, owner)
     for path in routes:
-        query = "thread=01234567-89ab-cdef-0123-456789abcdef" if path == "/api/open" else ""
-        assert method(handler, SimpleNamespace(path=path, query=query)) is True, (owner, path)
+        assert method(handler, SimpleNamespace(path=path, query="")) is True, (owner, path)
         assert len(handler.responses) == 1, (owner, path, handler.responses)
         handler.responses.clear()
         handler.wfile = BytesIO()

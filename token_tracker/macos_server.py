@@ -27,6 +27,13 @@ def proof_handler(key: bytes):
     class MacOSHandler(server.Handler):
         def do_GET(self):
             if urlsplit(self.path).path != PROOF_PATH:
+                # Known scope gap: the macOS host still uses the shared HTTP
+                # open route until its native Swift bridge gains open_thread.
+                if urlsplit(self.path).path == "/api/open":
+                    if not self._valid_local_host():
+                        return self._send_json({"ok": False, "error": "local Host required"}, 403)
+                    if self._get_open(urlsplit(self.path)):
+                        return
                 return super().do_GET()
             challenge = self.headers.get("X-Branchglance-Challenge", "")
             auth = self.headers.get("X-Branchglance-Auth", "")

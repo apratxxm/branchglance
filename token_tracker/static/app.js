@@ -1,4 +1,7 @@
 const $ = (selector, root = document) => root.querySelector(selector);
+function updateQueueCapability(){const root=typeof document!=="undefined"?document.documentElement:null,api=typeof window!=="undefined"?window.pywebview?.api:null;if(root?.classList)root.classList.toggle("queue-capable",typeof api?.queue_message==="function");}
+if(typeof window!=="undefined")window.addEventListener?.("pywebviewready",updateQueueCapability);
+updateQueueCapability();
 const RUNWAY_REFRESH_ICON='<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4.8A4.5 4.5 0 1 0 10 7"/><path d="M7.7 2.2H10v2.3"/></svg>';
 function preferredClockCycle(){try{return localStorage.getItem('branchglanceClockFormat')==='24'?'h23':'h12';}catch{return 'h12';}}
 let compactClockFormatter=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:preferredClockCycle()});
@@ -2491,9 +2494,18 @@ async function pollLive() {
 async function openInCodex(thread, button) {
   if(!thread)return false;
   try {
-    const response=await fetch("/api/open?thread="+encodeURIComponent(thread),{cache:"no-store",signal:AbortSignal.timeout(5000)});
-    const result=await response.json();
-    if(!response.ok||!result.ok)return false;
+    const api=window.pywebview?.api;
+    let result;
+    if(typeof api?.open_thread==="function"){
+      const generation=window.__branchglanceDocumentGeneration;
+      if(!Number.isSafeInteger(generation))return false;
+      result=await api.open_thread(thread,generation);
+    }else{
+      const response=await fetch("/api/open?thread="+encodeURIComponent(thread),{cache:"no-store",signal:AbortSignal.timeout(5000)});
+      result=await response.json();
+      if(!response.ok)return false;
+    }
+    if(!result?.ok)return false;
     if(button?.classList){button.classList.add("copied");setTimeout(()=>button.classList.remove("copied"),1200);}
     return true;
   } catch {return false;}
@@ -2511,11 +2523,14 @@ async function copyAndOpenAnswer(thread, answer, button) {
 }
 async function queueAnswer(thread, message, button) {
   if(!thread||!message||button?.disabled)return;
+  const api=window.pywebview?.api;
+  if(typeof api?.queue_message!=="function")return {ok:false,error:"Queue is unavailable on this host."};
   if(button)button.disabled=true;
   try {
-    const response=await fetch("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({thread,message}),cache:"no-store",signal:AbortSignal.timeout(20000)});
-    const result=await response.json();
-    if(!response.ok||!result.ok){
+    const generation=window.__branchglanceDocumentGeneration;
+    if(!Number.isSafeInteger(generation))throw new Error("Queue status unknown. Check the Codex task before retrying.");
+    const result=await api.queue_message(thread,message,generation);
+    if(!result?.ok){
       if(button){button.classList.add("send-failed");button.title=result.error||"Could not queue this message.";}
       return result;
     }
@@ -2609,7 +2624,7 @@ function handleClick(event) {
   else if(action==="analytics"){state.analyticsOpen=!state.analyticsOpen;if(state.snapshot)renderAnalytics(state.snapshot);return;}
   else if(action==="window"){setWindow(Number(button.dataset.days));queueSelectionRefresh();}
   else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);if(html){openPopover(html,button);void loadIdentityPolicyWarnings(button);}else closePopover();}return;}
-  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(api?.open_reset_actions)api.open_reset_actions();else window.open?.("/reset_actions.html","_blank","noopener");return;}
+  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api,generation=window.__branchglanceDocumentGeneration;if(typeof api?.open_reset_actions==="function"){if(typeof api.queue_message==="function"){if(Number.isSafeInteger(generation))void api.open_reset_actions(generation);}else void api.open_reset_actions();}return;}
   else if(action==="search"){openSearch(!state.searchOpen);}
   else if(action==="search-close"){openSearch(false);}
   else if(action==="refresh"){refresh(true);return;}

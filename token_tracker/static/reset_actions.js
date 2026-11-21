@@ -285,7 +285,7 @@
     }
     state.exportBusy=true;state.exportStatus="Choose where to save the CSV.";state.exportError=false;renderLedger();
     try{
-      const result=await api.save_ledger_csv();
+      const result=await api.save_ledger_csv(window.__branchglanceDocumentGeneration);
       if(result?.ok){state.exportStatus="Saved CSV.";}
       else if(result?.cancelled){state.exportStatus="Export cancelled.";}
       else throw new Error(result?.error||"Could not export saved history.");
