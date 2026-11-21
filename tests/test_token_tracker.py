@@ -3905,25 +3905,36 @@ def test_incremental_jsonl_group_opens_once_and_serializes_same_path_calls(tmp_p
     assert len(opens) == 1
     assert sum(bytes_read) == len(payload)
     opens.clear()
-    # A concurrent single-kind call may win the stripe lock first; either way,
-    # both paths must publish the same final state without corrupting checkpoints.
+    # Pause the group while it holds the path stripe inside reduction, then
+    # contend with a single-kind call on the exact same checkpoint key.
     path.write_bytes(payload + b'{"value":50}\n')
-    single_kind = f"group-concurrent-single-{id(path)}"
-    barrier = threading.Barrier(2)
+    single_kind = kinds[0]
+    scan_entered, release_scan, single_entered = threading.Event(), threading.Event(), threading.Event()
+
+    def blocking_reduce(state, _item):
+        if not scan_entered.is_set():
+            scan_entered.set()
+            assert release_scan.wait(timeout=5)
+        state["n"] += 1
+
+    contended_specs = [dict(specs[0], reduce_record=blocking_reduce), *specs[1:]]
 
     def group_call():
-        barrier.wait(timeout=5)
-        return providers._incremental_jsonl_reduce_group(path, specs)
+        return providers._incremental_jsonl_reduce_group(path, contended_specs)
 
     def single_call():
-        barrier.wait(timeout=5)
+        single_entered.set()
         return providers._incremental_jsonl_reduce(
             single_kind, path, lambda: {"n": 0},
             lambda state, _item: state.__setitem__("n", state["n"] + 1))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         group = pool.submit(group_call)
+        assert scan_entered.wait(timeout=5)
         single = pool.submit(single_call)
+        assert single_entered.wait(timeout=5)
+        assert not single.done()
+        release_scan.set()
         grouped = group.result()
         individual = single.result()
     assert grouped == {kind: {"n": 51} for kind in kinds}
@@ -3980,6 +3991,26 @@ def test_grouped_session_insights_spec_is_valid_when_transcript_is_missing(tmp_p
     assert providers._incremental_jsonl_reduce_group(missing, [spec]) == {spec["kind"]: {}}
 
 
+def test_missing_rollout_safe_thread_keeps_running_appserver_fallback(tmp_path, monkeypatch):
+    missing = tmp_path / "removed-running-rollout.jsonl"
+    seen = []
+    real_group = providers._incremental_jsonl_reduce_group
+
+    def capture(path, specs):
+        seen.extend(spec["kind"] for spec in specs)
+        return real_group(path, specs)
+
+    monkeypatch.setattr(providers, "_incremental_jsonl_reduce_group", capture)
+    row = CodexProvider._safe_thread({
+        "id": "missing-running", "status": {"type": "running"},
+        "statusObservedAt": datetime.now(timezone.utc).isoformat(), "path": str(missing),
+    })
+    assert row["status"] == "running"
+    assert "dataError" not in row
+    assert set(seen) == {"codex-question-state", "codex-exec-title", "codex-run-stats",
+                         "codex-session-insights", "codex-turn-count"}
+
+
 def test_grouped_valid_null_record_reaches_unfiltered_reducer(tmp_path):
     path = tmp_path / "valid-null.jsonl"
     path.write_bytes(b"null\n")
@@ -3988,6 +4019,22 @@ def test_grouped_valid_null_record_reaches_unfiltered_reducer(tmp_path):
     assert providers._incremental_jsonl_reduce_group(path, [spec])[kind] == [None]
     assert providers._JSONL_CHECKPOINTS[(kind, str(path.resolve(strict=False)))]["state"] == [None]
     assert providers._JSONL_CHECKPOINTS[(kind, str(path.resolve(strict=False)))]["offset"] == path.stat().st_size
+
+
+def test_grouped_valid_unterminated_record_reaches_reducer_before_needles_filter(tmp_path):
+    path = tmp_path / "needle-unterm.jsonl"
+    path.write_bytes(b'{"other":"record"}')
+    group_kind, single_kind = f"group-unterm-needle-{id(path)}", f"single-unterm-needle-{id(path)}"
+    initial = list
+    reduce = lambda state, item: state.append(item)
+    group_spec = {"kind": group_kind, "initial_state": initial, "reduce_record": reduce,
+                  "needles": (b'"match"',)}
+    grouped = providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind]
+    single = providers._incremental_jsonl_reduce(single_kind, path, initial, reduce,
+                                                  needles=(b'"match"',))
+    assert grouped == single == [{"other": "record"}]
+    assert (group_kind, str(path.resolve(strict=False))) not in providers._JSONL_CHECKPOINTS
+    assert (single_kind, str(path.resolve(strict=False))) not in providers._JSONL_CHECKPOINTS
 
 
 def test_grouped_incomplete_fragment_refreshes_prefix_guard_without_advancing_offset(tmp_path):
@@ -4052,6 +4099,43 @@ def test_grouped_sidecar_publication_is_discarded_if_path_changes_after_guard_va
     assert before["extra"] == "before"
 
 
+def test_grouped_state_and_guards_are_validated_after_final_guard_read(tmp_path, monkeypatch):
+    path = tmp_path / "final-guard-race.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    group_kind, single_kind = f"group-final-guard-{id(path)}", f"single-final-guard-{id(path)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    group_spec = {"kind": group_kind, "initial_state": initial, "reduce_record": reduce}
+    assert providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind] == {"values": [1]}
+    assert providers._incremental_jsonl_reduce(single_kind, path, initial, reduce) == {"values": [1]}
+    with path.open("ab") as handle:
+        handle.write(b'{"value":2}\n')
+
+    real_guards = providers._jsonl_guards
+    calls = [0]
+
+    def rewrite_during_final_guard(handle, offset, size):
+        calls[0] += 1
+        if calls[0] == 2:
+            path.write_bytes(b'{"value":9}\n{"value":2}\n')
+        return real_guards(handle, offset, size)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(providers, "_jsonl_guards", rewrite_during_final_guard)
+        assert providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind] == {"values": [1, 2]}
+    group_key = (group_kind, str(path.resolve(strict=False)))
+    assert group_key not in providers._JSONL_CHECKPOINTS
+
+    grouped = providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind]
+    single = providers._incremental_jsonl_reduce(single_kind, path, initial, reduce)
+    assert grouped == single == {"values": [9, 2]}
+    with path.open("ab") as handle:
+        handle.write(b'{"value":3}\n')
+    grouped = providers._incremental_jsonl_reduce_group(path, [group_spec])[group_kind]
+    single = providers._incremental_jsonl_reduce(single_kind, path, initial, reduce)
+    assert grouped == single == {"values": [9, 2, 3]}
+
+
 def test_grouped_reducer_exception_drops_only_that_kind(tmp_path):
     from token_tracker import claude_provider
 
@@ -4080,7 +4164,7 @@ def test_grouped_open_failure_projects_warm_and_unavailable_states(tmp_path, mon
     warm = {"kind": warm_kind, "initial_state": initial, "reduce_record": reduce,
             "project": project, "unavailable": {"values": []}}
     cold = {"kind": cold_kind, "initial_state": initial, "reduce_record": reduce,
-            "project": project, "unavailable": {"values": []}}
+            "project": project, "unavailable": []}
     assert providers._incremental_jsonl_reduce_group(path, [warm]) == {warm_kind: 1}
     original = Path.open
 
@@ -4091,8 +4175,14 @@ def test_grouped_open_failure_projects_warm_and_unavailable_states(tmp_path, mon
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", blocked)
-        assert providers._incremental_jsonl_reduce_group(path, [warm, cold]) == {
-            warm_kind: 1, cold_kind: 0}
+        grouped = providers._incremental_jsonl_reduce_group(path, [warm, cold])
+        single = {
+            warm_kind: providers._incremental_jsonl_reduce(
+                warm_kind, path, initial, reduce, project, unavailable={"values": []}),
+            cold_kind: providers._incremental_jsonl_reduce(
+                cold_kind, path, initial, reduce, project, unavailable=[]),
+        }
+        assert grouped == single == {warm_kind: 1, cold_kind: []}
 
 
 def test_grouped_stat_open_race_retries_with_fresh_fingerprint(tmp_path, monkeypatch):
@@ -4121,6 +4211,67 @@ def test_grouped_stat_open_race_retries_with_fresh_fingerprint(tmp_path, monkeyp
     assert providers._incremental_jsonl_reduce_group(path, [spec, cold_spec]) == {
         kind: {"values": [1, 2]}, cold_kind: {"values": [1, 2]}}
     assert len(read_opens) == 2
+
+
+def test_grouped_failed_handle_check_still_refreshes_path_stat_for_next_single_read(tmp_path, monkeypatch):
+    path = tmp_path / "handle-stat-refresh.jsonl"
+    path.write_bytes(b'{"value":1}\n')
+    warm_kind, cold_kind = f"group-refresh-warm-{id(path)}", f"group-refresh-cold-{id(path)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    warm = {"kind": warm_kind, "initial_state": initial, "reduce_record": reduce}
+    cold = {"kind": cold_kind, "initial_state": initial, "reduce_record": reduce}
+    assert providers._incremental_jsonl_reduce_group(path, [warm])[warm_kind] == {"values": [1]}
+
+    real_jsonl_stat = providers._jsonl_stat
+    real_path_stat = providers._stat_fingerprint
+    real_open = Path.open
+    handle_calls, path_stat_calls, appended = [0], [0], [False]
+
+    def mutate_before_final_handle_check(handle):
+        handle_calls[0] += 1
+        if handle_calls[0] == 2 and not appended[0]:
+            appended[0] = True
+            with real_open(path, "ab") as writer:
+                writer.write(b'{"value":2}\n')
+        return real_jsonl_stat(handle)
+
+    def count_path_stat(candidate):
+        if candidate == path:
+            path_stat_calls[0] += 1
+        return real_path_stat(candidate)
+
+    monkeypatch.setattr(providers, "_jsonl_stat", mutate_before_final_handle_check)
+    monkeypatch.setattr(providers, "_stat_fingerprint", count_path_stat)
+    grouped = providers._incremental_jsonl_reduce_group(path, [cold, warm])
+    assert grouped == {cold_kind: {"values": [1]}, warm_kind: {"values": [1]}}
+    assert path_stat_calls[0] >= 1  # Must run despite the failed handle comparison.
+    assert providers._incremental_jsonl_reduce(
+        warm_kind, path, initial, reduce) == {"values": [1, 2]}
+
+
+def test_grouped_lru_order_matches_cold_then_warm_single_calls(tmp_path, monkeypatch):
+    group_path, single_path = tmp_path / "lru-group.jsonl", tmp_path / "lru-single.jsonl"
+    group_path.write_bytes(b'{"value":1}\n')
+    single_path.write_bytes(b'{"value":1}\n')
+    group_warm, group_cold = f"group-lru-warm-{id(group_path)}", f"group-lru-cold-{id(group_path)}"
+    single_warm, single_cold = f"single-lru-warm-{id(single_path)}", f"single-lru-cold-{id(single_path)}"
+    initial = lambda: {"values": []}
+    reduce = lambda state, item: state["values"].append(item["value"])
+    with monkeypatch.context() as patch:
+        patch.setattr(providers, "_JSONL_CHECKPOINT_MAX_ENTRIES", 1)
+        gwarm = {"kind": group_warm, "initial_state": initial, "reduce_record": reduce}
+        gcold = {"kind": group_cold, "initial_state": initial, "reduce_record": reduce}
+        assert providers._incremental_jsonl_reduce_group(group_path, [gwarm])[group_warm] == {"values": [1]}
+        assert providers._incremental_jsonl_reduce_group(group_path, [gcold, gwarm]) == {
+            group_cold: {"values": [1]}, group_warm: {"values": [1]}}
+        group_keys = list(providers._JSONL_CHECKPOINTS)
+        assert group_keys == [(group_warm, str(group_path.resolve(strict=False)))]
+
+        assert providers._incremental_jsonl_reduce(single_warm, single_path, initial, reduce) == {"values": [1]}
+        assert providers._incremental_jsonl_reduce(single_cold, single_path, initial, reduce) == {"values": [1]}
+        assert providers._incremental_jsonl_reduce(single_warm, single_path, initial, reduce) == {"values": [1]}
+        assert list(providers._JSONL_CHECKPOINTS) == [(single_warm, str(single_path.resolve(strict=False)))]
 
 
 def test_claude_single_kind_readers_use_the_canonical_group_specs(monkeypatch, tmp_path):

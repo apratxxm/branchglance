@@ -808,6 +808,26 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
         callback = spec.get("project")
         return callback(state) if callback else state
 
+    def format_results(results: dict[str, Any], unavailable: set[str] | None = None) -> dict[str, Any]:
+        unavailable = unavailable or set()
+        formatted = {}
+        for spec in reducers:
+            kind = spec["kind"]
+            if kind in unavailable or kind not in results:
+                formatted[kind] = deepcopy(spec.get("unavailable"))
+            else:
+                formatted[kind] = project(spec, results[kind])
+        return formatted
+
+    def touch_or_restore(key: tuple[str, str], checkpoint: dict[str, Any]) -> None:
+        with _JSONL_CHECKPOINT_LOCK:
+            current = _JSONL_CHECKPOINTS.get(key)
+            if current is not None:
+                _JSONL_CHECKPOINTS.move_to_end(key)
+                return
+        _jsonl_cache_checkpoint(key, checkpoint["state"], checkpoint["offset"], checkpoint["stat"],
+                                (checkpoint["prefix"], checkpoint["cursor"]), checkpoint.get("extra"))
+
     with lock:
         fresh = False
         while True:
@@ -816,8 +836,7 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
             except OSError:
                 for key in keys:
                     _jsonl_checkpoint_remove(key)
-                return {spec["kind"]: project(spec, deepcopy(spec.get("unavailable")))
-                        for spec in reducers}
+                return format_results({}, {spec["kind"] for spec in reducers})
 
             with _JSONL_CHECKPOINT_LOCK:
                 cached = []
@@ -828,11 +847,13 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                     cached.append(entry)
 
             results: dict[str, Any] = {}
+            warm_hits: dict[str, tuple[tuple[str, str], dict[str, Any]]] = {}
             active: list[dict[str, Any]] = []
             for spec, key, checkpoint in zip(reducers, keys, cached):
                 extra = spec.get("fingerprint_extra")
                 if checkpoint and checkpoint["stat"] == before and checkpoint.get("extra") == extra:
                     results[spec["kind"]] = deepcopy(checkpoint["state"])
+                    warm_hits[spec["kind"]] = (key, checkpoint)
                     continue
                 same_fingerprint = bool(checkpoint and checkpoint["stat"] == before)
                 append_candidate = bool(checkpoint and checkpoint["stat"][2:4] == before[2:4]
@@ -842,18 +863,26 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                                "append_candidate": append_candidate, "extra": extra})
 
             if not active:
-                return {spec["kind"]: project(spec, results[spec["kind"]]) for spec in reducers}
+                for spec in reducers:
+                    hit = warm_hits.get(spec["kind"])
+                    if hit is not None:
+                        touch_or_restore(*hit)
+                return format_results(results)
 
             try:
                 handle_context = path.open("rb")
             except OSError:
                 for item in active:
                     _jsonl_checkpoint_remove(item["key"])
-                    results[item["spec"]["kind"]] = deepcopy(item["spec"].get("unavailable"))
-                return {spec["kind"]: project(spec, results.get(
-                    spec["kind"], deepcopy(spec.get("unavailable")))) for spec in reducers}
+                unavailable = {item["spec"]["kind"] for item in active}
+                for spec in reducers:
+                    hit = warm_hits.get(spec["kind"])
+                    if hit is not None:
+                        touch_or_restore(*hit)
+                return format_results(results, unavailable)
 
             retry = False
+            failed: set[str] = set()
             with handle_context as handle:
                 opened = _jsonl_stat(handle)
                 if opened != before:
@@ -872,7 +901,6 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                     committed: dict[str, int] = {}
                     old_guards: dict[str, tuple[bytes, bytes] | None] = {}
                     guard_cache: dict[tuple[int, int], tuple[bytes, bytes]] = {}
-                    failed: set[str] = set()
                     unterminated: set[str] = set()
                     extra_updates: set[str] = set()
 
@@ -939,7 +967,8 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                                 spec, kind = item["spec"], item["spec"]["kind"]
                                 if parsed:
                                     needles = spec.get("needles")
-                                    if needles and b"\\u" not in line and not any(n in line for n in needles):
+                                    if (complete and needles and b"\\u" not in line
+                                            and not any(n in line for n in needles)):
                                         try:
                                             line.decode("utf-8")
                                         except UnicodeDecodeError:
@@ -960,51 +989,73 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                                 else:
                                     unterminated.add(kind)
 
-                    try:
-                        stable = _jsonl_stat(handle) == before and _stat_fingerprint(path) == before
-                    except OSError:
-                        stable = False
-
                     staged: dict[str, tuple[Any, int, tuple[bytes, bytes], Any]] = {}
-                    if stable:
-                        for item in active:
-                            spec, kind = item["spec"], item["spec"]["kind"]
-                            if kind in failed:
-                                continue
-                            offset = committed[kind]
-                            if kind in extra_updates:
-                                guards = guards_for(offset, before[0])
-                            elif start_offset == 0:
-                                guards = (hashlib.blake2s(prefix).digest(),
-                                          hashlib.blake2s(cursor_tails.get(kind, b"")).digest())
-                            else:
-                                guards = guards_for(offset, before[0])
-                            results[kind] = states[kind]
-                            if kind not in unterminated and not _jsonl_state_uncacheable(states[kind]):
-                                staged[kind] = (states[kind], offset, guards, item["extra"])
-                    else:
+                    for item in active:
+                        spec, kind = item["spec"], item["spec"]["kind"]
+                        if kind in failed:
+                            continue
+                        offset = committed[kind]
+                        if kind in extra_updates:
+                            guards = guards_for(offset, before[0])
+                        elif start_offset == 0:
+                            guards = (hashlib.blake2s(prefix).digest(),
+                                      hashlib.blake2s(cursor_tails.get(kind, b"")).digest())
+                        else:
+                            guards = guards_for(offset, before[0])
+                        results[kind] = states[kind]
+                        if kind not in unterminated and not _jsonl_state_uncacheable(states[kind]):
+                            staged[kind] = (states[kind], offset, guards, item["extra"])
+
+                    # Evaluate both identities independently after every guard
+                    # read. A failed handle check must not skip the path stat,
+                    # which refreshes the current build's memoized fingerprint.
+                    try:
+                        after_handle = _jsonl_stat(handle)
+                    except OSError:
+                        after_handle = None
+                    try:
+                        after_path = _stat_fingerprint(path)
+                    except OSError:
+                        after_path = None
+                    stable = after_handle == before and after_path == before
+
+                    if not stable:
                         for item in active:
                             kind = item["spec"]["kind"]
                             if kind not in failed:
                                 _jsonl_checkpoint_remove(item["key"])
-                                results[kind] = states[kind]
 
-                    if stable:
-                        for item in active:
-                            spec, key = item["spec"], item["key"]
-                            kind = spec["kind"]
-                            if kind in failed:
-                                continue
-                            _jsonl_checkpoint_remove(key)
-                            publication = staged.get(kind)
-                            if publication is not None:
-                                state, offset, guards, extra = publication
-                                _jsonl_cache_checkpoint(key, state, offset, before, guards, extra)
+                    # Publish active states in request order before touching
+                    # warm hits. A publication can evict a validated warm hit;
+                    # the later touch restores it through the bounded LRU helper.
+                    active_by_kind = {item["spec"]["kind"]: item for item in active}
+                    for spec in reducers:
+                        kind = spec["kind"]
+                        item = active_by_kind.get(kind)
+                        if item is None or kind in failed or not stable:
+                            continue
+                        _jsonl_checkpoint_remove(item["key"])
+                        publication = staged.get(kind)
+                        if publication is not None:
+                            state, offset, guards, extra = publication
+                            _jsonl_cache_checkpoint(item["key"], state, offset, before, guards, extra)
+                    for spec in reducers:
+                        hit = warm_hits.get(spec["kind"])
+                        if hit is not None:
+                            touch_or_restore(*hit)
+                        item = active_by_kind.get(spec["kind"])
+                        if item is not None and spec["kind"] in failed and item["old"] is not None:
+                            touch_or_restore(item["key"], item["old"])
 
             if retry:
                 continue
-            return {spec["kind"]: project(spec, results.get(
-                spec["kind"], deepcopy(spec.get("unavailable")))) for spec in reducers}
+            if opened != before:
+                for spec in reducers:
+                    hit = warm_hits.get(spec["kind"])
+                    if hit is not None:
+                        touch_or_restore(*hit)
+            unavailable = failed if opened == before else set()
+            return format_results(results, unavailable)
 
 
 _STALE_PRE_READ_STAT = object()
