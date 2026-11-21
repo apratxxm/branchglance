@@ -148,7 +148,7 @@ assert.equal(T.runwayMessageAge(unsupportedMessage), null, "unsupported directio
 
 const bridgeCalls = [];
 context.window.pywebview = { api: { set_notch(...args) { bridgeCalls.push(args); return Promise.resolve(true); } } };
-const flushBridge = async () => { await Promise.resolve(); await Promise.resolve(); };
+const flushBridge = async () => { for (let index=0;index<8;index++) await Promise.resolve(); };
 const selectMode = async (active, { hover = false, focus = false, search = false } = {}) => {
   T.notch.active = active; T.notch.hover = hover; T.notch.qualifiedHover = hover; T.notch.autoExpanded = false; T.notch.manual = false;
   T.notch.keyboardInspecting = false; T.notch.inspecting = hover; T.state.searchOpen = search; T.state.popover = null;

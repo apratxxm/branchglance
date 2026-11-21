@@ -49,8 +49,19 @@ def test_native_settings_window_reuses_and_clears_reference(monkeypatch):
     app = widget.WidgetApp()
     app.server = types.SimpleNamespace(server_address=("127.0.0.1", 8765))
     monkeypatch.setattr(widget.webview, "guilib", None, raising=False)
-    monkeypatch.setattr(app, "_install_native_authority",
-                        lambda window, authority, **_kwargs: authority.install(window))
+    def install_test_authority(window, authority, **_kwargs):
+        adapter = getattr(window, "native_adapter", None)
+        if adapter is None:
+            adapter = window.native_adapter = object()
+        if not authority.already_installed(window, adapter):
+            authority.install(window, adapter)
+        if not authority._admitted:
+            authority.activate(window, adapter, "http://127.0.0.1:8765/reset_actions.html")
+            authority.begin_navigation("http://127.0.0.1:8765/reset_actions.html", 1)
+            authority.complete_navigation(1, True, "http://127.0.0.1:8765/reset_actions.html")
+        return True
+
+    monkeypatch.setattr(app, "_install_native_authority", install_test_authority)
     children = [Child(), Child()]
     calls = []
     tokens = []
@@ -143,9 +154,9 @@ def test_settings_native_guards_are_registered_before_pinned_gui_creates_the_win
     monkeypatch.setattr(app, "_install_native_authority",
                         lambda window, lease, **_kwargs: lease.install(window, window.native))
     child = app._create_settings_native_window(widget.SettingsWindowApi(lambda *_args: {}),
-                                               authority, lambda: None, "fragment-token")
+                                               authority, lambda: None, lambda _child: None, "fragment-token")
     assert child is observations[0][0]
-    assert observations == [(child, True)]
+    assert observations == [(child, False)], "native guards bind before navigation; admission waits for the trusted document"
 
 
 def test_quit_destroys_settings_window_before_releasing_the_server(monkeypatch):
@@ -175,3 +186,63 @@ def test_quit_destroys_settings_window_before_releasing_the_server(monkeypatch):
     app.quit()
     assert order[:3] == ["token-clear", "settings", "server"] and app.reset_actions_window is None
     assert not widget.server_module._settings_token_matches("active-token")
+
+
+def test_shutdown_intent_and_token_revocation_win_against_pending_settings_registration(monkeypatch):
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._lifecycle = threading.RLock()
+    app._reset_actions_lock = threading.Lock()
+    app._shutdown_requested = threading.Event()
+    app.quitting = False
+    app._reset_actions_token = None
+    app._settings_bridge_authority = None
+    app.reset_actions_window = None
+    app.server = types.SimpleNamespace(server_address=("127.0.0.1", 8765))
+    app._bridge_authority = widget.BridgeAuthority({"/runway.html"})
+    app._bridge_authority.enable(8765)
+    app.window = object()
+    app._bridge_authority.install(app.window, object())
+    app._bridge_authority.activate(app.window, app._bridge_authority._adapter,
+                                   "http://127.0.0.1:8765/runway.html")
+    app._bridge_authority.begin_navigation("http://127.0.0.1:8765/runway.html", 1)
+    app._bridge_authority.complete_navigation(1, True, "http://127.0.0.1:8765/runway.html")
+    receipt = app._bridge_authority.receive(app.window, "open_reset_actions",
+                                            "http://127.0.0.1:8765/runway.html",
+                                            "http://127.0.0.1:8765/runway.html",
+                                            widget._MAIN_BRIDGE_OPERATIONS)
+    registered, release = threading.Event(), threading.Event()
+    child = Child()
+
+    def create_child(_api, authority, revoke, clear, _token):
+        authority.install(child, child)
+        authority.activate(child, child, "http://127.0.0.1:8765/reset_actions.html")
+        authority.begin_navigation("http://127.0.0.1:8765/reset_actions.html", 1)
+        authority.complete_navigation(1, True, "http://127.0.0.1:8765/reset_actions.html")
+        child.events.closing += revoke
+        child.events.closed += lambda: clear(child)
+        registered.set()
+        assert release.wait(3)
+        return child
+
+    monkeypatch.setattr(app, "_create_settings_native_window", create_child)
+    outcome = []
+    opener = threading.Thread(target=lambda: outcome.append(
+        app._open_reset_actions_from_bridge(receipt, app.window)))
+    opener.start()
+    assert registered.wait(3)
+    registered_token = app._reset_actions_token
+    assert registered_token and widget.server_module._settings_token_matches(registered_token)
+    app._begin_shutdown()
+    assert app._shutdown_requested.is_set() and app.quitting
+    assert not widget.server_module._settings_token_matches(registered_token)
+    assert app.open_reset_actions() is False, "shutdown intent blocks later Settings capability registration"
+    release.set()
+    opener.join(3)
+    assert not opener.is_alive()
+    assert outcome == [False] and app.reset_actions_window is None
+    assert not authority_active(app)
+
+
+def authority_active(app):
+    authority = app._settings_bridge_authority
+    return bool(authority and authority._admitted and not authority._shutting_down)

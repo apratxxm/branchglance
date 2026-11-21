@@ -1,4 +1,5 @@
 const $ = (selector, root = document) => root.querySelector(selector);
+function waitForBridge(promise,timeoutMs=10000,message="Native action timed out."){if(typeof setTimeout!=="function")return Promise.resolve(promise);let timer,registering=true;const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{if(registering)return;reject(new Error(message));},timeoutMs);});registering=false;return Promise.race([Promise.resolve(promise),timeout]).finally(()=>{if(typeof clearTimeout==="function")clearTimeout(timer);});}
 function updateQueueCapability(){const root=typeof document!=="undefined"?document.documentElement:null,api=typeof window!=="undefined"?window.pywebview?.api:null;if(root?.classList)root.classList.toggle("queue-capable",typeof api?.queue_message==="function");}
 if(typeof window!=="undefined")window.addEventListener?.("pywebviewready",updateQueueCapability);
 updateQueueCapability();
@@ -96,7 +97,7 @@ async function syncKeepOpen() {
   const api=window.pywebview?.api?.get_keep_open;
   if(typeof api!=='function'){updateKeepOpenButton();return null;}
   keepOpenState.loading=true;updateKeepOpenButton();
-  try{const result=await api();applyKeepOpen(result);return result;}
+  try{const result=await waitForBridge(api(),10000,"Keep-open status timed out.");applyKeepOpen(result);return result;}
   catch{keepOpenState.error=true;return null;}
   finally{keepOpenState.loading=false;updateKeepOpenButton();}
 }
@@ -104,7 +105,7 @@ async function setKeepOpen(value) {
   if(keepOpenState.pending||keepOpenState.loading||!keepOpenState.known||typeof value!=='boolean')return false;
   const api=window.pywebview?.api?.set_keep_open;if(typeof api!=='function')return false;
   const expectedRevision=keepOpenState.revision;keepOpenState.pending=true;keepOpenState.error=false;updateKeepOpenButton();
-  try{const result=await api(value,expectedRevision);if(!applyKeepOpen(result))return false;return keepOpenState.value===value;}
+  try{const result=await waitForBridge(api(value,expectedRevision),10000,"Keep-open update timed out.");if(!applyKeepOpen(result))return false;return keepOpenState.value===value;}
   catch{keepOpenState.error=true;void syncKeepOpen();return false;}
   finally{keepOpenState.pending=false;updateKeepOpenButton();}
 }
@@ -138,7 +139,7 @@ function sendCompactNotch(api,args,signature){
       const request=compactBridge.pending;compactBridge.pending=null;
       if(notch.sent!==request.signature)continue;
       compactBridge.inFlightSignature=request.signature;
-      try{await request.api(...request.args);if(notch.sent===request.signature)compactBridge.appliedSignature=request.signature;else compactBridge.appliedSignature=null;}
+      try{await waitForBridge(request.api(...request.args),5000,"Widget display update timed out.");if(notch.sent===request.signature)compactBridge.appliedSignature=request.signature;else compactBridge.appliedSignature=null;}
       catch{if(notch.sent===request.signature){notch.sent=null;if(compactBridge.appliedSignature===request.signature)compactBridge.appliedSignature=null;if(inspectExpectedSignature===request.signature){clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}}}
       finally{compactBridge.inFlightSignature=null;}
     }
@@ -155,7 +156,7 @@ function applyWidgetLock(value) {
 async function syncWidgetLock() {
   const initial=!widgetLock.known;
   try{
-    const result=await window.pywebview?.api?.get_widget_lock?.();if(!applyWidgetLock(result))return null;
+    const result=await waitForBridge(window.pywebview?.api?.get_widget_lock?.(),10000,"Widget lock status timed out.");if(!applyWidgetLock(result))return null;
     if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,provider:chat.provider,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:hasTreeParent(chat),waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt))})));}
     return result;
   }catch{return null;}
@@ -166,7 +167,7 @@ async function setWidgetLock(locked) {
   const expectedRevision=widgetLock.revision;
   widgetLock.pending=true;updateWidgetLockButton();
   try{
-    const result=await api(locked,notch.expanded,null,expectedRevision);
+    const result=await waitForBridge(api(locked,notch.expanded,null,expectedRevision),10000,"Widget lock update timed out.");
     if(!applyWidgetLock(result))return false;
     return widgetLock.locked===locked;
   }catch{return false;}
@@ -177,7 +178,7 @@ async function recenterWidget(){
   const api=window.pywebview?.api;
   if(!api?.recenter)return false;
   try{
-    const result=await api.recenter();
+    const result=await waitForBridge(api.recenter(),10000,"Widget recenter timed out.");
     if(!applyWidgetLock(result)&&typeof api.get_widget_lock==='function')await syncWidgetLock();
     return true;
   }catch{return false;}
@@ -598,10 +599,10 @@ function setupWindowDrag() {
     let release;
     const current={ended:false,commit:false,released:new Promise(resolve=>{release=resolve;})};current.release=release;gesture=current;
     const operation=queue.then(async()=>{
-      const result=await api.begin_drag('compact-v1');
+      const result=await waitForBridge(api.begin_drag('compact-v1'),5000,"Widget drag could not start.");
       if(!result||result.accepted!==true||!Number.isSafeInteger(result.generation))return false;
-      if(!current.ended)await current.released;
-      await api.end_drag(result.generation,current.commit);return true;
+      if(!current.ended)await waitForBridge(current.released,10000,"Widget drag timed out.");
+      await waitForBridge(api.end_drag(result.generation,current.commit),5000,"Widget drag could not finish.");return true;
     });
     queue=operation.catch(()=>false);
   },true);
@@ -616,7 +617,7 @@ async function syncMonitors() {
   const requestGeneration=++monitorRequestGeneration,selectionGeneration=monitorSelectionGeneration;
   monitorState={...monitorState,pending:true,error:false};
   try {
-    const result=await window.pywebview?.api?.get_monitors?.();
+    const result=await waitForBridge(window.pywebview?.api?.get_monitors?.(),10000,"Monitor status timed out.");
     if(requestGeneration!==monitorRequestGeneration||selectionGeneration!==monitorSelectionGeneration||monitorSelectionPending)return false;
     const applied=applyMonitorResult(result,requestGeneration,selectionGeneration);
     if(!applied&&requestGeneration===monitorRequestGeneration){monitorState={...monitorState,known:false,pending:false,error:true};}
@@ -631,7 +632,7 @@ async function selectMonitor(id){
   const next=monitorState.monitors.find(m=>m.id===id);if(!next||next.id===monitorState.selected)return;
   const selectionGeneration=++monitorSelectionGeneration;monitorSelectionPending=true;monitorRequestGeneration++;
   try{
-    const result=await window.pywebview?.api?.select_monitor?.(next.id);
+    const result=await waitForBridge(window.pywebview?.api?.select_monitor?.(next.id),10000,"Monitor selection timed out.");
     if(selectionGeneration!==monitorSelectionGeneration)return;
     monitorSelectionPending=false;
     if(result){const requestGeneration=++monitorRequestGeneration;if(!applyMonitorResult(result,requestGeneration,selectionGeneration))void syncMonitors();}
@@ -2497,7 +2498,7 @@ async function openInCodex(thread, button) {
     const api=window.pywebview?.api;
     let result;
     if(typeof api?.open_thread==="function"){
-      result=await api.open_thread(thread);
+      result=await waitForBridge(api.open_thread(thread),10000,"Open in Codex timed out.");
     }else{
       const response=await fetch("/api/open?thread="+encodeURIComponent(thread),{cache:"no-store",signal:AbortSignal.timeout(5000)});
       result=await response.json();
@@ -2525,7 +2526,7 @@ async function queueAnswer(thread, message, button) {
   if(typeof api?.queue_message!=="function")return {ok:false,error:"Queue is unavailable on this host."};
   if(button)button.disabled=true;
   try {
-    const result=await api.queue_message(thread,message);
+    const result=await waitForBridge(api.queue_message(thread,message),20000,"Queue status unknown. Check the Codex task before retrying.");
     if(!result?.ok){
       if(button){button.classList.add("send-failed");button.title=result.error||"Could not queue this message.";}
       return result;
@@ -2620,7 +2621,7 @@ function handleClick(event) {
   else if(action==="analytics"){state.analyticsOpen=!state.analyticsOpen;if(state.snapshot)renderAnalytics(state.snapshot);return;}
   else if(action==="window"){setWindow(Number(button.dataset.days));queueSelectionRefresh();}
   else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);if(html){openPopover(html,button);void loadIdentityPolicyWarnings(button);}else closePopover();}return;}
-  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(typeof api?.open_reset_actions==="function")void api.open_reset_actions();return;}
+  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(typeof api?.open_reset_actions==="function")void waitForBridge(api.open_reset_actions(),10000,"Settings window could not be opened.").catch(()=>{});return;}
   else if(action==="search"){openSearch(!state.searchOpen);}
   else if(action==="search-close"){openSearch(false);}
   else if(action==="refresh"){refresh(true);return;}

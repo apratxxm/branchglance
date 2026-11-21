@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 _shutdown_trace_file = None
@@ -51,6 +51,7 @@ from . import ledger_service
 _WAIT_OBJECT_0 = 0x0
 _WAIT_ABANDONED = 0x80
 _WAIT_TIMEOUT = 0x102
+SETTINGS_DIALOG_WAIT_SECONDS = 300.0
 
 
 @dataclass
@@ -76,6 +77,10 @@ class BridgeAuthority:
         self._shutting_down = False
         self._window = None
         self._adapter = None
+        self._navigating = False
+        self._document_url = None
+        self._previous_document_url = None
+        self._pending_navigation_id = None
 
     @property
     def generation(self):
@@ -91,16 +96,32 @@ class BridgeAuthority:
         with self._lock:
             if self._port is None or self._shutting_down:
                 return False
-            if self._admitted:
+            if self._window is not None:
                 return self._window is window and self._adapter is adapter
             self._window = window
             self._adapter = adapter
+            return True
+
+    def activate(self, window, adapter, target_url):
+        with self._lock:
+            if (self._port is None or self._shutting_down or self._window is not window
+                    or self._adapter is not adapter or not self._trusted_url_locked(target_url)):
+                return False
             self._admitted = True
             return True
 
     def already_installed(self, window, adapter):
         with self._lock:
-            return self._admitted and self._window is window and self._adapter is adapter
+            return self._window is window and self._adapter is adapter
+
+    def guards_installed(self, window):
+        with self._lock:
+            return self._window is window and self._adapter is not None and self._port is not None
+
+    def document_ready(self, window):
+        with self._lock:
+            return (self._window is window and self._admitted and not self._shutting_down
+                    and not self._navigating and self._document_url is not None)
 
     def revoke(self):
         with self._lock:
@@ -108,19 +129,45 @@ class BridgeAuthority:
             self._admitted = False
             self._generation += 1
 
-    def navigation_started(self):
-        with self._lock:
-            self._generation += 1
-            return self._generation
-
-    def begin_navigation(self, target):
+    def begin_navigation(self, target, navigation_id=None):
         if not self._lock.acquire(blocking=False):
             return None
         try:
             self._generation += 1
-            return self._trusted_url_locked(target)
+            self._previous_document_url = self._document_url
+            self._navigating = True
+            self._pending_navigation_id = navigation_id
+            return (self._admitted and not self._shutting_down
+                    and self._trusted_url_locked(target))
         finally:
             self._lock.release()
+
+    def cancel_navigation(self, navigation_id=None):
+        with self._lock:
+            if (navigation_id is not None and self._pending_navigation_id is not None
+                    and navigation_id != self._pending_navigation_id):
+                return False
+            self._navigating = False
+            self._document_url = self._previous_document_url
+            self._previous_document_url = None
+            self._pending_navigation_id = None
+            return bool(self._document_url)
+
+    def complete_navigation(self, navigation_id, succeeded, top_url):
+        with self._lock:
+            if self._pending_navigation_id is None and navigation_id is not None:
+                return False
+            if (navigation_id is not None and self._pending_navigation_id is not None
+                    and navigation_id != self._pending_navigation_id):
+                return False
+            if succeeded and self._admitted and self._trusted_url_locked(top_url):
+                self._document_url = top_url
+                self._navigating = False
+                self._previous_document_url = None
+                self._pending_navigation_id = None
+                return True
+            self._navigating = True
+            return False
 
     def trusted_url(self, value):
         with self._lock:
@@ -139,18 +186,46 @@ class BridgeAuthority:
             return False
 
     def receive(self, window, operation, sender_url, top_url, allowed_operations):
+        receipt, _refusal, _generation = self.receive_status(window, operation, sender_url, top_url,
+                                                              allowed_operations)
+        return receipt
+
+    def receive_status(self, window, operation, sender_url, top_url, allowed_operations):
         if not self._lock.acquire(blocking=False):
-            return None
+            generation = self._generation
+            return None, "suspended" if self._navigating else "contended", generation
         try:
-            if (not self._admitted or self._shutting_down or self._window is not window
-                    or not isinstance(operation, str) or operation.startswith("_") or "." in operation
+            if (not self._admitted or self._shutting_down or self._window is not window):
+                return None, "rejected", self._generation
+            if (not isinstance(operation, str) or operation.startswith("_") or "." in operation
                     or operation not in allowed_operations
                     or not self._trusted_url_locked(sender_url) or not self._trusted_url_locked(top_url)):
-                return None
+                return None, "rejected", self._generation
+            if self._navigating or self._document_url is None:
+                return None, "suspended", self._generation
             if (urlsplit(sender_url).path != urlsplit(top_url).path
-                    or urlsplit(sender_url).netloc != urlsplit(top_url).netloc):
-                return None
-            return NativeBridgeReceipt(self, window, operation, sender_url, top_url, self._generation)
+                    or urlsplit(sender_url).netloc != urlsplit(top_url).netloc
+                    or urlsplit(top_url).path != urlsplit(self._document_url).path
+                    or urlsplit(top_url).netloc != urlsplit(self._document_url).netloc):
+                return None, "rejected", self._generation
+            return NativeBridgeReceipt(self, window, operation, sender_url, top_url, self._generation), None, self._generation
+        finally:
+            self._lock.release()
+
+    def retryable_current(self, window, operation, sender_url, top_url, generation, allowed_operations):
+        if not self._lock.acquire(timeout=0.5):
+            return False
+        try:
+            if (not self._admitted or self._shutting_down or self._navigating
+                    or self._window is not window or generation != self._generation
+                    or operation not in allowed_operations or operation.startswith("_") or "." in operation
+                    or not self._trusted_url_locked(sender_url) or not self._trusted_url_locked(top_url)
+                    or self._document_url is None):
+                return False
+            return (urlsplit(sender_url).netloc == urlsplit(top_url).netloc
+                    and urlsplit(sender_url).path == urlsplit(top_url).path
+                    and urlsplit(top_url).netloc == urlsplit(self._document_url).netloc
+                    and urlsplit(top_url).path == urlsplit(self._document_url).path)
         finally:
             self._lock.release()
 
@@ -158,11 +233,23 @@ class BridgeAuthority:
         with self._lock:
             return self.receipt_is_current_locked(receipt, window, operation)
 
+    def allows_popup(self, window, top_url):
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            return (self._admitted and not self._shutting_down and not self._navigating
+                    and self._window is window and self._document_url is not None
+                    and self._trusted_url_locked(top_url)
+                    and urlsplit(top_url).path == urlsplit(self._document_url).path
+                    and urlsplit(top_url).netloc == urlsplit(self._document_url).netloc)
+        finally:
+            self._lock.release()
+
     def receipt_is_current_locked(self, receipt, window, operation=None):
         return (isinstance(receipt, NativeBridgeReceipt) and receipt.authority is self
                 and receipt.window is window and self._window is window
                 and receipt.generation == self._generation and self._admitted
-                and not self._shutting_down
+                and not self._shutting_down and not self._navigating and self._document_url is not None
                 and (operation is None or receipt.operation == operation))
 
     def commit(self, receipt, window, operation):
@@ -174,10 +261,22 @@ class BridgeAuthority:
             return True
 
 
-def _external_http_url(value):
+def _explicit_external_url(value):
+    """Only the dashboard's deliberate public bug-report link is handed off."""
     try:
         parsed = urlsplit(str(value))
-        return parsed.scheme.lower() in {"http", "https"} and bool(parsed.hostname)
+        if (parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.port is not None
+                or parsed.username or parsed.password or parsed.path != "/apratxxm/branchglance/issues/new"
+                or parsed.fragment):
+            return False
+        query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+        if set(query) - {"template", "version", "os"} or any(len(values) != 1 for values in query.values()):
+            return False
+        if query.get("template") != ["bug_report.yml"]:
+            return False
+        if "version" in query and not re.fullmatch(r"\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.]+)?", query["version"][0]):
+            return False
+        return "os" not in query or query["os"][0] in {"Windows", "macOS", "Linux", "unknown"}
     except (TypeError, ValueError):
         return False
 
@@ -1157,7 +1256,7 @@ class WidgetApp:
         self.reset_actions_window = None
         self._reset_actions_token = None
         self._reset_actions_lock = threading.Lock()
-        self._bridge_authority = BridgeAuthority({"/runway.html", "/dashboard.html"})
+        self._bridge_authority = BridgeAuthority({"/runway.html"})
         self._settings_bridge_authority = None
         self.start_hidden = bool(start_hidden)
         self.visible = not self.start_hidden
@@ -2783,25 +2882,33 @@ class WidgetApp:
                     self._notch_thread = threading.Thread(target=self._animate_notch, daemon=True)
                     self._notch_thread.start()
 
+    def _begin_shutdown(self):
+        """Publish shutdown and revoke all authorities under the Settings registration gate."""
+        with self._lifecycle:
+            authority = getattr(self, "_bridge_authority", None)
+            if authority is not None:
+                with authority._lock:
+                    self._shutdown_requested.set()
+                    self.quitting = True
+                    authority.revoke()
+            else:
+                self._shutdown_requested.set()
+                self.quitting = True
+            settings_authority = getattr(self, "_settings_bridge_authority", None)
+            with self._reset_actions_lock:
+                settings_token = self._reset_actions_token
+                self._reset_actions_token = None
+                server_module.clear_settings_token(
+                    settings_token, settings_authority.revoke if settings_authority is not None else None)
+
     def quit(self, *_args) -> None:
-        authority = getattr(self, "_bridge_authority", None)
-        if authority is not None:
-            authority.revoke()
-        settings_authority = getattr(self, "_settings_bridge_authority", None)
-        with self._reset_actions_lock:
-            settings_token = self._reset_actions_token
-            self._reset_actions_token = None
-            server_module.clear_settings_token(
-                settings_token, settings_authority.revoke if settings_authority is not None else None)
+        self._begin_shutdown()
         _arm_shutdown_trace()
         from .providers import stop_snapshot_workers
         stop_snapshot_workers()
-        self._shutdown_requested.set()
         # Wait out any in-progress startup step; once quitting is set under the
         # lock no further startup resource is acquired, so the cleanup below
         # sees everything that exists.
-        with self._lifecycle:
-            self.quitting = True
         self._cancel_active_compact_drag()
         with self._notch_lock:
             self.quitting = True
@@ -2860,25 +2967,107 @@ class WidgetApp:
 
     def open_reset_actions(self) -> bool:
         """Open or focus the user-requested reset action settings window."""
-        with self._lifecycle:
-            if self.quitting:
-                return False
-            return self._open_reset_actions_locked()
+        return self._open_settings_with_receipt()
 
     def _open_reset_actions_from_bridge(self, receipt, window):
-        authority = getattr(self, "_bridge_authority", None)
-        if authority is None or window is not getattr(self, "window", None):
+        if window is not getattr(self, "window", None):
             return {"ok": False, "error": "Widget document is no longer trusted."}
-        if self.quitting or not authority.commit(receipt, window, "open_reset_actions"):
-            return False
+        return self._open_settings_with_receipt(receipt, window)
+
+    def _shutdown_pending(self):
+        requested = getattr(self, "_shutdown_requested", None)
+        return self.quitting or bool(requested and requested.is_set())
+
+    def _open_settings_with_receipt(self, receipt=None, source_window=None):
+        """Register Settings capability under lifecycle lock, then create its native child."""
+        existing = None
+        plan = None
         with self._lifecycle:
-            if self.quitting:
+            if self._shutdown_pending():
                 return False
-            return self._open_reset_actions_locked()
+            if receipt is not None:
+                authority = getattr(self, "_bridge_authority", None)
+                if (authority is None or source_window is not getattr(self, "window", None)
+                        or not authority.commit(receipt, source_window, "open_reset_actions")):
+                    return False
+            child = getattr(self, "reset_actions_window", None)
+            child_authority = getattr(self, "_settings_bridge_authority", None)
+            if child is not None and child_authority is not None and child_authority.document_ready(child):
+                existing = child
+            else:
+                if child is not None:
+                    self.reset_actions_window = None
+                token = secrets.token_urlsafe(32)
+                authority = BridgeAuthority({"/reset_actions.html"})
+                authority.enable(self.server.server_address[1])
+                with self._reset_actions_lock:
+                    server_module.set_settings_token(token)
+                    self._reset_actions_token = token
+                    self._settings_bridge_authority = authority
+
+                def revoke_on_closing():
+                    with self._lifecycle:
+                        with self._reset_actions_lock:
+                            if self._reset_actions_token == token:
+                                self._reset_actions_token = None
+                                server_module.clear_settings_token(token, authority.revoke)
+                            else:
+                                authority.revoke()
+
+                def clear_on_closed(closed_child):
+                    with self._lifecycle:
+                        self._clear_closed_settings_reference(closed_child)
+
+                settings_api = SettingsWindowApi(lambda native_receipt, source_child:
+                                                 self.save_ledger_csv(source_child, native_receipt))
+                plan = (settings_api, authority, revoke_on_closing, clear_on_closed, token)
+
+        if existing is not None:
+            try:
+                existing.show()
+                existing.restore()
+                existing.focus()
+                return True
+            except Exception:
+                with self._lifecycle:
+                    if self.reset_actions_window is existing:
+                        self.reset_actions_window = None
+                return self._open_settings_with_receipt(receipt, source_window)
+
+        settings_api, authority, revoke_on_closing, clear_on_closed, token = plan
+        child = None
+        try:
+            child = self._create_settings_native_window(settings_api, authority, revoke_on_closing,
+                                                        clear_on_closed, token)
+            with self._lifecycle:
+                if (self._shutdown_pending() or self._reset_actions_token != token
+                        or not authority.guards_installed(child)):
+                    with self._reset_actions_lock:
+                        if self._reset_actions_token == token:
+                            self._reset_actions_token = None
+                            server_module.clear_settings_token(token, authority.revoke)
+                    if child is not None:
+                        with suppress(Exception):
+                            child.destroy()
+                    return False
+                self.reset_actions_window = child
+            return True
+        except Exception:
+            with self._lifecycle:
+                with self._reset_actions_lock:
+                    if self._reset_actions_token == token:
+                        self._reset_actions_token = None
+                        server_module.clear_settings_token(token, authority.revoke)
+            if child is not None:
+                with suppress(Exception):
+                    child.destroy()
+            logging.getLogger(__name__).warning("Could not open reset action settings")
+            return False
 
     def queue_message(self, thread, message, receipt, window):
         authority = getattr(self, "_bridge_authority", None)
         if (authority is None or window is not getattr(self, "window", None)
+                or self._shutdown_pending()
                 or not authority.receipt_is_current(receipt, window, "queue_message")):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
@@ -2889,7 +3078,7 @@ class WidgetApp:
             return {"ok": False, "error": "Explicit Codex SEND consent is required."}
         if not server_module._is_collected_codex_thread(thread):
             return {"ok": False, "error": "unknown Codex thread"}
-        if not authority.commit(receipt, window, "queue_message"):
+        if self._shutdown_pending() or not authority.commit(receipt, window, "queue_message"):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         try:
             server_module.queue_codex_message(thread, message)
@@ -2906,6 +3095,7 @@ class WidgetApp:
     def open_thread(self, thread, receipt, window):
         authority = getattr(self, "_bridge_authority", None)
         if (authority is None or window is not getattr(self, "window", None)
+                or self._shutdown_pending()
                 or not authority.receipt_is_current(receipt, window, "open_thread")):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
@@ -2914,7 +3104,7 @@ class WidgetApp:
             return {"ok": False, "error": "Codex is not enabled."}
         if not server_module._is_collected_codex_thread(thread):
             return {"ok": False, "error": "unknown Codex thread"}
-        if not authority.commit(receipt, window, "open_thread"):
+        if self._shutdown_pending() or not authority.commit(receipt, window, "open_thread"):
             return {"ok": False, "error": "Widget document is no longer trusted."}
         try:
             url = f"codex://threads/{thread}"
@@ -2932,7 +3122,7 @@ class WidgetApp:
 
     def save_ledger_csv(self, window, receipt) -> dict:
         authority = getattr(receipt, "authority", None)
-        if (not isinstance(authority, BridgeAuthority)
+        if (not isinstance(authority, BridgeAuthority) or self._shutdown_pending()
                 or not authority.receipt_is_current(receipt, window, "save_ledger_csv")
                 or window is not getattr(self, "reset_actions_window", None)):
             return {"ok": False, "error": "Settings window is no longer trusted."}
@@ -2947,14 +3137,9 @@ class WidgetApp:
         if window is None or not callable(getattr(window, "create_file_dialog", None)):
             return {"ok": False, "error": "Native file saving is unavailable."}
         try:
-            if (window is not self.reset_actions_window
-                    or not authority.commit(receipt, window, "save_ledger_csv")):
-                return {"ok": False, "error": "Settings window is no longer trusted."}
-            selected = window.create_file_dialog(
-                webview.FileDialog.SAVE,
-                save_filename="branchglance-ledger-all.csv",
-                file_types=("CSV files (*.csv)",),
-            )
+            selected, dialog_error = self._launch_settings_file_dialog(window, authority, receipt)
+            if dialog_error:
+                return dialog_error
             if isinstance(selected, (list, tuple)):
                 selected = selected[0] if selected else None
             if not selected:
@@ -2962,69 +3147,70 @@ class WidgetApp:
             target = Path(selected)
             with authority._lock:
                 if (not authority.receipt_is_current_locked(receipt, window, "save_ledger_csv")
-                        or window is not self.reset_actions_window):
+                        or self._shutdown_pending() or window is not self.reset_actions_window):
                     return {"ok": False, "error": "Settings window is no longer trusted."}
                 target.write_bytes(body)
             return {"ok": True}
         except Exception:
             return {"ok": False, "error": "Could not save the CSV file."}
 
-    def _open_reset_actions_locked(self) -> bool:
-        child = self.reset_actions_window
-        if (child is not None and (self._settings_bridge_authority is None
-                                   or not self._settings_bridge_authority._admitted)):
-            child = self.reset_actions_window = None
-        if child is not None:
+    def _launch_settings_file_dialog(self, window, authority, receipt):
+        done = threading.Event()
+        cancelled = threading.Event()
+        outcome = {"selected": None, "error": None}
+
+        def launch():
             try:
-                child.show()
-                child.restore()
-                child.focus()
-                return True
-            except Exception:
-                self.reset_actions_window = None
-        try:
-            token = secrets.token_urlsafe(32)
-            authority = BridgeAuthority({"/reset_actions.html"})
-            authority.enable(self.server.server_address[1])
-            self._settings_bridge_authority = authority
-            with self._reset_actions_lock:
-                server_module.set_settings_token(token)
-                self._reset_actions_token = token
-
-            def revoke_on_closing():
-                with self._reset_actions_lock:
-                    if self._reset_actions_token == token:
-                        self._reset_actions_token = None
-                        server_module.clear_settings_token(token, authority.revoke)
+                with authority._lock:
+                    if (cancelled.is_set() or self._shutdown_pending()
+                            or window is not self.reset_actions_window
+                            or not authority.receipt_is_current_locked(receipt, window, "save_ledger_csv")
+                            or not authority.commit(receipt, window, "save_ledger_csv")):
+                        outcome["error"] = {"ok": False, "error": "Settings window is no longer trusted."}
+                        return
+                # This callback is running on the WinForms GUI thread. No native
+                # event can interleave between the receipt commit above and the
+                # ShowDialog call, while the lock remains free for close revocation
+                # during the modal dialog loop.
+                selected = window.create_file_dialog(
+                    webview.FileDialog.SAVE,
+                    save_filename="branchglance-ledger-all.csv",
+                    file_types=("CSV files (*.csv)",),
+                )
+                with authority._lock:
+                    if (cancelled.is_set() or self._shutdown_pending()
+                            or window is not self.reset_actions_window
+                            or not authority.receipt_is_current_locked(receipt, window, "save_ledger_csv")):
+                        outcome["error"] = {"ok": False, "error": "Settings window is no longer trusted."}
                     else:
-                        authority.revoke()
+                        outcome["selected"] = selected
+            except Exception:
+                outcome["error"] = {"ok": False, "error": "Could not open the CSV save dialog."}
+            finally:
+                done.set()
 
-            settings_api = SettingsWindowApi(lambda receipt, source_window:
-                                             self.save_ledger_csv(source_window, receipt))
-            child = self._create_settings_native_window(settings_api, authority, revoke_on_closing, token)
-            if not authority._admitted:
-                self._revoke_settings_authority(authority)
-                with suppress(Exception):
-                    child.destroy()
-                self.reset_actions_window = None
-                return False
-            self.reset_actions_window = child
-            child.events.closed += lambda *_: self._clear_closed_settings_reference(child)
-            return True
-        except Exception:
-            with self._reset_actions_lock:
-                if self._reset_actions_token == locals().get("token"):
-                    self._reset_actions_token = None
-                    server_module.set_settings_token(None)
-            logging.getLogger(__name__).warning("Could not open reset action settings")
-            self.reset_actions_window = None
-            return False
+        native = getattr(window, "native", None)
+        begin_invoke = getattr(native, "BeginInvoke", None) if native is not None else None
+        if callable(begin_invoke):
+            try:
+                from System import Func, Object
+                begin_invoke(Func[Object](launch))
+            except Exception:
+                return None, {"ok": False, "error": "Could not open the CSV save dialog."}
+            if not done.wait(SETTINGS_DIALOG_WAIT_SECONDS):
+                cancelled.set()
+                return None, {"ok": False, "status": "retryable", "error": "The CSV dialog timed out. Try again."}
+        else:
+            launch()
+        return outcome["selected"], outcome["error"]
 
     def _clear_closed_settings_reference(self, child):
-        if self.reset_actions_window is child:
-            self.reset_actions_window = None
+        with self._lifecycle:
+            if self.reset_actions_window is child:
+                self.reset_actions_window = None
 
-    def _create_settings_native_window(self, settings_api, authority, revoke_on_closing, token):
+    def _create_settings_native_window(self, settings_api, authority, revoke_on_closing,
+                                       clear_on_closed, token):
         """Initialize the pinned pywebview Window model, then bind guards before native creation."""
         gui = getattr(webview, "guilib", None)
         if gui is None:
@@ -3035,6 +3221,7 @@ class WidgetApp:
             child.events.before_show += lambda *_: self._install_native_authority(
                 child, authority, settings=True)
             child.events.closing += revoke_on_closing
+            child.events.closed += lambda *_: clear_on_closed(child)
             self._install_native_authority(child, authority, settings=True)
             return child
 
@@ -3054,6 +3241,7 @@ class WidgetApp:
         child.events.before_show += lambda *_: self._install_native_authority(
             child, authority, settings=True)
         child.events.closing += revoke_on_closing
+        child.events.closed += lambda *_: clear_on_closed(child)
         try:
             gui.create_window(child)
         except Exception:
@@ -3101,7 +3289,7 @@ class WidgetApp:
                         return
                     operation, encoded_params, value_id = wire
                     if (not isinstance(operation, str) or operation.startswith("_") or "." in operation
-                            or not isinstance(value_id, str) or not re.fullmatch(r"[0-9]{1,64}", value_id)):
+                            or not isinstance(value_id, str) or not re.fullmatch(r"[0-9eE+.-]{0,64}", value_id)):
                         return
                     params = json.loads(encoded_params)
                     if not isinstance(params, list):
@@ -3109,8 +3297,13 @@ class WidgetApp:
                     core = sender.CoreWebView2
                     source_url = str(args.Source)
                     top_url = str(core.Source)
-                    receipt = authority.receive(window, operation, source_url, top_url, operations)
+                    receipt, refusal, generation = authority.receive_status(
+                        window, operation, source_url, top_url, operations)
                     if receipt is None:
+                        if refusal == "contended":
+                            self._dispatch_retryable_bridge_refusal(
+                                window, authority, operation, params, value_id, source_url,
+                                top_url, generation, operations)
                         return
                 except Exception:
                     return
@@ -3118,35 +3311,65 @@ class WidgetApp:
 
             def navigation_starting(_sender, args):
                 target = str(args.Uri)
-                trusted = authority.begin_navigation(target)
-                if trusted:
+                trusted = authority.begin_navigation(target, getattr(args, "NavigationId", None))
+                if trusted is True:
                     return
                 args.Cancel = True
-                if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
+                if trusted is None:
+                    return
+                authority.cancel_navigation(getattr(args, "NavigationId", None))
+                if (getattr(args, "IsUserInitiated", False)
+                        and not getattr(args, "IsRedirected", False)
+                        and _explicit_external_url(target)):
                     import webbrowser
                     webbrowser.open(target)
 
-            def new_window_requested(_sender, args):
+            def new_window_requested(sender, args):
                 args.set_Handled(True)
+                try:
+                    top_url = str(sender.Source)
+                except Exception:
+                    return
+                if not authority.allows_popup(window, top_url):
+                    return
                 target = str(args.get_Uri())
-                if (getattr(args, "IsUserInitiated", False) and _external_http_url(target)):
+                if (getattr(args, "IsUserInitiated", False) and _explicit_external_url(target)):
                     import webbrowser
                     webbrowser.open(target)
 
             # CoreWebView2InitializationCompleted is subscribed in EdgeChrome.__init__.
-            # Rewire that instance callback so the default popup route is removed before
-            # on_webview_ready starts the first navigation.
+            # Replace the adapter's popup callback before invoking its initializer;
+            # that callback registers NewWindowRequested before it starts navigation.
             def guarded_ready(sender, args):
-                original_ready(sender, args)
-                if args.IsSuccess:
-                    core = sender.CoreWebView2
-                    core.NewWindowRequested -= adapter.on_new_window_request
-                    core.NewWindowRequested += new_window_requested
+                if not args.IsSuccess:
+                    if settings:
+                        self._revoke_settings_authority(authority)
+                    else:
+                        authority.revoke()
+                    return original_ready(sender, args)
+                adapter.on_new_window_request = new_window_requested
+                original_load_url = adapter.load_url
+
+                def activate_before_initial_navigation(target):
+                    if not authority.activate(window, adapter, str(target)):
+                        return None
+                    return original_load_url(target)
+
+                adapter.load_url = activate_before_initial_navigation
+                return original_ready(sender, args)
+
+            def navigation_completed(sender, args):
+                try:
+                    authority.complete_navigation(args.NavigationId, args.IsSuccess,
+                                                  str(sender.CoreWebView2.Source))
+                except Exception:
+                    return
 
             webview_control.WebMessageReceived -= original_notify
             webview_control.WebMessageReceived += guarded_notify
             adapter.on_script_notify = guarded_notify
             webview_control.NavigationStarting += navigation_starting
+            webview_control.NavigationCompleted += navigation_completed
             webview_control.CoreWebView2InitializationCompleted -= original_ready
             webview_control.CoreWebView2InitializationCompleted += guarded_ready
             if not authority.install(window, adapter):
@@ -3164,13 +3387,14 @@ class WidgetApp:
             return False
 
     def _revoke_settings_authority(self, authority):
-        with self._reset_actions_lock:
-            token = self._reset_actions_token
-            if token is None:
-                authority.revoke()
-                return
-            self._reset_actions_token = None
-            server_module.clear_settings_token(token, authority.revoke)
+        with self._lifecycle:
+            with self._reset_actions_lock:
+                token = self._reset_actions_token
+                if token is None:
+                    authority.revoke()
+                    return
+                self._reset_actions_token = None
+                server_module.clear_settings_token(token, authority.revoke)
 
     def _dispatch_native_bridge_call(self, window, operation, params, value_id, receipt):
         """Resolve only allowlisted top-level operations and carry native receipt to execution."""
@@ -3203,16 +3427,39 @@ class WidgetApp:
                 result = {"ok": False, "error": "Native action could not be completed."}
             if not authority.receipt_is_current(receipt, window, operation):
                 return
-            try:
-                serialized = json.dumps(result).replace("\\", "\\\\").replace("'", "\\'")
-                window.evaluate_js(
-                    f'window.pywebview._returnValuesCallbacks["{operation}"]["{value_id}"]'
-                    f'({{value: \'{serialized}\'}})'
-                )
-            except Exception:
-                pass
+            self._schedule_native_reply(window, operation, value_id, result)
 
         threading.Thread(target=run, name="widget-native-bridge", daemon=True).start()
+
+    def _dispatch_retryable_bridge_refusal(self, window, authority, operation, params, value_id,
+                                           source_url, top_url, generation, operations):
+        def reply_if_current():
+            if authority.retryable_current(window, operation, source_url, top_url, generation, operations):
+                self._schedule_native_reply(window, operation, value_id,
+                                            {"ok": False, "status": "retryable",
+                                             "error": "The widget is busy. Try again."})
+
+        threading.Thread(target=reply_if_current, name="widget-bridge-retry", daemon=True).start()
+
+    @staticmethod
+    def _native_bridge_callback_script(operation, value_id, result):
+        operation_key = json.dumps(operation)
+        id_key = json.dumps(value_id)
+        payload = json.dumps({"value": json.dumps(result, ensure_ascii=False)}, ensure_ascii=False)
+        return ("(()=>{const cb=window.pywebview?._returnValuesCallbacks?.[" + operation_key
+                + "]?.[" + id_key + "];if(typeof cb===\"function\")cb(" + payload + ");})();")
+
+    @staticmethod
+    def _schedule_native_reply(window, operation, value_id, result):
+        """Post the response asynchronously to the GUI thread; never wait there for script completion."""
+        try:
+            from System import Func, Object
+            native = window.native
+            adapter = native.browser
+            script = WidgetApp._native_bridge_callback_script(operation, value_id, result)
+            native.BeginInvoke(Func[Object](lambda: adapter.webview.ExecuteScriptAsync(script)))
+        except Exception:
+            return
 
     def _startup_step(self, action):
         """Run one startup acquisition unless a shutdown was requested; serialized with quit()."""

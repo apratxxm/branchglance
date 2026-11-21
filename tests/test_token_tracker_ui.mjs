@@ -475,6 +475,17 @@ console.log("Token Tracker UI tests passed");
   assert.deepEqual(bridgeCalls,[["01a0cad8-0000-7000-8000-000000000001","Yes, both worked"]]);
   assert.deepEqual(calls,[],"queue never sends a message through the HTTP API");
   assert.match(button.title,/does not answer/);
+  context.window.pywebview.api.queue_message=async()=>({ok:false,status:"retryable",error:"The widget is busy. Try again."});
+  const retryButton={disabled:false,title:"",classList:{add(name){this[name]=true},contains(name){return Boolean(this[name])}},querySelector(){return null}};
+  const retryable=await T.queueAnswer("01a0cad8-0000-7000-8000-000000000001","Yes, both worked",retryButton);
+  assert.equal(retryable.status,"retryable","a refused receipt is reported as retryable, not as unknown delivery");
+  context.window.pywebview.api.queue_message=()=>new Promise(()=>{});
+  const timeoutButton={disabled:false,title:"",classList:{add(name){this[name]=true},contains(name){return Boolean(this[name])}},querySelector(){return null}};
+  const previousSetTimeout=context.setTimeout,previousClearTimeout=context.clearTimeout;
+  context.setTimeout=(callback)=>globalThis.setTimeout(callback,1);context.clearTimeout=timer=>globalThis.clearTimeout(timer);
+  const timedOut=await T.queueAnswer("01a0cad8-0000-7000-8000-000000000001","Yes, both worked",timeoutButton);
+  context.setTimeout=previousSetTimeout;context.clearTimeout=previousClearTimeout;
+  assert.equal(timedOut.status,"unknown","a timed out Queue keeps the unknown-outcome state");
   console.log("Token Tracker next-turn queue UI tests passed");
 }
 {

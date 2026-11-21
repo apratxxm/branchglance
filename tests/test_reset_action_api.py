@@ -182,13 +182,27 @@ def test_close_settings_before_mutation_boundary_revokes_pending_request(api, mo
     child.events = type("Events", (), {name: Event() for name in ("before_show", "closing", "closed")})()
     app = widget.WidgetApp.__new__(widget.WidgetApp)
     app._reset_actions_lock = threading.Lock()
+    app._lifecycle = threading.RLock()
+    app._shutdown_requested = threading.Event()
     app.reset_actions_window = None
     app._reset_actions_token = None
     app._settings_bridge_authority = None
     app.server = type("BoundServer", (), {"server_address": ("127.0.0.1", port)})()
     app.quitting = False
-    monkeypatch.setattr(app, "_install_native_authority",
-                        lambda _window, authority, **_kwargs: authority.install(child))
+    def install_test_authority(window, authority, **_kwargs):
+        adapter = getattr(window, "native_adapter", None)
+        if adapter is None:
+            adapter = window.native_adapter = object()
+        if not authority.already_installed(window, adapter):
+            authority.install(window, adapter)
+        if not authority._admitted:
+            url = "http://127.0.0.1:8765/reset_actions.html"
+            authority.activate(window, adapter, url)
+            authority.begin_navigation(url, 1)
+            authority.complete_navigation(1, True, url)
+        return True
+
+    monkeypatch.setattr(app, "_install_native_authority", install_test_authority)
     monkeypatch.setattr(widget.webview, "guilib", None, raising=False)
     monkeypatch.setattr(widget.webview, "create_window", lambda *args, **kwargs: child)
     monkeypatch.setattr(widget.secrets, "token_urlsafe", lambda _size: SETTINGS_TOKEN)
@@ -201,7 +215,7 @@ def test_close_settings_before_mutation_boundary_revokes_pending_request(api, mo
     result = []
     request_thread = threading.Thread(target=lambda: result.append(
         request(port, "/api/reset-action", {"mode": "greet", "threadIds": []})))
-    assert app._open_reset_actions_locked() is True
+    assert app.open_reset_actions() is True
     child.events.before_show.fire()
     request_thread.start()
     assert entered.wait(3)
@@ -490,7 +504,7 @@ def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypa
         def create_file_dialog(self, dialog_type, **kwargs):
             requested.append((dialog_type, kwargs))
             if self.revoke_during_dialog:
-                self.authority.navigation_started()
+                self.authority.begin_navigation("http://127.0.0.1:8765/reset_actions.html", 2)
             return self.selected
 
     monkeypatch.setattr(widget.ledger_service, "http_response", export)
@@ -499,12 +513,16 @@ def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypa
     app.quitting = False
     authority = widget.BridgeAuthority({"/reset_actions.html"})
     authority.enable(8765)
-    authority.install(app.reset_actions_window)
+    adapter = object()
+    authority.install(app.reset_actions_window, adapter)
+    settings_url = "http://127.0.0.1:8765/reset_actions.html"
+    authority.activate(app.reset_actions_window, adapter, settings_url)
+    authority.begin_navigation(settings_url, 1)
+    authority.complete_navigation(1, True, settings_url)
     app._settings_bridge_authority = authority
     app.reset_actions_window.authority = authority
     receipt = authority.receive(app.reset_actions_window, "save_ledger_csv",
-                                "http://127.0.0.1:8765/reset_actions.html",
-                                "http://127.0.0.1:8765/reset_actions.html",
+                                settings_url, settings_url,
                                 widget._SETTINGS_BRIDGE_OPERATIONS)
     api = widget.SettingsWindowApi(lambda native_receipt, source_window:
                                    app.save_ledger_csv(source_window, native_receipt))
@@ -529,11 +547,56 @@ def test_settings_export_uses_native_save_dialog_and_filtered_csv_route(monkeypa
     assert len(requested) == dialog_calls, "an unavailable filtered export does not open the native dialog"
 
     receipt = authority.receive(app.reset_actions_window, "save_ledger_csv",
-                                "http://127.0.0.1:8765/reset_actions.html",
-                                "http://127.0.0.1:8765/reset_actions.html",
+                                settings_url, settings_url,
                                 widget._SETTINGS_BRIDGE_OPERATIONS)
+    monkeypatch.setattr(widget.ledger_service, "http_response", export)
     target = tmp_path / "revoked-after-dialog.csv"
     app.reset_actions_window.selected = str(target)
     app.reset_actions_window.revoke_during_dialog = True
+    before_dialog = sum(item[0] == widget.webview.FileDialog.SAVE for item in requested)
     assert app.save_ledger_csv(app.reset_actions_window, receipt)["ok"] is False
+    after_dialog = sum(item[0] == widget.webview.FileDialog.SAVE for item in requested)
+    assert after_dialog == before_dialog + 1, "the successful export reaches the native dialog before revocation is tested"
     assert not target.exists(), "a close or reload during the file dialog blocks the later write"
+
+
+def test_settings_csv_gui_dispatch_wait_is_bounded(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    body = b"provider,coverageStatus\r\nCodex,complete\r\n"
+    monkeypatch.setattr(widget.ledger_service, "http_response",
+                        lambda *_args: (200, {"Content-Type": "text/csv"}, body))
+    monkeypatch.setattr(widget, "SETTINGS_DIALOG_WAIT_SECONDS", 0.01)
+
+    class Func:
+        @classmethod
+        def __class_getitem__(cls, _item):
+            return lambda function: function
+
+    system = types.ModuleType("System")
+    system.Func = Func
+    system.Object = object
+    monkeypatch.setitem(sys.modules, "System", system)
+
+    class Window:
+        def __init__(self):
+            self.native = types.SimpleNamespace(BeginInvoke=lambda _callback: None)
+        def create_file_dialog(self, *_args, **_kwargs):
+            pytest.fail("an unrun GUI callback cannot open the native dialog")
+
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app.quitting = False
+    app._shutdown_requested = threading.Event()
+    app.reset_actions_window = Window()
+    authority = widget.BridgeAuthority({"/reset_actions.html"})
+    authority.enable(8765)
+    authority.install(app.reset_actions_window, app.reset_actions_window.native)
+    url = "http://127.0.0.1:8765/reset_actions.html"
+    authority.activate(app.reset_actions_window, app.reset_actions_window.native, url)
+    authority.begin_navigation(url, 1); authority.complete_navigation(1, True, url)
+    app._settings_bridge_authority = authority
+    receipt = authority.receive(app.reset_actions_window, "save_ledger_csv", url, url,
+                                widget._SETTINGS_BRIDGE_OPERATIONS)
+    result = app.save_ledger_csv(app.reset_actions_window, receipt)
+    assert result == {"ok": False, "status": "retryable", "error": "The CSV dialog timed out. Try again."}

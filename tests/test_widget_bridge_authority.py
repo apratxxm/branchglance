@@ -3,9 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 import json
 import http.client
+import subprocess
 import threading
+from dataclasses import replace
+from types import MappingProxyType
 
-from token_tracker import server, widget
+from token_tracker import provider_policy, server, widget
 
 
 TRUSTED = "http://127.0.0.1:8765/runway.html"
@@ -17,6 +20,9 @@ def _bound_authority(paths=("/runway.html",)):
     assert authority.install(window) is False
     authority.enable(8765)
     assert authority.install(window)
+    assert authority.activate(window, None, TRUSTED)
+    assert authority.begin_navigation(TRUSTED, 1) is True
+    assert authority.complete_navigation(1, True, TRUSTED)
     return authority, window
 
 
@@ -27,6 +33,9 @@ def test_native_receipt_requires_bound_window_source_generation_and_public_opera
     authority.enable(8765)
     assert authority.receive(window, "queue_message", TRUSTED, TRUSTED, {"queue_message"}) is None
     assert authority.install(window)
+    assert authority.activate(window, None, TRUSTED)
+    assert authority.begin_navigation(TRUSTED, 1) is True
+    assert authority.complete_navigation(1, True, TRUSTED)
     assert authority.receive(object(), "queue_message", TRUSTED, TRUSTED, {"queue_message"}) is None
     assert authority.receive(window, "queue_message", "http://127.0.0.1:8765/evil.html", TRUSTED,
                              {"queue_message"}) is None
@@ -37,7 +46,9 @@ def test_native_receipt_requires_bound_window_source_generation_and_public_opera
                              {"queue_message.nested"}) is None
     receipt = authority.receive(window, "queue_message", TRUSTED, TRUSTED, {"queue_message"})
     assert receipt and authority.receipt_is_current(receipt, window, "queue_message")
-    authority.navigation_started()  # same-URL reload invalidates the received native receipt
+    assert authority.begin_navigation(TRUSTED, 2) is True
+    assert authority.receive(window, "queue_message", TRUSTED, TRUSTED, {"queue_message"}) is None
+    assert authority.complete_navigation(2, True, TRUSTED)
     assert not authority.receipt_is_current(receipt, window, "queue_message")
     authority.revoke()
     assert authority.receive(window, "queue_message", TRUSTED, TRUSTED, {"queue_message"}) is None
@@ -52,6 +63,42 @@ def test_bridge_operation_allowlists_match_the_only_public_api_methods():
     assert settings_public == widget._SETTINGS_BRIDGE_OPERATIONS == {"save_ledger_csv"}
 
 
+def test_busy_native_bridge_receipt_returns_retryable_failure_only_to_current_document():
+    authority, window = _bound_authority()
+    entered, release, replied = threading.Event(), threading.Event(), threading.Event()
+    holder = threading.Thread(target=lambda: _hold_authority(authority, entered, release), daemon=True)
+    holder.start()
+    assert entered.wait(2)
+    receipt, refusal, generation = authority.receive_status(
+        window, "queue_message", TRUSTED, TRUSTED, widget._MAIN_BRIDGE_OPERATIONS)
+    assert receipt is None and refusal == "contended"
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    responses = []
+
+    def schedule(_window, operation, callback_id, result):
+        responses.append((operation, callback_id, result))
+        replied.set()
+
+    app._schedule_native_reply = schedule
+    app._dispatch_retryable_bridge_refusal(
+        window, authority, "queue_message", ["thread", "message"], "1e-7",
+        TRUSTED, TRUSTED, generation, widget._MAIN_BRIDGE_OPERATIONS)
+    release.set()
+    assert replied.wait(2)
+    holder.join(2)
+    assert responses == [("queue_message", "1e-7",
+                          {"ok": False, "status": "retryable", "error": "The widget is busy. Try again."})]
+    script = widget.WidgetApp._native_bridge_callback_script("queue_message", "1e-7", responses[0][2])
+    assert '["queue_message"]?.["1e-7"]' in script, "callback identifiers use JSON-safe property access"
+    assert "function\")cb" in script
+
+
+def _hold_authority(authority, entered, release):
+    with authority._lock:
+        entered.set()
+        release.wait(2)
+
+
 def test_widget_queue_bridge_checks_document_and_calls_sender_once(monkeypatch):
     app = widget.WidgetApp.__new__(widget.WidgetApp)
     app.quitting = False
@@ -59,9 +106,14 @@ def test_widget_queue_bridge_checks_document_and_calls_sender_once(monkeypatch):
     sent = []
     policy_allowed = [False]
     collected = [False]
+    unknown_outcome = [False]
     monkeypatch.setattr(server, "_codex_queue_allowed", lambda: policy_allowed[0])
     monkeypatch.setattr(server, "_is_collected_codex_thread", lambda _thread: collected[0])
-    monkeypatch.setattr(server, "queue_codex_message", lambda thread, message: sent.append((thread, message)))
+    def send(thread, message):
+        sent.append((thread, message))
+        if unknown_outcome[0]:
+            raise subprocess.TimeoutExpired("codex queue", 15)
+    monkeypatch.setattr(server, "queue_codex_message", send)
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     receipt = app._bridge_authority.receive(app.window, "queue_message", TRUSTED, TRUSTED,
                                             widget._MAIN_BRIDGE_OPERATIONS)
@@ -74,9 +126,16 @@ def test_widget_queue_bridge_checks_document_and_calls_sender_once(monkeypatch):
     collected[0] = True
     assert app.queue_message(thread, "hello", receipt, app.window)["ok"] is True
     assert sent == [(thread, "hello")]
-    app._bridge_authority.navigation_started()
+    unknown_outcome[0] = True
+    retry_receipt = app._bridge_authority.receive(app.window, "queue_message", TRUSTED, TRUSTED,
+                                                  widget._MAIN_BRIDGE_OPERATIONS)
+    result = app.queue_message(thread, "hello again", retry_receipt, app.window)
+    assert result["status"] == "unknown", "a timeout after sender dispatch remains an unknown outcome"
+    assert sent[-1] == (thread, "hello again")
+    assert app._bridge_authority.begin_navigation(TRUSTED, 1) is True
+    assert app._bridge_authority.complete_navigation(1, True, TRUSTED)
     assert app.queue_message(thread, "stale", receipt, app.window)["ok"] is False
-    assert sent == [(thread, "hello")]
+    assert sent == [(thread, "hello"), (thread, "hello again")]
 
 
 def test_widget_open_bridge_refuses_invalid_or_uncollected_threads(monkeypatch):
@@ -103,6 +162,73 @@ def test_widget_open_bridge_refuses_invalid_or_uncollected_threads(monkeypatch):
     assert len(opened) == 1
 
 
+def test_bridge_policy_matches_parent_display_and_collection_denials(monkeypatch):
+    thread = "01234567-89ab-cdef-0123-456789abcdef"
+    cached_ids = frozenset({thread})
+    monkeypatch.setattr(server, "_collected_codex_thread_ids", lambda: cached_ids)
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app.quitting = False
+    app._bridge_authority, app.window = _bound_authority()
+    queued, opened = [], []
+    monkeypatch.setattr(server, "queue_codex_message", lambda *args: queued.append(args))
+    monkeypatch.setattr(widget.os, "startfile", lambda url: opened.append(url), raising=False)
+
+    policies = dict(provider_policy.POLICIES)
+    policies["Codex"] = replace(policies["Codex"], collect=True, show=False, send=True,
+                                send_origin="provider_env")
+    monkeypatch.setattr(provider_policy, "POLICIES", MappingProxyType(policies))
+    queue_receipt = app._bridge_authority.receive(app.window, "queue_message", TRUSTED, TRUSTED,
+                                                  widget._MAIN_BRIDGE_OPERATIONS)
+    assert server._codex_queue_allowed() is False  # explicit SEND cannot override display off
+    assert app.queue_message(thread, "hello", queue_receipt, app.window)["ok"] is False
+    assert queued == []
+
+    policies["Codex"] = replace(policies["Codex"], collect=False, show=True,
+                                send=False, send_origin="provider_denied")
+    monkeypatch.setattr(provider_policy, "POLICIES", MappingProxyType(policies))
+    open_receipt = app._bridge_authority.receive(app.window, "open_thread", TRUSTED, TRUSTED,
+                                                 widget._MAIN_BRIDGE_OPERATIONS)
+    assert server._codex_allows("show") is False  # display=true is ineffective when collection is off
+    assert app.open_thread(thread, open_receipt, app.window)["ok"] is False
+    assert opened == []
+
+
+def test_manage_settings_rechecks_native_receipt_after_waiting_for_lifecycle_gate(monkeypatch):
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._lifecycle = threading.RLock()
+    app._shutdown_requested = threading.Event()
+    app.quitting = False
+    app.reset_actions_window = None
+    app._reset_actions_token = None
+    app._settings_bridge_authority = None
+    app._reset_actions_lock = threading.Lock()
+    app._bridge_authority, app.window = _bound_authority()
+    receipt = app._bridge_authority.receive(app.window, "open_reset_actions", TRUSTED, TRUSTED,
+                                             widget._MAIN_BRIDGE_OPERATIONS)
+    create_calls = []
+    monkeypatch.setattr(app, "_create_settings_native_window", lambda *args: create_calls.append(args))
+    server.set_settings_token(None)
+    entered, release = threading.Event(), threading.Event()
+
+    def hold_lifecycle():
+        with app._lifecycle:
+            entered.set()
+            assert release.wait(3)
+
+    holder = threading.Thread(target=hold_lifecycle)
+    holder.start(); assert entered.wait(2)
+    result = []
+    opener = threading.Thread(target=lambda: result.append(
+        app._open_reset_actions_from_bridge(receipt, app.window)))
+    opener.start()
+    app._bridge_authority.begin_navigation(TRUSTED, 2)
+    assert app._bridge_authority.complete_navigation(2, True, TRUSTED)
+    release.set(); holder.join(2); opener.join(2)
+    assert not opener.is_alive()
+    assert result == [False] and create_calls == []
+    assert server._SETTINGS_TOKEN is None, "a stale receipt never registers a Settings capability"
+
+
 def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allowlisted(monkeypatch):
     class NativeEvent:
         def __init__(self): self.handlers = []
@@ -127,6 +253,7 @@ def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allow
             self.on_script_notify = self.original_notify
             self.on_webview_ready = self.original_ready
             self.on_new_window_request = lambda _sender, _args: None
+            self.load_url = self.initial_load
             self.webview.WebMessageReceived += self.on_script_notify
             self.webview.NavigationStarting += lambda *_args: None
             self.webview.CoreWebView2InitializationCompleted += self.on_webview_ready
@@ -136,7 +263,21 @@ def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allow
 
         def original_ready(self, sender, args):
             sender.CoreWebView2.NewWindowRequested += self.on_new_window_request
+            self.load_url(TRUSTED)
             self.loaded_url = True
+
+        def initial_load(self, target):
+            assert self.webview.CoreWebView2.NewWindowRequested.handlers == [self.on_new_window_request]
+            assert self.on_new_window_request.__name__ == "new_window_requested"
+            assert self.webview.WebMessageReceived.handlers[0].__name__ == "guarded_notify"
+            assert self.webview.NavigationStarting.handlers[-1] is not None
+            assert authority._admitted
+            nav = SimpleNamespace(Uri=target, NavigationId=1, IsUserInitiated=False, IsRedirected=False, Cancel=False)
+            self.webview.NavigationStarting.fire(self.webview, nav)
+            assert nav.Cancel is False
+            self.webview.CoreWebView2.Source = target
+            self.webview.NavigationCompleted.fire(self.webview,
+                                                   SimpleNamespace(NavigationId=1, IsSuccess=True))
 
     adapter_holder = {}
     model = SimpleNamespace()
@@ -152,17 +293,15 @@ def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allow
     app._dispatch_native_bridge_call = lambda *args: calls.append(args)
     app._revoke_settings_authority = lambda _authority: None
     assert app._install_native_authority(model, authority) is True
-    assert authority._admitted
+    assert not authority._admitted, "receipt admission waits until the guarded initializer is ready"
     assert adapter.on_script_notify is not adapter.original_notify
     assert len(adapter.webview.WebMessageReceived.handlers) == 1
     assert adapter.webview.WebMessageReceived.handlers[0].__name__ == "guarded_notify"
-    assert adapter.webview.NavigationStarting.handlers[-1] is not None
-
     adapter.webview.CoreWebView2InitializationCompleted.fire(
         adapter.webview, SimpleNamespace(IsSuccess=True))
     assert adapter.loaded_url
-    assert adapter.on_new_window_request not in adapter.webview.CoreWebView2.NewWindowRequested.handlers
-    assert len(adapter.webview.CoreWebView2.NewWindowRequested.handlers) == 1
+    assert authority.document_ready(model)
+    assert adapter.webview.CoreWebView2.NewWindowRequested.handlers == [adapter.on_new_window_request]
 
     value_id = "1234567890123456"
     assert authority.receive(model, "queue_message", TRUSTED, TRUSTED,
@@ -170,8 +309,8 @@ def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allow
     wire = json.dumps(["queue_message", json.dumps(["01234567-89ab-cdef-0123-456789abcdef", "hello"]), value_id])
     args = SimpleNamespace(Source=TRUSTED, get_WebMessageAsJson=lambda: wire)
     receive_attempts = []
-    real_receive = authority.receive
-    monkeypatch.setattr(authority, "receive", lambda *values: (receive_attempts.append(values), real_receive(*values))[1])
+    real_receive = authority.receive_status
+    monkeypatch.setattr(authority, "receive_status", lambda *values: (receive_attempts.append(values), real_receive(*values))[1])
     adapter.webview.WebMessageReceived.fire(adapter.webview, args)
     assert receive_attempts, "the native adapter parses and validates the WebMessageReceived envelope"
     assert len(calls) == 1
@@ -181,16 +320,41 @@ def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allow
 
     opened = []
     monkeypatch.setattr("webbrowser.open", lambda value: opened.append(value))
+    entered, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=lambda: _hold_authority(authority, entered, release), daemon=True)
+    holder.start(); assert entered.wait(2)
+    busy_nav = SimpleNamespace(Uri=TRUSTED + "#t=capability-sentinel", NavigationId=2,
+                               IsUserInitiated=True, IsRedirected=False, Cancel=False)
+    adapter.webview.NavigationStarting.fire(adapter.webview, busy_nav)
+    assert busy_nav.Cancel and opened == [], "authority contention cancels a local Settings URL without browser handoff"
+    release.set(); holder.join(2)
+
     nav = SimpleNamespace(Uri="https://evil.example/redirect", IsUserInitiated=False, Cancel=False)
     adapter.webview.NavigationStarting.fire(adapter.webview, nav)
     assert nav.Cancel and opened == [], "script navigation is cancelled without a desktop launch"
     nav = SimpleNamespace(Uri="https://example.com/docs", IsUserInitiated=True, Cancel=False)
     adapter.webview.NavigationStarting.fire(adapter.webview, nav)
-    assert nav.Cancel and opened == ["https://example.com/docs"]
+    assert nav.Cancel and opened == [], "arbitrary host-initiated external URLs are not handed off"
+    explicit_url = "https://github.com/apratxxm/branchglance/issues/new?template=bug_report.yml&os=Windows"
+    nav = SimpleNamespace(Uri=explicit_url, IsUserInitiated=True, IsRedirected=False, Cancel=False, NavigationId=3)
+    adapter.webview.NavigationStarting.fire(adapter.webview, nav)
+    assert nav.Cancel and opened == [explicit_url]
     popup = SimpleNamespace(IsUserInitiated=True, get_Uri=lambda: "codex://threads/01234567-89ab-cdef-0123-456789abcdef",
                             set_Handled=lambda value: setattr(popup, "handled", value))
-    adapter.webview.CoreWebView2.NewWindowRequested.fire(adapter.webview, popup)
+    adapter.webview.CoreWebView2.NewWindowRequested.fire(adapter.webview.CoreWebView2, popup)
     assert popup.handled and len(opened) == 1, "Codex links stay behind open_thread"
+    entered, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=lambda: _hold_authority(authority, entered, release), daemon=True)
+    holder.start(); assert entered.wait(2)
+    popup = SimpleNamespace(IsUserInitiated=True, get_Uri=lambda: explicit_url,
+                            set_Handled=lambda value: setattr(popup, "handled", value))
+    adapter.webview.CoreWebView2.NewWindowRequested.fire(adapter.webview.CoreWebView2, popup)
+    assert popup.handled and opened == [explicit_url], "popup contention never launches the browser"
+    release.set(); holder.join(2)
+    popup = SimpleNamespace(IsUserInitiated=True, get_Uri=lambda: explicit_url,
+                            set_Handled=lambda value: setattr(popup, "handled", value))
+    adapter.webview.CoreWebView2.NewWindowRequested.fire(adapter.webview.CoreWebView2, popup)
+    assert popup.handled and opened == [explicit_url, explicit_url]
 
     for operation in ("_private", "queue_message.nested", "not_public"):
         bad = json.dumps([operation, json.dumps([]), value_id])

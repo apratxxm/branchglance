@@ -23,6 +23,7 @@
   // The embedded frame never scrolls: the chat list shows a few rows at a time with Previous and Next.
   const PAGE_SIZE = 3;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  function waitForNative(promise,timeoutMs=300000,error="Native file dialog timed out."){let timer,registering=true;const timeout=new Promise((_,reject)=>{if(typeof setTimeout==="function")timer=setTimeout(()=>{if(registering)return;reject(new Error(error));},timeoutMs);});registering=false;return Promise.race([Promise.resolve(promise),timeout]).finally(()=>{if(timer&&typeof clearTimeout==="function")clearTimeout(timer);});}
   const message = (text, error=false) => { const el=$("#message"); el.textContent=text||""; el.classList.toggle("error",error); };
   const canChangeClaude = () => Boolean(settingsToken);
   let featureValues={}, statuslineConnected=false;
@@ -283,7 +284,7 @@
     }
     state.exportBusy=true;state.exportStatus="Choose where to save the CSV.";state.exportError=false;renderLedger();
     try{
-      const result=await api.save_ledger_csv();
+      const result=await waitForNative(api.save_ledger_csv(),310000,"CSV save dialog timed out.");
       if(result?.ok){state.exportStatus="Saved CSV.";}
       else if(result?.cancelled){state.exportStatus="Export cancelled.";}
       else throw new Error(result?.error||"Could not export saved history.");
