@@ -5842,3 +5842,42 @@ def test_claude_limits_come_from_claude_code_cache_without_desktop(tmp_path, mon
     except Exception:
         result = None
     assert result is None or (result["identityVerified"] is False and result["fiveHour"]["percent"] is None)
+
+
+def test_codex_local_usage_skips_transcripts_last_written_before_the_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(providers, "_local_today", lambda: date(2026, 9, 4))
+    sessions = tmp_path / "sessions" / "2026" / "07" / "01"; sessions.mkdir(parents=True)
+    def count(timestamp, total):
+        return {"timestamp": timestamp, "type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"total_tokens": total}}}}
+    old = sessions / "old.jsonl"
+    old.write_text(json.dumps(count("2026-07-01T12:00:00Z", 500)), encoding="utf-8")
+    recent = sessions / "recent.jsonl"
+    recent.write_text(json.dumps(count("2026-09-04T12:00:00Z", 70)), encoding="utf-8")
+    old_epoch = datetime(2026, 7, 1, 12, tzinfo=timezone.utc).timestamp()
+    os.utime(old, (old_epoch, old_epoch))
+    recent_epoch = datetime(2026, 9, 4, 12, tzinfo=timezone.utc).timestamp()
+    os.utime(recent, (recent_epoch, recent_epoch))
+    parsed = []
+    original = CodexProvider._token_events.__func__
+    monkeypatch.setattr(CodexProvider, "_token_events",
+                        classmethod(lambda cls, path: parsed.append(Path(path).name) or original(cls, path)))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    usage = CodexProvider()._local_usage()
+    assert parsed == ["recent.jsonl"]
+    assert usage["totals"]["total_tokens"] == 70
+    assert [path.name for path in usage["paths"]] == ["recent.jsonl"]
+
+
+def test_codex_local_usage_keeps_a_transcript_written_just_before_the_window(tmp_path, monkeypatch):
+    # The slack keeps a file whose mtime sits a day before the first window date, so time-zone
+    # differences between event stamps and the file clock cannot drop in-window events.
+    monkeypatch.setattr(providers, "_local_today", lambda: date(2026, 9, 4))
+    sessions = tmp_path / "sessions"; sessions.mkdir()
+    edge = sessions / "edge.jsonl"
+    edge.write_text(json.dumps({"timestamp": "2026-08-05T12:00:00Z", "type": "event_msg", "payload": {
+        "type": "token_count", "info": {"total_token_usage": {"total_tokens": 30}}}}), encoding="utf-8")
+    edge_epoch = datetime(2026, 8, 4, 12, tzinfo=timezone.utc).timestamp()
+    os.utime(edge, (edge_epoch, edge_epoch))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    assert CodexProvider()._local_usage()["totals"]["total_tokens"] == 30

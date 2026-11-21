@@ -4198,10 +4198,17 @@ class CodexProvider:
         paths: list[Path] = []
         if session_paths is None:
             session_paths = _codex_session_inventory()
+        # A transcript last written before the window opened cannot hold an event inside it;
+        # parsing those in full made cold start read the whole session history. Two days of
+        # slack absorbs clock and time-zone differences.
+        window_opens = datetime.combine(date.fromisoformat(min(window_dates)), datetime.min.time()).timestamp()
+        mtime_floor = window_opens - 2 * 86400
         for path in session_paths:
             try:
-                live_keys.add((_canonical_path_text(str(path.resolve())), *_stat_fingerprint(path)))
                 stat = path.stat()
+                if stat.st_mtime < mtime_floor:
+                    continue
+                live_keys.add((_canonical_path_text(str(path.resolve())), *_stat_fingerprint(path)))
             except OSError:
                 continue
             paths.append(path)
