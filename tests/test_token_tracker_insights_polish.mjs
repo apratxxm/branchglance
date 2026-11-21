@@ -311,6 +311,10 @@ assert.match(quota,/<th scope="row" class="codex-color">Codex<small class="dash-
 assert.match(quota,/<td title="No live reading" aria-label="No live reading"><span class="dash-quota-empty" aria-hidden="true">—<\/span><\/td>/,"O401 uses a muted dash with accessible missing-reading text in the empty cell");
 assert.doesNotMatch(quota,/data-quota-part="week">No live reading<\/small>/,"O401 does not repeat the missing-reading message in a quota cell");
 assert.match(quota,/Not available/,"a provider without a weekly reading shows Not available");
+assert.match(quota,/data-quota-shape="Claude:11\|Codex:10"/,"C-601 the shape records each window's reading in its own position");
+window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",resetTarget:1,weekly:{usedPercent:20,countdown:"3d 2h",resetTarget:2}},{name:"Codex",usedPercent:null,countdown:"",resetTarget:null,weekly:{usedPercent:72,countdown:"2d 1h",resetTarget:3}}];
+assert.match(dashboard.insightsHTML(),/data-quota-shape="Claude:11\|Codex:01"/,"C-601 a missing 5-hour reading has a different shape from a missing weekly reading, so the switch re-renders");
+window.tokenTrackerQuotaNow=()=>[{name:"Claude",usedPercent:40,countdown:"2h 40m",resetTarget:1,weekly:{usedPercent:20,countdown:"3d 2h",resetTarget:2}},{name:"Codex",usedPercent:62,countdown:"1h 5m",resetTarget:3,weekly:{usedPercent:null,countdown:"",resetTarget:null}}];
 dashboard.toggleProvider("Claude");
 quota=dashboard.insightsHTML();
 assert.doesNotMatch(quota,/data-quota-key="Claude"/,"quota rows exclude a hidden provider");
@@ -323,6 +327,7 @@ const peakQuota=dashboard.insightsHTML();
 const embeddedPeaks=peakQuota.match(/<div class="dash-quota-peak">[\s\S]*?<\/div><\/div>/)?.[0]||"";
 assert.match(embeddedPeaks,/<div class="dash-section-label">Peak in this range<\/div><table class="dash-peaks-table dash-quota-table">[\s\S]*?<tbody>/,"O501 reuses the live quota columns without repeating a 5h/Week header row");
 assert.doesNotMatch(embeddedPeaks,/<thead>/,"O501 omits a second quota header row");
+assert.match(embeddedPeaks,/<td><span class="sr-only">5-hour peak <\/span>80%<\/td><td><span class="sr-only">Week peak <\/span>70%<\/td>/,"C-603 each historical peak names its window for screen readers");
 assert.match(css,/\.dash-quota-peak \.dash-section-label\{min-height:18px;color:var\(--d-mute\);font-size:12px;font-weight:450;\}/,"O501 uses a smaller muted secondary heading");
 assert.match(css,/\.dash-quota-peak \.dash-peaks-table td\{color:var\(--d-sub\);font-weight:450;\}/,"O501 keeps secondary quota values in the subdued token");
 assert.match(css,/\.dash-quota-table \.dash-quota-note\{text-align:left;\}/,"O603 aligns the missing-reading note to the provider-name column");
@@ -484,6 +489,7 @@ const zeroRange=dashboard.insightsHTML();
 assert.match(zeroRange,/<section class="dash-lower is-zero"><div class="dash-lower-main"><p class="dash-zero-line">No usage /,"zero state: the one line sits in the left column where Models starts");
 assert.match(zeroRange,/<\/p><\/div><div class="dash-side">/,"zero state: Quota keeps the right column");
 assert.doesNotMatch(zeroRange,/dash-chart-section/,"zero state: no chart band");
+assert.match(zeroRange,/class="dash-status-line[^"]*is-freshness[^"]*" role="status">Updated/,"C-604 the zero state keeps its Updated stamp");
 
 dashboard.state.insights=payload([provider("Claude",{totals:{tokens:1e6,apiEquivalentCost:10,sessions:0,subagentsActive:0,activeHours:0,cacheHitRate:0}})]);
 dashboard.state.range="30d";dashboard.state.metric="tokens";

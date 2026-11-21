@@ -440,8 +440,8 @@ dashboard.state.insights={range:"30d",providers:[
 const summary=dashboard.insightsHTML();
 assert.match(summary,/<table class="dash-peaks-table dash-quota-table">/,"historical peaks reuse the live quota column widths");
 assert.match(summary,/Highest recorded quota usage in this period, not current allowance/);
-assert.match(summary,/<th scope="row" class="codex-color">Codex<\/th><td><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded<\/span><\/td><td>80%/);
-assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td>50%<\/td><td><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded/);
+assert.match(summary,/<th scope="row" class="codex-color">Codex<\/th><td><span class="sr-only">5-hour peak <\/span><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded<\/span><\/td><td><span class="sr-only">Week peak <\/span>80%/);
+assert.match(summary,/<th scope="row" class="claude-color">Claude<\/th><td><span class="sr-only">5-hour peak <\/span>50%<\/td><td><span class="sr-only">Week peak <\/span><span aria-hidden="true">—<\/span><span class="sr-only">Not recorded/);
 
 // Insights refresh: an identical payload keeps the rendered panel; the status line is inserted or updated without a full render.
 {
