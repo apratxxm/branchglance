@@ -154,9 +154,88 @@ def test_settings_native_guards_are_registered_before_pinned_gui_creates_the_win
     monkeypatch.setattr(app, "_install_native_authority",
                         lambda window, lease, **_kwargs: lease.install(window, window.native))
     child = app._create_settings_native_window(widget.SettingsWindowApi(lambda *_args: {}),
-                                               authority, lambda: None, lambda _child: None, "fragment-token")
+                                               authority, lambda: None, lambda _child: None,
+                                               lambda _child: True, "fragment-token")
     assert child is observations[0][0]
     assert observations == [(child, False)], "native guards bind before navigation; admission waits for the trusted document"
+
+
+def test_manage_settings_reuses_a_registered_child_while_its_document_loads(monkeypatch):
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._lifecycle = threading.RLock()
+    app._reset_actions_lock = threading.Lock()
+    app._shutdown_requested = threading.Event()
+    app.quitting = False
+    app.reset_actions_window = None
+    app._reset_actions_token = None
+    app._settings_bridge_authority = None
+    app.server = types.SimpleNamespace(server_address=("127.0.0.1", 8765))
+    app._bridge_authority = widget.BridgeAuthority({"/runway.html"})
+    app._bridge_authority.enable(8765)
+    app.window = object()
+    app._bridge_authority.install(app.window, object())
+    main_url = "http://127.0.0.1:8765/runway.html"
+    app._bridge_authority.activate(app.window, app._bridge_authority._adapter, main_url)
+    app._bridge_authority.begin_navigation(main_url, 1)
+    app._bridge_authority.complete_navigation(1, True, main_url)
+    first_receipt = app._bridge_authority.receive(app.window, "open_reset_actions", main_url, main_url,
+                                                   widget._MAIN_BRIDGE_OPERATIONS)
+    created = []
+    child_registered, release_create = threading.Event(), threading.Event()
+
+    def create_child(_api, authority, revoke, clear, register_child, _token):
+        child = Child()
+        adapter = object()
+        authority.install(child, adapter)
+        child.native_adapter = adapter
+        child.events.closing += revoke
+        child.events.closed += lambda: clear(child)
+        created.append(child)
+        assert register_child(child)
+        child_registered.set()
+        assert release_create.wait(3)
+        return child  # Simulate CoreWebView2 initialization still pending.
+
+    monkeypatch.setattr(app, "_create_settings_native_window", create_child)
+    first_result = []
+    opener = threading.Thread(target=lambda: first_result.append(
+        app._open_reset_actions_from_bridge(first_receipt, app.window)))
+    opener.start()
+    assert child_registered.wait(3)
+    pending_child = created[0]
+    authority = app._settings_bridge_authority
+    registered_token = app._reset_actions_token
+    assert authority.guards_installed(pending_child) and not authority.document_ready(pending_child)
+    second_receipt = app._bridge_authority.receive(app.window, "open_reset_actions", main_url, main_url,
+                                                    widget._MAIN_BRIDGE_OPERATIONS)
+    assert app._open_reset_actions_from_bridge(second_receipt, app.window) is True
+    assert created == [pending_child], "repeated Manage clicks reuse the pending child and capability"
+    release_create.set(); opener.join(3)
+    assert not opener.is_alive() and first_result == [True]
+    assert pending_child.calls == []
+    pending_child.events.closing.fire()
+    assert not widget.server_module._settings_token_matches(registered_token)
+    pending_child.events.closed.fire()
+
+
+def test_old_settings_cleanup_cannot_clear_a_replacement_child_capability():
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._lifecycle = threading.RLock()
+    app._reset_actions_lock = threading.Lock()
+    old_authority = widget.BridgeAuthority({"/reset_actions.html"})
+    new_authority = widget.BridgeAuthority({"/reset_actions.html"})
+    app._settings_bridge_authority = new_authority
+    app._reset_actions_token = "new-settings-token"
+    old_authority.settings_token = "old-settings-token"
+    new_authority.settings_token = "new-settings-token"
+    widget.server_module.set_settings_token("new-settings-token")
+    try:
+        app._revoke_settings_authority(old_authority)
+        assert old_authority._shutting_down
+        assert widget.server_module._settings_token_matches("new-settings-token")
+        assert app._reset_actions_token == "new-settings-token"
+    finally:
+        widget.server_module.set_settings_token(None)
 
 
 def test_quit_destroys_settings_window_before_releasing_the_server(monkeypatch):
@@ -213,13 +292,14 @@ def test_shutdown_intent_and_token_revocation_win_against_pending_settings_regis
     registered, release = threading.Event(), threading.Event()
     child = Child()
 
-    def create_child(_api, authority, revoke, clear, _token):
+    def create_child(_api, authority, revoke, clear, register_child, _token):
         authority.install(child, child)
         authority.activate(child, child, "http://127.0.0.1:8765/reset_actions.html")
         authority.begin_navigation("http://127.0.0.1:8765/reset_actions.html", 1)
         authority.complete_navigation(1, True, "http://127.0.0.1:8765/reset_actions.html")
         child.events.closing += revoke
         child.events.closed += lambda: clear(child)
+        assert register_child(child)
         registered.set()
         assert release.wait(3)
         return child
@@ -241,6 +321,88 @@ def test_shutdown_intent_and_token_revocation_win_against_pending_settings_regis
     assert not opener.is_alive()
     assert outcome == [False] and app.reset_actions_window is None
     assert not authority_active(app)
+
+
+def test_rejected_settings_child_is_detached_before_synchronous_gui_destroy():
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._lifecycle = threading.RLock()
+    app._reset_actions_lock = threading.Lock()
+    app._shutdown_requested = threading.Event()
+    app.quitting = False
+    app.reset_actions_window = None
+    app._reset_actions_token = None
+    app._settings_bridge_authority = None
+    app._bridge_authority = None
+    app.server = types.SimpleNamespace(server_address=("127.0.0.1", 8765))
+    child = Child()
+    close_finished = threading.Event()
+
+    def destroy_synchronously_through_gui():
+        def close_on_ui_thread():
+            child.events.closing.fire()
+            child.events.closed.fire()
+            close_finished.set()
+        native_thread = threading.Thread(target=close_on_ui_thread)
+        native_thread.start()
+        assert close_finished.wait(2), "native FormClosing must not wait on a lifecycle lock held by destroy"
+        native_thread.join(2)
+
+    child.destroy = destroy_synchronously_through_gui
+
+    def create_then_quit(_api, authority, revoke, clear, register_child, _token):
+        authority.install(child, object())
+        child.events.closing += revoke
+        child.events.closed += lambda: clear(child)
+        assert register_child(child)
+        app._begin_shutdown()
+        return child
+
+    app._create_settings_native_window = create_then_quit
+    assert app.open_reset_actions() is False
+    assert close_finished.is_set()
+    assert app.reset_actions_window is None and app._settings_child_reservation is None
+    assert widget.server_module._SETTINGS_TOKEN is None
+
+
+def test_discarded_settings_child_is_destroyed_outside_lifecycle_lock():
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._lifecycle = threading.RLock()
+    app._reset_actions_lock = threading.Lock()
+    app._shutdown_requested = threading.Event()
+    app.quitting = False
+    app.reset_actions_window = None
+    app._reset_actions_token = None
+    app._settings_bridge_authority = None
+    app.server = types.SimpleNamespace(server_address=("127.0.0.1", 8765))
+    child = Child()
+    closed = threading.Event()
+
+    def destroy_synchronously_through_gui():
+        def native_close():
+            child.events.closing.fire()
+            child.events.closed.fire()
+            closed.set()
+        native_thread = threading.Thread(target=native_close)
+        native_thread.start()
+        assert closed.wait(2), "native close callback must not wait on a lifecycle lock held by destroy"
+        native_thread.join(2)
+
+    child.destroy = destroy_synchronously_through_gui
+
+    def create_then_quit(_api, authority, revoke, clear, register_child, _token):
+        adapter = object()
+        authority.install(child, adapter)
+        child.events.closing += revoke
+        child.events.closed += lambda: clear(child)
+        assert register_child(child)
+        app._begin_shutdown()
+        return child
+
+    app._create_settings_native_window = create_then_quit
+    assert app.open_reset_actions() is False
+    assert closed.is_set()
+    assert app.reset_actions_window is None
+    assert widget.server_module._SETTINGS_TOKEN is None
 
 
 def authority_active(app):

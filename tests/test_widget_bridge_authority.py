@@ -5,6 +5,7 @@ import json
 import http.client
 import subprocess
 import threading
+import time
 from dataclasses import replace
 from types import MappingProxyType
 
@@ -91,6 +92,20 @@ def test_busy_native_bridge_receipt_returns_retryable_failure_only_to_current_do
     script = widget.WidgetApp._native_bridge_callback_script("queue_message", "1e-7", responses[0][2])
     assert '["queue_message"]?.["1e-7"]' in script, "callback identifiers use JSON-safe property access"
     assert "function\")cb" in script
+
+    responses.clear();replied.clear()
+    assert authority.begin_navigation(TRUSTED, 2) is True
+    receipt, refusal, generation = authority.receive_status(
+        window, "queue_message", TRUSTED, TRUSTED, widget._MAIN_BRIDGE_OPERATIONS)
+    assert receipt is None and refusal == "suspended"
+    app._dispatch_retryable_bridge_refusal(
+        window, authority, "queue_message", ["thread", "message"], "1e-8",
+        TRUSTED, TRUSTED, generation, widget._MAIN_BRIDGE_OPERATIONS)
+    time.sleep(0.05)
+    assert authority.cancel_navigation(2)
+    assert replied.wait(2)
+    assert responses == [("queue_message", "1e-8",
+                          {"ok": False, "status": "retryable", "error": "The widget is busy. Try again."})]
 
 
 def _hold_authority(authority, entered, release):
@@ -227,6 +242,48 @@ def test_manage_settings_rechecks_native_receipt_after_waiting_for_lifecycle_gat
     assert not opener.is_alive()
     assert result == [False] and create_calls == []
     assert server._SETTINGS_TOKEN is None, "a stale receipt never registers a Settings capability"
+
+
+def test_reload_between_settings_reservation_and_native_creation_discards_the_reservation():
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app._lifecycle = threading.RLock()
+    app._reset_actions_lock = threading.Lock()
+    app._shutdown_requested = threading.Event()
+    app.quitting = False
+    app.reset_actions_window = None
+    app._reset_actions_token = None
+    app._settings_bridge_authority = None
+    app.server = SimpleNamespace(server_address=("127.0.0.1", 8765))
+    app._bridge_authority, app.window = _bound_authority()
+    receipt = app._bridge_authority.receive(app.window, "open_reset_actions", TRUSTED, TRUSTED,
+                                             widget._MAIN_BRIDGE_OPERATIONS)
+    reserved, continue_create = threading.Event(), threading.Event()
+    child = SimpleNamespace(native_adapter=object())
+    native_creations = []
+
+    def create_settings(_api, authority, _revoke, _clear, register_child, _token):
+        reserved.set()
+        assert continue_create.wait(3)
+        if not register_child(child):
+            return None
+        native_creations.append(child)
+        return child
+
+    app._create_settings_native_window = create_settings
+    result = []
+    opener = threading.Thread(target=lambda: result.append(
+        app._open_reset_actions_from_bridge(receipt, app.window)))
+    opener.start()
+    assert reserved.wait(3)
+    assert app._settings_child_reservation is not None, "the single pending child owns the reservation"
+    assert app._bridge_authority.begin_navigation(TRUSTED, 2) is True
+    assert app._bridge_authority.complete_navigation(2, True, TRUSTED)
+    continue_create.set()
+    opener.join(3)
+    assert not opener.is_alive()
+    assert result == [False] and native_creations == []
+    assert app._settings_child_reservation is None and app.reset_actions_window is None
+    assert server._SETTINGS_TOKEN is None
 
 
 def test_native_edge_adapter_is_guarded_before_navigation_and_receipts_are_allowlisted(monkeypatch):
