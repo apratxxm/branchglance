@@ -15,6 +15,9 @@ Planned as 0.2.0.
 - Settings has a Report a bug section that previews a privacy-filtered debug report to copy into a GitHub issue. Nothing is sent automatically. From a source checkout, `--debug-report` writes the same report to a file.
 - A resumed Codex thread shows a ↻N badge after two or more resumes.
 - A separate Claude Code chat started from another Claude chat (for example with `claude -p`) nests under that chat when its process chain proves the parent. Agents started from a Codex thread stay top-level until Codex's per-thread environment can be verified.
+- Runs whose process is verified to have exited show a muted **Stopped** instead of "Status unknown".
+- Settings opens in its own window.
+- Prices for GPT-6.2 Sol, GPT-6.2 Astra (with its long-context rule) and Claude Fable 5.2. Claude Haiku 5.5 requests over 100K prompt tokens are priced at the long-prompt rate.
 
 ### Changed
 
@@ -23,7 +26,8 @@ Planned as 0.2.0.
 - Removed routing alerts and their automatic widget expansion.
 - Branchglance now finds Claude's settings in `CLAUDE_CONFIG_DIR` when set (same as Claude Code); the old `CLAUDE_HOME` variable no longer locates settings; if it is set, uninstalling an install from before targets were recorded leaves hooks in place rather than guess.
 - A Codex job nests under a Claude chat only when its parent is proven by a receipt or verified process lineage. Unverifiable candidates now stay unresolved instead of being guessed.
-- Subagent rows keep their parent's timing and workspace columns.
+- Subagent rows drop the status word: the dot beside the name carries the state, the timer takes the status column in the dot's colour with the current activity below it, and the name gets the freed width. A waiting subagent's timer opens its question.
+- Insights uses one 30-day window throughout.
 - Claude readings are tied to the account they came from. Switching accounts no longer shows the old account's limits, and a reset armed on one account is not carried to another.
 - Privacy text is exact: Branchglance does read Claude Code's OAuth token, in memory, for live usage. See [Privacy](docs/PRIVACY.md).
 - A resumed Codex thread is one tree row instead of one row per run.
@@ -46,6 +50,10 @@ Planned as 0.2.0.
 - Running agent rows show elapsed time from the first known start instead of a dash.
 - Per-chat scratch folders show as "scratch" instead of their path, and POSIX paths no longer get a drive prefix.
 - A rejected settings change (feature, status-line or greeting request) gets its error response instead of a dropped connection.
+- The widget no longer settles at a stale height when the chat list opens.
+- The usage ledger no longer re-reads growing transcripts from the start on every new line; exact verification runs once a file goes quiet. Cold start reads about half as much data as before.
+- A locked integrity check no longer quarantines a healthy usage ledger.
+- A slow memory leak in the widget is fixed.
 
 ### Security
 
@@ -56,6 +64,7 @@ Planned as 0.2.0.
 - Codex processes Branchglance starts are contained from the moment they are created, and retention cleanup on macOS no longer follows links.
 - Installing or removing Claude hooks refuses, before any backup or write, a change that would alter a setting or hook Branchglance does not own.
 - Revoking live Claude usage cancels a request in progress, and no request is sent after the revocation.
+- Queue, open and Settings writes go through the native bridge with sender, generation and admission checks; reset-action writes need the Settings capability.
 
 ## [0.1.0] - 2026-11-03
 
