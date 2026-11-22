@@ -13,10 +13,12 @@ import re
 import struct
 import time
 import zlib
-from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+
+from .product import is_finite_number as _number
+from .timeutil import parse_iso_epoch
 
 HEADER_SIZE = 8192
 MAX_BODY = 262144
@@ -104,10 +106,6 @@ def _body(raw: bytes, encoding: bytes) -> dict[str, Any] | None:
     except Exception:
         # zstandard's optional native extension has its own exception type.
         return None
-
-
-def _number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 SIMPLE_MAGIC = 0xFCFB6D1BA7725C30
@@ -240,13 +238,10 @@ def _usage_window_evidence(result: dict[str, Any], records: list[tuple[float, An
 
         if not isinstance(window.get("resets_at"), str):
             continue
-        try:
-            date = datetime.fromisoformat(window["resets_at"].replace("Z", "+00:00"))
-            if date.tzinfo is None:
-                continue
-            reset = math.ceil(date.timestamp())
-        except (ValueError, OverflowError, OSError):
+        epoch = parse_iso_epoch(window["resets_at"], naive="reject")
+        if epoch is None:
             continue
+        reset = math.ceil(epoch)
         if not observed < reset <= observed + duration + 300:
             continue
         if not _number(utilization) or not 0 <= utilization <= 100:

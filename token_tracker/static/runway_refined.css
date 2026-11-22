@@ -450,7 +450,7 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runwa
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-refined-title>.runway-agent-name{align-self:center;}
 
 /* Edgeless provider identity tints sit on the continuous panel surface. */
-body.runway-refined.runway-compact:not(.phone){--claude-accent:#e8813f;--tree-claude-surface:#19130f;--tree-codex-surface:#11121d;}
+body.runway-refined.runway-compact:not(.phone){--claude-accent:var(--claude);--tree-claude-surface:#19130f;--tree-codex-surface:#11121d;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Claude"]>.row:has(.runway-refined-status.t-live,.runway-refined-status.t-attn)>.runway-refined-row{--tree-hover-accent:var(--claude-accent);background:transparent;background-image:radial-gradient(ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 12%,transparent),transparent 100%);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Codex"]>.row:has(.runway-refined-status.t-live,.runway-refined-status.t-attn)>.runway-refined-row{--tree-hover-accent:var(--source-glow-primary);background:transparent;background-image:radial-gradient(ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--source-glow-primary) 11%,transparent),transparent 100%);}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .ag[data-provider="Claude"]>.runway-agent-glance>.runway-refined-row{--tree-hover-accent:var(--claude-accent);background:transparent;background-image:radial-gradient(ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 9%,transparent),transparent 100%);}
@@ -461,8 +461,8 @@ body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat[data-provider="Claude"]>.row::after{background:radial-gradient(ellipse at 48% 110%,color-mix(in srgb,var(--claude-accent) 22%,transparent),transparent 70%);}
 body.runway-refined:not(.phone) .chat>.row:not(:has(.runway-refined-status.t-live,.runway-refined-status.t-attn))::after{content:none;background:none;}
 body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .chat>.row:not(:has(.runway-refined-status.t-live,.runway-refined-status.t-attn))::after{content:none;background:none;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-model-name.is-codex-model{color:#b3a8ff;text-shadow:0 0 9px #7040ff66,0 0 18px #425df633;}
-body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-model-name.is-claude-model{color:#f0a06e;text-shadow:0 0 9px #e8813f40;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-model-name.is-codex-model{color:#b3a8ff;text-shadow:0 0 9px color-mix(in srgb,var(--codex) 40%,transparent),0 0 18px #425df633;}
+body.runway-refined.runway-compact[data-notch-mode="inspect"]:not(.phone) .runway-model-name.is-claude-model{color:#f0a06e;text-shadow:0 0 9px color-mix(in srgb,var(--claude) 25%,transparent);}
 
 /* Two fixed provider halves follow the period label in each quota band. */
 body.runway-refined.runway-compact:not(.phone) .resets::before,
@@ -500,7 +500,7 @@ body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .rr-left.t-err
 body.runway-refined.runway-compact:not(.phone) .rr .meter{grid-column:1/-1;grid-row:2;width:100%;height:3px;min-width:0;align-self:center;border-radius:4px;background:#282a35;overflow:hidden;}
 body.runway-refined.runway-compact:not(.phone) .rr .meter i{height:100%;border-radius:inherit;}
 body.runway-refined.runway-compact:not(.phone) .rr.provider-codex .meter i{background:#6577ff;}
-body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .meter i{background:#e8813f;}
+body.runway-refined.runway-compact:not(.phone) .rr.provider-claude .meter i{background:var(--claude);}
 body.runway-refined.runway-compact:not(.phone) .rr .meter.last-known i{background:var(--muted);}
 body.runway-refined.runway-compact:not(.phone) .rr .greet{left:0;top:1px;width:14px;height:18px;opacity:0;}
 body.runway-refined.runway-compact:not(.phone) .rr .greet:focus-visible,

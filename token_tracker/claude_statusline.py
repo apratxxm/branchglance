@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import sys
 import tempfile
@@ -11,10 +10,11 @@ import stat
 import threading
 import queue
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 from . import product
+from .product import is_finite_number as _number
+from .timeutil import parse_iso_epoch
 
 MAX_BYTES = 65536
 FILENAME = "claude-statusline.json"
@@ -33,7 +33,7 @@ def _check_path(path, *, allow_missing=False, directory=None):
         if allow_missing:
             return None
         raise
-    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+    if product.info_is_reparse(info):
         raise OSError("reparse point refused")
     if directory is True and not stat.S_ISDIR(info.st_mode):
         raise OSError("not a directory")
@@ -142,25 +142,12 @@ def _open_checked(path, *, write=False, create=False):
             raise OSError("file identity changed")
         yield stream
 
-def _number(value):
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
-
-
 def _reset(value):
     if _number(value):
         return float(value) if value > 0 else None
     if not isinstance(value, str):
         return None
-    try:
-        date = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return date.timestamp() if date.tzinfo is not None else None
-    except (ValueError, OverflowError, OSError):
-        return None
+    return parse_iso_epoch(value, naive="reject")
 
 
 def parse(payload, now=None):

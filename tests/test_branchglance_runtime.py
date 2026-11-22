@@ -1114,7 +1114,8 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert '.runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' in refined
     assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
-    assert '--claude-accent:#e8813f' in refined
+    assert '--claude-accent:var(--claude)' in refined
+    assert '--claude:#e8813f' in (static / "runway.css").read_text(encoding="utf-8")
     assert "--tree-claude-surface:#19130f" in refined
     assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 12%,transparent),transparent 100%" in refined
     assert "ellipse 90px 18px at 80px 50%,color-mix(in srgb,var(--claude-accent) 9%,transparent),transparent 100%" in refined

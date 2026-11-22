@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import claude_hook
+from . import claude_hook, product
 from .product import claude_config_dir, claude_config_override
 
 MARKER = "--branchglance-hook"
@@ -209,11 +209,11 @@ def _touches_marker(group: Any) -> bool:
 
 # --------------------------------------------------------------------- files
 
-def _is_reparse(path: Path, info: os.stat_result) -> bool:
-    if os.path.islink(path):
-        return True
-    attr = getattr(info, "st_file_attributes", 0)
-    return bool(attr & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+def _is_reparse(path: Path, info: os.stat_result | None) -> bool:
+    """Fails closed: when the lstat result is missing, the path counts as a reparse point."""
+    if info is None:
+        return product.is_reparse(path)
+    return os.path.islink(path) or product.info_is_reparse(info)
 
 
 def _chain_root(absolute: Path) -> Path:

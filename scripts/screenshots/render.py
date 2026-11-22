@@ -87,9 +87,7 @@ def prepare_capture(capture, mode, live):
 def _capture_payload_once(base):
     data = []
     for path in ("/api/stats", "/api/live"):
-        started = time.monotonic()
         payload = json.loads(live_get(base, path))
-        print(f"prefetch {path}: {(time.monotonic() - started)*1000:.0f} ms", flush=True)
         data.append(payload)
     stats, live = data
     try:

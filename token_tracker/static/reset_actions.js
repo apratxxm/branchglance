@@ -22,7 +22,7 @@
   const purgeTimers = {};
   // The embedded frame never scrolls: the chat list shows a few rows at a time with Previous and Next.
   const PAGE_SIZE = 3;
-  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
   function waitForNative(promise,timeoutMs=300000,error="Native file dialog timed out."){let timer,registering=true;const timeout=new Promise((_,reject)=>{if(typeof setTimeout==="function")timer=setTimeout(()=>{if(registering)return;reject(new Error(error));},timeoutMs);});registering=false;return Promise.race([Promise.resolve(promise),timeout]).finally(()=>{if(timer&&typeof clearTimeout==="function")clearTimeout(timer);});}
   const message = (text, error=false) => { const el=$("#message"); el.textContent=text||""; el.classList.toggle("error",error); };
   const canChangeClaude = () => Boolean(settingsToken);

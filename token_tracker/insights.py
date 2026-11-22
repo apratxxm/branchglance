@@ -6,13 +6,15 @@ import json
 import math
 import os
 import sys
-import tempfile
 import threading
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from .product import atomic_write_bytes
+from .timeutil import parse_iso_datetime
 
 RANGES = frozenset({"24h", "7d", "30d", "all"})
 MAX_LIMIT_PEAK_BYTES = 512 * 1024
@@ -266,20 +268,7 @@ class LimitPeakStore:
         payload = b"".join((json.dumps(row, separators=(",", ":")) + "\n").encode() for row in keep)
         if not _owner_check(self.owner_check):
             return
-        fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if not _owner_check(self.owner_check):
-                return
-            os.replace(temporary, self.path)
-        finally:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
+        atomic_write_bytes(self.path, payload, before_replace=lambda: _owner_check(self.owner_check))
 
     def _read_without_compaction_locked(self) -> dict[tuple[str, str], dict[str, Any]]:
         try:
@@ -396,11 +385,10 @@ def _fresh_limit_observations(providers: list[dict[str, Any]], *, now: datetime)
         if (not isinstance(provider, dict) or provider.get("connected") is not True
                 or provider.get("stale") is True):
             continue
+        observed = parse_iso_datetime(str(provider.get("limitsUpdatedAt", "")), naive="utc")
+        if observed is None:
+            continue
         try:
-            observed = datetime.fromisoformat(str(provider.get("limitsUpdatedAt", "")).replace("Z", "+00:00"))
-            if observed.tzinfo is None:
-                observed = observed.replace(tzinfo=timezone.utc)
-            observed = observed.astimezone(timezone.utc)
             if observed > now_utc or now_utc - observed > timedelta(minutes=10):
                 continue
             result.append((provider, _local_now(observed)))
