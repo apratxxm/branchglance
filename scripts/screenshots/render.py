@@ -90,6 +90,7 @@ def fixtures(models=2, reset_continue=False, tree_space=False):
                           "fiveHour": {"percent": five, "resetAt": reset(minutes)},
                           "weekly": {"percent": weekly, "resetAt": reset(weekly_minutes)},
                           "limitsUpdatedAt": iso(0)})
+    providers[1]["identityVerified"] = True
     providers[0]["bankedResets"] = {"available": 1, "items": [{"title": "Full reset (Weekly + 5 hr)", "expiresAt": reset(30 * 1440)}]}
     if tree_space:
         providers[0]["chats"] = extra + [other, docs_child]
@@ -308,7 +309,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--insights-only", action="store_true")
     parser.add_argument("--settings-only", action="store_true")
-    parser.add_argument("--menu-open", action="store_true", help="capture the tree with the overflow menu open")
     parser.add_argument("--routing", choices=("codex", "claude", "both"), action="append",
                         help="capture the routing alert state (repeatable): the widget tree after a quota crossing")
     parser.add_argument("--insights-ranges", default="24h,30d",
@@ -340,9 +340,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix="branchglance-screenshots-") as profile:
-            if args.menu_open:
-                captures = [("tree&menu=1", "tree-menu-open.png", 560, 420)]
-            elif args.routing:
+            if args.routing:
                 captures = [(f"tree&routing={kind}", f"routing-{kind}.png", 560, 420) for kind in args.routing]
             elif args.insights_only:
                 captures = [(f"insights-{item}", f"insights-{item}.png", 720, 608) for item in ranges]

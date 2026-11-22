@@ -556,18 +556,9 @@ body.runway-refined.runway-compact:not(.phone) .rr-cd:empty::before{content:"\20
 body.runway-refined.runway-compact:not(.phone) .rr .meter{grid-column:1/-1;grid-row:2;height:4px;border-radius:4px;}
 body.runway-refined.runway-compact:not(.phone) .rr .greet{left:-13px;top:1px;}
 
-/* ---- Toolbar: lock, pin and Refresh left, window actions right; Settings and Move-monitor in the overflow menu ---- */
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-more{position:relative;flex:none;display:flex;align-items:center;}
+/* ---- Toolbar: lock, pin and Refresh left, window actions right; Insights, Settings and Recenter in the dock ---- */
 body.runway-refined.runway-compact:not(.phone) .compact-toolbar .updated-marker{flex:none;margin:0 6px;color:#d8b980;font:500 11px/16px var(--sans);white-space:nowrap;}
 body.runway-refined.runway-compact:not(.phone) .compact-toolbar .updated-marker[hidden]{display:none;}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu{position:absolute;left:0;top:calc(100% + 4px);z-index:30;min-width:190px;display:flex;flex-direction:column;gap:1px;padding:4px;border-radius:8px;background:#0b0d14;box-shadow:0 10px 26px #000c;}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu[hidden]{display:none;}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #toolbar-settings,body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #monitor-toggle{position:relative;border:0;background:transparent;box-shadow:none;cursor:pointer;width:100%;min-width:0;max-width:none;height:28px;display:flex;align-items:center;justify-content:flex-start;gap:8px;padding:0 8px;border-radius:6px;color:var(--ink);font:500 12px/1 var(--sans);}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #monitor-toggle{padding-left:30px;font-size:12px;}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #toolbar-settings{padding-left:30px;}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #toolbar-settings::before{content:"";position:absolute;left:10px;top:9px;width:10px;height:10px;border:1.4px solid currentColor;border-radius:50%;box-shadow:0 0 0 2px #0b0d14,0 0 0 3px currentColor;opacity:.8;}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu #monitor-toggle::before{left:9px;top:10px;}
-body.runway-refined.runway-compact:not(.phone) .compact-toolbar .toolbar-menu button:hover{background:#ffffff0b;}
 
 /* Narrow strip (the collapsed 328px widget): same grid, shorter words. */
 @media (max-width:460px){
