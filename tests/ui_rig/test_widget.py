@@ -25,6 +25,8 @@ def open_settings(page):
     page.locator(ui.SETTINGS_TAB).click()
     expect(page.locator(ui.SETTINGS)).to_be_visible()
     expect(page.locator(ui.SETTINGS).get_by_role("switch").first).to_be_visible()
+    # Controls are added when the settings load finishes; count them only after it settles.
+    page.wait_for_function("() => { const s = window.TokenTrackerDashboard?.state; return !!s && s.settingsLoaded && !s.settingsBusy; }")
 
 
 def exercise_provider_chips(page):
