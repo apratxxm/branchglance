@@ -1649,7 +1649,7 @@ function runwayTelemetryHTML(chat,agent=false) {
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
     const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
     // A root's status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
-    const visibleActivityHTML=!agent&&status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
+    const visibleActivityHTML=!agent&&status&&['Compacting','Waiting for input','Subagents running'].some(label=>activityHTML===runwayActivityMarkup(label))?'':activityHTML;
     // Never a silent blank: an active run without a usable sample shows a quiet dash.
     const awaitingSample=!contextValue&&!cacheValue&&ownCurrent&&currentEvidence&&!chat.telemetryUnavailable;
     const tokenPlaceholder=awaitingSample?'<span class="runway-refined-context t-mute" title="No usable context sample yet for this run">—</span>':'';

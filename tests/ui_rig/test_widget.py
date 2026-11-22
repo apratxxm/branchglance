@@ -376,6 +376,9 @@ def test_settings_page_reachable(settings_window):
 
 def test_tall_by_work_chart_scrolls_at_full_and_compact_heights(page):
     open_insights(page)
+    # Let the insights loads that opening started finish first; their render would replace the injected fixture.
+    page.wait_for_load_state("networkidle")
+    page.wait_for_function("() => document.querySelector('#dashboard-refresh')?.getAttribute('aria-busy') !== 'true'")
     page.evaluate("""() => {
       const panel = document.querySelector('#dashboard-insights');
       const rows = ['Opus', 'Sonnet', 'Haiku', 'GPT 6 Codex', 'Other (2)'].map(name =>
