@@ -15,6 +15,9 @@ def open_insights(page):
     page.locator(ui.OPEN).click()
     expect(page.locator(ui.DASHBOARD)).to_be_visible()
     expect(page.locator(ui.HERO)).to_be_visible()
+    # The first paint is a loading skeleton that also carries the hero class: wait for the loaded panel.
+    expect(page.locator("#dashboard-insights .dash-hero-loading")).to_have_count(0)
+    page.wait_for_function("() => document.querySelector('#dashboard-refresh')?.getAttribute('aria-busy') !== 'true'")
 
 
 def open_settings(page):
