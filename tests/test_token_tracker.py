@@ -4122,6 +4122,10 @@ def test_grouped_state_and_guards_are_validated_after_final_guard_read(tmp_path,
         calls[0] += 1
         if calls[0] == 2:
             path.write_bytes(b'{"value":9}\n{"value":2}\n')
+            # Same-size rewrite: guarantee the metadata fingerprint changes even
+            # on filesystems with coarse mtime resolution.
+            stat = path.stat()
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
         return real_guards(handle, offset, size)
 
     with monkeypatch.context() as patch:
