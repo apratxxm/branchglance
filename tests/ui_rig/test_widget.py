@@ -537,8 +537,15 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
             <span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span>
             <span class="runway-refined-path">${branch}</span><span class="runway-refined-tokens"></span>
           </div>`;
+          // Production child markup: no timing column; the timer sits in the status column.
+          const childRow = (titleText) => `<div class="runway-refined-row">
+            <span class="runway-refined-tree-anchor"></span>
+            <span class="runway-refined-title"><span class="runway-agent-name" title="${titleText}"><span class="runway-agent-label">${titleText}</span></span></span>
+            <span class="runway-refined-status t-live"><span class="runway-status-timer" title="Running"><span class="runway-refined-elapsed">1h 05m</span></span></span><span class="runway-refined-activity"></span>
+            <span class="runway-refined-path"></span><span class="runway-refined-tokens"></span>
+          </div>`;
           document.querySelector('#chat-list').innerHTML = `<div class="chat"><div class="row">${row('r-title', title, 'feature/branch')}</div></div>
-            <div class="ag runway-agent"><div class="runway-agent-glance">${row('runway-agent-name', title)}</div></div>`;
+            <div class="ag runway-agent"><div class="runway-agent-glance">${childRow(title)}</div></div>`;
         }""")
         metrics = page.locator("#chat-list .runway-refined-title > span").evaluate_all("""els => els.map(el => {
           const label=el.querySelector('.runway-agent-label'), style=getComputedStyle(label), titleStyle=getComputedStyle(el), box=el.getBoundingClientRect();
@@ -555,10 +562,11 @@ def test_parent_and_child_job_titles_ellipsis_on_one_line(page):
             if item["scrollWidth"] > item["clientWidth"]:
                 assert item["overflow"] == "hidden" and item["textOverflow"] == "ellipsis", (width, item)
         parent, child = metrics
-        # The child keeps the parent's single band: its timing sits beside its title, not on a lower line.
+        # The child keeps the parent's single band: its timer sits beside its title, not on a lower line.
         assert child["titleTop"] - 1 <= child["timingMid"] <= child["titleBottom"] + 1, (width, metrics)
         assert child["rowHeight"] <= parent["rowHeight"] + 1, (width, metrics)
-        assert child["titleWidth"] > 0, (width, metrics)
+        # The child name takes over the freed timing column.
+        assert child["titleWidth"] >= parent["titleWidth"] + 50, (width, metrics)
 
 
 def test_recent_standalone_failure_is_visible_with_muted_age(page):
@@ -577,17 +585,27 @@ def test_recent_standalone_failure_is_visible_with_muted_age(page):
     expect(row.locator('.runway-refined-elapsed')).not_to_be_empty()
 
 
-def test_branchless_child_timing_shares_parent_right_edge(page):
+def test_child_timer_takes_the_status_column_in_the_dot_tone(page):
     for width in (720, 560, 328):
         page.set_viewport_size({"width": width, "height": 478})
         page.evaluate("""() => {
           document.body.classList.add('runway-compact'); document.body.dataset.notchMode='inspect';
-          const row=(path)=>`<div class="runway-refined-row"><span class="runway-refined-title"><span class="r-title"><span class="runway-agent-label">Job title</span></span></span><span class="runway-refined-timing"><span class="runway-refined-elapsed">2m 00s</span></span><span class="runway-refined-status">Running</span><span class="runway-refined-activity"></span><span class="runway-refined-path">${path}</span><span class="runway-refined-tokens"></span></div>`;
-          document.querySelector('#chat-list').innerHTML=`<div class="chat"><div class="row">${row('feature/branch')}</div><div class="ag runway-agent"><div class="runway-agent-glance">${row('')}</div></div></div>`;
+          const parent=`<div class="runway-refined-row"><span class="runway-refined-title"><span class="r-title"><span class="runway-agent-label">Job title</span></span></span><span class="runway-refined-timing"><span class="runway-refined-elapsed">2m 00s</span></span><span class="runway-refined-status t-live">Running</span><span class="runway-refined-activity"><span class="runway-activity">Reading app.js</span></span><span class="runway-refined-path">feature/branch</span><span class="runway-refined-tokens"></span></div>`;
+          const child=`<div class="runway-refined-row"><span class="runway-refined-title"><span class="runway-agent-name"><span class="runway-agent-label">Child job</span></span></span><span class="runway-refined-status t-attn"><button class="runway-waiting-link runway-status-timer"><span class="runway-refined-elapsed">1m 00s</span></button></span><span class="runway-refined-activity"><span class="runway-activity">Waiting for input</span></span><span class="runway-refined-path"></span><span class="runway-refined-tokens"></span></div>`;
+          document.querySelector('#chat-list').innerHTML=`<div class="chat"><div class="row">${parent}</div><div class="ag runway-agent"><div class="runway-agent-glance">${child}</div></div></div>`;
         }""")
-        edges = page.locator("#chat-list .runway-refined-elapsed").evaluate_all("els => els.map(el => el.getBoundingClientRect().right)")
-        assert len(edges) == 2, (width, edges)
-        assert abs(edges[0] - edges[1]) <= 1, (width, edges)
+        cells = page.locator("#chat-list .runway-refined-status").evaluate_all("""els => els.map(el => {
+          const r=el.getBoundingClientRect(), row=el.closest('.runway-refined-row'), timer=row.querySelector('.runway-refined-elapsed'), t=timer.getBoundingClientRect(), a=row.querySelector('.runway-activity').getBoundingClientRect();
+          return {left:r.left, right:r.right, color:getComputedStyle(el).color, timerColor:getComputedStyle(timer).color, timerLeft:t.left, timerRight:t.right, timerBottom:t.bottom, activityTop:a.top, inStatus:el.contains(timer)};
+        })""")
+        assert len(cells) == 2, (width, cells)
+        parent, child = cells
+        # The child's timer sits in the parent's status column, above its activity, in the status dot's tone.
+        assert abs(parent["left"] - child["left"]) <= 1 and abs(parent["right"] - child["right"]) <= 1, (width, cells)
+        assert child["inStatus"] and child["timerLeft"] >= child["left"] - 1 and child["timerRight"] <= child["right"] + 1, (width, cells)
+        assert child["timerBottom"] <= child["activityTop"] + 1, (width, cells)
+        assert child["timerColor"] == child["color"], (width, cells)
+        assert child["color"] != parent["color"], (width, cells)
 
 
 def test_overflowing_job_list_stays_keyboard_scrollable_without_a_more_cue(page):
