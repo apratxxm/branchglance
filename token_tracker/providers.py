@@ -354,6 +354,7 @@ CODEX_PRICING = {
     # USD per 1M tokens: (input, cached input, output).
     # Source: https://developers.openai.com/api/docs/pricing (checked 2026-11-02, official OpenAI page).
     "gpt-6-astra": (10, 1, 50),
+    "gpt-6.2-astra": (8, .4, 40),  # checked 2026-11-22 on the same page (Codex's recommended model)
     "gpt-6.2-sol": (2, .1, 10),  # checked 2026-11-21 on the same page
     "gpt-6.1-sol": (2, .1, 10), "gpt-6.1-terra": (1, .05, 5), "gpt-6-luna": (.1, .01, .5),
     "gpt-6-sol": (2, .2, 10),
@@ -365,7 +366,7 @@ CODEX_PRICING = {
 # input exceeds 272K tokens is priced at the input/cache multiplier and output multiplier for the
 # whole request. Rows with no long-context tier listed on that page are absent here.
 CODEX_LONG_CONTEXT = {name: (272_000, 2.0, 1.5) for name in
-                      ("gpt-6-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol",
+                      ("gpt-6-astra", "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol",
                        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4")}
 LONG_CONTEXT_SUFFIX = "|long-context"
 PRICE_BASIS = "Standard-tier list prices; Batch, Flex, Fast and data-residency billing are not recorded locally"
