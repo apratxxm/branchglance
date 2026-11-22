@@ -16,6 +16,8 @@ import hashlib
 import json
 import stat as stat_module
 import time
+import bisect
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -30,9 +32,23 @@ _READ_CHUNK = 64 * 1024
 _HASH_CHUNK = 64 * 1024
 # A prefix whose verification restarted this many times (the file kept growing) is verified in one pass.
 _VERIFY_RESTART_LIMIT = 8
+IDLE_VERIFY_SECONDS = 120
+DEADLINE_VERIFY_SECONDS = 1800
+DEBT_BACKLOG_BYTES = 64 * 1024 * 1024
+VERIFY_RETRY_START_SECONDS = 60
+VERIFY_RETRY_MAX_SECONDS = 600
 _GAP_COUNTERS = {"truncation": "truncations", "replacement": "replacements", "oversize": "oversizeRecords", "ambiguous-reset": "ambiguousResets",
                  "source-missing-unverified": "missingUnverified"}
 FaultHook = Callable[[str], None]
+# Thread hint for a first-seen rollout whose leading metadata record is still being written.
+_PENDING_THREAD = object()
+
+
+class _VerificationReadError(OSError):
+    def __init__(self, message: str, work: int, state: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.work = work
+        self.state = deepcopy(dict(state)) if state is not None else None
 
 
 def _digest(data: bytes) -> str:
@@ -115,6 +131,10 @@ def _head_matches(path: Path, head_key: str) -> bool:
 
 def _file_stamp(info: Any) -> list[int]:
     return [info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_dev, info.st_ino]
+
+
+def _file_identity_changed(previous: Any, current: list[int]) -> bool:
+    return isinstance(previous, list) and len(previous) >= 5 and previous[3:5] != current[3:5]
 
 
 def _spans(state: Mapping[str, Any], offset: int) -> list[tuple[int, str]]:
@@ -227,6 +247,9 @@ class Ingestor:
         self.kind_registry_path = kind_registry_path
         self.registry = dict(classify_mod.DEFAULT_KIND_REGISTRY)
         self.stats = {"sourceReads": 0}
+        self._verification_turn: tuple[str, str] | None = None
+        self._last_outcome: dict[str, bool] = {}
+        self._thread_hint_cache: dict[tuple[str, str], tuple[tuple[int, ...], str | None]] = {}
         # Only digest state is retained; a restart safely rechecks an unfinished chunk.
         self._partial_verification: dict[tuple[str, str], dict[str, Any]] = {}
         self.conn.execute("CREATE TABLE IF NOT EXISTS ledger_omissions("
@@ -250,6 +273,51 @@ class Ingestor:
         """Drop in-memory partial verification for one provider (its stored rows were purged)."""
         for key in [key for key in self._partial_verification if key[0] == provider]:
             del self._partial_verification[key]
+        for key in [key for key in self._thread_hint_cache if key[0] == provider]:
+            del self._thread_hint_cache[key]
+
+    def _codex_thread_hint(self, path: Path) -> Any:
+        """Read only the bounded leading metadata needed to order a first-seen rollout.
+
+        Returns the thread id, None when the leading records name no thread, or
+        _PENDING_THREAD when a leading record is incomplete or unreadable, so the
+        caller orders the rollout conservatively until its metadata can be read."""
+        key = (model_mod.CODEX, path_key(path))
+        try:
+            stamp = tuple(_file_stamp(path.stat()))
+        except OSError:
+            return None
+        cached = self._thread_hint_cache.get(key)
+        if cached and cached[0] == stamp:
+            return cached[1]
+        thread: Any = None
+        try:
+            with path.open("rb") as handle:
+                scanned = 0
+                # The first record may be a large session_meta (long base instructions); later records
+                # are scanned only within the leading chunk, matching where session_meta appears.
+                while scanned < _READ_CHUNK:
+                    line = handle.readline(MAX_RECORD_BYTES + 1)
+                    if not line:
+                        break
+                    scanned += len(line)
+                    if not line.endswith(b"\n"):
+                        # Still being written (or oversize, which ingestion skips): do not guess.
+                        thread = _PENDING_THREAD if len(line) <= MAX_RECORD_BYTES else None
+                        break
+                    try:
+                        item = json.loads(line.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    payload = item.get("payload") if isinstance(item, dict) else None
+                    if isinstance(item, dict) and item.get("type") == "session_meta":
+                        if isinstance(payload, dict) and isinstance(payload.get("id"), str) and payload["id"]:
+                            thread = payload["id"][:128]
+                        break  # only the first session_meta names the thread, as in _codex_pass
+        except OSError:
+            return _PENDING_THREAD  # not cached: the next pass retries the read
+        self._thread_hint_cache[key] = (stamp, thread)
+        return thread
 
     def run(self, collect: Mapping[str, bool], budget: int | None = None,
             fault: FaultHook | None = None, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
@@ -257,17 +325,156 @@ class Ingestor:
         discovered = discover(self.claude_root, self.codex_root, collect)
         read_total = 0
         visited = 0
-        for provider, path in discovered:
+        now = self.clock()
+        source_cursors: dict[tuple[str, str], dict[str, Any] | None] = {}
+        source_threads: dict[tuple[str, str], str | None] = {}
+        source_positions: dict[tuple[str, str], int] = {}
+        unresolved_positions: dict[str, list[int]] = {}
+        pending_hints: set[tuple[str, str]] = set()
+        for position, (provider, path) in enumerate(discovered):
+            identity = (provider, path_key(path))
+            source_positions[identity] = position
+            cursor = store.load_source(self.conn, provider, identity[1]) if collect.get(provider) else None
+            source_cursors[identity] = cursor
+            state = (cursor or {}).get("state", {})
+            thread = state.get("thread")
+            if provider == model_mod.CODEX and not thread:
+                thread = self._codex_thread_hint(path)
+                if thread is _PENDING_THREAD:
+                    pending_hints.add(identity)
+                    thread = None
+            source_threads[identity] = thread
+            unresolved = bool(state.get("verification_debt") or state.get("verify")
+                              or state.get("provisional") or state.get("ordered_tail_pending"))
+            if provider == model_mod.CODEX and thread and unresolved:
+                unresolved_positions.setdefault(thread, []).append(position)
+
+        def debt_due(entry: tuple[str, Path]) -> bool:
+            provider, path = entry
+            cursor = source_cursors.get((provider, path_key(path)))
+            debt = (cursor or {}).get("state", {}).get("verification_debt")
+            if not debt:
+                return False
+            try:
+                info = path.stat()
+            except OSError:
+                return False
+            stamp = _file_stamp(info)
+            if debt.get("verified_stamp") == stamp:
+                return True
+            retry_due = bool(debt.get("retry_pending")
+                             and now >= float(debt.get("next_attempt_epoch", 0)))
+            if now < float(debt.get("next_attempt_epoch", 0)):
+                return False
+            if retry_due:
+                return True
+            return (now - float(debt.get("last_change_epoch", now)) >= IDLE_VERIFY_SECONDS
+                    or now - float(debt.get("first_deferred_epoch", now)) >= DEADLINE_VERIFY_SECONDS
+                    or max(0, info.st_size - int(cursor["byte_offset"])) > DEBT_BACKLOG_BYTES)
+        debt_entries = []
+        for entry in discovered:
+            if not collect.get(entry[0]):
+                continue
+            cursor = source_cursors.get((entry[0], path_key(entry[1])))
+            if (cursor or {}).get("state", {}).get("verification_debt"):
+                debt_entries.append(entry)
+        debt_ids = [(provider, path_key(path)) for provider, path in debt_entries]
+        if self._verification_turn not in debt_ids:
+            self._verification_turn = debt_ids[0] if debt_ids else None
+        if debt_ids:
+            start = debt_ids.index(self._verification_turn)
+            rotated_debt_ids = debt_ids[start:] + debt_ids[:start]
+            due_by_id = {(provider, path_key(path)): (provider, path)
+                         for provider, path in discovered if collect.get(provider) and debt_due((provider, path))}
+            due_entries = [due_by_id[identity] for identity in rotated_debt_ids if identity in due_by_id]
+        else:
+            rotated_debt_ids = []
+            due_entries = []
+        due_keys = {(name, path) for name, path in due_entries}
+        due_identities = {(provider, path_key(path)) for provider, path in due_entries}
+        ordered = due_entries + [entry for entry in discovered if entry not in due_keys]
+        self._capped_scan_used = False
+        cadence = {"cursorAdvanced": False, "actionableBytes": 0,
+                   "verificationAdvanced": False, "verificationRemaining": 0}
+        blocked_order: set[tuple[str, Path]] = set()
+        for provider, path in ordered:
             if not collect.get(provider):
                 continue
             if should_stop and should_stop():
                 # Cooperative stop between files: nothing from this pass is left half-applied.
                 return {"filesVisited": visited, "bytesRead": read_total, "pendingBytes": None, "stopped": True}
+            identity = (provider, path_key(path))
+            source_position = source_positions[identity]
+            thread = source_threads.get(identity)
+            prior = unresolved_positions.get(thread, []) if provider == model_mod.CODEX and thread else []
+            blocked = bool(prior and bisect.bisect_left(prior, source_position) > 0)
+            if identity in pending_hints and source_cursors.get(identity) is None:
+                # Unknown thread: wait behind any earlier unresolved Codex source.
+                blocked = any(positions and positions[0] < source_position
+                              for positions in unresolved_positions.values())
+            if blocked:
+                blocked_order.add((provider, path))
             if budget is not None and read_total >= budget:
                 break
             remaining = None if budget is None else budget - read_total
-            read_total += self.ingest_file(provider, path, remaining, fault, should_stop)
+            before = source_cursors.get(identity)
+            result = self.ingest_file(provider, path, remaining, fault, should_stop, block_events=blocked)
+            read_total += result
             visited += 1
+            after = store.load_source(self.conn, provider, identity[1])
+            source_cursors[identity] = after
+            after_thread = (after or {}).get("state", {}).get("thread")
+            if after_thread:
+                source_threads[identity] = after_thread
+                thread = after_thread
+            old_unresolved = bool((before or {}).get("state", {}).get("verification_debt")
+                                 or (before or {}).get("state", {}).get("verify")
+                                 or (before or {}).get("state", {}).get("provisional")
+                                 or (before or {}).get("state", {}).get("ordered_tail_pending"))
+            new_unresolved = bool((after or {}).get("state", {}).get("verification_debt")
+                                 or (after or {}).get("state", {}).get("verify")
+                                 or (after or {}).get("state", {}).get("provisional")
+                                 or (after or {}).get("state", {}).get("ordered_tail_pending"))
+            if provider == model_mod.CODEX and thread and old_unresolved != new_unresolved:
+                positions = unresolved_positions.setdefault(thread, [])
+                if new_unresolved and source_position not in positions:
+                    bisect.insort(positions, source_position)
+                elif not new_unresolved and source_position in positions:
+                    positions.remove(source_position)
+            if identity in due_identities and not blocked and debt_ids:
+                served_index = debt_ids.index(identity)
+                self._verification_turn = debt_ids[(served_index + 1) % len(debt_ids)]
+            outcome = self._last_outcome
+            cadence["cursorAdvanced"] = cadence["cursorAdvanced"] or outcome.get("cursorAdvanced", False)
+            cadence["verificationAdvanced"] = cadence["verificationAdvanced"] or outcome.get("verificationAdvanced", False)
+        now = self.clock()
+        actionable = 0
+        verification_left = 0
+        for provider, path in discovered:
+            if not collect.get(provider):
+                continue
+            cursor = store.load_source(self.conn, provider, path_key(path))
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            offset = int(cursor["byte_offset"]) if cursor else 0
+            debt = cursor["state"].get("verification_debt") if cursor else None
+            stamp = _file_stamp(info)
+            retry_due = not debt or now >= float(debt.get("next_attempt_epoch", 0))
+            scan_due = bool(debt and retry_due and
+                            (bool(debt.get("retry_pending"))
+                             or now - float(debt.get("last_change_epoch", now)) >= IDLE_VERIFY_SECONDS
+                             or now - float(debt.get("first_deferred_epoch", now)) >= DEADLINE_VERIFY_SECONDS
+                             or max(0, info.st_size - offset) > DEBT_BACKLOG_BYTES))
+            tail_ready = bool(debt and debt.get("verified_stamp") == stamp)
+            blocked = (provider, path) in blocked_order
+            if not blocked and (not debt or scan_due or tail_ready):
+                actionable += max(0, info.st_size - offset)
+            if scan_due and not blocked:
+                verification_left += self._remaining(provider, path, cursor)
+        cadence["actionableBytes"] = actionable
+        cadence["verificationRemaining"] = verification_left
         pending_by_provider = {provider: self._pending(discovered, {provider: bool(collect.get(provider))})
                                for provider in (model_mod.CLAUDE, model_mod.CODEX)}
         verifying = {provider: self._verifying(discovered, provider) if collect.get(provider) else 0
@@ -287,7 +494,7 @@ class Ingestor:
             for provider in (model_mod.CLAUDE, model_mod.CODEX):
                 store.meta_set(conn, f"pendingBytes:{provider}", pending_by_provider[provider])
             store.meta_set(conn, "collected", json.dumps(sorted(name for name, on in collect.items() if on)))
-        return {"filesVisited": visited, "bytesRead": read_total, "pendingBytes": pending}
+        return {"filesVisited": visited, "bytesRead": read_total, "pendingBytes": pending, **cadence}
 
     def _resolve_missing(self, conn: Any, provider: str, found: set[str], now: int) -> bool:
         """A source that was deleted or went undiscovered while unverified keeps no unconfirmed usage."""
@@ -314,6 +521,18 @@ class Ingestor:
             remaining = max(1, remaining - partial["position"])
         return remaining
 
+    @staticmethod
+    def _next_complete_line(path: Path, start: int, end: int) -> tuple[int | None, int]:
+        """Find the next complete supported record boundary with one bounded line read."""
+        if start >= end:
+            return None, 0
+        want = min(MAX_RECORD_BYTES + 1, end - start)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            line = handle.readline(want)
+        newline = line.find(b"\n")
+        return (start + newline + 1 if newline >= 0 else None), len(line)
+
     def _pending(self, discovered: list[tuple[str, Path]], collect: Mapping[str, bool]) -> int:
         total = 0
         for provider, path in discovered:
@@ -330,6 +549,8 @@ class Ingestor:
                 verify = cursor["state"].get("verify")
                 if verify:
                     total += self._remaining(provider, path, cursor)
+                elif cursor["state"].get("verification_debt"):
+                    total += max(1, cursor["byte_offset"])
                 elif cursor["byte_offset"] and cursor["state"].get("file_stamp") != _file_stamp(info):
                     total += cursor["byte_offset"]
         return total
@@ -342,6 +563,8 @@ class Ingestor:
             cursor = store.load_source(self.conn, provider, path_key(path))
             if cursor and cursor["state"].get("verify"):
                 total += self._remaining(provider, path, cursor)
+            elif cursor and cursor["state"].get("verification_debt"):
+                total += max(1, cursor["byte_offset"])
             elif cursor and cursor["byte_offset"]:
                 try:
                     if cursor["state"].get("file_stamp") != _file_stamp(path.stat()):
@@ -351,29 +574,165 @@ class Ingestor:
         return total
 
     def ingest_file(self, provider: str, path: Path, budget: int | None, fault: FaultHook | None,
-                    should_stop: Callable[[], bool] | None = None) -> int:
+                    should_stop: Callable[[], bool] | None = None, *, block_events: bool = False) -> int:
         key = path_key(path)
+        self._last_outcome = {"cursorAdvanced": False, "verificationAdvanced": False}
+        cursor = None
         try:
             info = path.stat()
             cursor = store.load_source(self.conn, provider, key)
+            if block_events:
+                return self._defer_ordered_source(provider, path, info, cursor, fault)
             plan = self._plan(provider, path, info, cursor, budget, should_stop)
+        except _VerificationReadError as error:
+            self._partial_verification.pop((provider, key), None)
+            with store.transaction(self.conn) as conn:
+                store.bump_counter(conn, provider, "readFailures")
+                if cursor and cursor["byte_offset"]:
+                    state = error.state or {**_fresh_state(), **deepcopy(cursor["state"])}
+                    debt = state.get("verification_debt")
+                    if debt:
+                        now = self.clock()
+                        if error.work:
+                            delay = min(VERIFY_RETRY_MAX_SECONDS,
+                                        int(debt.get("retry_delay_seconds") or VERIFY_RETRY_START_SECONDS))
+                            debt.update(retry_pending=True, next_attempt_epoch=now + delay,
+                                        retry_delay_seconds=min(VERIFY_RETRY_MAX_SECONDS, delay * 2))
+                        store.save_source(conn, provider, key, generation=cursor["generation"],
+                                          byte_offset=cursor["byte_offset"], head_key=cursor["head_key"], state=state)
+            return error.work
         except OSError:
             self._partial_verification.pop((provider, key), None)
             with store.transaction(self.conn) as conn:
                 store.bump_counter(conn, provider, "readFailures")
             return 0
+        final_stat_failed = False
         try:
             stable = _file_stamp(path.stat()) == _file_stamp(info)
         except OSError:
             stable = False
+            final_stat_failed = True
+            with store.transaction(self.conn) as conn:
+                store.bump_counter(conn, provider, "readFailures")
         if not stable:
             self._partial_verification.pop((provider, key), None)
+            scan_work = int(plan.get("verification_work", 0))
+            if cursor is not None and (plan.get("state_changed") or scan_work):
+                # The plan is discarded as a unit when the final stamp check fails. Keep the
+                # persisted cursor/debt, even if the discarded plan had tentatively cleared it.
+                state = {**_fresh_state(), **cursor["state"]}
+                debt = dict(state.get("verification_debt") or
+                            plan["state"].get("verification_debt") or {})
+                if not debt and cursor["byte_offset"]:
+                    debt = {"open": True, "generation": cursor["generation"],
+                            "first_deferred_epoch": self.clock(), "last_change_epoch": self.clock(),
+                            "last_stamp": state.get("file_stamp"), "last_size": cursor["byte_offset"]}
+                changed_stamp = None
+                if debt:
+                    try:
+                        changed_stamp = _file_stamp(path.stat())
+                    except OSError:
+                        changed_stamp = None
+                    now = self.clock()
+                    if changed_stamp is not None:
+                        if (not debt.get("replacement_observed")
+                                and _file_identity_changed(debt.get("last_stamp") or state.get("file_stamp"),
+                                                           changed_stamp)):
+                            debt.update(replacement_observed=True, replacement_boundary=changed_stamp[0])
+                        debt.update(last_stamp=changed_stamp, last_size=changed_stamp[0],
+                                    last_change_epoch=now)
+                    debt.update(open=True, generation=cursor["generation"])
+                    if scan_work:
+                        delay = min(VERIFY_RETRY_MAX_SECONDS,
+                                    int(debt.get("retry_delay_seconds") or VERIFY_RETRY_START_SECONDS))
+                        debt.update(retry_pending=True, next_attempt_epoch=now + delay,
+                                    retry_delay_seconds=min(VERIFY_RETRY_MAX_SECONDS, delay * 2))
+                    state["verification_debt"] = debt
+                    state.pop("verify", None)
+                with store.transaction(self.conn) as conn:
+                    if debt and changed_stamp is None and not final_stat_failed:
+                        store.bump_counter(conn, provider, "readFailures")
+                    store.save_source(conn, provider, key, generation=cursor["generation"],
+                                      byte_offset=cursor["byte_offset"], head_key=cursor["head_key"], state=state)
             return plan.get("work", plan["consumed"])
         if cursor is not None and not plan["consumed"] and not plan["gaps"] and not plan.get("state_changed"):
             return plan.get("work", 0)
         with store.transaction(self.conn) as conn:
             self._apply(conn, provider, key, plan, fault)
+        old_generation = cursor["generation"] if cursor else plan["generation"]
+        generation_changed = plan["generation"] != old_generation
+        self._last_outcome = {
+            "cursorAdvanced": bool(plan["offset"] > 0 if generation_changed
+                                    else plan["offset"] > (cursor["byte_offset"] if cursor else 0)),
+            "verificationAdvanced": bool(plan.get("verification_advanced")),
+        }
         return plan.get("work", plan["consumed"])
+
+    def _defer_ordered_source(self, provider: str, path: Path, info: Any,
+                              cursor: dict[str, Any] | None, fault: FaultHook | None) -> int:
+        """Observe queued Codex files without committing their counter or tag events."""
+        key = path_key(path)
+        if cursor is not None and info.st_size < cursor["byte_offset"]:
+            state = _replay_state(info.st_size)
+            plan = {"generation": cursor["generation"] + 1, "offset": 0, "head_key": None,
+                    "state": state, "gaps": [("truncation", cursor["byte_offset"])],
+                    "facts": [], "threads": {}, "omissions": [], "unknown_tags": [],
+                    "consumed": 0, "work": 0, "state_changed": True, "counters": {}}
+            try:
+                stable = _file_stamp(path.stat()) == _file_stamp(info)
+            except OSError:
+                stable = False
+                with store.transaction(self.conn) as conn:
+                    store.bump_counter(conn, provider, "readFailures")
+            if stable:
+                with store.transaction(self.conn) as conn:
+                    self._apply(conn, provider, key, plan, fault)
+                return 0
+            return 0
+        try:
+            # Opening the source records access failures immediately, without parsing queued events.
+            with path.open("rb"):
+                pass
+        except OSError:
+            with store.transaction(self.conn) as conn:
+                store.bump_counter(conn, provider, "readFailures")
+            return 0
+        if cursor is None or not cursor["byte_offset"]:
+            return 0
+        stamp = _file_stamp(info)
+        state = {**_fresh_state(), **deepcopy(cursor["state"])}
+        debt = state.get("verification_debt")
+        changed = False
+        if debt:
+            previous_stamp = debt.get("last_stamp")
+            if previous_stamp != stamp:
+                debt.update(last_stamp=stamp, last_size=info.st_size, last_change_epoch=self.clock(),
+                            tail_boundary=info.st_size)
+                debt.pop("verified_stamp", None)
+                if (not debt.get("replacement_observed") and
+                        (_file_identity_changed(previous_stamp, stamp)
+                         or (cursor["head_key"] and not _head_matches(path, cursor["head_key"])) )):
+                    debt.update(replacement_observed=True, replacement_boundary=info.st_size)
+                changed = True
+        elif state.get("file_stamp") != stamp:
+            now = self.clock()
+            replacement_observed = bool(
+                _file_identity_changed(state.get("file_stamp"), stamp)
+                or (cursor["head_key"] and not _head_matches(path, cursor["head_key"]))
+            )
+            debt = {"open": True, "generation": cursor["generation"],
+                    "first_deferred_epoch": now, "last_change_epoch": now,
+                    "last_stamp": stamp, "last_size": info.st_size,
+                    "replacement_observed": replacement_observed,
+                    "replacement_boundary": info.st_size if replacement_observed else None,
+                    "tail_boundary": info.st_size}
+            state["verification_debt"] = debt
+            changed = True
+        if changed:
+            with store.transaction(self.conn) as conn:
+                store.save_source(conn, provider, key, generation=cursor["generation"],
+                                  byte_offset=cursor["byte_offset"], head_key=cursor["head_key"], state=state)
+        return 0
 
     def _plan(self, provider: str, path: Path, info: Any, cursor: dict[str, Any] | None,
               budget: int | None, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
@@ -383,114 +742,218 @@ class Ingestor:
         work = 0
         state_changed = False
         provisional = False  # tail is read while the prefix is still unverified
-        tail_read = False  # a capped pass that completes verification reads the tail in the same pass
+        tail_read = False  # verification work is already accounted for in the remaining tail allowance
         tail_budget = 0
         promote = False
+        verification_work = 0
+        verification_advanced = False
+        verified_tail_boundary: int | None = None
+        checkpoint_before: tuple[bool, int] | None = None
         if cursor is not None:
             generation, offset, head_key = cursor["generation"], cursor["byte_offset"], cursor["head_key"]
-            state = {**_fresh_state(), **cursor["state"]}
+            state = {**_fresh_state(), **deepcopy(cursor["state"])}
             reset = None
             if info.st_size < offset:
                 reset = "truncation"
-            elif offset and state.get("file_stamp") != _file_stamp(info):
+            elif offset and (state.get("verification_debt") or state.get("file_stamp") != _file_stamp(info)):
                 spans = _spans(state, offset)
                 if not spans:
                     reset = "replacement"  # Legacy cursor has no trustworthy consumed-prefix hashes.
                 else:
-                    verify = state.get("verify")
-                    had_verify = bool(verify)
-                    restarts = int(verify.get("restarts") or 0) if verify else 0
-                    if verify and verify.get("stamp") != _file_stamp(info):
-                        # Only growth counts toward the cap; a metadata-only change restarts without counting.
-                        if info.st_size > int(verify.get("size") or 0):
+                    now = self.clock()
+                    stamp = _file_stamp(info)
+                    debt = state.get("verification_debt")
+                    if debt is None:
+                        replacement_observed = bool(
+                            _file_identity_changed(state.get("file_stamp"), stamp)
+                            or (head_key and not _head_matches(path, head_key))
+                        )
+                        debt = {"open": True, "generation": generation,
+                                "first_deferred_epoch": now, "last_change_epoch": now,
+                                "last_stamp": stamp, "last_size": info.st_size,
+                                "replacement_observed": replacement_observed,
+                                "replacement_boundary": info.st_size if replacement_observed else None,
+                                "tail_boundary": info.st_size}
+                        state["verification_debt"] = debt
+                        state_changed = True
+                    elif debt.get("last_stamp") != stamp:
+                        previous_stamp = debt.get("last_stamp")
+                        debt["last_change_epoch"] = now
+                        debt["last_stamp"] = stamp
+                        debt["last_size"] = info.st_size
+                        debt["tail_boundary"] = info.st_size
+                        debt.pop("verified_stamp", None)
+                        if (not debt.get("replacement_observed")
+                                and (_file_identity_changed(previous_stamp, stamp)
+                                     or (head_key and not _head_matches(path, head_key)))):
+                            debt["replacement_observed"] = True
+                            debt["replacement_boundary"] = info.st_size
+                        state_changed = True
+                    if debt.get("verified_stamp") == stamp:
+                        # Compatibility with persisted round-one state: exact verification succeeded.
+                        verified_tail_boundary = int(debt.get("tail_boundary", info.st_size))
+                        state.pop("verification_debt", None)
+                        state["file_stamp"] = stamp
+                        state_changed = True
+                    else:
+                        verify = state.get("verify")
+                        restarts = int(verify.get("restarts") or 0) if verify else 0
+                        if verify and verify.get("stamp") != stamp:
+                            cache_key = (provider, path_key(path))
+                            partial = self._partial_verification.get(cache_key)
+                            scan_progress_lost = bool(verify.get("boundary") or int(verify.get("next", 0))
+                                                     or (partial and partial.get("position")))
+                            self._partial_verification.pop(cache_key, None)
+                            state.pop("verify", None)
                             restarts += 1
-                    if not verify or verify.get("stamp") != _file_stamp(info):
-                        verify = {"stamp": _file_stamp(info), "next": 0, "boundary": False, "count": len(spans),
-                                  "restarts": restarts, "size": info.st_size}
-                    verify.setdefault("count", len(spans))
-                    capped = int(verify.get("restarts") or 0) >= _VERIFY_RESTART_LIMIT
-                    count = min(int(verify["count"]), len(spans))
-                    starts = [sum(length for length, _ in spans[:index]) for index in range(len(spans))]
-                    # A pass that finds a changed file verifies first. Later passes reserve a quarter of the
-                    # budget for the appended tail, so a growing file cannot starve its own ingestion.
-                    reserve = budget // 4 if budget is not None and had_verify and info.st_size > offset else 0
-                    # A capped verification ignores the budget for its loop only: it verifies the whole prefix in this pass.
-                    limit = offset + _HASH_CHUNK if budget is None or capped else budget - reserve
+                            if info.st_size > int(verify.get("size") or 0):
+                                restarts += 0  # preserve the historical growth count in the checkpoint
+                            if scan_progress_lost:
+                                delay = min(VERIFY_RETRY_MAX_SECONDS,
+                                            int(debt.get("retry_delay_seconds") or VERIFY_RETRY_START_SECONDS))
+                                debt.update(retry_pending=True, next_attempt_epoch=now + delay,
+                                            retry_delay_seconds=min(VERIFY_RETRY_MAX_SECONDS, delay * 2))
+                                state["verification_debt"] = debt
+                                return {"generation": generation, "offset": offset, "head_key": head_key,
+                                        "state": state, "gaps": [], "facts": [], "threads": {}, "omissions": [],
+                                        "consumed": 0, "work": 0, "state_changed": True, "counters": {},
+                                        "deferred": True}
+                        due = (now - float(debt.get("last_change_epoch", now)) >= IDLE_VERIFY_SECONDS
+                               or now - float(debt.get("first_deferred_epoch", now)) >= DEADLINE_VERIFY_SECONDS
+                               or max(0, info.st_size - offset) > DEBT_BACKLOG_BYTES
+                               or (debt.get("retry_pending")
+                                   and now >= float(debt.get("next_attempt_epoch", 0))))
+                        if not due or now < float(debt.get("next_attempt_epoch", 0)):
+                            return {"generation": generation, "offset": offset, "head_key": head_key,
+                                    "state": state, "gaps": [], "facts": [], "threads": {}, "omissions": [],
+                                    "consumed": 0, "work": 0, "state_changed": state_changed, "counters": {},
+                                    "deferred": True}
+                        debt.pop("retry_pending", None)
+                    if verified_tail_boundary is None:
+                        verify = state.get("verify")
+                        if not verify or verify.get("stamp") != stamp:
+                            verify = {"stamp": stamp, "next": 0, "boundary": False, "count": len(spans),
+                                      "restarts": restarts, "size": info.st_size}
+                        verify.setdefault("count", len(spans))
+                        checkpoint_before = (bool(verify.get("boundary")), int(verify.get("next", 0)))
+                    else:
+                        verify = None
+                    capped = bool(verified_tail_boundary is None
+                                  and now - float(debt.get("first_deferred_epoch", now)) >= DEADLINE_VERIFY_SECONDS
+                                  and not self._capped_scan_used)
+                    if capped:
+                        self._capped_scan_used = True
+                    count = min(int(verify["count"]), len(spans)) if verify else 0
+                    starts = []
+                    span_start = 0
+                    for length, _digest_text in spans:
+                        starts.append(span_start)
+                        span_start += length
+                    # Leave a bounded allowance for complete tail records when exact verification finishes.
+                    tail_reserve = (min(_READ_CHUNK, max(1, budget // 4))
+                                    if budget is not None and info.st_size > offset else 0)
+                    # A capped scan ignores the pass budget, but only one is allowed per pass.
+                    limit = offset + _HASH_CHUNK if budget is None or capped else max(1, budget - tail_reserve)
                     # Finish the boundary span first. A partial digest is process-local;
                     # only completed spans advance the durable cursor.
                     cache_key = (provider, path_key(path))
                     stopped = False
-                    with path.open("rb") as handle:
-                        while work < limit and (not verify["boundary"] or verify["next"] < count - 1):
-                            if should_stop and should_stop():
-                                stopped = True  # checked once per hashed chunk; commits nothing from this pass
-                                break
-                            index = count - 1 if not verify["boundary"] else verify["next"]
-                            length, expected = spans[index]
-                            identity = (generation, tuple(_file_stamp(info)), index, expected, length)
-                            partial = self._partial_verification.get(cache_key)
-                            if not partial or partial["identity"] != identity:
-                                partial = {"identity": identity, "position": 0,
-                                           "digest": hashlib.blake2b(digest_size=16)}
-                                self._partial_verification[cache_key] = partial
-                            handle.seek(starts[index] + partial["position"])
-                            want = min(length - partial["position"], limit - work)
-                            chunk = handle.read(want)
-                            work += len(chunk)
-                            if len(chunk) != want:
-                                raise OSError("source changed while verifying")
-                            partial["digest"].update(chunk)
-                            partial["position"] += len(chunk)
-                            if partial["position"] != length:
-                                break
-                            self._partial_verification.pop(cache_key, None)
-                            if partial["digest"].hexdigest() != expected:
-                                reset = "replacement"
-                                break
-                            if not verify["boundary"]:
-                                verify["boundary"] = True
-                            else:
-                                verify["next"] = index + 1
+                    if verify:
+                        try:
+                            with path.open("rb") as handle:
+                                while work < limit and (not verify["boundary"] or verify["next"] < count - 1):
+                                    if should_stop and should_stop():
+                                        stopped = True  # checked once per hashed chunk; commits nothing from this pass
+                                        break
+                                    index = count - 1 if not verify["boundary"] else verify["next"]
+                                    length, expected = spans[index]
+                                    identity = (generation, tuple(_file_stamp(info)), index, expected, length)
+                                    partial = self._partial_verification.get(cache_key)
+                                    if not partial or partial["identity"] != identity:
+                                        partial = {"identity": identity, "position": 0,
+                                                   "digest": hashlib.blake2b(digest_size=16)}
+                                        self._partial_verification[cache_key] = partial
+                                    handle.seek(starts[index] + partial["position"])
+                                    want = min(length - partial["position"], limit - work)
+                                    try:
+                                        chunk = handle.read(want)
+                                    except OSError as error:
+                                        state["verify"] = verify
+                                        state["verification_debt"] = debt
+                                        raise _VerificationReadError(str(error), work, state) from error
+                                    work += len(chunk)
+                                    if len(chunk) != want:
+                                        state["verify"] = verify
+                                        state["verification_debt"] = debt
+                                        raise _VerificationReadError("short read while verifying source", work, state)
+                                    partial["digest"].update(chunk)
+                                    partial["position"] += len(chunk)
+                                    if partial["position"] != length:
+                                        break
+                                    self._partial_verification.pop(cache_key, None)
+                                    if partial["digest"].hexdigest() != expected:
+                                        reset = "replacement"
+                                        break
+                                    if not verify["boundary"]:
+                                        verify["boundary"] = True
+                                    else:
+                                        verify["next"] = index + 1
+                        except _VerificationReadError:
+                            raise
+                        except OSError as error:
+                            state["verify"] = verify
+                            state["verification_debt"] = debt
+                            raise _VerificationReadError(str(error), work, state) from error
                     if stopped:
                         # The unfinished digest is dropped; the durable cursor has not moved.
                         self._partial_verification.pop(cache_key, None)
                         return {"generation": generation, "offset": offset, "head_key": head_key,
                                 "state": state, "gaps": [], "facts": [], "threads": {}, "omissions": [],
-                                "consumed": 0, "work": work, "state_changed": False, "counters": {}}
+                                "consumed": 0, "work": work, "verification_work": work,
+                                "state_changed": False, "counters": {}}
+                    verification_work = work
                     if not reset:
                         state_changed = True
-                        if not verify["boundary"] or verify["next"] < count - 1:
+                        if verify and (not verify["boundary"] or verify["next"] < count - 1):
                             state["verify"] = verify
-                            # Codex counters are shared across files, so its tail waits for verification.
-                            if reserve <= 0 or provider != model_mod.CLAUDE:
-                                return {"generation": generation, "offset": offset, "head_key": head_key,
-                                        "state": state, "gaps": [], "facts": [], "threads": {}, "omissions": [],
-                                        "consumed": 0, "work": work, "state_changed": True, "counters": {}}
-                            provisional = True
-                            tail_budget = reserve
+                            verification_advanced = bool(work and checkpoint_before !=
+                                                         (bool(verify.get("boundary")), int(verify.get("next", 0))))
+                            # Debt blocks every provider's tail until exact verification succeeds.
+                            return {"generation": generation, "offset": offset, "head_key": head_key,
+                                    "state": state, "gaps": [], "facts": [], "threads": {}, "omissions": [],
+                                    "consumed": 0, "work": work, "verification_work": work,
+                                    "state_changed": True, "counters": {},
+                                    "verification_advanced": verification_advanced}
                         else:
                             state.pop("verify", None)
-                            state["file_stamp"] = _file_stamp(info)
+                            verified_tail_boundary = int(debt.get("tail_boundary", info.st_size))
+                            state.pop("verification_debt", None)
+                            state["file_stamp"] = stamp
+                            verification_advanced = bool(work)
                             promote = bool(state.get("provisional"))
-                            if budget is not None and work and not (capped and info.st_size > offset):
-                                return {"generation": generation, "offset": offset, "head_key": head_key,
-                                        "state": state, "gaps": [], "facts": [], "threads": {}, "omissions": [],
-                                        "consumed": 0, "work": work, "state_changed": True, "counters": {},
-                                        **self._promotion(state, promote)}
                             if budget is not None and work:
-                                # A capped verification already overspent its budget; its confirmed tail is read now.
-                                budget = max(budget - work, budget // 4, 1)
+                                # The tail reader receives only the allowance left by this verified plan.
+                                # A capped scan ignored the budget for the prefix; its tail still gets the
+                                # normal pass budget, so constant appends cannot hold confirmation to one
+                                # small allowance per deadline.
+                                budget = max(1, budget - work) if not capped else max(1, budget)
                                 tail_read = True
             if reset:
                 self._partial_verification.pop((provider, path_key(path)), None)
                 gaps.append((reset, offset))
                 generation, offset, head_key = generation + 1, 0, None
-                state = _replay_state(info.st_size)
+                debt = state.get("verification_debt") or {}
+                replay_end = (int(debt.get("replacement_boundary") or info.st_size)
+                              if (reset == "replacement" and debt.get("replacement_observed")
+                                  and info.st_size > int(debt.get("replacement_boundary") or 0))
+                              else info.st_size)
+                state = _replay_state(replay_end)
                 # Do not spend ingestion's record completion allowance in a verification pass.
                 if work and budget is not None:
                     return {"generation": generation, "offset": 0, "head_key": None, "state": state,
                             "gaps": gaps, "facts": [], "threads": {}, "omissions": [],
-                            "consumed": 0, "work": work, "state_changed": True, "counters": {}}
+                            "consumed": 0, "work": work, "verification_work": verification_work,
+                            "state_changed": True, "counters": {}}
         if provisional:
             budget = max(1, tail_budget)
         elif budget is not None and not tail_read:
@@ -547,6 +1010,32 @@ class Ingestor:
                         left -= len(chunk)
                 state["file_stamp"] = _file_stamp(info)
             _store_spans(state, spans)
+        ordered = state.get("ordered_tail_pending") if provider == model_mod.CODEX else None
+        if verified_tail_boundary is not None and provider == model_mod.CODEX:
+            order_boundary, probe_work = self._next_complete_line(path, offset + cut, verified_tail_boundary)
+            work += probe_work
+            if order_boundary is not None:
+                state["ordered_tail_pending"] = {"boundary": order_boundary,
+                                                  "tail_boundary": verified_tail_boundary}
+            elif offset + cut + probe_work < verified_tail_boundary:
+                # An oversize record hides the next boundary: hold the gate until it is skipped.
+                state["ordered_tail_pending"] = {"boundary": offset + cut + probe_work,
+                                                  "tail_boundary": verified_tail_boundary}
+        elif ordered is not None and offset + cut >= int(ordered.get("boundary", 0)):
+            order_boundary, probe_work = self._next_complete_line(
+                path, offset + cut, int(ordered.get("tail_boundary", info.st_size)))
+            work += probe_work
+            tail_boundary = int(ordered.get("tail_boundary", info.st_size))
+            if order_boundary is None and offset + cut + probe_work >= tail_boundary:
+                state.pop("ordered_tail_pending", None)
+            elif order_boundary is None:
+                # No complete record before the verified boundary yet (an oversize record is being
+                # skipped): keep the gate until the boundary is passed.
+                state["ordered_tail_pending"] = {"boundary": offset + cut + probe_work,
+                                                  "tail_boundary": tail_boundary}
+            else:
+                state["ordered_tail_pending"] = {"boundary": order_boundary,
+                                                  "tail_boundary": int(ordered.get("tail_boundary", info.st_size))}
         items, malformed = _parse(complete)
         eof = len(data) == remaining  # the whole remaining file was scanned in this pass
         if provider == model_mod.CLAUDE:
@@ -588,6 +1077,8 @@ class Ingestor:
                 "gaps": gaps, "facts": facts, "threads": threads, "omissions": omissions,
                 "unknown_tags": unknown_tags, "consumed": cut, "observed": observed,
                 "work": work + cut, "state_changed": state_changed,
+                "verification_work": verification_work,
+                "verification_advanced": verification_advanced,
                 "counters": {"malformedLines": len(malformed), "unknownUsageRecords": unknown}, **extra}
 
     @staticmethod
@@ -663,6 +1154,7 @@ class Ingestor:
             if fields is None:
                 omissions.append((omission_key, True, message_key, epoch))
                 continue
+            prompt_evidence = model_mod.claude_prompt_evidence(usage)
             if epoch is None:
                 unknown += 1
                 omissions.append((omission_key, True, message_key, epoch))
@@ -673,7 +1165,8 @@ class Ingestor:
             facts.append({
                 "provider": model_mod.CLAUDE, "fact_key": model_mod.fact_key(model_mod.CLAUDE, identity),
                 "thread_id": state["thread"], "model": claude_provider.public_model(message.get("model")) or "unknown",
-                "price_tier": model_mod.STANDARD_TIER, "hour": _hour(epoch), "fields": fields, "merge": True,
+                "price_tier": model_mod.claude_price_tier(claude_provider.public_model(message.get("model")) or "unknown", prompt_evidence),
+                "prompt_evidence": prompt_evidence, "hour": _hour(epoch), "fields": fields, "merge": True,
                 "segment": dict(state["segment"]) if state["segment"] else None,
             })
         threads: dict[str, Any] = {}
@@ -895,7 +1388,9 @@ class Ingestor:
             if amount:
                 store.bump_counter(conn, provider, name, amount)
         state = plan["state"]
-        if state.get("audit") and not state.get("replay_ambiguous") and not state.get("verify"):
+        if (state.get("audit") and not state.get("replay_ambiguous")
+                and not state.get("verify") and not state.get("verification_debt")
+                and not state.get("ordered_tail_pending")):
             # The replay of a rewritten file is complete: confirmed usage is never lowered, so report it.
             state.pop("audit")
             if store.audit_rewrite(conn, provider, key, generation):

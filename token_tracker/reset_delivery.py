@@ -99,7 +99,15 @@ def list_candidates(limit: int = MAX_CANDIDATES, *, client: CodexAppServer | Non
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_CANDIDATES:
         raise ValueError(f"candidate limit must be between 1 and {MAX_CANDIDATES}")
     metadata = {row["id"]: row for row in _metadata(limit=limit) if not row.get("archived")}
-    threads = (client or CodexAppServer(timeout=5)).list_threads(limit=limit)
+    if client is None:
+        # A throwaway app-server must be closed, or its codex child outlives the call.
+        owned = CodexAppServer(timeout=5)
+        try:
+            threads = owned.list_threads(limit=limit)
+        finally:
+            owned.close(timeout=2.0)
+    else:
+        threads = client.list_threads(limit=limit)
     candidates = []
     for thread in threads:
         ident = thread.get("id")
@@ -134,8 +142,17 @@ def inspect_target(thread_id: str, *, client: CodexAppServer | None = None,
     if not Path(rollout_path).is_file():
         return _failure("rollout_unavailable", exists=True)
 
+    if client is not None:
+        return _inspect_thread(thread_id, rollout_path, client)
+    owned = CodexAppServer(timeout=5)
+    try:
+        return _inspect_thread(thread_id, rollout_path, owned)
+    finally:
+        owned.close(timeout=2.0)
+
+
+def _inspect_thread(thread_id: str, rollout_path: str, app_client: CodexAppServer) -> dict[str, Any]:
     observed_at = time.time()
-    app_client = client or CodexAppServer(timeout=5)
     try:
         thread = app_client.read_thread(thread_id, include_turns=False)
     except (CodexUnavailable, OSError, TimeoutError):

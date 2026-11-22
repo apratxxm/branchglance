@@ -43,8 +43,10 @@ const claudeParent={id:"op",key:"Claude:op",parentKey:null,title:"Branchglance l
   assert.equal(child.key,stopped.key);
   assert.equal(T.runInfo(child).seconds,120);
   const markup=T.runwayTelemetryHTML(child,true);
-  assert.match(markup,/Stopped/);
-  for(const slot of ['timing','path-column','tokens'])assert.ok(markup.includes('data-runway-slot="'+slot+'"'));
+  assert.match(markup,/runway-status-dot[^>]*aria-label="Stopped"/);
+  assert.match(markup,/runway-refined-status t-mute"[^>]*><span class="runway-status-timer" title="Stopped"><span data-runway-slot="elapsed" class="runway-refined-elapsed">2m 00s/,'a retained child shows its stopped duration where the status word was');
+  for(const slot of ['status','elapsed','path-column','tokens'])assert.ok(markup.includes('data-runway-slot="'+slot+'"'),slot);
+  assert.ok(!markup.includes('data-runway-slot="timing"'),'the child name takes the timing column');
 }
 
 {
@@ -133,8 +135,11 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const rendered=[T.state.forest.roots[0],...T.state.forest.roots[0].descendants].map((chat,index)=>index===0?T.rowHTML(chat):T.runwayTelemetryHTML(chat,true));
   const slotOrder=markup=>[...markup.matchAll(/data-runway-slot="(timing|status|activity-column|path-column|tokens)"/g)].map(([,slot])=>slot);
   assert.deepEqual(slotOrder(rendered[0]),['timing','status','activity-column','path-column','tokens']);
-  assert.ok(rendered.slice(1).every(markup=>JSON.stringify(slotOrder(markup))===JSON.stringify(slotOrder(rendered[0]))),
-    'parent and nested child rows share the same information columns');
+  // Children drop only the timing column (their timer sits in the status column, where the name dot's state word was).
+  assert.ok(rendered.slice(1).every(markup=>JSON.stringify(slotOrder(markup))===JSON.stringify(['status','activity-column','path-column','tokens'])),
+    'nested child rows keep the status, activity, path and token columns of their parent');
+  assert.ok(rendered.slice(1).every(markup=>/data-runway-slot="status"[^>]*><span class="runway-status-timer"[^>]*><span data-runway-slot="elapsed"/.test(markup)),'each running child shows its timer in the status column');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-title\{grid-column:1\/3;\}/,'the child name takes over the freed timing column');
   for(const [index,markup] of rendered.entries()){
     const activity=markup.match(/data-runway-slot="activity-column"[^>]*>([\s\S]*?)<\/span><span data-runway-slot="path-column"/)?.[1]||'';
     const tokens=markup.match(/data-runway-slot="tokens"[^>]*>([\s\S]*?)<\/span><\/div>/)?.[1]||'';
@@ -146,15 +151,20 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
     assert.ok(tokens.indexOf('ctx-tokens')<tokens.indexOf('Cache 98%'),'tokens stay above the muted cache line');
     if(index===0) assert.match(markup,/runway-path-leaf">A: orchestrator/);
     else assert.match(markup,/data-runway-slot="path-column" class="runway-refined-path"><\/span>/);
-    assert.equal(markup.match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1],'Running');
+    if(index===0) assert.equal(markup.match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1],'Running');
+    else {
+      assert.doesNotMatch(markup,/runway-state-word/,`row ${index} shows its state by its dot only`);
+      assert.match(markup,/runway-status-dot[^>]*aria-label="Running"/,`row ${index} keeps an accessible running dot`);
+      assert.match(markup,/runway-refined-status t-live"[^>]*><span class="runway-status-timer" title="Running">/,`row ${index} timer takes the running tone`);
+    }
     assert.equal((markup.match(/data-runway-slot="cache"/g)||[]).length,1);
   }
 
   const longName='Review a particularly long subagent name to check the single line truncation and full tooltip';
   const longMarkup=T.runwayTelemetryHTML({...T.state.forest.roots[0].descendants[0],agentName:longName},true);
   assert.ok(longMarkup.includes('title="'+longName+'"'),'full agent name is available in the tooltip');
-  // Subagent names wrap like parent names; the user asked for no truncation.
-  assert.doesNotMatch(css,/.ag.runway-agent .runway-refined-title .runway-agent-label{[^}]*text-overflow:ellipsis/);
+  // Parent and child names stay on one line and ellipsize while retaining the full tooltip.
+  assert.match(css,/\.runway-refined-title \.runway-agent-label\{[^}]*text-overflow:ellipsis/);
   assert.match(longMarkup,/data-runway-slot="model"/);
   assert.match(longMarkup,/Cache 98%/);
 
@@ -168,11 +178,12 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const waiting={...extra[5],status:'needs-input',executionStatus:'waiting',pendingQuestion:'Choose?',pendingQuestionAt:ago(0)};
   entries=entriesFor(extra.map(a=>a.key===waiting.key?waiting:a));
   assert.ok(keys(entries).includes(waiting.key),'waiting sibling past cap remains visible');
-  assert.match(T.runwayTelemetryHTML(waiting,true),/class="runway-state-word runway-waiting-link"[^>]*>Waiting<\/button>/);
+  assert.match(T.runwayTelemetryHTML(waiting,true),/class="runway-waiting-link runway-status-timer" data-action="runway-question"[^>]*><span data-runway-slot="elapsed"[^>]*>[^<]+<\/span><\/button>/,'a waiting child keeps its question control as its timer');
   const failed={...extra[6],status:'failed',executionStatus:'failed',updatedAt:ago(0)};
   entries=entriesFor(extra.map(a=>a.key===failed.key?failed:a));
   assert.ok(keys(entries).includes(failed.key),'failed child remains visible beyond the ordinary cap');
-  assert.equal(T.runwayTelemetryHTML(failed,true).match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1], 'Failed');
+  assert.match(T.runwayTelemetryHTML(failed,true),/runway-status-dot[^>]*aria-label="Failed"/,'a failed child is labelled by its dot');
+  assert.doesNotMatch(T.runwayTelemetryHTML(failed,true),/runway-state-word/);
   const waitingGrandchild={...waiting,key:'Codex:question',id:'question',parentKey:extra[5].key,treeParentKey:extra[5].key};
   entries=entriesFor([...extra,waitingGrandchild]);
   assert.ok(keys(entries).includes(extra[5].key)&&keys(entries).includes(waitingGrandchild.key),'actionable descendant preserves ancestor path');
@@ -187,7 +198,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const rowRule=cssRule(inspect+'.runway-refined-row');
   assert.match(rowRule,/grid-template-rows:minmax\(0,1fr\) minmax\(0,1fr\);column-gap:8px;row-gap:0;align-items:center/);
   const cellRules=['runway-refined-timing','runway-refined-status','runway-refined-path','runway-refined-tokens'];
-  for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
+  for(const name of cellRules){const rule=cssRule(inspect+'.'+name);assert.match(rule,name==='runway-refined-timing'?/min-width:58px/:/min-width:0/);assert.match(rule,/max-width:100%/);assert.match(rule,/overflow:hidden/);}
   assert.doesNotMatch(cssRule(inspect+'.runway-refined-activity'),/overflow:visible/);
   assert.doesNotMatch(cssRule(inspect+'.runway-refined-activity>.runway-activity'),/white-space:normal/,'activity stays on one line');
   for(const name of ['runway-refined-timing','runway-refined-path'])
@@ -352,7 +363,12 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(page,/id="brand-name">Branchglance/);
   const template=css.match(/\.runway-refined-row\{\s*grid-template-columns:([^;]+);/)?.[1];
   assert.ok(template,"the inspect row declares shared tracks");
-  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-title\{grid-column:1 \/ 3/,'child titles stay in the shared title column');
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-row:has\(/,'a child row never switches to its own layout; it keeps the parent single-band tracks');
+  assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-row\{[^}]*grid-template-(?:columns|rows):/,'children inherit the exact parent columns and rows');
+  assert.doesNotMatch(css,/\.ag\.runway-agent[^{]*\.runway-refined-(?:timing|status|activity|path|tokens)\{[^}]*grid-(?:column|row):/,'child status, activity, path and token cells sit in the same column and row as the parent cells');
+  // The only child-specific placement: a child has no timing cell (its timer is in the status column), so its name spans the title and timing tracks.
+  const childTitleRules=[...css.matchAll(/\.ag\.runway-agent[^{]*\.runway-refined-title\{([^}]*grid-(?:column|row):[^}]*)\}/g)].map(m=>m[1]);
+  assert.deepEqual(childTitleRules,['grid-column:1/3;'],'the child name takes over exactly the freed timing track');
   assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-timing\{grid-column:4/,'child timing stays in the shared timing column');
   const minimums=[120,46,82,70,80,78],gap=8,padLeft=30,centers=[];let x=padLeft;
   for(const width of minimums){centers.push(x+width/2);x+=width+gap;}
@@ -363,7 +379,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.match(css,/\.runway-model-name\.is-codex-model\{color:#b3a8ff;text-shadow:/);
   assert.match(css,/\.runway-model-name\.is-claude-model\{color:#f0a06e/);
   assert.match(css,/--tree-claude-surface:#19130f/,"Claude keeps the darker surface token");
-  assert.match(css,/\.chat\[data-provider="Claude"\]>.row>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 12%[^}]*transparent 100%/,"Claude parent halo stays warm, subtle, and edgeless");
+  assert.match(css,/\.chat\[data-provider="Claude"\]>.row:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 12%[^}]*transparent 100%/,"Claude parent halo stays warm, subtle, and edgeless only for active rows");
   assert.match(css,/\.ag\[data-provider="Claude"\]>.runway-agent-glance>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--claude-accent\) 9%[^}]*transparent 100%/,"Claude children use a softer transparent tint");
   assert.match(css,/\.ag\[data-provider="Codex"\]>.runway-agent-glance>.runway-refined-row\{[^}]*radial-gradient\(ellipse 90px 18px at 80px 50%,[^}]*var\(--source-glow-primary\) 11%[^}]*transparent 100%/,"OpenAI rows use a subtle transparent tint");
   assert.doesNotMatch(css,/\.runway-refined-row\{[^}]*background-color:/,"tree rows have no rectangular background fill");
@@ -410,10 +426,10 @@ console.log("unified agent tree contract checks passed");
 {
   const {T}=boot();
   const active={id:'active',key:'Claude:active',title:'Active',status:'running',executionStatus:'running',executionSource:'transcript',executionObservedAt:ago(0),runStartedAt:ago(2)};
-  assert.equal(T.runwayStateElapsed(active),'2:00');
-  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2:00');
-  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+3000).toISOString()}),'0:00');
-  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1:00');
+  assert.equal(T.runwayStateElapsed(active),'2m 00s');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+10000).toISOString()}),'2m 00s');
+  assert.equal(T.runwayStateElapsed({...active,executionSince:new Date(fixedNow+3000).toISOString()}),'0s');
+  assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,firstSeenAt:ago(1)}),'1m 00s');
   // The thread's creation time is not a run start: a resumed run without a run start shows a dash.
   assert.equal(T.runwayStateElapsed({...active,runStartedAt:null,createdAt:ago(600)}),'—');
   const row=workspace=>T.runwayTelemetryHTML({...active,workspace},false);

@@ -84,10 +84,21 @@ def test_codex_continuation_does_not_depend_on_claude_identity(current_generatio
 def test_greeting_default_and_getter_are_copy_isolated():
     h = Harness()
     original = h.dispatcher.get()
-    assert original == {"schemaVersion": 2, "mode": "greet", "threadIds": [], "armed": False,
+    assert original == {"schemaVersion": 2, "mode": "off", "threadIds": [], "armed": False,
                         "oneShot": True, "lastRun": None}
     original["threadIds"].append(ONE)
     assert h.dispatcher.get()["threadIds"] == []
+
+
+def test_off_persists_disarm_without_changing_last_outcome():
+    h = Harness()
+    prior = {"at": T0, "targets": [{"threadId": ONE, "status": "queued"}]}
+    h.state.update(mode="continue", threadIds=[ONE], armed=True, lastRun=prior)
+    result = h.dispatcher.configure("off", [])
+    assert result["mode"] == "off" and result["armed"] is False and result["threadIds"] == []
+    assert result["lastRun"] == prior
+    assert h.dispatcher.dispatch("next-cycle") is None
+    assert h.queue_calls == []
 
 
 def test_configure_continue_normalizes_deduplicates_and_requires_existing_uuid():
@@ -464,7 +475,7 @@ def test_limit_service_persists_selection_and_respects_quota_gate(tmp_path):
         list_candidates=h.dispatcher.list_candidates, inspect_target=h.dispatcher.inspect_target,
         queue_continue=lambda thread_id: (queued.append(thread_id) or {"status": "queued"}),
     )
-    assert watcher.get_reset_action()["mode"] == "greet"
+    assert watcher.get_reset_action()["mode"] == "off"
     assert watcher.configure_reset_action("continue", [ONE])["armed"] is True
 
     watcher.check_provider("Codex", LimitSample(20, 20, T0, T0 + 10))
@@ -521,7 +532,7 @@ def test_legacy_armed_selection_migrates_unarmed_and_preserves_delivery_ledger()
         {"threadId": ONE, "status": "unknown", "reason": "old result"},
     ]}]}
     h.state.clear()
-    h.state.update({"mode": "continue", "threadIds": [ONE], "armed": True,
+    h.state.update({"schemaVersion": 1, "mode": "continue", "threadIds": [ONE], "armed": True,
                     "oneShot": True, "lastRun": {"cycleId": "old"}, "ledger": ledger})
 
     dispatcher = h.make_dispatcher()
@@ -532,6 +543,38 @@ def test_legacy_armed_selection_migrates_unarmed_and_preserves_delivery_ledger()
     assert dispatcher.get()["armed"] is False
     assert h.state["ledger"] == ledger
     assert dispatcher.dispatch("codex:cycle-new") is None
+    assert h.queue_calls == []
+
+
+def test_existing_greeting_action_migrates_without_being_turned_off():
+    h = Harness()
+    previous = {"cycleId": "greeting-cycle", "at": T0}
+    h.state.clear()
+    h.state.update({"mode": "greet", "threadIds": [], "armed": False, "lastRun": previous})
+    h.dispatcher = h.make_dispatcher()
+    action = h.dispatcher.get()
+    assert action["mode"] == "greet"
+    assert action["lastRun"] == previous
+
+
+@pytest.mark.parametrize("record", [
+    {"schemaVersion": 2, "threadIds": [], "armed": False},
+    {"schemaVersion": 2, "mode": "future", "threadIds": [], "armed": False},
+    {"schemaVersion": 3, "mode": "greet", "threadIds": [], "armed": False},
+    {"schemaVersion": None, "mode": "greet", "threadIds": [], "armed": False},
+    {"schemaVersion": 1, "mode": "greet", "threadIds": [], "armed": "invalid"},
+    {"mode": "future", "threadIds": [], "armed": False},
+    {"schemaVersion": 2, "mode": "greet", "threadIds": [ONE], "armed": False},
+])
+def test_malformed_or_unknown_reset_records_fail_closed_to_off(record):
+    h = Harness()
+    h.state.clear()
+    h.state.update(record)
+    h.dispatcher = h.make_dispatcher()
+    action = h.dispatcher.get()
+    assert action["mode"] == "off"
+    assert action["armed"] is False and action["threadIds"] == []
+    assert h.dispatcher.dispatch("malformed-record-cycle") is None
     assert h.queue_calls == []
 
 

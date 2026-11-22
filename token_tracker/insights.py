@@ -154,9 +154,12 @@ def _cache_hit_rate(name: str, totals: dict[str, int]) -> float | None:
     return round(totals.get("cached_tokens", 0) * 100.0 / denominator, 1)
 
 
-def _sessions_in_window(data: dict[str, Any], window: dict[str, Any], grain: str) -> tuple[int, int]:
+def _sessions_in_window(data: dict[str, Any], window: dict[str, Any], grain: str) -> tuple[int | None, int | None]:
+    sessions = data.get("sessions")
+    if not isinstance(sessions, list):
+        return None, None
     roots, subagents = set(), set()
-    for session in data.get("sessions") or []:
+    for session in sessions:
         if not isinstance(session, dict):
             continue
         stamp = _epoch(session.get("lastActivityAt"))
@@ -169,9 +172,12 @@ def _sessions_in_window(data: dict[str, Any], window: dict[str, Any], grain: str
     return len(roots), len(subagents)
 
 
-def _active_hours(data: dict[str, Any], window: dict[str, Any]) -> float:
+def _active_hours(data: dict[str, Any], window: dict[str, Any]) -> float | None:
+    active_hours = data.get("activeHours")
+    if not isinstance(active_hours, list):
+        return None
     hours = set()
-    for value in data.get("activeHours") or []:
+    for value in active_hours:
         stamp = _epoch(value)
         if stamp is not None and window["start"] <= stamp < window["end"]:
             hours.add(str(value))

@@ -9,7 +9,7 @@ const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>valu
 const document={querySelector(){return null;},querySelectorAll(){return [];},addEventListener(){}};
 const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$/i,(_,f,a,b)=>f[0].toUpperCase()+f.slice(1)+" "+a+"."+b)};
 let responses=[];
-const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://127.0.0.1:8765"},fetch:async()=>responses.shift()||{ok:false,status:503,json:async()=>({})}};
+const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://127.0.0.1:8765"},fetch:async()=>responses.shift()||{ok:false,status:503,json:async()=>({})}};
 vm.createContext(context);vm.runInContext(source,context);
 const ui=window.__tokenTrackerDashboardTest;
 const row=(provider,modelId,kind,tokens,cost=tokens/1e6,extra={})=>({provider,modelId,displayName:modelId,kind,totalTokens:tokens,knownCostUsd:cost,costComplete:true,unpricedTokens:0,...extra});
@@ -23,10 +23,14 @@ ui.state.ledger=ledger([
   row("Claude","unknown","other",10,null,{costComplete:false,unpricedTokens:10}),
 ]);
 const work=ui.workData();
-assert.equal(work.rows.length,4,"top three plus Other");
+assert.equal(work.metric,"cost","the selected Cost metric is carried into By work");
+assert.equal(work.rows.length,5,"top four plus Other at the same fold point as Models");
 assert.equal(work.rows[0].name,"Opus 5.5");
-assert.equal(work.rows[3].other,true);
-assert.match(work.rows[3].name,/Other · 3 models/);
+assert.equal(work.rows[4].other,true);
+assert.equal(work.rows[4].count,2,"the Other row count matches the two folded models");
+assert.match(work.rows[4].name,/Other \(2 models\)/);
+assert.doesNotMatch(ui.workHTML(work),/>\?</,"empty work cells never show a literal question mark");
+assert.match(ui.workHTML(work),/aria-label="No usage"><span aria-hidden="true">—<\/span>/,"empty work cells show an em dash labelled No usage");
 assert.ok(!work.kinds.includes("debug"),"unknown kinds fold into Other");
 assert.ok(work.kinds.includes("other"));
 const grand=1880;
@@ -35,11 +39,21 @@ for(const r of work.rows)assert.equal(r.sum.tokens,work.kinds.reduce((t,k)=>t+(r
 assert.equal(work.kinds.reduce((t,k)=>t+work.totals.cells[k].tokens,0),grand,"columns add up");
 assert.equal(work.rows.reduce((t,r)=>t+r.sum.tokens,0),grand,"rows add up");
 // The Other row mixes priced and unpriced usage: its cost is a lower bound, never complete.
-const otherCell=work.rows[3].cells.other;
+const otherCell=work.rows[4].cells.other;
 assert.equal(otherCell.unpriced,true);
 const html=ui.workHTML(work);
-assert.match(html,/≥ \$0\.00 API-equivalent|No published price/);
+assert.match(html,/API-equivalent cost by model and kind of work/);
+assert.match(html,/≥\$0\.00005 API-equivalent/);
+assert.match(html,/aria-label="All models, all work: at least \$0\.00185 API-equivalent cost; some usage has no published price"/);
+assert.match(html,/≥\$0\.00185 API-equivalent \(some usage has no published price\)/);
+assert.doesNotMatch(html,/0\.0018499999999999999/);
+assert.doesNotMatch(html,/>\? /,"partial-price cells show ≥, never a corrupted ?");
 assert.doesNotMatch(html,/dash-work-foot/);
+
+ui.state.ledger=ledger([row("Claude","rounding","build",5,1.5),row("Claude","rounding","review",4,12.3456789)]);
+const roundedHTML=ui.workHTML(ui.workData());
+assert.match(roundedHTML,/aria-label="rounding, Build: \$1\.50 API-equivalent cost"/);
+assert.match(roundedHTML,/aria-label="rounding, Review: \$12\.345679 API-equivalent cost"/);
 
 // Same name under two providers gets the provider appended, when both are shown.
 ui.state.ledger=ledger([row("Claude","unknown","build",5,null,{costComplete:false}),row("Codex","unknown","build",4,null,{costComplete:false})]);
@@ -47,13 +61,44 @@ const twins=ui.workData();
 assert.equal(JSON.stringify(twins.rows.map(r=>r.name).sort()),JSON.stringify(["unknown · Claude","unknown · Codex"]));
 assert.match(ui.workHTML(twins),/No published price/);
 
+// Tokens and Cost control the matrix unit and ranking; provider chips scope both Insights and By work.
+ui.state.ledger=ledger([row("Claude","claude-opus-5-5","build",900,1),row("Codex","gpt-6.1-sol","review",100,9)]);
+ui.state.metric="tokens";
+assert.equal(ui.workData().rows[0].name,"Opus 5.5");
+assert.match(ui.workHTML(ui.workData()),/Tokens by model and kind of work/);
+ui.state.metric="cost";
+assert.equal(ui.workData().rows[0].name,"gpt-6.1-sol");
+assert.match(ui.workHTML(ui.workData()),/API-equivalent cost by model and kind of work/);
+ui.state.insights={range:"30d",providers:[{name:"Claude",totals:{tokens:900,apiEquivalentCost:1},series:[{date:"2026-11-14",tokens:900,apiEquivalentCost:1}],models:[{name:"claude-opus-5-5",tokens:900,apiEquivalentCost:1}]},{name:"Codex",totals:{tokens:100,apiEquivalentCost:9},series:[{date:"2026-11-14",tokens:100,apiEquivalentCost:9}],models:[{name:"gpt-6.1-sol",tokens:100,apiEquivalentCost:9}]}]};
+assert.match(ui.insightsHTML(),/data-dashboard-models="work"/,"By work remains reachable from the semantic Models table");
+ui.toggleProvider("Codex");
+assert.equal(ui.insightsData().totals.tokens,900,"provider selection scopes the hero totals");
+assert.equal(ui.insightsData().models.length,1,"provider selection scopes Models");
+assert.equal(ui.workData().totals.all.tokens,900,"provider selection scopes By work");
+ui.toggleProvider("Claude");
+assert.equal(ui.insightsData().totals.tokens,900,"the last visible provider cannot be hidden");
+ui.toggleProvider("Codex");ui.state.metric="cost";
+
 // Coverage short of complete is always qualified, with its causes.
 assert.equal(ui.workNote({coverage:{status:"complete"},service:{state:"live"}}),null);
-assert.equal(ui.workNote({coverage:{status:"catching-up"},service:{}}).text,"Catching up");
-assert.equal(ui.workNote({coverage:{status:"verifying"},service:{}}).text,"Verifying");
-assert.equal(ui.workNote({coverage:{status:"complete"},service:{state:"error"}}).text,"Ledger paused");
+const catchingUp=ui.workNote({coverage:{status:"catching-up"},service:{}});
+assert.equal(catchingUp.text,"Catching up");
+assert.equal(catchingUp.title,"Still reading older transcripts; totals will grow.");
+const verifyingStamp=new Date("2026-11-14T10:00:00Z"),verifyingAt=verifyingStamp.toISOString();
+const verifying=ui.workNote({coverage:{status:"verifying",lastIngestedAt:verifyingAt},service:{}});
+const verifyingTime12=verifyingStamp.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).replace(/\u202f/g," ");
+assert.equal(verifying.text,`Checking usage records · updated ${verifyingTime12}`,"verifying status uses the short failure-notice clock format");
+assert.equal(verifying.title,`Some recent usage is waiting for its file to be re-checked. The ledger has not confirmed completion. Last ingestion ${verifyingStamp.toLocaleString()}.`,"verifying title preserves its meaning and full locale timestamp");
+values.set("branchglanceClockFormat","24");
+const verifyingTime24=verifyingStamp.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:false}).replace(/\u202f/g," ");
+assert.equal(ui.workNote({coverage:{status:"verifying",lastIngestedAt:verifyingAt},service:{}}).text,`Checking usage records · updated ${verifyingTime24}`,"verifying status follows the selected 24-hour clock format");
+values.delete("branchglanceClockFormat");
+const paused=ui.workNote({coverage:{status:"complete"},service:{state:"error"}});
+assert.equal(paused.text,"Ledger paused");
+assert.equal(paused.title,"The ledger hit an error and is retrying; figures are from its last pass.");
 const partial=ui.workNote({coverage:{status:"partial",gapCount:0,unknownUsageRecords:8,readFailures:0,providersNotCollected:[]},service:{}});
 assert.equal(partial.text,"Partial · 8 turns without usage");
+assert.equal(partial.title,"Some usage could not be counted exactly: 8 turns without usage.");
 
 // Another range's ledger is never shown; an empty or failed ledger hides the view.
 ui.state.ledgerRange="24h";assert.equal(ui.workData(),null);

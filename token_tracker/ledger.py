@@ -74,14 +74,19 @@ class Ledger:
             else:
                 try:
                     store.quick_check(conn)
-                    store.migrate(conn)
-                    return conn
                 except sqlite3.OperationalError:
                     conn.close()
-                    raise
+                    raise  # a locked or busy integrity check proves nothing about corruption
                 except sqlite3.DatabaseError:
                     conn.close()
                     self.recovery = self._begin_recovery("corrupt")
+                else:
+                    try:
+                        store.migrate(conn)
+                    except BaseException:
+                        conn.close()
+                        raise
+                    return conn
         return self._open_replacement()
 
     def _open_replacement(self) -> sqlite3.Connection:
@@ -222,10 +227,13 @@ class Ledger:
     def _payload(conn: sqlite3.Connection, now: float, start: float, end: float, *,
                  show: Mapping[str, bool] | None, time_zone: str, plan_fee_usd: float | None) -> dict[str, Any]:
         with store.snapshot(conn):
+            schema = int(store.meta_value(conn, LEDGER_SCHEMA_VERSION_KEY) or 0)
+            target = max(store.MIGRATIONS)
+            if schema != target:
+                raise LedgerUnavailable(f"ledger schema {schema} is incompatible with supported schema {target}")
             raw = store.summary_rows(conn, _hour(start), int(end))
             coverage = Ledger._coverage(conn, now, show)
             revision = int(store.meta_value(conn, "revision") or 0)
-            schema = int(store.meta_value(conn, LEDGER_SCHEMA_VERSION_KEY) or 0)
         rows = Ledger._rows(raw, show)
         totals = {"requests": 0, "inputTotal": 0, "outputTotal": 0, "totalTokens": 0, "knownCostUsd": None,
                   "costComplete": True, "unpricedTokens": 0}
@@ -348,6 +356,7 @@ class Ledger:
         else:
             pending = sum(int(store.meta_value(conn, "pendingBytes:" + name) or 0) for name in allowed)
             verifying = sum(int(store.meta_value(conn, "verifyingBytes:" + name) or 0) for name in allowed)
+        verifying = max(verifying, store.verification_debt_bytes(conn, allowed))
         collected = set(json.loads(store.meta_value(conn, "collected") or "[]"))
         selected = allowed + ["*"]
         placeholders = ",".join("?" for _ in selected)
@@ -375,7 +384,7 @@ class Ledger:
             unknown_kinds = dict(conn.execute(
                 f"SELECT kind, COUNT(*) FROM ledger_unknown_kinds WHERE provider IN ({placeholders}) "
                 "GROUP BY kind ORDER BY kind", selected))
-        if verifying or store.provisional_exists(conn, allowed):
+        if verifying or store.provisional_exists(conn, allowed) or store.verification_debt_bytes(conn, allowed):
             # Staged usage is unconfirmed even when an interrupted run left the coverage meta behind.
             status = "verifying"
         elif gap_count or counts.get("readFailures") or omissions:

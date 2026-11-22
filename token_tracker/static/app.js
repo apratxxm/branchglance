@@ -1,4 +1,8 @@
 const $ = (selector, root = document) => root.querySelector(selector);
+function waitForBridge(promise,timeoutMs=10000,message="Native action timed out."){if(typeof setTimeout!=="function")return Promise.resolve(promise);let timer,registering=true;const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{if(registering)return;reject(new Error(message));},timeoutMs);});registering=false;return Promise.race([Promise.resolve(promise),timeout]).finally(()=>{if(typeof clearTimeout==="function")clearTimeout(timer);});}
+function updateQueueCapability(){const root=typeof document!=="undefined"?document.documentElement:null,api=typeof window!=="undefined"?window.pywebview?.api:null;if(root?.classList)root.classList.toggle("queue-capable",typeof api?.queue_message==="function");}
+if(typeof window!=="undefined")window.addEventListener?.("pywebviewready",updateQueueCapability);
+updateQueueCapability();
 const RUNWAY_REFRESH_ICON='<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4.8A4.5 4.5 0 1 0 10 7"/><path d="M7.7 2.2H10v2.3"/></svg>';
 function preferredClockCycle(){try{return localStorage.getItem('branchglanceClockFormat')==='24'?'h23':'h12';}catch{return 'h12';}}
 let compactClockFormatter=new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit',hourCycle:preferredClockCycle()});
@@ -60,21 +64,21 @@ const notch={active:0,expanded:false,mode:'idle',manual:false,keyboardInspecting
 const widgetLock={known:Boolean(window.__TOKEN_TRACKER_TEST__),locked:false,expanded:false,revision:-1,pending:false};
 const keepOpenState={known:false,value:false,revision:-1,pending:false,loading:false,error:false};
 const compactBridge={busy:false,pending:null,inFlightSignature:null,appliedSignature:null};
-const dashboardState={open:false,returnMode:null,restoreMode:null};
+const dashboardState={open:false,returnMode:null,restoreMode:null,closing:false,swapping:false,generation:0,timer:null,returnHeight:110,height:608};
 let compactInputModality='pointer';
 const lockIcon=locked=>locked?'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 4 0V5"/></svg>':'<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="5" width="7" height="5.5" rx="1"/><path d="M4 5V3.8a2 2 0 0 1 3.6-1.2"/></svg>';
 function updateWidgetLockButton() {
   const button=$('#widget-lock');if(!button)return;
   const label=widgetLock.locked?'Release position':'Hold position';
-  const title=label+'. Prevents automatic repositioning; you can still drag.';
+  const title=widgetLock.locked?'Release position to move the widget. Prevents automatic repositioning.':'Lock widget position. Prevents automatic repositioning.';
   button.disabled=widgetLock.pending||!widgetLock.known;
   button.setAttribute?.('aria-pressed',String(widgetLock.locked));button.setAttribute?.('aria-label',label);button.title=title;
   if(button.innerHTML!==lockIcon(widgetLock.locked))button.innerHTML=lockIcon(widgetLock.locked);
-  updateMonitorButton();updateRecenterButton();
+  updateRecenterButton();
 }
 function updateRecenterButton() {
   const button=$('#window-recenter');if(!button)return;
-  button.disabled=!widgetLock.known||widgetLock.pending||widgetLock.locked;
+  button.disabled=!widgetLock.known||widgetLock.pending||widgetLock.locked;button.setAttribute?.('aria-disabled',String(button.disabled));
   button.title=widgetLock.locked?'Unlock the widget to move it':'Recenter widget';
 }
 function updateKeepOpenButton() {
@@ -93,7 +97,7 @@ async function syncKeepOpen() {
   const api=window.pywebview?.api?.get_keep_open;
   if(typeof api!=='function'){updateKeepOpenButton();return null;}
   keepOpenState.loading=true;updateKeepOpenButton();
-  try{const result=await api();applyKeepOpen(result);return result;}
+  try{const result=await waitForBridge(api(),10000,"Keep-open status timed out.");applyKeepOpen(result);return result;}
   catch{keepOpenState.error=true;return null;}
   finally{keepOpenState.loading=false;updateKeepOpenButton();}
 }
@@ -101,7 +105,7 @@ async function setKeepOpen(value) {
   if(keepOpenState.pending||keepOpenState.loading||!keepOpenState.known||typeof value!=='boolean')return false;
   const api=window.pywebview?.api?.set_keep_open;if(typeof api!=='function')return false;
   const expectedRevision=keepOpenState.revision;keepOpenState.pending=true;keepOpenState.error=false;updateKeepOpenButton();
-  try{const result=await api(value,expectedRevision);if(!applyKeepOpen(result))return false;return keepOpenState.value===value;}
+  try{const result=await waitForBridge(api(value,expectedRevision),10000,"Keep-open update timed out.");if(!applyKeepOpen(result))return false;return keepOpenState.value===value;}
   catch{keepOpenState.error=true;void syncKeepOpen();return false;}
   finally{keepOpenState.pending=false;updateKeepOpenButton();}
 }
@@ -135,7 +139,7 @@ function sendCompactNotch(api,args,signature){
       const request=compactBridge.pending;compactBridge.pending=null;
       if(notch.sent!==request.signature)continue;
       compactBridge.inFlightSignature=request.signature;
-      try{await request.api(...request.args);if(notch.sent===request.signature)compactBridge.appliedSignature=request.signature;else compactBridge.appliedSignature=null;}
+      try{await waitForBridge(request.api(...request.args),5000,"Widget display update timed out.");if(notch.sent===request.signature)compactBridge.appliedSignature=request.signature;else compactBridge.appliedSignature=null;}
       catch{if(notch.sent===request.signature){notch.sent=null;if(compactBridge.appliedSignature===request.signature)compactBridge.appliedSignature=null;if(inspectExpectedSignature===request.signature){clearTimeout(inspectLayoutTimer);inspectLayoutTimer=null;}}}
       finally{compactBridge.inFlightSignature=null;}
     }
@@ -152,7 +156,7 @@ function applyWidgetLock(value) {
 async function syncWidgetLock() {
   const initial=!widgetLock.known;
   try{
-    const result=await window.pywebview?.api?.get_widget_lock?.();if(!applyWidgetLock(result))return null;
+    const result=await waitForBridge(window.pywebview?.api?.get_widget_lock?.(),10000,"Widget lock status timed out.");if(!applyWidgetLock(result))return null;
     if(initial&&!widgetLock.locked&&notch.active>0&&state.forest){notch.activeKeys=null;syncNotch(notch.active,[...state.forest.rows].filter(runwayVisibleActive).map(chat=>({key:chat.key,provider:chat.provider,active:true,runStartedAt:chat.activeRunStartedAt,latestMessageAt:chat.latestMessageAt,latestMessageDirection:chat.latestMessageDirection,subagent:hasTreeParent(chat),waiting:runwayWaiting(chat),questionToken:runwayWaiting(chat)?questionDismissToken(chat):null,activityAt:stamp(chat.activityAt)||Math.max(stamp(chat.updatedAt),stamp(chat.latestMessageAt),stamp(chat.statusObservedAt),stamp(chat.executionObservedAt),stamp(chat.activity?.observedAt),stamp(chat.executionActivity?.observedAt))})));}
     return result;
   }catch{return null;}
@@ -163,7 +167,7 @@ async function setWidgetLock(locked) {
   const expectedRevision=widgetLock.revision;
   widgetLock.pending=true;updateWidgetLockButton();
   try{
-    const result=await api(locked,notch.expanded,null,expectedRevision);
+    const result=await waitForBridge(api(locked,notch.expanded,null,expectedRevision),10000,"Widget lock update timed out.");
     if(!applyWidgetLock(result))return false;
     return widgetLock.locked===locked;
   }catch{return false;}
@@ -174,33 +178,65 @@ async function recenterWidget(){
   const api=window.pywebview?.api;
   if(!api?.recenter)return false;
   try{
-    const result=await api.recenter();
+    const result=await waitForBridge(api.recenter(),10000,"Widget recenter timed out.");
     if(!applyWidgetLock(result)&&typeof api.get_widget_lock==='function')await syncWidgetLock();
     return true;
   }catch{return false;}
 }
 function openDashboard(tab){
   if(dashboardState.open)return false;
-  dashboardState.returnMode=notch.mode||'controls';dashboardState.restoreMode=null;dashboardState.open=true;
-  window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:tab==='settings'?'settings':'insights'});
-  setNotch(notch.expanded);return true;
+  const reopening=dashboardState.closing||dashboardState.swapping,gen=++dashboardState.generation;
+  clearTimeout(dashboardState.timer);dashboardState.timer=null;dashboardState.closing=false;dashboardState.swapping=false;
+  document.body?.classList?.remove?.('dashboard-crossfade');document.body?.classList?.remove?.('dashboard-closing');
+  if(!reopening){dashboardState.returnMode=notch.mode||'controls';dashboardState.returnHeight=notchHeight();}
+  dashboardState.restoreMode=null;dashboardState.open=true;
+  const content=$('#dashboard-content');content?.classList?.toggle('dashboard-transition-hidden',!reducedMotion());
+  const requestedTab=tab==='settings'?'settings':'insights';
+  if(reopening){const view=$('#dashboard-view');if(view){view.hidden=false;view.inert=false;view.setAttribute?.('aria-hidden','false');}}
+  if(!reopening)window.TokenTrackerDashboard?.open?.({source:effectiveSource(state.snapshot),tab:requestedTab});
+  else window.TokenTrackerDashboard?.selectTab?.(requestedTab);
+  if(!reopening){dashboardState.height=window.TokenTrackerDashboard?.windowHeight?.()||608;const view=$('#dashboard-view');view?.style?.setProperty?.('--dashboard-height',dashboardState.height+'px');if(view)view.dataset.openCompact=String(dashboardState.height<=478);}
+  setNotch(notch.expanded);
+  if(!reducedMotion())dashboardState.timer=setTimeout(()=>{if(gen===dashboardState.generation&&dashboardState.open&&!dashboardState.closing)$('#dashboard-content')?.classList?.remove('dashboard-transition-hidden');},406);
+  return true;
 }
 function closeDashboard(){
-  if(!dashboardState.open)return false;
-  const previous=dashboardState.returnMode;dashboardState.open=false;dashboardState.returnMode=null;
+  if(!dashboardState.open||dashboardState.closing)return false;
+  const gen=++dashboardState.generation,previous=dashboardState.returnMode;
+  dashboardState.open=false;dashboardState.closing=true;dashboardState.finish=null;clearTimeout(dashboardState.timer);document.body?.classList?.add?.('dashboard-closing');
   dashboardState.restoreMode=['idle','rest','controls','inspect'].includes(previous)?previous:'controls';
-  window.TokenTrackerDashboard?.close?.();
-  const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');}
-  setNotch(notch.expanded);return true;
+  const finish=()=>{if(gen!==dashboardState.generation||!dashboardState.closing)return;
+    clearTimeout(dashboardState.timer);dashboardState.timer=null;dashboardState.closing=false;dashboardState.open=false;
+    const reduced=reducedMotion();dashboardState.swapping=!reduced;document.body?.classList?.remove?.('dashboard-closing');
+    setNotch(notch.expanded);
+    const view=$('#dashboard-view');if(view){view.hidden=true;view.inert=true;view.setAttribute?.('aria-hidden','true');}
+    const complete=()=>{if(gen!==dashboardState.generation)return;dashboardState.swapping=false;dashboardState.returnMode=null;window.TokenTrackerDashboard?.close?.();if(view)delete view.dataset.openCompact;document.body?.classList?.remove?.('dashboard-crossfade');
+      const widget=$('.widget'),rect=widget?.getBoundingClientRect?.(),x=notch.globalPointerX,y=notch.globalPointerY;
+      if(rect&&Number.isFinite(x)&&Number.isFinite(y)){const left=(window.screenX||0)+rect.left,top=(window.screenY||0)+rect.top;if(x<left||x>left+rect.width||y<top||y>top+rect.height){notch.hover=false;widget?.dispatchEvent?.(new Event('pointerleave'));}}
+    };
+    if(!reduced)document.body?.classList?.add?.('dashboard-crossfade');
+    if(reduced)complete();else dashboardState.timer=setTimeout(complete,90);
+  };
+  const shrink=()=>{if(gen!==dashboardState.generation||!dashboardState.closing)return;
+    dashboardState.finish=finish;
+    const mode=dashboardState.restoreMode,expanded=mode==='inspect',height=dashboardState.returnHeight,reduced=reducedMotion();
+    const api=window.pywebview?.api?.set_notch,signature=mode+':'+expanded+':'+height+':'+reduced+':'+gen;
+    if(api&&widgetLock.known)sendCompactNotch(api,[expanded,height,reduced,mode,gen],signature);
+    if(reduced)finish();else if(dashboardState.closing)dashboardState.timer=setTimeout(finish,340);
+  };
+  $('#dashboard-content')?.classList?.add('dashboard-transition-hidden');
+  if(reducedMotion())shrink();else dashboardState.timer=setTimeout(shrink,90);
+  return true;
 }
+window.tokenTrackerNotchSettled=(mode,expanded,id)=>{
+  if(id==null||id!==dashboardState.generation)return;
+  if(dashboardState.closing){if(dashboardState.finish&&mode===dashboardState.restoreMode)dashboardState.finish();return;}
+  if(dashboardState.open&&mode==='dashboard'){clearTimeout(dashboardState.timer);dashboardState.timer=null;$('#dashboard-content')?.classList?.remove('dashboard-transition-hidden');}
+};
 window.tokenTrackerCloseDashboard=closeDashboard;
+window.tokenTrackerSelectMonitor=selectMonitor;
 // The dashboard sizes the window (720 wide, 608 tall, or the shorter 24h panel). The window may not shrink below that while it is open.
-window.addEventListener?.('dashboard-size',()=>{if(dashboardState.open)setNotch(notch.expanded);});
-window.addEventListener?.('resize',()=>{
-  if(!dashboardState.open)return;
-  const height=window.TokenTrackerDashboard?.windowHeight?.()||608;
-  if(window.innerWidth<720||window.innerHeight<height){const api=window.pywebview?.api?.set_notch;if(api)Promise.resolve(api(true,height,reducedMotion(),'dashboard')).catch(()=>{});}
-});
+window.addEventListener?.('dashboard-size',()=>{});
 window.tokenTrackerOpenDashboard=tab=>openDashboard(tab);
 window.tokenTrackerRecenter=()=>recenterWidget();
 window.tokenTrackerSetWidgetLock=value=>applyWidgetLock(value);
@@ -221,7 +257,7 @@ function runwayMaxNotchHeight() {
   return max;
 }
 function notchHeight() {
-  if(notch.mode==='dashboard')return window.TokenTrackerDashboard?.windowHeight?.()||608;
+  if(notch.mode==='dashboard')return dashboardState.height;
   if(notch.mode==='inspect'&&state.sourceHeightHold)return state.sourceHeightHold;
   if(notch.mode==='idle'||notch.mode==='rest')return 100;
   if(notch.mode==='controls')return 110;
@@ -312,6 +348,7 @@ function put(el,key,value){if(el&&el[key]!==value)el[key]=value;}
 function attr(el,name,value){if(el&&el.getAttribute?.(name)!==value)el.setAttribute?.(name,value);}
 function cls(el,name,on){on=Boolean(on);if(el?.classList&&el.classList.contains?.(name)!==on)el.classList.toggle(name,on);}
 function setNotch(expanded, treeSynced=false) {
+  if(dashboardState.closing)return;
   const mode=compactModeForState();
   if(mode==='dashboard')document.documentElement?.style?.removeProperty?.('--runway-inspect-layout-width');
   if(mode==='inspect'){
@@ -323,7 +360,7 @@ function setNotch(expanded, treeSynced=false) {
   notch.mode=mode;notch.expanded=mode==='inspect';
   if(notch.expanded&&!wasExpanded)beginNotchOpening();else if(!notch.expanded)clearNotchOpening();
   const dashboardView=$('#dashboard-view'),dashboardVisible=mode==='dashboard';
-  if(dashboardView){put(dashboardView,'hidden',!dashboardVisible);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
+  if(dashboardView){put(dashboardView,'hidden',!dashboardVisible&&!dashboardState.swapping);put(dashboardView,'inert',!dashboardVisible);attr(dashboardView,'aria-hidden',String(!dashboardVisible));}
   const hidden=!notch.expanded,sections=[$('.chats'),$('.totals')].filter(Boolean);
   if(hidden&&sections.some(section=>section.contains?.(document.activeElement)))$('#sync-age')?.focus?.({preventScroll:true});
   for(const section of sections){if(section.inert!==hidden)section.inert=hidden;if(section.getAttribute?.('aria-hidden')!==String(hidden))section.setAttribute?.('aria-hidden',String(hidden));}
@@ -335,8 +372,8 @@ function setNotch(expanded, treeSynced=false) {
   cls(document.body,'notch-inspecting',mode==='inspect');
   if(notch.expanded&&!treeSynced){if(typeof requestAnimationFrame==='function'){scheduleNotchSize();return;}syncRunwayTreeConnectors();}
   renderRunwayCounts(notch.counts);
-  const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),signature=mode+':'+notch.expanded+':'+height+':'+reduced;
-  if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,[notch.expanded||mode==='dashboard',height,reduced,mode],signature);}
+  const api=window.pywebview?.api?.set_notch,height=notchHeight(),reduced=reducedMotion(),transitionId=mode==='dashboard'?dashboardState.generation:null,signature=mode+':'+notch.expanded+':'+height+':'+reduced+(transitionId==null?'':':'+transitionId);
+  if(api&&widgetLock.known){if(mode==='inspect')noteInspectRequest(signature);sendCompactNotch(api,transitionId==null?[notch.expanded,height,reduced,mode]:[true,height,reduced,mode,transitionId],signature);}
   if(dashboardState.restoreMode===mode&&(mode!=='inspect'||treeSynced))dashboardState.restoreMode=null;
 }
 function expandForNewWork() {
@@ -436,7 +473,6 @@ function setupNotch() {
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!state.popover&&!state.searchOpen){closeInspection();}});
   window.addEventListener('pywebviewready',()=>{notch.sent=null;compactBridge.appliedSignature=null;compactBridge.pending=null;void syncKeepOpen();void syncWidgetLock().then(()=>syncMonitors());});
   if(window.pywebview?.api?.get_widget_lock)void syncWidgetLock().then(()=>syncMonitors());
-  $('#monitor-toggle')?.addEventListener('click',toggleMonitor);
   $('#window-recenter')?.addEventListener('click',()=>{void recenterWidget();});
   updateWidgetLockButton();updateKeepOpenButton();void syncKeepOpen();
   syncMonitors();
@@ -457,16 +493,6 @@ function monitorSignature(monitor){
   const values=[area.x,area.y,area.width,area.height].map(value=>typeof value==='number'?value:Number(value));
   if(values.some(value=>!Number.isFinite(value))||values[2]<=0||values[3]<=0)return null;
   return JSON.stringify([monitor.id,scale,...values]);
-}
-function updateMonitorButton(){
-  const button=$('#monitor-toggle');if(!button)return;
-  const knownSingle=monitorState.known&&!monitorState.pending&&!monitorSelectionPending&&monitorState.monitors.length<=1;
-  button.hidden=knownSingle;
-  const current=monitorState.current;
-  if(current)button.textContent=current.kind==='internal'?'Laptop':current.kind==='external'?'Monitor':current.label||current.name||'Monitor';
-  button.disabled=!monitorState.known||monitorState.pending||!widgetLock.known||widgetLock.pending||widgetLock.locked||monitorSelectionPending||monitorState.monitors.length<2;
-  button.title=monitorSelectionPending?'Changing monitor':monitorState.pending?'Checking available monitors':!monitorState.known?(monitorState.error?'Monitor information unavailable':'Checking available monitors'):!widgetLock.known||widgetLock.pending?'Checking widget lock':widgetLock.locked?'Unlock the widget to move monitors':monitorState.monitors.length<2?'One monitor available':'Move to next monitor';
-  if(current?.label&&monitorState.known&&!monitorState.pending&&!monitorSelectionPending)button.title=current.label+' · '+button.title;
 }
 function predictedInspectLayoutWidth(monitor){
   const signature=monitorSignature(monitor);if(!signature)return null;
@@ -550,17 +576,16 @@ function armInspectLayoutReconcile(signature){
     scheduleNotchSize();
   },180);
 }
-function applyMonitorResult(result,requestGeneration,selectionGeneration){
+function applyMonitorResult(result,requestGeneration,selectionGeneration=monitorSelectionGeneration){
   if(requestGeneration!==monitorRequestGeneration||selectionGeneration!==monitorSelectionGeneration)return false;
   const monitors=Array.isArray(result)?result:Array.isArray(result?.monitors)?result.monitors:null;
   if(!monitors||!monitors.every(m=>m&&typeof m==='object'&&typeof m.id==='string'&&m.id.trim())){
-    monitorState={...monitorState,known:false,pending:false,error:true};updateMonitorButton();return false;
+    monitorState={...monitorState,known:false,pending:false,error:true};return false;
   }
   const selectedId=Array.isArray(result)?null:result?.selected??result?.selectedId??null;
   const current=monitors.find(m=>m.id===selectedId||m.selected)||monitors[0]||null;
   monitorState={known:true,pending:false,error:false,monitors,selected:current?.id??selectedId,current,signature:monitorSignature(current)};
   applyInspectLayoutWidth(current);
-  updateMonitorButton();
   return true;
 }
 function setupWindowDrag() {
@@ -572,10 +597,10 @@ function setupWindowDrag() {
     let release;
     const current={ended:false,commit:false,released:new Promise(resolve=>{release=resolve;})};current.release=release;gesture=current;
     const operation=queue.then(async()=>{
-      const result=await api.begin_drag('compact-v1');
+      const result=await waitForBridge(api.begin_drag('compact-v1'),5000,"Widget drag could not start.");
       if(!result||result.accepted!==true||!Number.isSafeInteger(result.generation))return false;
-      if(!current.ended)await current.released;
-      await api.end_drag(result.generation,current.commit);return true;
+      if(!current.ended)await waitForBridge(current.released,10000,"Widget drag timed out.");
+      await waitForBridge(api.end_drag(result.generation,current.commit),5000,"Widget drag could not finish.");return true;
     });
     queue=operation.catch(()=>false);
   },true);
@@ -588,32 +613,29 @@ function setupWindowDrag() {
 }
 async function syncMonitors() {
   const requestGeneration=++monitorRequestGeneration,selectionGeneration=monitorSelectionGeneration;
-  monitorState={...monitorState,pending:true,error:false};updateMonitorButton();
+  monitorState={...monitorState,pending:true,error:false};
   try {
-    const result=await window.pywebview?.api?.get_monitors?.();
+    const result=await waitForBridge(window.pywebview?.api?.get_monitors?.(),10000,"Monitor status timed out.");
     if(requestGeneration!==monitorRequestGeneration||selectionGeneration!==monitorSelectionGeneration||monitorSelectionPending)return false;
     const applied=applyMonitorResult(result,requestGeneration,selectionGeneration);
-    if(!applied&&requestGeneration===monitorRequestGeneration){monitorState={...monitorState,known:false,pending:false,error:true};updateMonitorButton();}
+    if(!applied&&requestGeneration===monitorRequestGeneration){monitorState={...monitorState,known:false,pending:false,error:true};}
     return applied;
   }catch{
-    if(requestGeneration===monitorRequestGeneration&&selectionGeneration===monitorSelectionGeneration){monitorState={...monitorState,known:false,pending:false,error:true};updateMonitorButton();}
+    if(requestGeneration===monitorRequestGeneration&&selectionGeneration===monitorSelectionGeneration){monitorState={...monitorState,known:false,pending:false,error:true};}
     return false;
   }
 }
-async function toggleMonitor() {
+async function selectMonitor(id){
   if(!monitorState.known||monitorState.pending||!widgetLock.known||widgetLock.pending||widgetLock.locked||monitorSelectionPending||monitorState.monitors.length<2)return;
-  const index=monitorState.monitors.findIndex(m=>m.id===monitorState.selected);
-  const next=monitorState.monitors[(index+1)%monitorState.monitors.length];
-  if(!next)return;
-  const selectionGeneration=++monitorSelectionGeneration;
-  monitorSelectionPending=true;monitorRequestGeneration++;
-  updateMonitorButton();
+  const next=monitorState.monitors.find(m=>m.id===id);if(!next||next.id===monitorState.selected)return;
+  const selectionGeneration=++monitorSelectionGeneration;monitorSelectionPending=true;monitorRequestGeneration++;
   try{
-    const result=await window.pywebview?.api?.select_monitor?.(next.id);
+    const result=await waitForBridge(window.pywebview?.api?.select_monitor?.(next.id),10000,"Monitor selection timed out.");
     if(selectionGeneration!==monitorSelectionGeneration)return;
     monitorSelectionPending=false;
     if(result){const requestGeneration=++monitorRequestGeneration;if(!applyMonitorResult(result,requestGeneration,selectionGeneration))void syncMonitors();}
     else await syncMonitors();
+    return result;
   }catch{
     if(selectionGeneration===monitorSelectionGeneration){monitorSelectionPending=false;void syncMonitors();}
   }
@@ -630,7 +652,7 @@ const pad2 = n => String(n).padStart(2,"0");
 const localISODate = () => { const date=new Date(); return date.getFullYear()+"-"+pad2(date.getMonth()+1)+"-"+pad2(date.getDate()); };
 const clock = ms => new Date(ms).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",hour12:true}).toLowerCase();
 const mmss = seconds => { const s=Math.max(0,Math.floor(seconds)); return Math.floor(s/60)+":"+pad2(s%60); };
-// Reset countdown: "5d 19h", "3h 02m", "42m", then m:ss in the last 10 minutes.
+// Dashboard reset countdown: "5d 19h", "3h 02m", "42m", then m:ss in the last 10 minutes.
 function countdown(seconds) {
   const s=Math.max(0,Math.floor(seconds));
   if(s>=86400)return Math.floor(s/86400)+"d "+pad2(Math.floor(s%86400/3600))+"h";
@@ -638,11 +660,15 @@ function countdown(seconds) {
   if(s>=600)return Math.floor(s/60)+"m";
   return mmss(s);
 }
-// Run time: m:ss under 10 minutes, then 12m, then 1h 04m.
-function runSpan(seconds) {
+// Widget quota countdown and elapsed duration use identical window-specific units.
+function quotaCountdown(seconds,key) {
   const s=Math.max(0,Math.floor(seconds));
-  return s<600 ? mmss(s) : s<3600 ? Math.floor(s/60)+"m" : s<86400 ? Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m" : Math.floor(s/86400)+"d "+Math.floor(s%86400/3600)+"h";
+  const window=key||(s>=86400?"weekly":"fiveHour");
+  if(window==="weekly")return s>=86400?Math.floor(s/86400)+"d "+Math.floor(s%86400/3600)+"h":Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m";
+  return s>=3600?Math.floor(s/3600)+"h "+pad2(Math.floor(s%3600/60))+"m":s>=60?Math.floor(s/60)+"m "+pad2(s%60)+"s":s+"s";
 }
+const elapsedDuration=seconds=>quotaCountdown(seconds);
+const runSpan = elapsedDuration;
 function ageShort(ms) {
   if(!ms)return "—";
   const m=Math.max(0,Math.floor((Date.now()-ms)/60000));
@@ -718,7 +744,6 @@ const QUESTION_STALE_MS=24*60*60*1000;
 const isAsking = chat => (!chat.pendingQuestionExpired&&!(stamp(chat.pendingQuestionAt)&&Date.now()-stamp(chat.pendingQuestionAt)>=QUESTION_STALE_MS))&&(Boolean(chat.pendingQuestion)||normalizeStatus(chat.status)==="needs-input");
 // A failure is only actionable while it is recent (30 min).
 const recentFail = chat => chat.status==="failed"&&Date.now()-stamp(chat.updatedAt)<FAIL_WINDOW_MS;
-const needsAttention = chat => isAsking(chat)||recentFail(chat);
 const agentLive = chat => chat.status==="running"||chat.status==="compacting"||chat.status==="quiet"||isAsking(chat);
 const runwayTerminated = chat => Boolean(chat.deleted||chat.isDeleted)||[chat.stateDetail,chat.sourceStatus].some(value=>/^(?:completed|finished|stopped|interrupted|deleted|expired)$/i.test(String(value||'')));
 const runwayWaiting = chat => !chat.telemetryUnavailable&&!runwayTerminated(chat)&&isAsking(chat);
@@ -776,18 +801,27 @@ function runwayCounts(forest) {
 }
 // The yellow waiting count opens the widget on the first waiting chat and shows its question.
 function jumpToWaiting() {
-  const target=[...(state.forest?.rows||[])].find(chat=>runwayWaiting(chat));if(!target)return;
+  const roots=state.forest?.roots||[];
+  const target=roots.flatMap(root=>[root,...(root.descendants||[])]).find(chat=>runwayWaiting(chat));if(!target)return;
+  const root=roots.find(item=>item===target||(item.descendants||[]).includes(target));
+  if(root)state.hiddenChats.delete(root.key);state.hiddenChats.delete(target.key);
   notch.manual=true;setNotch(true);
-  const reveal=()=>{const link=[...(document.querySelectorAll?.('.runway-waiting-link')||[])].find(item=>item.dataset?.key===target.key);if(!link)return;link.scrollIntoView?.({block:'nearest'});if(state.popover===link&&!$('#popover')?.hidden)return;link.click?.();};
+  const reveal=()=>{
+    if(state.query){state.query='';const search=$('#chat-search');if(search)search.value='';}
+    renderChats(providersFor(state.snapshot));
+    const link=[...(document.querySelectorAll?.('.runway-waiting-link')||[])].find(item=>item.dataset?.key===target.key);if(!link)return;
+    link.scrollIntoView?.({block:'nearest'});link.focus?.({preventScroll:true});if(state.popover===link&&!$('#popover')?.hidden)return;link.click?.();
+  };
   if(typeof requestAnimationFrame==='function')requestAnimationFrame(()=>requestAnimationFrame(reveal));else reveal();
 }
 function renderRunwayCounts(counts) {
   const nodes=[$('#notch-counts'),...[$('#compact-counts')]].filter(Boolean);if(!nodes.length)return;
   if(!counts){for(const node of nodes){if(node._runwayCountHTML!==''){node.innerHTML='';node._runwayCountHTML='';}if(node.title)node.title='';if(node.getAttribute?.('aria-label'))node.removeAttribute?.('aria-label');}return;}
+  const stale=state.runwaySnapshotPainted&&!runwayCurrentEvidenceFresh();
   const chatsWord=counts.roots===1?'chat':'chats';
-  const label=counts.roots+' chat group'+(counts.roots===1?'':'s')+', '+counts.total+' active, '+counts.waiting+' waiting';
+  const label=stale?'Live job status unavailable':counts.roots+' chat group'+(counts.roots===1?'':'s')+', '+counts.total+' active, '+counts.waiting+' waiting';
   const badge=(slot,value,unit,tone,path,meaning,visible=true)=>{if(unit==='chat'||unit==='chats')meaning='visible chat groups';const hidden=visible?'':' aria-hidden="true"';const jump=slot==='waiting'&&visible?' data-action="jump-waiting" role="button" tabindex="0"':'';return '<span data-count-slot="'+slot+'" class="runway-count runway-count-'+slot+' t-'+tone+(visible?'':' is-empty')+'"'+hidden+jump+' aria-label="'+value+' '+meaning+(jump?', show the first':'')+'" title="'+value+' '+meaning+(jump?' · click to show':'')+'"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="'+path+'"/></svg><span class="count-value">'+(visible?value:'')+'</span><span class="count-unit">'+(visible?unit:'')+'</span></span>';};
-  const html=badge('groups',counts.roots,chatsWord,'live','M2 2h8v6H5l-3 2Z',chatsWord,counts.roots>0)+badge('active',counts.total,'active','live','M3 1v8h6M3 4h6M9 2v4M9 7v4','active',counts.total>0)+badge('waiting',counts.waiting,'waiting','attn','M6 2v5M6 9h.01','waiting',Boolean(counts.waiting));
+  const html=stale?'<span class="runway-jobs-stale">Jobs stale</span>':badge('groups',counts.roots,chatsWord,'live','M2 2h8v6H5l-3 2Z',chatsWord,counts.roots>0)+badge('active',counts.total,'active','live','M3 1v8h6M3 4h6M9 2v4M9 7v4','active',counts.total>0)+badge('waiting',counts.waiting,'waiting','attn','M6 2v5M6 9h.01','waiting',Boolean(counts.waiting));
   for(const node of nodes){
     if(node._runwayCountHTML!==html){node.innerHTML=html;node._runwayCountHTML=html;}
     if(node.title!==label)node.title=label;
@@ -802,6 +836,9 @@ function ownState(chat) {
     const word=chat.stateDetail==="interrupted"?"Stopped":"Failed";
     return recentFail(chat)?{key:"failed",glyph:"dot",tone:"err",word}:{key:"failed-old",glyph:"dot",tone:"mute",word};
   }
+  // Exact process verification can mark a dead Codex run as stopped while its
+  // provider status remains idle. Keep that terminal state visible in the tree.
+  if(chat.stateDetail==="stopped")return {key:"stopped",glyph:"dot",tone:"mute",word:"Stopped"};
   if(chat.status==="running")return {key:"running",glyph:"dot",tone:"live",word:"Running"};
   if(chat.status==="compacting")return {key:"compacting",glyph:"dot",tone:"attn",word:"Compacting"};
   if(chat.status==="quiet")return {key:"quiet",glyph:"ring",tone:"live",wordTone:"mute",word:"Quiet",title:"No transcript writes for 3+ minutes; may be in a long tool call"};
@@ -826,7 +863,6 @@ function shortModel(value) {
   return text.replace(/^claude-/,"").replace(/^gpt-/,"").replace(/-20\d{6}$/,"");
 }
 const modelLabel = chat => isAutoReview(chat)&&(!chat.model||chat.model==="Codex") ? "review" : shortModel(chat.model);
-const agentModelLabel = chat => /^gpt-/i.test(chat.model||"") ? "GPT-"+modelLabel(chat).replace(/-(astra|sol|luna|terra)$/i,(_,family)=>" "+family[0].toUpperCase()+family.slice(1)) : modelLabel(chat);
 function runwayModelLabel(chat) {
   if(isAutoReview(chat))return "Auto-review";
   const model=String(chat.model||"").trim().replace(/-20\d{6}$/,'');if(!model||model.toLowerCase()==='codex')return "";
@@ -835,10 +871,11 @@ function runwayModelLabel(chat) {
   if(tier){const base=runwayModelLabel({model:tier[1]});return base?base+" · long context":"";}
   let match=model.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
   if(match){const family=(match[2]||"").split("-").filter(Boolean).at(-1)||"";return "GPT-"+match[1]+(family?" "+family[0].toUpperCase()+family.slice(1).toLowerCase():"");}
-  match=model.match(/^claude-(?:(opus|sonnet|haiku)-(\d+)[.-](\d+)|(\d+)[.-](\d+)-(opus|sonnet|haiku))(?:-.+)?$/i);
-  if(match){const family=match[1]||match[6],major=match[2]||match[4],minor=match[3]||match[5];return family[0].toUpperCase()+family.slice(1).toLowerCase()+" "+major+"."+minor;}
-  match=model.match(/^claude-(opus|sonnet|haiku)(?:-.+)?$/i);
-  if(match)return match[1][0].toUpperCase()+match[1].slice(1).toLowerCase();
+  // Current ids put the family first (claude-opus-5-5); legacy ids put it last (claude-3-5-sonnet).
+  match=model.match(/^claude-(?:([a-z][a-z0-9]*)-(\d+)(?:[.-](\d+))?|(\d+)(?:[.-](\d+))?-([a-z][a-z0-9]*))(?:-[a-z][a-z0-9-]*)?$/i);
+  if(match){const name=match[1]||match[6],major=match[2]||match[4],minor=match[3]||match[5],family=name[0].toUpperCase()+name.slice(1).toLowerCase();return family+" "+major+(minor?"."+minor:"");}
+  match=model.match(/^claude-([a-z][a-z0-9]*)$/i);
+  if(match)return match[1][0].toUpperCase()+match[1].slice(1).toLowerCase()+" (no version)";
   return model;
 }
 window.TokenTrackerFormatModel=runwayModelLabel;
@@ -951,18 +988,18 @@ function providersFor(snapshot) {
   const visible=visibleProviderNames(snapshot),available=(snapshot?.providers||[]);
   return runwaySource(snapshot).filter(name=>visible.has(name)).map(name=>available.find(p=>p.name===name)||{name,connected:false,chats:[]});
 }
-// Chat providers plus providers shown only as quota meters (reset block and alerts).
-function limitProvidersFor(snapshot) {
-  const visible=visibleProviderNames(snapshot),available=snapshot?.providers||[];
-  const names=sourceNames(snapshot).filter(name=>visible.has(name));
-  return names.flatMap(name=>{
+// Rendering keeps a cell for each policy-visible provider before its first reading.
+function limitProvidersFor(snapshot, {includeUnavailable=false}={}) {
+  const available=snapshot?.providers||[];
+  return sourceNames(snapshot).map(name=>{
     const provider=available.find(item=>item.name===name),bootstrap=quotaBootstrap.providers[name];
     const hasQuota=item=>Boolean(item&&["fiveHour","weekly"].some(key=>{
       const value=item[key];return value&&typeof value==="object"&&(safeNumber(value.percent)!=null||resetAt(value,item.limitsUpdatedAt)!=null);
     }));
-    const selected=hasQuota(provider)?provider:hasQuota(bootstrap)?bootstrap:null;
-    return selected?[selected]:[];
-  });
+    if(hasQuota(provider))return provider;
+    if(hasQuota(bootstrap))return bootstrap;
+    return includeUnavailable?provider||bootstrap:null;
+  }).filter(Boolean);
 }
 function snapshotParentKey(provider, raw, edges=null) {
   const key=keyOf({...raw,provider:provider.name});
@@ -1073,7 +1110,7 @@ function visibleRoots(forest, days=state.windowDays) {
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||chat.descendants.some(runwayActionable))&&matches;
+      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||runwayActionable(chat)||chat.descendants.some(runwayActionable))&&matches;
   });
 }
 function nextWindowWithChats(forest) {
@@ -1250,6 +1287,11 @@ function syncBreath(el) {
 function watcherTone(watcher, name) {
   const w=watcher?.providers?.[name];
   if(!watcher||!w)return {tone:"mute",tip:""};
+  if(name==="Codex"&&(w.automationMode==="off"||w.phase==="off")){
+    const error=w.lastPollError||watcher.persistenceError;
+    const detail=w.lastPollError?"Quota check error: "+w.lastPollError:watcher.persistenceError?"State could not be saved: "+watcher.persistenceError:"";
+    return error?{tone:"err",tip:"Auto-greet off · "+String(detail)}:{tone:"mute",tip:"Auto-greet off"};
+  }
   if(!watcher.enabled||!watcher.running)return {tone:"mute",tip:"Auto-greet off"};
   const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
   const tip=["Auto-greet",next?clock(next*1000):null,last?"last "+clock(last)+(verified?" ✓":""):null].filter(Boolean).join(" · ");
@@ -1275,7 +1317,7 @@ function resetView(provider, key) {
   const shownUsed=(measured||lastKnown)&&used!=null?Math.max(0,Math.min(100,used)):null;
   const parts=measured||lastKnown?observedParts:{day:"",time:"",countdown:"",due:false,target:null,seconds:null};
   const hasReset=Boolean((measured&&parts.target)||(lastKnown&&parts.target&&parts.seconds>0));
-  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":key==="weekly"?(parts.seconds>=86400?Math.floor(parts.seconds/86400)+"d "+Math.floor(parts.seconds%86400/3600)+"h":Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m"):parts.seconds>=3600?Math.floor(parts.seconds/3600)+"h "+pad2(Math.floor(parts.seconds%3600/60))+"m":parts.seconds>=60?Math.floor(parts.seconds/60)+"m "+pad2(parts.seconds%60)+"s":parts.seconds+"s";
+  const runwayCountdown=parts.seconds==null?"":parts.seconds<=0?"due":quotaCountdown(parts.seconds,key);
   const usedLabel=expired?"reset":shownUsed==null?"":Math.round(shownUsed)+"%",usedText=expired?"reset":usedLabel?usedLabel+" used":"";
   const lastKnownAge=lastKnown?quotaAgeLabel(sampled)+" ago":"";
   return {measured,lastKnown,lastKnownAge,expired,hasValue:shownUsed!=null,usedPercent:shownUsed,usedLabel,usedText,resetTarget:hasReset&&parts.target!=null?Number(parts.target):null,
@@ -1330,7 +1372,12 @@ function bankedResetView(banked) {
   const lines=items.map(item=>{const at=safeNumber(item?.expiresAt);return String(item?.title||"Limit reset")+(at?" · expires "+new Date(at*1000).toLocaleDateString([], {month:"short",day:"numeric"}):"");});
   return {text:"↻ "+count,tip:Math.round(count)+" banked reset"+(count===1?"":"s")+(lines.length?": "+lines.join("; "):"")};
 }
+// The widget's last provider list, read by the dashboard through tokenTrackerQuotaNow.
+let resetProviders=[];
+// Current 5-hour quota per provider from the same resetView the widget draws; usedPercent is null when the widget shows no measured or last-known value.
+window.tokenTrackerQuotaNow=()=>resetProviders.map(p=>{const view=resetView(p,"fiveHour"),week=resetView(p,"weekly");return {name:String(p.name||""),usedPercent:view.usedPercent,countdown:view.countdown,resetTarget:view.resetTarget,weekly:{usedPercent:week.usedPercent,countdown:week.countdown,resetTarget:week.resetTarget}};});
 function renderResets(providers) {
+  resetProviders=Array.isArray(providers)?providers:[];
   const node=$("#resets"),weeklyNode=$("#weekly-resets");if(!node)return;
   const shape=providers.map(p=>p.name).join("|");
   node.dataset.providerCount=String(providers.length);if(weeklyNode)weeklyNode.dataset.providerCount=String(providers.length);
@@ -1349,31 +1396,36 @@ function renderResets(providers) {
   providers.forEach((p,i)=>["fiveHour","weekly"].forEach(key=>{
     const id="#r"+i+"-"+key,view=resetView(p,key),row=$(id+"-row");put(row,"title",view.tip);
     const set=(suffix,text)=>{const el=$(id+suffix);if(el&&el.textContent!==text)el.textContent=text;};
-    const left=$(id+"-left");if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge.split(' ')[0]+' ago':'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><b></b><i></i></span>';if(left.innerHTML!==html)left.innerHTML=html;put(left,"title",view.tip);}
-    set("-day",view.day);set("-time",view.time);set("-cd",view.countdown);set("-stale",view.stale);
-    put(left,"className","rr-left"+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.tip);
-    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":""));const countdownText=view.countdown||'';if(cd.textContent!==countdownText)cd.textContent=countdownText;put(cd,"title",countdownText?'Resets '+view.day+' '+view.time:'');attr(cd,'aria-hidden',String(!countdownText));}
+    const unavailable=!view.hasValue&&!view.expired,unavailableLabel=unavailable?'No live reading for '+String(p.name||'provider'):'';
+    const left=$(id+"-left"),readingLabel=view.hasValue?String(p.name||'Provider')+' '+(key==='fiveHour'?'5-hour':'Weekly')+': '+Math.round(view.usedPercent)+'% used'+(view.countdown?(view.countdown==='due'?', reset due':', resets in '+view.countdown):'')+'.'+(view.lastKnown?' Last reported '+view.lastKnownAge+'.':''):'';if(left){const html=view.hasValue?'<span class="rr-value"><b>'+esc(view.usedLabel)+'</b><i>'+esc(view.lastKnown?view.lastKnownAge:'used')+'</i></span>':view.expired?'<span class="rr-reset-label">reset</span>':'<span class="rr-value"><span class="rr-provider">'+esc(p.name)+'</span><b>—</b><i></i></span>';const accessible=view.hasValue?readingLabel:unavailable?unavailableLabel:'',labelled=html+(accessible?'<span class="sr-only">'+esc(accessible)+'</span>':'');if(left.innerHTML!==labelled)left.innerHTML=labelled;put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);}
+    set("-day",view.day);set("-time",view.time);set("-cd",view.lastKnown?'':view.countdown);set("-stale",view.stale);
+    put(left,"className","rr-left"+(unavailable?" is-unavailable":"")+(view.lastKnown?" last-known":"")+(view.tone?" t-"+view.tone:""));put(left,"title",view.hasValue?readingLabel:unavailable?unavailableLabel:view.tip);
+    const cd=$(id+"-cd");if(cd){put(cd,"className","rr-cd"+(view.due?" t-attn":"")+(view.lastKnown?" last-known":""));const countdownText=view.countdown||'',visibleCountdown=view.lastKnown?'':countdownText;if(cd.textContent!==visibleCountdown)cd.textContent=visibleCountdown;put(cd,"title",countdownText?(view.lastKnown?'Resets in '+countdownText:'Resets '+view.day+' '+view.time):'');attr(cd,'aria-hidden',String(!visibleCountdown));}
     const meter=$(id+"-meter");if(meter){put(meter,"className","meter"+(view.lastKnown?" last-known":""));if(!view.hasValue){meter.removeAttribute?.('aria-valuenow');meter.removeAttribute?.('aria-valuetext');meter.setAttribute?.('aria-hidden','true');}else{attr(meter,"aria-valuenow",String(Math.round(view.usedPercent)));attr(meter,'aria-valuetext',(view.lastKnown?"Last known: ":"")+Math.round(view.usedPercent)+"% used");meter.removeAttribute?.('aria-hidden');}}
     const bar=$(id+"-bar");if(bar){const width=(view.usedPercent??0)+"%";if(bar.style.width!==width)bar.style.width=width;put(bar,"className",view.lastKnown?"last-known":view.tone?"t-"+view.tone:"");}
     if(key==="fiveHour"){const dot=$(id+"-greet"),w=watcherTone(state.watcher,p.name);if(dot){dot.className="greet t-"+w.tone;dot.title=w.tip;}}
     else{const banked=$(id+"-banked"),view=bankedResetView(p.bankedResets);if(banked){if(banked.textContent!==view.text)banked.textContent=view.text;put(banked,"title",view.tip);attr(banked,"aria-label",view.tip);banked.hidden=!view.text;}}
   }));
   renderGreeterStatus(providers);
+  window.tokenTrackerDashboardSyncQuota?.();
 }
 function renderGreeterStatus(providers) {
   const node=$("#runway-greeter-status");if(!node)return;
   const provider=providers.find(p=>p.name==="Codex"),watcher=state.watcher,w=watcher?.providers?.Codex;
   if(!provider||!watcher||!w){node.textContent="";node.className="greeter-status muted";return;}
-  const error=watcher.persistenceError||w.lastPollError||w.lastError;
+  const automationOff=w.automationMode==="off"||w.phase==="off";
+  const offPollError=w.lastPollError,offPersistenceError=watcher.persistenceError;
+  const error=automationOff?(watcher.persistenceError||w.lastPollError):(watcher.persistenceError||w.lastPollError||w.lastError);
   const attempted=stamp(w.lastAttemptAt||w.lastTriggerAt);
   let label;
-  if(w.needsLogin||w.phase==="needs_login")label="Sign-in needed";
+  if(automationOff)label=offPollError?"Auto-greet off · Quota check error":offPersistenceError?"Auto-greet off · Status not saved":"Auto-greet off";
+  else if(w.needsLogin||w.phase==="needs_login")label="Sign-in needed";
   else if(error)label=watcher.persistenceError?"Greeter state not saved":w.lastPollError?"Quota check error":"Greeter error";
   else if(!watcher.enabled||!watcher.running)label="Greeter stopped";
   else if(attempted)label="Last attempt "+runwayActivityAge({latest:attempted});
   else label="";
-  node.textContent=label;node.className="greeter-status"+(w.needsLogin||error?" error":"");
-  node.title=(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
+  node.textContent=label;node.className="greeter-status"+(error?" error":"");
+  node.title=automationOff?(offPollError?"Auto-greet off; quota check failed: "+String(offPollError):offPersistenceError?"Auto-greet off; status could not be saved: "+String(offPersistenceError):"Auto-greet off; quota tracking continues."):(error?String(error)+" · ":"")+(attempted?"Last greeting attempt at "+clock(attempted):"Codex quota recovery status");
 }
 document.addEventListener?.("pointerdown",event=>{const view=$("#dashboard-view");if(dashboardState.open&&view&&!view.contains?.(event.target))closeDashboard();});
 /* ---------- chat rows (layer 1) ---------- */
@@ -1407,7 +1459,6 @@ function runwayActivityAge(chat) {
   if(!chat.latest)return "";
   const age=ageShort(chat.latest);return age==="now"?"now":age+" ago";
 }
-const runwayRecordedAt = chat => Math.max(stamp(chat.updatedAt),stamp(chat.usageUpdatedAt));
 const runwayInstructionText = text => /^(?:#\s*)?(?:AGENTS\.md instructions|<INSTRUCTIONS>|<environment_context>|subagent\b|spawned\b)/i.test(String(text||'').trim());
 const runwayRequest = chat => runwayInstructionText(chat.latestRequest)?'':chat.latestRequest||'';
 function runwayCurrentSnippet(chat) {
@@ -1466,7 +1517,7 @@ function runwayStateElapsed(chat) {
   const execution=runwayExecutionView(chat);
   const status=runwayEffectiveStatus(chat);
   const waiting=runwayWaiting(chat);
-  const candidates=execution&&!waiting?(status==='running'?[execution.since,chat.activeRunStartedAt,chat.runStartedAt,chat.firstSeenAt]:[execution.since]):[waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince:null];
+  const candidates=execution&&!waiting?(status==='running'?[execution.since,chat.activeRunStartedAt,chat.runStartedAt,chat.firstSeenAt]:[execution.since,status==='failed'?chat.updatedAt:null]):[waiting?chat.pendingQuestionAt||(status==='needs-input'?chat.stateSince:null):chat.executionStatus===undefined?status==='compacting'?chat.compactionStartedAt||chat.stateSince:status==='running'?chat.stateSince||chat.activeRunStartedAt:chat.stateSince:['idle','failed'].includes(status)?chat.stateSince||(status==='failed'?chat.updatedAt:null):null];
   const now=Date.now(),since=candidates.map(stamp).find(value=>value&&value<=now+5000);
   return since?runSpan(Math.max(0,now-since)/1000):'—';
 }
@@ -1551,9 +1602,10 @@ function runwayTelemetryHTML(chat,agent=false) {
   const childWaiting=(chat.descendants||[]).some(runwayWaiting),childRunning=(chat.descendants||[]).some(runwayRunning);
   const ownCurrent=runwayWaiting(chat)||runwayRunning(chat)||(!runwayTerminated(chat)&&recentFail(chat));
   const effectiveStatus=runwayEffectiveStatus(chat);
-  const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
-  const statusUnavailable=!currentEvidence||((chat.status==='unknown'||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
-  const status=chat.retainedRun===true&&chat.stateDetail==='stopped'?'Stopped':statusUnavailable?'':runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
+  const tone=runwayWaiting(chat)?'attn':effectiveStatus==='compacting'&&runwayRunning(chat)?'info':runwayRunning(chat)?'live':effectiveStatus==='failed'?'mute':ownCurrent?'err':childWaiting?'attn':childRunning?'live':'mute';
+  const statusMissing=(chat.status===undefined||chat.status===null||String(chat.status).trim()==='')&&chat.executionStatus===undefined;
+  const statusUnavailable=!currentEvidence||((chat.status==='unknown'||statusMissing||chat.statusSource==='unavailable')&&!childWaiting&&!childRunning&&!runwayRunning(chat));
+  const status=chat.retainedRun===true&&chat.stateDetail==='stopped'?'Stopped':statusUnavailable?(currentEvidence?'Status unknown':''):runwayWaiting(chat)?'Waiting':!ownCurrent&&childWaiting?'Waiting':!ownCurrent&&childRunning?'Agents running':runwayRunning(chat)?effectiveStatus==='compacting'?'Compacting':'Running':chat.executionStatus!==undefined?effectiveStatus==='needs-input'?'Waiting':effectiveStatus==='idle'?'Idle':effectiveStatus==='failed'?runwayStatus({...chat,status:'failed'},ownState({...chat,status:'failed'})):'':runwayStatus(chat,st);
   const modelText=runwayModelLabel(chat);
   const modelChanged=runwayModelRecentlyChanged(chat);
   const modelEvent=state.modelVersions.get(chat.key||[chat.provider,chat.id].join(':'))?.highlightEventAt;
@@ -1567,8 +1619,9 @@ function runwayTelemetryHTML(chat,agent=false) {
   const messageLane='<span data-runway-slot="message-lane" class="runway-message-slot">'+messageContents+'</span>';
   const activityHTML=runwayActivityHTML(chat);
   const displayTitle=runwayTitle(chat,agent);
-  const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
-  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(agent?agentLabel(chat):displayTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
+  const resumeBadge=Number.isSafeInteger(chat.resumeCount)&&chat.resumeCount>=2?'<span class="runway-resume-badge" title="Resumed '+chat.resumeCount+' times" aria-label="Resumed '+chat.resumeCount+' times">\u21bb'+chat.resumeCount+'</span>':'';
+  const fullTitle=agent?agentLabel(chat):runwayFirstLine(chat.title||'Untitled');
+  const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(fullTitle)+'" aria-label="'+esc(fullTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
   const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);
   const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
@@ -1579,6 +1632,10 @@ function runwayTelemetryHTML(chat,agent=false) {
     const treeAnchor='<span data-runway-slot="tree-anchor" class="runway-name-status runway-refined-tree-anchor t-'+tone+'" aria-hidden="true">'+(status?runwayStatusDot(status,tone):'')+'</span>';
     const elapsedTarget=ownCurrent||chat.retainedRun===true?chat:waitingTarget;
     const elapsed=currentEvidence&&elapsedTarget&&!statusUnavailable?runwayStateElapsed(elapsedTarget):'';
+    // Subagents: the name dot carries the status, so the status column shows the timer in the dot's tone instead of a word.
+    // A waiting subagent's timer stays the control that opens its question.
+    const agentElapsedHTML=elapsed?'<span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed)+'</span>':'';
+    const agentStateContent=status==='Waiting'&&waitingTarget?'<button class="runway-waiting-link runway-status-timer" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">'+(agentElapsedHTML||'Waiting')+'</button>':agentElapsedHTML?'<span class="runway-status-timer" title="'+esc(status)+'">'+agentElapsedHTML+'</span>':'';
     const request=chat.lastRequest||chat.latestRequest||{},input=safeNumber(request.input),cached=safeNumber(request.cached);
     const cachePercent=currentEvidence&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&input>0&&cached!=null?Math.round(cached*100/input):null;
     const workspace=chat.workspace||chat.root?.workspace,workspacePath=runwayWorkspacePath(workspace),workspaceLeaf=runwayWorkspaceLeaf(workspace);
@@ -1591,12 +1648,12 @@ function runwayTelemetryHTML(chat,agent=false) {
     const cleanPath=workspacePath&&leaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(drive&&!runwayScratch(chat,workspacePath)?drive+' ':'')+esc(leaf)+'</span></span>':'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
     const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
-    // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
-    const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
+    // A root's status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
+    const visibleActivityHTML=!agent&&status&&['Compacting','Waiting for input','Subagents running'].some(label=>activityHTML===runwayActivityMarkup(label))?'':activityHTML;
     // Never a silent blank: an active run without a usable sample shows a quiet dash.
     const awaitingSample=!contextValue&&!cacheValue&&ownCurrent&&currentEvidence&&!chat.telemetryUnavailable;
     const tokenPlaceholder=awaitingSample?'<span class="runway-refined-context t-mute" title="No usable context sample yet for this run">—</span>':'';
-     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+(agent?'':cleanPath)+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+tokenPlaceholder+'</span></div>';
+     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span>'+(agent?'':'<span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span>')+'<span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+(agent?agentStateContent:stateContent)+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+(agent?'':cleanPath)+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+tokenPlaceholder+'</span></div>';
   }
 }
 
@@ -1644,7 +1701,6 @@ function noteLiveness(chat, live) {
   if(was&&!live)state.finishedAt.set(chat.key,Date.now());
   return Date.now()-(state.finishedAt.get(chat.key)||0)<1000;
 }
-const sortAgents = agents => [...agents].sort((a,b)=>(isAsking(b)-isAsking(a))||(recentFail(b)-recentFail(a))||((b.status==="running")-(a.status==="running"))||b.latest-a.latest);
 // The tray is a live control surface, not agent history. Never retain completed or failed children.
 // Auto-review/guardian sessions are internal bookkeeping; surface them only when they need a reply.
 const runwayActionable = a => runwayCurrentEvidenceFresh()&&!runwayTerminated(a)&&(runwayWaiting(a)||recentFail(a)||runwayEffectiveStatus(a)==='failed');
@@ -1680,6 +1736,7 @@ function chatBlockHTML(chat, query) {
 }
 function emptyHTML(forest, providers) {
   if(parseQuery(state.query).active)return '<div class="empty">No matches</div>';
+  if(!runwayCurrentEvidenceFresh())return '<div class="empty tree-empty">Live job status unavailable</div>';
   const down=providers.filter(p=>p.connected===false);
   return down.length?'<div class="empty">No data</div>':'<div class="empty tree-empty">No active chats</div>';
 }
@@ -1818,7 +1875,6 @@ function renderChats(providers) {
   document.querySelectorAll?.("[data-days]").forEach(b=>b.setAttribute?.("aria-pressed",String(Number(b.dataset.days)===state.windowDays)));
   const list=$("#chat-list");if(!list)return;
   // The compact tree always paints its empty state (the list is hidden by CSS while the widget is collapsed), never a blank panel.
-  const searchCanShowEmpty=true;
   if(!realDom(list)) {
     const html=(roots.length?roots.map(c=>chatBlockHTML(c,query)).join(""):emptyHTML(forest,providers));
     if(list.innerHTML!==html)list.innerHTML=html;
@@ -1840,7 +1896,7 @@ function renderChats(providers) {
   // Keep established rows stable while the user points, focuses, or reads a question.
   const focused=list.contains?.(document.activeElement),readingQuestion=Boolean(state.popover&&state.popover.dataset?.action==='runway-question');
   if((state.pointerInList||focused||readingQuestion)&&state.lastOrder){const kept=state.lastOrder.filter(k=>byKey.has(k));order=[...kept,...order.filter(k=>!kept.includes(k))];}
-  const existing=new Map([...list.children].filter(el=>!el._leaving).map(el=>[el.dataset.key,el]));
+  const existing=new Map([...list.children].filter(el=>el.classList.contains('chat')&&!el._leaving).map(el=>[el.dataset.key,el]));
   const scroller=notch.mode!=='inspect'?list.closest?.('.layout'):list;
   const scrollTopBefore=scroller?.scrollTop||0,scrollRect=scroller?.getBoundingClientRect?.();
   const anchor=[...existing].find(([key,el])=>byKey.has(key)&&(()=>{const rect=el.getBoundingClientRect?.();return rect&&(!scrollRect||rect.bottom>scrollRect.top);})())?.[1];
@@ -1972,9 +2028,9 @@ async function loadIdentityPolicyWarnings(anchor) {
 function watcherPopoverHTML(name) {
   const watcher=state.watcher,w=watcher?.providers?.[name];
   if(!watcher||!w)return policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
-  const next=safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
-  const phase=!watcher.enabled?"off":!watcher.running?"stopped":esc(PHASES[w.phase]||w.phase);
-  const err=watcher.persistenceError||w.lastPollError||w.lastError;
+  const automationOff=name==="Codex"&&(w.automationMode==="off"||w.phase==="off"),next=automationOff?null:safeNumber(w.nextGreetingAt),last=stamp(w.lastTriggerAt),verified=w.verificationEvidence==="usage_and_deadline"&&last&&stamp(w.lastVerifiedAt)>=last;
+  const phase=automationOff?"off":!watcher.enabled?"off":!watcher.running?"stopped":esc(PHASES[w.phase]||w.phase);
+  const err=automationOff?(watcher.persistenceError||w.lastPollError):(watcher.persistenceError||w.lastPollError||w.lastError);
   const rows=[];if(phase)rows.push(['phase',phase]);if(next)rows.push(['next',dayWord(next*1000)+' '+clock(next*1000)]);if(last)rows.push(['last',clock(last)+(verified?' <span class="t-live">✓</span>':'')]);const fails=safeNumber(w.failedAttempts);if(fails!=null)rows.push(['fails',String(fails)]);
   return (rows.length?'<dl class="pop-facts">'+rows.map(([label,value])=>'<dt>'+label+'</dt><dd>'+value+'</dd>').join('')+(err?'<dt>error</dt><dd class="t-err" title="'+esc(err)+'">'+esc(err)+'</dd>':'')+'</dl>':'')+policyWarningHTML()+'<button class="ghost" data-action="reset-settings">Reset action settings</button>';
 }
@@ -2055,7 +2111,7 @@ function render(snapshot) {
   if(firstRunwayPaint){const activeSource=initialActiveSource(snapshot);if(activeSource)state.source=activeSource;}
   if(!state.lastOkAt)state.lastOkAt=Date.now();
   state.runwaySnapshotPainted=true;
-  const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot);
+  const providers=providersFor(snapshot),limits=limitProvidersFor(snapshot,{includeUnavailable:true});
   const chatProviders=graphlessFallback?providers.map(provider=>({...provider,chats:(provider.chats||[]).map(chat=>({...chat,
     parentKey:null,parentId:null,status:'unknown',statusSource:'unavailable',telemetryUnavailable:true,
     executionStatus:'unknown',executionSource:'unavailable',executionActivity:null,activity:null,activityUnavailable:true,
@@ -2081,7 +2137,7 @@ function renderLoading() {
 function tick() {
   syncCompactClock();
   if(!state.snapshot){renderTitle([]);renderQuotaState();return;}
-  const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot);
+  const providers=providersFor(state.snapshot),limits=limitProvidersFor(state.snapshot,{includeUnavailable:true});
   renderTitle(providers);renderResets(limits);renderChats(providers);renderAnalytics(state.snapshot);
   window.TokenTrackerDashboard?.setSnapshot?.(state.snapshot);
   syncLastKnownFollowup();
@@ -2211,7 +2267,7 @@ function validQuotaMetadata(payload,now=Date.now()){
 function renderQuotaState(){
   renderTitle(state.snapshot?providersFor(state.snapshot):[]);
   const bootstrapSnapshot={providers:Object.values(quotaBootstrap.providers),providerPolicies:state.providerPolicy};
-  renderResets(state.snapshot?limitProvidersFor(state.snapshot):limitProvidersFor(bootstrapSnapshot));
+  renderResets(limitProvidersFor(state.snapshot||bootstrapSnapshot,{includeUnavailable:true}));
 }
 function quotaBootstrapTargets(){
   const providers=state.snapshot?.providers||[],present=new Set(providers.map(provider=>provider.name));
@@ -2419,9 +2475,16 @@ async function pollLive() {
 async function openInCodex(thread, button) {
   if(!thread)return false;
   try {
-    const response=await fetch("/api/open?thread="+encodeURIComponent(thread),{cache:"no-store",signal:AbortSignal.timeout(5000)});
-    const result=await response.json();
-    if(!response.ok||!result.ok)return false;
+    const api=window.pywebview?.api;
+    let result;
+    if(typeof api?.open_thread==="function"){
+      result=await waitForBridge(api.open_thread(thread),10000,"Open in Codex timed out.");
+    }else{
+      const response=await fetch("/api/open?thread="+encodeURIComponent(thread),{cache:"no-store",signal:AbortSignal.timeout(5000)});
+      result=await response.json();
+      if(!response.ok)return false;
+    }
+    if(!result?.ok)return false;
     if(button?.classList){button.classList.add("copied");setTimeout(()=>button.classList.remove("copied"),1200);}
     return true;
   } catch {return false;}
@@ -2439,11 +2502,12 @@ async function copyAndOpenAnswer(thread, answer, button) {
 }
 async function queueAnswer(thread, message, button) {
   if(!thread||!message||button?.disabled)return;
+  const api=window.pywebview?.api;
+  if(typeof api?.queue_message!=="function")return {ok:false,error:"Queue is unavailable on this host."};
   if(button)button.disabled=true;
   try {
-    const response=await fetch("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({thread,message}),cache:"no-store",signal:AbortSignal.timeout(20000)});
-    const result=await response.json();
-    if(!response.ok||!result.ok){
+    const result=await waitForBridge(api.queue_message(thread,message),20000,"Queue status unknown. Check the Codex task before retrying.");
+    if(!result?.ok){
       if(button){button.classList.add("send-failed");button.title=result.error||"Could not queue this message.";}
       return result;
     }
@@ -2536,7 +2600,7 @@ function handleClick(event) {
   else if(action==="analytics"){state.analyticsOpen=!state.analyticsOpen;if(state.snapshot)renderAnalytics(state.snapshot);return;}
   else if(action==="window"){setWindow(Number(button.dataset.days));queueSelectionRefresh();}
   else if(action==="watcher"){if(state.popover===button)closePopover();else{const html=watcherPopoverHTML(button.dataset.provider);if(html){openPopover(html,button);void loadIdentityPolicyWarnings(button);}else closePopover();}return;}
-  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(api?.open_reset_actions)api.open_reset_actions();else window.open?.("/reset_actions.html","_blank","noopener");return;}
+  else if(action==="reset-settings"){closePopover();const api=window.pywebview?.api;if(typeof api?.open_reset_actions==="function")void waitForBridge(api.open_reset_actions(),10000,"Settings window could not be opened.").catch(()=>{});return;}
   else if(action==="search"){openSearch(!state.searchOpen);}
   else if(action==="search-close"){openSearch(false);}
   else if(action==="refresh"){refresh(true);return;}
@@ -2545,7 +2609,7 @@ function handleClick(event) {
 function handleKey(event) {
   const typing=/INPUT|TEXTAREA/.test(event.target?.tagName||"");
   if(event.key==="Escape"){
-    if(dashboardState.open){event.preventDefault();event.stopImmediatePropagation?.();closeDashboard();return;}
+    if(dashboardState.open||dashboardState.closing){event.preventDefault();event.stopImmediatePropagation?.();closeDashboard();return;}
     if(state.popover){closePopover({restoreFocus:true});event.preventDefault();event.stopImmediatePropagation?.();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
     if(state.searchOpen){openSearch(false);event.preventDefault();event.stopImmediatePropagation?.();if(state.snapshot)renderChats(providersFor(state.snapshot));return;}
     return;
@@ -2555,9 +2619,9 @@ function handleKey(event) {
 }
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
-window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,toggleMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
+window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
   renderLoading,
-  nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
+  nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,quotaCountdown,elapsedDuration,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};
 Object.assign(window.__tokenTrackerTest,{sourceNames,effectiveSource,setSource,updateSourceSwitch,providersFor,limitProvidersFor,liveIdentity,resumeCommand,runwayExecutionView,runwayWaiting,isAsking,runwayVisibleActive,applyIdentityPayload,policyWarningHTML,validPublicProviderPolicy,initialActiveSource,openDashboard,closeDashboard,dashboardState});window.__tokenTrackerTest.bankedResetView=bankedResetView;window.__tokenTrackerTest.widgetLock=widgetLock;window.__tokenTrackerTest.loadQuota=loadQuota;window.__tokenTrackerTest.loadProviderPolicy=loadProviderPolicy;window.__tokenTrackerTest.quotaBootstrap=quotaBootstrap;window.__tokenTrackerTest.quotaLoader=quotaLoader;window.__tokenTrackerTest.validQuotaMetadata=validQuotaMetadata;

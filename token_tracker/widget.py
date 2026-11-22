@@ -8,14 +8,18 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import socket
+import subprocess
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from contextlib import suppress, contextmanager
 from collections import deque
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 
 _shutdown_trace_file = None
@@ -47,6 +51,292 @@ from . import ledger_service
 _WAIT_OBJECT_0 = 0x0
 _WAIT_ABANDONED = 0x80
 _WAIT_TIMEOUT = 0x102
+SETTINGS_DIALOG_WAIT_SECONDS = 300.0
+BRIDGE_REFUSAL_DEADLINES = {
+    "queue_message": 20.0,
+    "open_thread": 10.0,
+    "open_reset_actions": 10.0,
+    "save_ledger_csv": SETTINGS_DIALOG_WAIT_SECONDS + 10.0,
+}
+
+
+@dataclass
+class NativeBridgeReceipt:
+    authority: object
+    window: object
+    operation: str
+    source_url: str
+    top_url: str
+    generation: int
+    committed: bool = False
+
+
+@dataclass
+class SettingsChildReservation:
+    token: str
+    authority: object
+    window: object | None = None
+    opener_receipt: object | None = None
+    source_window: object | None = None
+    native_created: bool = False
+
+
+class BridgeAuthority:
+    """Per-window bridge lease tied to a native receipt and trusted document generation."""
+
+    def __init__(self, page_paths):
+        self._lock = threading.RLock()
+        self._page_paths = frozenset(page_paths)
+        self._port = None
+        self._generation = 0
+        self._document_epoch = 0
+        self._admitted = False
+        self._shutting_down = False
+        self._window = None
+        self._pending_window = None
+        self._adapter = None
+        self._navigating = False
+        self._document_url = None
+        self._previous_document_url = None
+        self._pending_navigation_id = None
+
+    @property
+    def generation(self):
+        with self._lock:
+            return self._generation
+
+    def enable(self, port):
+        with self._lock:
+            self._port = int(port)
+            self._admitted = False
+
+    def install(self, window, adapter=None):
+        with self._lock:
+            if self._port is None or self._shutting_down:
+                return False
+            if self._window is not None:
+                return self._window is window and self._adapter is adapter
+            if self._pending_window is not None and self._pending_window is not window:
+                return False
+            self._window = window
+            self._adapter = adapter
+            self._pending_window = None
+            return True
+
+    def reserve_window(self, window):
+        with self._lock:
+            if self._shutting_down or self._port is None or self._window is not None:
+                return False
+            if self._pending_window not in (None, window):
+                return False
+            self._pending_window = window
+            return True
+
+    def activate(self, window, adapter, target_url):
+        with self._lock:
+            if (self._port is None or self._shutting_down or self._window is not window
+                    or self._adapter is not adapter or not self._trusted_url_locked(target_url)):
+                return False
+            self._admitted = True
+            return True
+
+    def already_installed(self, window, adapter):
+        with self._lock:
+            return self._window is window and self._adapter is adapter
+
+    def guards_installed(self, window):
+        with self._lock:
+            return self._window is window and self._adapter is not None and self._port is not None
+
+    def window_registered(self, window):
+        with self._lock:
+            if self._port is None or self._shutting_down:
+                return False
+            if window is None:
+                return self._window is None and self._pending_window is None
+            return (self._window is window and self._adapter is not None) or self._pending_window is window
+
+    def document_ready(self, window):
+        with self._lock:
+            return (self._window is window and self._admitted and not self._shutting_down
+                    and not self._navigating and self._document_url is not None)
+
+    def revoke(self):
+        with self._lock:
+            self._shutting_down = True
+            self._admitted = False
+            self._pending_window = None
+            self._generation += 1
+
+    def begin_navigation(self, target, navigation_id=None):
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            self._generation += 1
+            self._previous_document_url = self._document_url
+            self._navigating = True
+            self._pending_navigation_id = navigation_id
+            return (self._admitted and not self._shutting_down
+                    and self._trusted_url_locked(target))
+        finally:
+            self._lock.release()
+
+    def cancel_navigation(self, navigation_id=None):
+        with self._lock:
+            if (navigation_id is not None and self._pending_navigation_id is not None
+                    and navigation_id != self._pending_navigation_id):
+                return False
+            self._navigating = False
+            self._document_url = self._previous_document_url
+            self._previous_document_url = None
+            self._pending_navigation_id = None
+            return bool(self._document_url)
+
+    def complete_navigation(self, navigation_id, succeeded, top_url):
+        with self._lock:
+            if self._pending_navigation_id is None and navigation_id is not None:
+                return False
+            if (navigation_id is not None and self._pending_navigation_id is not None
+                    and navigation_id != self._pending_navigation_id):
+                return False
+            if succeeded and self._admitted and self._trusted_url_locked(top_url):
+                self._document_url = top_url
+                self._document_epoch += 1
+                self._navigating = False
+                self._previous_document_url = None
+                self._pending_navigation_id = None
+                return True
+            self._navigating = True
+            return False
+
+    def trusted_url(self, value):
+        with self._lock:
+            return self._trusted_url_locked(value)
+
+    def _trusted_url_locked(self, value):
+        port = self._port
+        if not port or not isinstance(value, str):
+            return False
+        try:
+            parsed = urlsplit(value)
+            return (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+                    and parsed.port == port and not parsed.username and not parsed.password
+                    and parsed.path in self._page_paths and not parsed.query)
+        except (ValueError, TypeError):
+            return False
+
+    def receive(self, window, operation, sender_url, top_url, allowed_operations):
+        receipt, _refusal, _generation = self.receive_status(window, operation, sender_url, top_url,
+                                                              allowed_operations)
+        return receipt
+
+    def receive_status(self, window, operation, sender_url, top_url, allowed_operations):
+        if not self._lock.acquire(blocking=False):
+            epoch = self._document_epoch
+            return None, "suspended" if self._navigating else "contended", epoch
+        try:
+            if (not self._admitted or self._shutting_down or self._window is not window):
+                return None, "rejected", self._document_epoch
+            if (not isinstance(operation, str) or operation.startswith("_") or "." in operation
+                    or operation not in allowed_operations
+                    or not self._trusted_url_locked(sender_url) or not self._trusted_url_locked(top_url)):
+                return None, "rejected", self._document_epoch
+            if self._navigating or self._document_url is None:
+                return None, "suspended", self._document_epoch
+            if (urlsplit(sender_url).path != urlsplit(top_url).path
+                    or urlsplit(sender_url).netloc != urlsplit(top_url).netloc
+                    or urlsplit(top_url).path != urlsplit(self._document_url).path
+                    or urlsplit(top_url).netloc != urlsplit(self._document_url).netloc):
+                return None, "rejected", self._document_epoch
+            return NativeBridgeReceipt(self, window, operation, sender_url, top_url, self._generation), None, self._document_epoch
+        finally:
+            self._lock.release()
+
+    def retryable_current(self, window, operation, sender_url, top_url, generation, allowed_operations):
+        return self.retryable_state(window, operation, sender_url, top_url, generation,
+                                    allowed_operations) == "current"
+
+    def retryable_state(self, window, operation, sender_url, top_url, generation, allowed_operations):
+        if not self._lock.acquire(blocking=False):
+            return "contended"
+        try:
+            if (not self._admitted or self._shutting_down or self._window is not window
+                    or generation != self._document_epoch or operation not in allowed_operations
+                    or operation.startswith("_") or "." in operation
+                    or not self._trusted_url_locked(sender_url) or not self._trusted_url_locked(top_url)):
+                return "stale"
+            if self._navigating or self._document_url is None:
+                return "pending"
+            if (urlsplit(sender_url).netloc != urlsplit(top_url).netloc
+                    or urlsplit(sender_url).path != urlsplit(top_url).path
+                    or urlsplit(top_url).netloc != urlsplit(self._document_url).netloc
+                    or urlsplit(top_url).path != urlsplit(self._document_url).path):
+                return "stale"
+            return "current"
+        finally:
+            self._lock.release()
+
+    def receipt_is_current(self, receipt, window, operation=None):
+        with self._lock:
+            return self.receipt_is_current_locked(receipt, window, operation)
+
+    def allows_popup(self, window, top_url):
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            return (self._admitted and not self._shutting_down and not self._navigating
+                    and self._window is window and self._document_url is not None
+                    and self._trusted_url_locked(top_url)
+                    and urlsplit(top_url).path == urlsplit(self._document_url).path
+                    and urlsplit(top_url).netloc == urlsplit(self._document_url).netloc)
+        finally:
+            self._lock.release()
+
+    def receipt_is_current_locked(self, receipt, window, operation=None):
+        return (isinstance(receipt, NativeBridgeReceipt) and receipt.authority is self
+                and receipt.window is window and self._window is window
+                and receipt.generation == self._generation and self._admitted
+                and not self._shutting_down and not self._navigating and self._document_url is not None
+                and (operation is None or receipt.operation == operation))
+
+    def commit(self, receipt, window, operation):
+        """Linearize a side effect against navigation and shutdown without holding the lock through UI work."""
+        with self._lock:
+            if not self.receipt_is_current_locked(receipt, window, operation):
+                return False
+            receipt.committed = True
+            return True
+
+
+def _explicit_external_url(value):
+    """Only the dashboard's deliberate public bug-report link is handed off."""
+    try:
+        parsed = urlsplit(str(value))
+        if (parsed.scheme != "https" or parsed.hostname != "github.com" or parsed.port is not None
+                or parsed.username or parsed.password or parsed.path != "/apratxxm/branchglance/issues/new"
+                or parsed.fragment):
+            return False
+        query = parse_qs(parsed.query, keep_blank_values=True, strict_parsing=True)
+        if set(query) - {"template", "version", "os"} or any(len(values) != 1 for values in query.values()):
+            return False
+        if query.get("template") != ["bug_report.yml"]:
+            return False
+        if "version" in query and not re.fullmatch(r"\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.]+)?", query["version"][0]):
+            return False
+        return "os" not in query or query["os"][0] in {"Windows", "macOS", "Linux", "unknown"}
+    except (TypeError, ValueError):
+        return False
+
+
+_MAIN_BRIDGE_OPERATIONS = frozenset({
+    "begin_drag", "close", "end_drag", "fit", "get_inspection_hotkey", "get_keep_open",
+    "get_monitors", "get_widget_lock", "minimize", "open_reset_actions", "open_thread",
+    "queue_message", "recenter", "resize", "resize_start", "select_monitor",
+    "set_inspection_hotkey", "set_keep_open", "set_monitor_name", "set_notch",
+    "set_widget_lock", "toggle_maximize",
+})
+_SETTINGS_BRIDGE_OPERATIONS = frozenset({"save_ledger_csv"})
+_RECEIPTED_OPERATIONS = frozenset({"open_reset_actions", "open_thread", "queue_message", "save_ledger_csv"})
 
 
 def claim_install_mutex(timeout: float = 20.0) -> tuple[object | None, str]:
@@ -262,6 +552,28 @@ class _Rect(ctypes.Structure):
     ]
 
 
+_MONITOR_INFO_LOCK = threading.Lock()
+_MONITOR_INFO_TYPES = None
+
+
+def _monitor_info_type(device: bool = False):
+    """Create and retain the monitor structures before ctypes caches pointers to them."""
+    global _MONITOR_INFO_TYPES
+    with _MONITOR_INFO_LOCK:
+        if _MONITOR_INFO_TYPES is None:
+            class MonitorInfo(ctypes.Structure):
+                _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
+                            ("work", _Rect), ("flags", ctypes.c_ulong)]
+
+            class MonitorInfoEx(ctypes.Structure):
+                _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
+                            ("work", _Rect), ("flags", ctypes.c_ulong),
+                            ("device", ctypes.c_wchar * 32)]
+
+            _MONITOR_INFO_TYPES = (MonitorInfo, MonitorInfoEx)
+        return _MONITOR_INFO_TYPES[1 if device else 0]
+
+
 @contextmanager
 def _physical_coordinates():
     """Use one coordinate space for native rectangles on mixed-DPI displays."""
@@ -287,9 +599,7 @@ def _work_area(hwnd: int | None = None) -> tuple[int, int, int, int]:
     user32 = ctypes.windll.user32
     try:
         if hwnd:
-            class MonitorInfo(ctypes.Structure):
-                _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
-                            ("work", _Rect), ("flags", ctypes.c_ulong)]
+            MonitorInfo = _monitor_info_type()
             user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
             user32.MonitorFromWindow.restype = ctypes.c_void_p
             user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -396,8 +706,7 @@ def _monitor_work_areas(physical: bool = False) -> list[tuple[int, int, int, int
     try:
         user32 = ctypes.windll.user32
 
-        class MonitorInfo(ctypes.Structure):
-            _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect), ("work", _Rect), ("flags", ctypes.c_ulong)]
+        MonitorInfo = _monitor_info_type()
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_Rect), ctypes.c_long)
         scale = 1.0 if physical else _system_scale()
@@ -584,10 +893,7 @@ def _monitor_descriptors() -> list[dict]:
         user32 = ctypes.windll.user32
         user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
-        class MonitorInfo(ctypes.Structure):
-            _fields_ = [("size", ctypes.c_ulong), ("monitor", _Rect),
-                        ("work", _Rect), ("flags", ctypes.c_ulong),
-                        ("device", ctypes.c_wchar * 32)]
+        MonitorInfo = _monitor_info_type(device=True)
 
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
                                            ctypes.POINTER(_Rect), ctypes.c_ssize_t)
@@ -788,12 +1094,23 @@ def _advance_notch_deadline(deadline, now, interval=NOTCH_FRAME_INTERVAL):
     return deadline + missed_slots * interval
 
 
+class SettingsWindowApi:
+    """The Settings window's only bridge: saving the history CSV through the native file dialog."""
+
+    def __init__(self, on_save_ledger_csv) -> None:
+        self._save_ledger_csv = on_save_ledger_csv
+
+    def save_ledger_csv(self):
+        return {"ok": False, "error": "Settings window is no longer trusted."}
+
+
 class WindowApi:
     def __init__(self, on_minimize, on_toggle_maximize, on_close, on_size=None, on_resize=None, on_fit=None, on_notch=None,
                  on_monitors=None, on_monitor=None, on_recenter=None, on_drag_begin=None, on_drag_end=None,
                  on_lock=None, on_get_lock=None, on_reset_actions=None,
                  on_keep_open=None, on_get_keep_open=None, on_compact_profile=None,
-                 on_set_monitor_name=None) -> None:
+                 on_set_monitor_name=None, on_get_inspection_hotkey=None, on_set_inspection_hotkey=None,
+                 on_queue_message=None, on_open_thread=None) -> None:
         self._minimize = on_minimize
         self._toggle_maximize = on_toggle_maximize
         self._close = on_close
@@ -813,9 +1130,19 @@ class WindowApi:
         self._get_keep_open = on_get_keep_open
         self._is_compact_profile = on_compact_profile
         self._set_monitor_name = on_set_monitor_name
+        self._get_inspection_hotkey = on_get_inspection_hotkey
+        self._set_inspection_hotkey = on_set_inspection_hotkey
+        self._queue_message = on_queue_message
+        self._open_thread = on_open_thread
+
+    def queue_message(self, thread, message):
+        return {"ok": False, "error": "Queue call has no native receipt."}
+
+    def open_thread(self, thread):
+        return {"ok": False, "error": "Open call has no native receipt."}
 
     def open_reset_actions(self):
-        return self._open_reset_actions() if self._open_reset_actions else False
+        return False
 
     def begin_drag(self, intent=None):
         if intent is None:
@@ -842,6 +1169,12 @@ class WindowApi:
 
     def set_monitor_name(self, monitor_id, name):
         return self._set_monitor_name(monitor_id, name) if self._set_monitor_name else []
+
+    def get_inspection_hotkey(self):
+        return self._get_inspection_hotkey() if self._get_inspection_hotkey else None
+
+    def set_inspection_hotkey(self, choice):
+        return self._set_inspection_hotkey(choice) if self._set_inspection_hotkey else None
 
     def recenter(self):
         return self._recenter() if self._recenter else None
@@ -887,14 +1220,19 @@ class WindowApi:
             return self._set_keep_open(keep_open, expected_revision)
         return self.get_keep_open()
 
-    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None) -> None:
+    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None, transition_id=None) -> None:
         if self._notch and isinstance(expanded, bool) and isinstance(reduced_motion, bool):
             if mode is not None:
+                if transition_id is not None and (type(transition_id) is not int or not 0 <= transition_id <= 9007199254740991):
+                    return
                 try:
                     _compact_notch_dimensions(mode, height)
                 except ValueError:
                     return
-                self._notch(expanded, height, reduced_motion, mode)
+                if transition_id is None:
+                    self._notch(expanded, height, reduced_motion, mode)
+                else:
+                    self._notch(expanded, height, reduced_motion, mode, transition_id)
                 return
             if height is None:
                 if reduced_motion:
@@ -965,6 +1303,9 @@ class WidgetApp:
         self.reset_actions_window = None
         self._reset_actions_token = None
         self._reset_actions_lock = threading.Lock()
+        self._bridge_authority = BridgeAuthority({"/runway.html"})
+        self._settings_bridge_authority = None
+        self._settings_child_reservation: SettingsChildReservation | None = None
         self.start_hidden = bool(start_hidden)
         self.visible = not self.start_hidden
         self.server: ThreadingHTTPServer | None = None
@@ -1030,6 +1371,9 @@ class WidgetApp:
             self._notch_reference_width = None
         self._widget_lock_render_position = None
         self._notch_native_frames = deque(maxlen=128)
+        # Last rectangle commanded for the window. Animation frames are posted
+        # asynchronously, so this can differ from GetWindowRect while frames wait.
+        self._notch_last_frame = None
         self._notch_placing = False
         self._notch_placement_ready = False
         self._notch_user_dragging = False
@@ -1551,6 +1895,7 @@ class WidgetApp:
 
     def _record_notch_frame(self, frame):
         now = time.monotonic()
+        self._notch_last_frame = tuple(frame[:4])
         self._notch_native_frames.append((*frame, now))
         self._notch_command_guard_until = now + NOTCH_EVENT_GUARD_SECONDS
 
@@ -1925,6 +2270,9 @@ class WidgetApp:
                 return {"ok": True, "choice": choice, "status": "off"}
             status = self._start_inspection_hotkey()
             return {"ok": status == "registered", "choice": choice, "status": status}
+
+    def get_inspection_hotkey(self) -> dict:
+        return {"choice": self.inspection_hotkey, "status": self._inspection_hotkey_status}
 
     def _inspection_hotkey_menu_item(self, choice: str, label: str):
         def text(_item):
@@ -2303,7 +2651,7 @@ class WidgetApp:
         if self.compact_profile:
             mode = self._compact_notch_mode or "idle"
             width_logical, height_logical = _compact_notch_dimensions(
-                mode, self.notch_height if mode == "inspect" else None)
+                mode, self.notch_height if mode in ("inspect", "dashboard") else None)
             width = min(round(width_logical * scale), right-left)
             height = min(round(height_logical * scale), bottom-top)
             x, y = left + (right-left-width) // 2, top
@@ -2420,8 +2768,9 @@ class WidgetApp:
             return
         self.window.resize(width, height)
 
-    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None) -> None:
+    def set_notch(self, expanded=False, height=None, reduced_motion=False, mode=None, transition_id=None) -> None:
         if (not isinstance(expanded, bool) or not isinstance(reduced_motion, bool)
+                or (transition_id is not None and (type(transition_id) is not int or not 0 <= transition_id <= 9007199254740991))
                 or (mode is not None and (not isinstance(mode, str) or mode not in COMPACT_NOTCH_MODES))):
             return
         try:
@@ -2433,8 +2782,10 @@ class WidgetApp:
             return
         if not self.window or not self.notch_mode or self.quitting:
             return
+        notice = None
         with self._notch_lock:
             self.sync_window_state()
+            previous_mode = self._compact_notch_mode
             self.compact_profile = mode is not None
             self._compact_notch_mode = mode
             if self.widget_locked and not self.compact_profile:
@@ -2463,17 +2814,27 @@ class WidgetApp:
             if self.maximized:
                 self.window.restore()
                 self.maximized = False
-            duration = (COMPACT_NOTCH_TRANSITION_SECONDS if self.compact_profile and expanded else
+            duration = (COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS if previous_mode == "dashboard" and mode != "dashboard" else
+                        COMPACT_NOTCH_TRANSITION_SECONDS if self.compact_profile and expanded else
                         COMPACT_NOTCH_CLOSE_TRANSITION_SECONDS if self.compact_profile else
                         NOTCH_OPEN_TRANSITION_SECONDS if expanded and not was_expanded else NOTCH_TRANSITION_SECONDS)
-            self._apply_notch_bounds(animate=not reduced_motion, duration=duration)
+            notice = self._apply_notch_bounds(animate=not reduced_motion, duration=duration,
+                                               notice=(self.window, mode, expanded, transition_id))
+        if notice:
+            self._notify_notch_settled(*notice)
 
     def _cancel_notch_transition(self) -> None:
         with self._notch_lock:
             self._notch_transition = None
             self._notch_wake.set()
 
-    def _apply_notch_bounds(self, *, animate=True, duration=NOTCH_TRANSITION_SECONDS, expanded=None) -> None:
+    def _notify_notch_settled(self, window, mode, expanded, transition_id) -> None:
+        if window and mode and not self.quitting and self.window is window:
+            with suppress(Exception):
+                window.evaluate_js("window.tokenTrackerNotchSettled?.(%s, %s, %s)" % (
+                    json.dumps(mode), json.dumps(expanded), json.dumps(transition_id)))
+
+    def _apply_notch_bounds(self, *, animate=True, duration=NOTCH_TRANSITION_SECONDS, expanded=None, notice=None):
         if not self.window or self.quitting:
             return
         hwnd = self._native_window_handle()
@@ -2488,11 +2849,24 @@ class WidgetApp:
                 start = (rect[2], rect[3], rect[0], rect[1])
                 # Identical content measurements must not restart the animation.
                 if self._notch_transition and self._notch_transition[1] == native_target:
+                    if notice is not None:
+                        self._notch_transition_notice = notice
                     return
                 if start == native_target:
                     self._cancel_notch_transition()
-                    return
+                    last_frame = getattr(self, "_notch_last_frame", None)
+                    if last_frame is not None and last_frame != native_target:
+                        # GetWindowRect already shows this target, but asynchronous frames
+                        # toward an earlier request (such as the controls height) may still
+                        # be queued on the GUI thread. Post the target behind them so the
+                        # window ends at this request; on failure keep the old frame so the
+                        # next identical request tries again.
+                        self._record_notch_frame(native_target)
+                        if not self._place(*native_target, asynchronous=True):
+                            self._notch_last_frame = last_frame
+                    return notice
                 self._notch_transition = (start, native_target, time.monotonic(), duration)
+                self._notch_transition_notice = notice
                 self._notch_wake.set()
                 if self._notch_thread is None:
                     self._notch_thread = threading.Thread(target=self._animate_notch, daemon=True)
@@ -2509,6 +2883,7 @@ class WidgetApp:
                     self.window.move(x, y)
                 finally:
                     self._notch_placing = False
+            return notice
 
     def _animate_notch(self) -> None:
         transition = None
@@ -2544,13 +2919,16 @@ class WidgetApp:
                         self._notch_transition = None
                         if not placed:
                             return
-                        return
+                        notice = getattr(self, "_notch_transition_notice", None)
+                        break
                     after_placement = time.monotonic()
                     next_sample_deadline = _advance_notch_deadline(
                         next_sample_deadline, after_placement)
                     final_deadline = started + duration
                     wait_seconds = max(0.0, min(next_sample_deadline, final_deadline) - after_placement)
                 self._notch_wake.wait(wait_seconds)
+            if notice:
+                self._notify_notch_settled(*notice)
         except Exception:
             # Native teardown or an unavailable backend must not restart a
             # failed transition in an unbounded series of daemon workers.
@@ -2566,16 +2944,34 @@ class WidgetApp:
                     self._notch_thread = threading.Thread(target=self._animate_notch, daemon=True)
                     self._notch_thread.start()
 
+    def _begin_shutdown(self):
+        """Publish shutdown and revoke all authorities under the Settings registration gate."""
+        with self._lifecycle:
+            authority = getattr(self, "_bridge_authority", None)
+            if authority is not None:
+                with authority._lock:
+                    self._shutdown_requested.set()
+                    self.quitting = True
+                    authority.revoke()
+            else:
+                self._shutdown_requested.set()
+                self.quitting = True
+            settings_authority = getattr(self, "_settings_bridge_authority", None)
+            with self._reset_actions_lock:
+                settings_token = self._reset_actions_token
+                self._reset_actions_token = None
+                self._settings_child_reservation = None
+                server_module.clear_settings_token(
+                    settings_token, settings_authority.revoke if settings_authority is not None else None)
+
     def quit(self, *_args) -> None:
+        self._begin_shutdown()
         _arm_shutdown_trace()
         from .providers import stop_snapshot_workers
         stop_snapshot_workers()
-        self._shutdown_requested.set()
         # Wait out any in-progress startup step; once quitting is set under the
         # lock no further startup resource is acquired, so the cleanup below
         # sees everything that exists.
-        with self._lifecycle:
-            self.quitting = True
         self._cancel_active_compact_drag()
         with self._notch_lock:
             self.quitting = True
@@ -2592,9 +2988,8 @@ class WidgetApp:
         if self.tray:
             with suppress(Exception):
                 self.tray.stop()
-        # Revoke the settings capability, then destroy its window before the port is released.
+        # The Settings capability was revoked synchronously before shutdown work began.
         with self._reset_actions_lock:
-            server_module.set_settings_token(None)
             self._reset_actions_token = None
         child, self.reset_actions_window = self.reset_actions_window, None
         if child is not None:
@@ -2635,51 +3030,667 @@ class WidgetApp:
 
     def open_reset_actions(self) -> bool:
         """Open or focus the user-requested reset action settings window."""
-        with self._lifecycle:
-            if self.quitting:
-                return False
-            return self._open_reset_actions_locked()
+        return self._open_settings_with_receipt()
 
-    def _open_reset_actions_locked(self) -> bool:
-        child = self.reset_actions_window
-        if child is not None:
+    def _open_reset_actions_from_bridge(self, receipt, window):
+        if window is not getattr(self, "window", None):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        return self._open_settings_with_receipt(receipt, window)
+
+    def _shutdown_pending(self):
+        requested = getattr(self, "_shutdown_requested", None)
+        return self.quitting or bool(requested and requested.is_set())
+
+    def _open_settings_with_receipt(self, receipt=None, source_window=None):
+        """Register Settings capability under lifecycle lock, then create its native child."""
+        existing = None
+        plan = None
+        with self._lifecycle:
+            if self._shutdown_pending():
+                return False
+            if receipt is not None:
+                authority = getattr(self, "_bridge_authority", None)
+                if (authority is None or source_window is not getattr(self, "window", None)
+                        or not authority.receipt_is_current(receipt, source_window, "open_reset_actions")):
+                    return False
+            reservation = getattr(self, "_settings_child_reservation", None)
+            if (reservation is not None and reservation.token == self._reset_actions_token
+                    and reservation.authority.window_registered(reservation.window)):
+                if receipt is not None and reservation.window is not None:
+                    if reservation.authority.document_ready(reservation.window):
+                        existing = reservation.window
+                    elif not authority.receipt_is_current(receipt, source_window, "open_reset_actions"):
+                        return False
+                    else:
+                        reservation.opener_receipt = receipt
+                        reservation.source_window = source_window
+                elif receipt is not None:
+                    reservation.opener_receipt = receipt
+                    reservation.source_window = source_window
+                if existing is None and (reservation.window is None
+                                         or not reservation.authority.document_ready(reservation.window)):
+                    return True  # Reuse the one pending child while its trusted document loads.
+                if existing is None:
+                    existing = reservation.window
+            else:
+                child = getattr(self, "reset_actions_window", None)
+                if child is not None:
+                    self.reset_actions_window = None
+                token = secrets.token_urlsafe(32)
+                authority = BridgeAuthority({"/reset_actions.html"})
+                authority.enable(self.server.server_address[1])
+                authority.settings_token = token
+                reservation = SettingsChildReservation(token, authority, None, receipt, source_window)
+                with self._reset_actions_lock:
+                    server_module.set_settings_token(token)
+                    self._reset_actions_token = token
+                    self._settings_bridge_authority = authority
+                    self._settings_child_reservation = reservation
+
+                def revoke_on_closing():
+                    with self._lifecycle:
+                        with self._reset_actions_lock:
+                            if (self._settings_child_reservation is reservation
+                                    and self._reset_actions_token == token):
+                                self._reset_actions_token = None
+                                self._settings_child_reservation = None
+                                if self.reset_actions_window is reservation.window:
+                                    self.reset_actions_window = None
+                                server_module.clear_settings_token(token, authority.revoke)
+                            else:
+                                authority.revoke()
+
+                def clear_on_closed(closed_child):
+                    with self._lifecycle:
+                        if self._settings_child_reservation is reservation:
+                            self._settings_child_reservation = None
+                        self._clear_closed_settings_reference(closed_child)
+
+                def register_child(created_child, create_native=None):
+                    with self._lifecycle:
+                        if (self._shutdown_pending() or self._settings_child_reservation is not reservation
+                                or self._reset_actions_token != token):
+                            return False
+                        opener_receipt = reservation.opener_receipt
+                        if opener_receipt is not None:
+                            opener_authority = getattr(opener_receipt, "authority", None)
+                            if (opener_authority is not self._bridge_authority
+                                    or reservation.source_window is not getattr(self, "window", None)
+                                    or not opener_authority.receipt_is_current(
+                                        opener_receipt, reservation.source_window, "open_reset_actions")):
+                                with self._reset_actions_lock:
+                                    if (self._settings_child_reservation is reservation
+                                            and self._reset_actions_token == token):
+                                        self._reset_actions_token = None
+                                        self._settings_child_reservation = None
+                                        server_module.clear_settings_token(token, authority.revoke)
+                                return False
+                        if create_native is None:
+                            if not authority.reserve_window(created_child):
+                                return False
+                            reservation.window = created_child
+                            return True
+                        if opener_receipt is not None and not opener_authority.commit(
+                                opener_receipt, reservation.source_window, "open_reset_actions"):
+                            with self._reset_actions_lock:
+                                if (self._settings_child_reservation is reservation
+                                        and self._reset_actions_token == token):
+                                    self._reset_actions_token = None
+                                    self._settings_child_reservation = None
+                                    server_module.clear_settings_token(token, authority.revoke)
+                            return False
+                        # WinForms invokes this callback on its GUI thread. The native
+                        # constructor runs synchronously below, so a navigation event
+                        # cannot interleave between the receipt check and construction.
+                        create_native()
+                        reservation.native_created = True
+                        reservation.window = created_child
+                        self.reset_actions_window = created_child
+                        return True
+
+                settings_api = SettingsWindowApi(lambda native_receipt, source_child:
+                                                 self.save_ledger_csv(source_child, native_receipt))
+                plan = (settings_api, authority, revoke_on_closing, clear_on_closed,
+                        register_child, reservation)
+
+        if existing is not None:
+            return self._show_existing_settings_child(existing, receipt, source_window)
+
+        settings_api, authority, revoke_on_closing, clear_on_closed, register_child, reservation = plan
+        token = reservation.token
+        child = None
+        try:
+            child = self._create_settings_native_window(settings_api, authority, revoke_on_closing,
+                                                        clear_on_closed, register_child, token)
+            discard_child = None
+            with self._lifecycle:
+                if (self._shutdown_pending() or self._settings_child_reservation is not reservation
+                        or self._reset_actions_token != token
+                        or not authority.guards_installed(child)):
+                    with self._reset_actions_lock:
+                        if self._settings_child_reservation is reservation:
+                            self._settings_child_reservation = None
+                        if self.reset_actions_window is reservation.window:
+                            self.reset_actions_window = None
+                        if self._reset_actions_token == token:
+                            self._reset_actions_token = None
+                            server_module.clear_settings_token(token, authority.revoke)
+                    discard_child = child
+                else:
+                    reservation.window = child
+                    self.reset_actions_window = child
+            if discard_child is not None:
+                with suppress(Exception):
+                    discard_child.destroy()
+                return False
+            if child is None:
+                return False
+            return True
+        except Exception:
+            with self._lifecycle:
+                with self._reset_actions_lock:
+                    if self._settings_child_reservation is reservation:
+                        self._settings_child_reservation = None
+                        if self.reset_actions_window is reservation.window:
+                            self.reset_actions_window = None
+                    if self._reset_actions_token == token:
+                        self._reset_actions_token = None
+                        server_module.clear_settings_token(token, authority.revoke)
+            if child is not None:
+                with suppress(Exception):
+                    child.destroy()
+            logging.getLogger(__name__).warning("Could not open reset action settings")
+            return False
+
+    def _show_existing_settings_child(self, child, receipt, source_window):
+        result = {"ok": False}
+        completed = threading.Event()
+
+        def show_on_gui():
             try:
+                with self._lifecycle:
+                    if self._shutdown_pending() or self.reset_actions_window is not child:
+                        return
+                    if receipt is not None:
+                        authority = getattr(self, "_bridge_authority", None)
+                        if (authority is None or source_window is not self.window
+                                or not authority.commit(receipt, source_window, "open_reset_actions")):
+                            return
                 child.show()
                 child.restore()
                 child.focus()
-                return True
+                result["ok"] = True
             except Exception:
-                self.reset_actions_window = None
+                result["ok"] = False
+            finally:
+                completed.set()
+
+        native = getattr(child, "native", None)
+        begin_invoke = getattr(native, "BeginInvoke", None) if native is not None else None
+        if not callable(begin_invoke):
+            show_on_gui()
+        else:
+            try:
+                from System import Func, Object
+                begin_invoke(Func[Object](show_on_gui))
+            except Exception:
+                return False
+            if not completed.wait(10.0):
+                return False
+        return result["ok"]
+
+    def queue_message(self, thread, message, receipt, window):
+        authority = getattr(self, "_bridge_authority", None)
+        if (authority is None or window is not getattr(self, "window", None)
+                or self._shutdown_pending()
+                or not authority.receipt_is_current(receipt, window, "queue_message")):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
+            return {"ok": False, "error": "invalid thread id"}
+        if not isinstance(message, str) or not message.strip() or len(message) > server_module.QUEUE_MESSAGE_LIMIT:
+            return {"ok": False, "error": "message must be 1 to 2000 characters"}
+        if not server_module._codex_queue_allowed():
+            return {"ok": False, "error": "Explicit Codex SEND consent is required."}
+        if not server_module._is_collected_codex_thread(thread):
+            return {"ok": False, "error": "unknown Codex thread"}
+        if self._shutdown_pending() or not authority.commit(receipt, window, "queue_message"):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
         try:
-            token = secrets.token_urlsafe(32)
-            with self._reset_actions_lock:
-                server_module.set_settings_token(token)
-                self._reset_actions_token = token
+            server_module.queue_codex_message(thread, message)
+        except FileNotFoundError:
+            return {"ok": False, "error": "Codex CLI unavailable"}
+        except OSError:
+            return {"ok": False, "error": "Could not start Codex CLI"}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "status": "unknown", "error": "queue status unknown; check the Codex task"}
+        except subprocess.CalledProcessError:
+            return {"ok": False, "error": "Codex CLI rejected the queue request"}
+        return {"ok": True, "status": "queued", "detail": "Queued for the next turn. This does not answer the pending question."}
+
+    def open_thread(self, thread, receipt, window):
+        authority = getattr(self, "_bridge_authority", None)
+        if (authority is None or window is not getattr(self, "window", None)
+                or self._shutdown_pending()
+                or not authority.receipt_is_current(receipt, window, "open_thread")):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        if not isinstance(thread, str) or not server_module.THREAD_ID.fullmatch(thread):
+            return {"ok": False, "error": "invalid thread id"}
+        if not server_module._codex_allows("show"):
+            return {"ok": False, "error": "Codex is not enabled."}
+        if not server_module._is_collected_codex_thread(thread):
+            return {"ok": False, "error": "unknown Codex thread"}
+        if self._shutdown_pending() or not authority.commit(receipt, window, "open_thread"):
+            return {"ok": False, "error": "Widget document is no longer trusted."}
+        try:
+            url = f"codex://threads/{thread}"
+            startfile = getattr(os, "startfile", None)
+            if startfile is None and os.name != "nt":
+                subprocess.run(["/usr/bin/open", url], check=True, timeout=10,
+                               stdin=subprocess.DEVNULL, capture_output=True)
+            elif startfile is not None:
+                startfile(url)
+            else:
+                return {"ok": False, "error": "Codex opener is unavailable."}
+            return {"ok": True}
+        except (AttributeError, TypeError, OSError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "error": str(exc)[:120]}
+
+    def save_ledger_csv(self, window, receipt) -> dict:
+        authority = getattr(receipt, "authority", None)
+        if (not isinstance(authority, BridgeAuthority) or self._shutdown_pending()
+                or not authority.receipt_is_current(receipt, window, "save_ledger_csv")
+                or window is not getattr(self, "reset_actions_window", None)):
+            return {"ok": False, "error": "Settings window is no longer trusted."}
+        try:
+            status, _headers, body = ledger_service.http_response(
+                ledger_service.EXPORT_PATH, {"range": ["all"], "format": ["csv"]})
+        except Exception:
+            return {"ok": False, "error": "Saved history export is unavailable."}
+        if status != 200 or not any(name.lower() == "content-type" and value.startswith("text/csv")
+                                    for name, value in _headers.items()):
+            return {"ok": False, "error": "Saved history is unavailable or starting."}
+        if window is None or not callable(getattr(window, "create_file_dialog", None)):
+            return {"ok": False, "error": "Native file saving is unavailable."}
+        try:
+            selected, dialog_error = self._launch_settings_file_dialog(window, authority, receipt)
+            if dialog_error:
+                return dialog_error
+            if isinstance(selected, (list, tuple)):
+                selected = selected[0] if selected else None
+            if not selected:
+                return {"ok": False, "cancelled": True}
+            target = Path(selected)
+            with authority._lock:
+                if (not authority.receipt_is_current_locked(receipt, window, "save_ledger_csv")
+                        or self._shutdown_pending() or window is not self.reset_actions_window):
+                    return {"ok": False, "error": "Settings window is no longer trusted."}
+                target.write_bytes(body)
+            return {"ok": True}
+        except Exception:
+            return {"ok": False, "error": "Could not save the CSV file."}
+
+    def _launch_settings_file_dialog(self, window, authority, receipt):
+        done = threading.Event()
+        cancelled = threading.Event()
+        outcome = {"selected": None, "error": None}
+
+        def launch():
+            try:
+                with authority._lock:
+                    if (cancelled.is_set() or self._shutdown_pending()
+                            or window is not self.reset_actions_window
+                            or not authority.receipt_is_current_locked(receipt, window, "save_ledger_csv")
+                            or not authority.commit(receipt, window, "save_ledger_csv")):
+                        outcome["error"] = {"ok": False, "error": "Settings window is no longer trusted."}
+                        return
+                # This callback is running on the WinForms GUI thread. No native
+                # event can interleave between the receipt commit above and the
+                # ShowDialog call, while the lock remains free for close revocation
+                # during the modal dialog loop.
+                selected = window.create_file_dialog(
+                    webview.FileDialog.SAVE,
+                    save_filename="branchglance-ledger-all.csv",
+                    file_types=("CSV files (*.csv)",),
+                )
+                with authority._lock:
+                    if (cancelled.is_set() or self._shutdown_pending()
+                            or window is not self.reset_actions_window
+                            or not authority.receipt_is_current_locked(receipt, window, "save_ledger_csv")):
+                        outcome["error"] = {"ok": False, "error": "Settings window is no longer trusted."}
+                    else:
+                        outcome["selected"] = selected
+            except Exception:
+                outcome["error"] = {"ok": False, "error": "Could not open the CSV save dialog."}
+            finally:
+                done.set()
+
+        native = getattr(window, "native", None)
+        begin_invoke = getattr(native, "BeginInvoke", None) if native is not None else None
+        if callable(begin_invoke):
+            try:
+                from System import Func, Object
+                begin_invoke(Func[Object](launch))
+            except Exception:
+                return None, {"ok": False, "error": "Could not open the CSV save dialog."}
+            if not done.wait(SETTINGS_DIALOG_WAIT_SECONDS):
+                cancelled.set()
+                return None, {"ok": False, "status": "retryable", "error": "The CSV dialog timed out. Try again."}
+        else:
+            launch()
+        return outcome["selected"], outcome["error"]
+
+    def _clear_closed_settings_reference(self, child):
+        with self._lifecycle:
+            if self.reset_actions_window is child:
+                self.reset_actions_window = None
+
+    def _create_settings_native_window(self, settings_api, authority, revoke_on_closing,
+                                       clear_on_closed, register_child, token):
+        """Initialize the pinned pywebview Window model, then bind guards before native creation."""
+        gui = getattr(webview, "guilib", None)
+        if gui is None:
             child = webview.create_window(
                 "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
                 width=440, height=540, min_size=(360, 360), resizable=True,
-                background_color="#111316",
-            )
-            self.reset_actions_window = child
+                background_color="#111316", js_api=settings_api)
+            if not register_child(child):
+                with suppress(Exception):
+                    child.destroy()
+                return None
+            child.events.before_show += lambda *_: self._install_native_authority(
+                child, authority, settings=True)
+            child.events.closing += revoke_on_closing
+            child.events.closed += lambda *_: clear_on_closed(child)
+            self._install_native_authority(child, authority, settings=True)
+            return child
 
-            def on_closed(*_args):
-                with self._reset_actions_lock:
-                    if self.reset_actions_window is child:
-                        self.reset_actions_window = None
-                    if self._reset_actions_token == token:
-                        self._reset_actions_token = None
-                        server_module.set_settings_token(None)
+        # pywebview 6.2.1's public create_window creates native children before it
+        # returns on a running GUI thread. Construct its Window model directly so
+        # the synchronous before_show/closing hooks exist before guilib creates
+        # BrowserForm, EdgeChrome and the first CoreWebView2 navigation.
+        uid = "child_" + secrets.token_hex(4)
+        child = webview.Window(
+            uid, "Reset action settings", f"{RESET_ACTIONS_URL}#t={token}",
+            width=440, height=540, min_size=(360, 360), resizable=True,
+            background_color="#111316", js_api=settings_api)
+        webview.windows.append(child)
+        if not child._initialize(gui=gui, server=None):
+            webview.windows.remove(child)
+            return None
+        child.events.before_show += lambda *_: self._install_native_authority(
+            child, authority, settings=True)
+        child.events.closing += revoke_on_closing
+        child.events.closed += lambda *_: clear_on_closed(child)
+        if not register_child(child):
+            with suppress(ValueError):
+                webview.windows.remove(child)
+            return None
+        try:
+            created = {"ok": False}
+            completed = threading.Event()
 
-            child.events.closed += on_closed
+            def create_on_gui():
+                # Never raise out of this callback: under BeginInvoke it runs in the WinForms
+                # message loop, where an exception would surface as an unhandled-exception dialog.
+                # The calling thread re-raises it after completion and runs the normal cleanup.
+                try:
+                    created["ok"] = register_child(child, lambda: gui.create_window(child))
+                except Exception as error:
+                    created["ok"] = False
+                    created["error"] = error
+                finally:
+                    completed.set()
+
+            main_window = getattr(self, "window", None)
+            main_native = getattr(main_window, "native", None) if main_window is not None else None
+            begin_invoke = getattr(main_native, "BeginInvoke", None) if main_native is not None else None
+            invoke_required = bool(getattr(main_native, "InvokeRequired", False)) if main_native is not None else False
+            if callable(begin_invoke) and invoke_required:
+                try:
+                    from System import Func, Object
+                    begin_invoke(Func[Object](create_on_gui))
+                except Exception:
+                    raise
+                if not completed.wait(30.0):
+                    raise TimeoutError("Settings native creation timed out")
+            else:
+                create_on_gui()
+            if created.get("error") is not None:
+                raise created["error"]
+            if not created["ok"]:
+                with suppress(ValueError):
+                    webview.windows.remove(child)
+                return None
+        except Exception:
+            with suppress(ValueError):
+                webview.windows.remove(child)
+            raise
+        return child
+
+    def _install_native_authority(self, window, authority, *, settings=False):
+        """Install receipt, navigation and popup guards on the pinned Edge adapter pre-navigation."""
+        if authority is None or authority._port is None:
+            return
+        native = getattr(window, "native", None)
+        if native is None:
+            if settings:
+                self._revoke_settings_authority(authority)
+            else:
+                authority.revoke()
+            return False
+        adapter = getattr(native, "browser", None)
+        try:
+            if adapter is None:
+                if settings:
+                    self._revoke_settings_authority(authority)
+                else:
+                    authority.revoke()
+                return False
+            if authority.already_installed(window, adapter):
+                return True
+            webview_control = getattr(adapter, "webview", None)
+            original_notify = getattr(adapter, "on_script_notify", None)
+            original_ready = getattr(adapter, "on_webview_ready", None)
+            if webview_control is None or original_notify is None or original_ready is None:
+                if settings:
+                    self._revoke_settings_authority(authority)
+                else:
+                    authority.revoke()
+                return False
+            operations = _SETTINGS_BRIDGE_OPERATIONS if settings else _MAIN_BRIDGE_OPERATIONS
+
+            def guarded_notify(sender, args):
+                try:
+                    wire = json.loads(args.get_WebMessageAsJson())
+                    if not isinstance(wire, list) or len(wire) != 3:
+                        return
+                    operation, encoded_params, value_id = wire
+                    if (not isinstance(operation, str) or operation.startswith("_") or "." in operation
+                            or not isinstance(value_id, str) or not re.fullmatch(r"[0-9eE+.-]{0,64}", value_id)):
+                        return
+                    params = json.loads(encoded_params)
+                    if not isinstance(params, list):
+                        return
+                    core = sender.CoreWebView2
+                    source_url = str(args.Source)
+                    top_url = str(core.Source)
+                    receipt, refusal, generation = authority.receive_status(
+                        window, operation, source_url, top_url, operations)
+                    if receipt is None:
+                        if refusal in {"contended", "suspended"}:
+                            self._dispatch_retryable_bridge_refusal(
+                                window, authority, operation, params, value_id, source_url,
+                                top_url, generation, operations)
+                        return
+                except Exception:
+                    return
+                self._dispatch_native_bridge_call(window, operation, params, value_id, receipt)
+
+            def navigation_starting(_sender, args):
+                target = str(args.Uri)
+                trusted = authority.begin_navigation(target, getattr(args, "NavigationId", None))
+                if trusted is True:
+                    return
+                args.Cancel = True
+                if trusted is None:
+                    return
+                authority.cancel_navigation(getattr(args, "NavigationId", None))
+                if (getattr(args, "IsUserInitiated", False)
+                        and not getattr(args, "IsRedirected", False)
+                        and _explicit_external_url(target)):
+                    import webbrowser
+                    webbrowser.open(target)
+
+            def new_window_requested(sender, args):
+                args.set_Handled(True)
+                try:
+                    top_url = str(sender.Source)
+                except Exception:
+                    return
+                if not authority.allows_popup(window, top_url):
+                    return
+                target = str(args.get_Uri())
+                if (getattr(args, "IsUserInitiated", False) and _explicit_external_url(target)):
+                    import webbrowser
+                    webbrowser.open(target)
+
+            # CoreWebView2InitializationCompleted is subscribed in EdgeChrome.__init__.
+            # Replace the adapter's popup callback before invoking its initializer;
+            # that callback registers NewWindowRequested before it starts navigation.
+            def guarded_ready(sender, args):
+                if not args.IsSuccess:
+                    if settings:
+                        self._revoke_settings_authority(authority)
+                    else:
+                        authority.revoke()
+                    return original_ready(sender, args)
+                adapter.on_new_window_request = new_window_requested
+                original_load_url = adapter.load_url
+
+                def activate_before_initial_navigation(target):
+                    if not authority.activate(window, adapter, str(target)):
+                        return None
+                    return original_load_url(target)
+
+                adapter.load_url = activate_before_initial_navigation
+                return original_ready(sender, args)
+
+            def navigation_completed(sender, args):
+                try:
+                    authority.complete_navigation(args.NavigationId, args.IsSuccess,
+                                                  str(sender.CoreWebView2.Source))
+                except Exception:
+                    return
+
+            webview_control.WebMessageReceived -= original_notify
+            webview_control.WebMessageReceived += guarded_notify
+            adapter.on_script_notify = guarded_notify
+            webview_control.NavigationStarting += navigation_starting
+            webview_control.NavigationCompleted += navigation_completed
+            webview_control.CoreWebView2InitializationCompleted -= original_ready
+            webview_control.CoreWebView2InitializationCompleted += guarded_ready
+            if not authority.install(window, adapter):
+                if settings:
+                    self._revoke_settings_authority(authority)
+                else:
+                    authority.revoke()
+                return False
             return True
         except Exception:
-            with self._reset_actions_lock:
-                if self._reset_actions_token == locals().get("token"):
-                    self._reset_actions_token = None
-                    server_module.set_settings_token(None)
-            logging.getLogger(__name__).warning("Could not open reset action settings")
-            self.reset_actions_window = None
+            if settings:
+                self._revoke_settings_authority(authority)
+            else:
+                authority.revoke()
             return False
+
+    def _revoke_settings_authority(self, authority):
+        with self._lifecycle:
+            with self._reset_actions_lock:
+                token = getattr(authority, "settings_token", None)
+                if (token is None or self._settings_bridge_authority is not authority
+                        or self._reset_actions_token != token):
+                    authority.revoke()
+                    return
+                self._reset_actions_token = None
+                reservation = self._settings_child_reservation
+                if reservation is not None and reservation.authority is authority:
+                    self._settings_child_reservation = None
+                    if self.reset_actions_window is reservation.window:
+                        self.reset_actions_window = None
+                server_module.clear_settings_token(token, authority.revoke)
+
+    def _dispatch_native_bridge_call(self, window, operation, params, value_id, receipt):
+        """Resolve only allowlisted top-level operations and carry native receipt to execution."""
+        authority = receipt.authority
+        api = getattr(window, "_js_api", None)
+
+        def run():
+            try:
+                if operation in _RECEIPTED_OPERATIONS:
+                    if operation == "queue_message":
+                        callback = getattr(api, "_queue_message", None)
+                        result = callback(*params, receipt, window) if callback else {"ok": False, "error": "Queue is unavailable."}
+                    elif operation == "open_thread":
+                        callback = getattr(api, "_open_thread", None)
+                        result = callback(*params, receipt, window) if callback else {"ok": False, "error": "Open in Codex is unavailable."}
+                    elif operation == "open_reset_actions":
+                        callback = getattr(api, "_open_reset_actions", None)
+                        result = callback(receipt, window) if callback else False
+                    else:
+                        callback = getattr(api, "_save_ledger_csv", None)
+                        result = callback(receipt, window) if callback else {"ok": False, "error": "Native file saving is unavailable."}
+                else:
+                    method = getattr(api, operation, None)
+                    if method is None or operation.startswith("_") or "." in operation:
+                        return
+                    if not authority.commit(receipt, window, operation):
+                        return
+                    result = method(*params)
+            except Exception:
+                result = {"ok": False, "error": "Native action could not be completed."}
+            if not authority.receipt_is_current(receipt, window, operation):
+                return
+            self._schedule_native_reply(window, operation, value_id, result)
+
+        threading.Thread(target=run, name="widget-native-bridge", daemon=True).start()
+
+    def _dispatch_retryable_bridge_refusal(self, window, authority, operation, params, value_id,
+                                           source_url, top_url, generation, operations):
+        def reply_if_current():
+            deadline = time.monotonic() + BRIDGE_REFUSAL_DEADLINES.get(operation, 10.0)
+            while True:
+                state = authority.retryable_state(window, operation, source_url, top_url,
+                                                  generation, operations)
+                if state == "current":
+                    self._schedule_native_reply(window, operation, value_id,
+                                                {"ok": False, "status": "retryable",
+                                                 "error": "The widget is busy. Try again."})
+                    return
+                if state == "stale" or time.monotonic() >= deadline:
+                    return
+                time.sleep(min(0.025, max(0, deadline - time.monotonic())))
+
+        threading.Thread(target=reply_if_current, name="widget-bridge-retry", daemon=True).start()
+
+    @staticmethod
+    def _native_bridge_callback_script(operation, value_id, result):
+        operation_key = json.dumps(operation)
+        id_key = json.dumps(value_id)
+        payload = json.dumps({"value": json.dumps(result, ensure_ascii=True)}, ensure_ascii=True)
+        return ("(()=>{const cb=window.pywebview?._returnValuesCallbacks?.[" + operation_key
+                + "]?.[" + id_key + "];if(typeof cb===\"function\")cb(" + payload + ");})();")
+
+    @staticmethod
+    def _schedule_native_reply(window, operation, value_id, result):
+        """Post the response asynchronously to the GUI thread; never wait there for script completion."""
+        try:
+            from System import Func, Object
+            native = window.native
+            adapter = native.browser
+            script = WidgetApp._native_bridge_callback_script(operation, value_id, result)
+            native.BeginInvoke(Func[Object](lambda: adapter.webview.ExecuteScriptAsync(script)))
+        except Exception:
+            return
 
     def _startup_step(self, action):
         """Run one startup acquisition unless a shutdown was requested; serialized with quit()."""
@@ -2765,6 +3776,7 @@ class WidgetApp:
                          f"({HTTP_PORT}) is in use by another program. If another Branchglance instance "
                          "is running, quit it from its tray icon and start Branchglance again.")
             return
+        self._bridge_authority.enable(self.server.server_address[1])
         self._startup_step(self.limit_reset.start)
         self._startup_step(self.ledger.start)
         self._startup_step(self._create_main_window)
@@ -2795,12 +3807,17 @@ class WidgetApp:
             js_api=WindowApi(self.minimize, self.toggle_maximize, self.hide, self.size, self.resize,
                              self.fit_opening_size, self.set_notch, self.get_monitors, self.select_monitor, self.recenter,
                              self.begin_drag, self.end_drag, on_lock=self.set_widget_lock,
-                             on_get_lock=self.get_widget_lock, on_reset_actions=self.open_reset_actions,
+                             on_get_lock=self.get_widget_lock, on_reset_actions=self._open_reset_actions_from_bridge,
                              on_keep_open=self.set_keep_open, on_get_keep_open=self.get_keep_open,
-                              on_compact_profile=lambda: self.compact_profile,
-                              on_set_monitor_name=self.set_monitor_name),
+                             on_compact_profile=lambda: self.compact_profile,
+                             on_set_monitor_name=self.set_monitor_name,
+                             on_get_inspection_hotkey=self.get_inspection_hotkey,
+                             on_set_inspection_hotkey=self.set_inspection_hotkey,
+                             on_queue_message=self.queue_message, on_open_thread=self.open_thread),
         )
         self.window.events.before_show += self._set_native_background_fallback
+        self.window.events.before_show += lambda *_: self._install_native_authority(
+            self.window, self._bridge_authority, settings=False)
         self.window.events.closing += self.on_closing
         # The native Handle does not exist until the GUI backend has loaded.
         self.window.events.loaded += self.apply_native_window_region
@@ -2848,6 +3865,9 @@ def main(argv=None) -> None:
         # CLI only: no UI, no instance lock. Writes a file; the frozen app has no console to print to.
         raise SystemExit(debug_report.write_cli(_debug_report_target(args.debug_report), port=HTTP_PORT))
     debug_report.install_handler()
+    with suppress(Exception):
+        from . import memory_diagnostics
+        memory_diagnostics.start_if_requested()
     # Wait for any setup transaction before taking the Instance lock or loading
     # provider policy. A timeout exits quietly so repeated Start-menu clicks do
     # not leave message-box processes behind.

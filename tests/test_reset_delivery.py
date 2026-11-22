@@ -431,3 +431,48 @@ def test_denied_queue_does_not_discover_executable(monkeypatch):
     result = reset_delivery.queue_continue(THREAD, policies=load_policies({}))
     assert result["status"] == "rejected"
     assert discovered == []
+
+
+class _ClosingClient:
+    instances: list["_ClosingClient"] = []
+
+    def __init__(self, *args, fail=False, **kwargs):
+        self.closed = False
+        self.fail = fail
+        _ClosingClient.instances.append(self)
+
+    def list_threads(self, limit):
+        raise reset_delivery.CodexUnavailable("app-server down")
+
+    def read_thread(self, thread_id, include_turns=False):
+        raise reset_delivery.CodexUnavailable("app-server down")
+
+    def close(self, timeout=None):
+        self.closed = True
+
+
+def test_throwaway_app_server_is_closed_on_every_path(tmp_path, monkeypatch):
+    # An unclosed throwaway client leaves its `codex app-server` child running forever.
+    _metadata_db(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setattr(reset_delivery, "CodexAppServer", _ClosingClient)
+    _ClosingClient.instances = []
+
+    with pytest.raises(reset_delivery.CodexUnavailable):
+        reset_delivery.list_candidates()
+    assert reset_delivery.inspect_target("not a thread id")["reason"] == "invalid_thread_id"
+    assert len(_ClosingClient.instances) == 1, "validation runs before executable discovery"
+    reset_delivery.inspect_target(THREAD)
+
+    assert len(_ClosingClient.instances) == 2
+    assert all(client.closed for client in _ClosingClient.instances)
+
+
+def test_caller_supplied_client_is_not_closed(tmp_path, monkeypatch):
+    _metadata_db(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    client = _ClosingClient()
+    with pytest.raises(reset_delivery.CodexUnavailable):
+        reset_delivery.list_candidates(client=client)
+    reset_delivery.inspect_target(THREAD, client=client)
+    assert not client.closed

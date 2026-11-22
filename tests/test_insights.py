@@ -119,6 +119,26 @@ def test_insights_24h_uses_hour_series_and_all_is_bounded_to_31_days(tmp_path):
     assert thirty["providers"][0]["previous"] is None
 
 
+def test_missing_activity_inputs_are_unavailable_but_explicit_empty_inputs_are_zero(tmp_path):
+    snapshot, now = _fixture()
+    claude = snapshot["providers"][0]["_insightsData"]
+    claude.pop("sessions")
+    claude.pop("activeHours")
+
+    missing = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))["providers"][0]
+    assert missing["totals"]["tokens"] > 0
+    assert missing["totals"]["sessions"] is None
+    assert missing["totals"]["subagentsActive"] is None
+    assert missing["totals"]["activeHours"] is None
+
+    claude["sessions"] = []
+    claude["activeHours"] = []
+    empty = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))["providers"][0]
+    assert empty["totals"]["sessions"] == 0
+    assert empty["totals"]["subagentsActive"] == 0
+    assert empty["totals"]["activeHours"] == 0.0
+
+
 def _unpriced_row(tokens=1):
     return {"input_tokens": tokens, "cached_tokens": 0, "cache_5m_tokens": 0,
             "cache_1h_tokens": 0, "output_tokens": 0, "total_tokens": tokens}
@@ -145,6 +165,26 @@ def test_mixed_priced_and_unpriced_claude_models_sum_priced_and_flag_partial(tmp
     assert today_row["costPartial"] is True and today_row["apiEquivalentCost"] is not None
     assert next(row for row in claude["models"] if row["name"] == "unlisted-model-secret")["apiEquivalentCost"] is None
     assert next(row for row in claude["models"] if row["name"] == "claude-opus-5")["apiEquivalentCost"] is not None
+
+
+def test_unpublished_claude_model_remains_unpriced_without_a_price_row(tmp_path):
+    # Was test_fable_5_2_remains_unpriced_without_a_published_price_row; Fable 5.2's price was
+    # published (checked 2026-11-21), so the unpriced path is pinned with a still-unlisted id.
+    snapshot, now = _fixture()
+    snapshot["providers"][0]["_insightsData"]["dailyModels"][now.date().isoformat()]["claude-fable-5-3"] = _unpriced_row(10)
+    provider = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))["providers"][0]
+    row = next(row for row in provider["models"] if row["name"] == "claude-fable-5-3")
+    assert row["apiEquivalentCost"] is None
+    assert "claude-fable-5-3" in provider["totals"]["unpricedModels"]
+
+
+def test_fable_5_2_is_priced_from_its_published_row(tmp_path):
+    snapshot, now = _fixture()
+    snapshot["providers"][0]["_insightsData"]["dailyModels"][now.date().isoformat()]["claude-fable-5-2"] = _unpriced_row(1_000_000)
+    provider = insights.build_insights(snapshot, "30d", now=now, peak_store=_quiet_store(tmp_path))["providers"][0]
+    row = next(row for row in provider["models"] if row["name"] == "claude-fable-5-2")
+    assert row["apiEquivalentCost"] == 8.0  # 1M uncached input tokens at $8 / MTok
+    assert "claude-fable-5-2" not in (provider["totals"].get("unpricedModels") or [])
 
 
 def test_mixed_priced_and_unpriced_codex_models_in_range(tmp_path):

@@ -295,13 +295,62 @@ def test_compact_typed_anchor_centers_expansion_and_drag_saves_actual_width(nati
 def test_dashboard_mode_uses_fixed_size_and_clamps_to_work_area(native_notch):
     app, monitors, rect, calls = native_notch
     app._compact_notch_mode = "dashboard"
+    app.notch_height = 608
     assert widget._compact_notch_dimensions("dashboard") == (720, 608)
     assert app._notch_target() == (720, 608, 600, 0)
     app.set_notch(False, 608, False, "dashboard")
     assert rect == [600, 0, 720, 608]
-    assert calls[-1] == (720, 608, 600, 0)
+    assert calls[-2] == (720, 608, 600, 0)
+    assert calls[-1] == 'window.tokenTrackerNotchSettled?.("dashboard", false, null)'
     monitors[0]["area"] = (0, 0, 640, 480)
     assert app._notch_target() == (640, 480, 0, 0)
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_dashboard_requested_height_and_jump_settle(native_notch):
+    app, _monitors, rect, calls = native_notch
+    for height in (478, 608):
+        app.set_notch(True, height, True, "dashboard")
+        assert rect == [600, 0, 720, height]
+        assert calls[-1] == 'window.tokenTrackerNotchSettled?.("dashboard", true, null)'
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_animation_emits_settle_after_final_frame(native_notch, monkeypatch):
+    app, _monitors, rect, calls = native_notch
+    app._compact_notch_mode = "dashboard"
+    app.notch_expanded = True
+    target = (720, 478, 600, 0)
+    app._notch_transition = ((rect[2], rect[3], rect[0], rect[1]), target, 0, 1)
+    app._notch_transition_notice = (app.window, "dashboard", True, 42)
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 2)
+    app._animate_notch()
+    assert calls[-2] == target
+    assert calls[-1] == 'window.tokenTrackerNotchSettled?.("dashboard", true, 42)'
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_close_can_take_notch_lock_while_jump_settle_blocks(native_notch):
+    app, _monitors, _rect, _calls = native_notch
+    entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+    def evaluate(_script):
+        entered.set()
+        release.wait(2)
+    app.window.evaluate_js = evaluate
+    sender = threading.Thread(target=lambda: app.set_notch(True, 478, True, "dashboard", 5), daemon=True)
+    closer = threading.Thread(target=lambda: (app.hide(), closed.set()), daemon=True)
+    try:
+        sender.start()
+        assert entered.wait(1)
+        closer.start()
+        assert closed.wait(1), "close must not wait for the evaluator to release the notch lock"
+    finally:
+        release.set()
+        sender.join(2)
+        if closer.ident is not None:
+            closer.join(2)
+    assert not sender.is_alive()
+    assert not closer.is_alive()
 
 
 @pytest.mark.parametrize("native_notch", [True], indirect=True)
@@ -1782,3 +1831,52 @@ def test_window_state_writes_from_many_threads_keep_every_key(tmp_path):
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored == {f"key{index}": index for index in range(24)}
     assert not list(tmp_path.glob("*.tmp")), "temporary files are cleaned up"
+
+
+@pytest.mark.parametrize("native_notch", [True], indirect=True)
+def test_inspect_request_matching_a_stale_rect_ends_behind_queued_controls_frames(native_notch, monkeypatch):
+    """Asynchronous frames apply later in FIFO order; GetWindowRect can lag behind them."""
+    app, _monitors, rect, _calls = native_notch
+    app.set_notch(True, 170, False, "inspect")
+    inspect_rect = tuple(rect)
+    queued, fails = [], []
+
+    def place(width, height, x, y, *, asynchronous=False):
+        if fails:
+            return fails.pop()
+        if asynchronous:
+            queued.append([x, y, width, height])  # posted to the GUI thread, not yet applied
+        else:
+            rect[:] = [x, y, width, height]
+        return True
+
+    def pump():
+        while queued:
+            rect[:] = queued.pop(0)
+
+    monkeypatch.setattr(app, "_place", place)
+    monkeypatch.setattr(widget, "_notch_animation_enabled", lambda: True)
+    app._notch_thread = SimpleNamespace(join=lambda timeout=None: None)  # drive the animation inline
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1000.0)
+    app.set_notch(False, None, False, "controls")
+    assert app._notch_transition is not None
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1001.0)
+    app._animate_notch()
+    assert queued and tuple(queued[-1][2:]) == (328, 110), "the controls frame is queued, not applied"
+    assert tuple(rect) == inspect_rect, "GetWindowRect still reports the inspect rectangle"
+
+    app.set_notch(True, 170, False, "inspect")
+    pump()
+    assert tuple(rect) == inspect_rect, "the window must end at the latest (inspect) request"
+
+    # A failed corrective post leaves the request eligible: the next identical request repairs it.
+    app._notch_thread = SimpleNamespace(join=lambda timeout=None: None)
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1002.0)
+    app.set_notch(False, None, False, "controls")
+    monkeypatch.setattr(widget.time, "monotonic", lambda: 1003.0)
+    app._animate_notch()
+    fails.append(False)
+    app.set_notch(True, 170, False, "inspect")
+    app.set_notch(True, 170, False, "inspect")
+    pump()
+    assert tuple(rect) == inspect_rect

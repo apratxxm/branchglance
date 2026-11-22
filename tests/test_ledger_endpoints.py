@@ -8,6 +8,8 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -19,6 +21,7 @@ from test_ledger_support import (  # ledger_guard is autouse
 ALL = {"Claude": True, "Codex": True}
 
 from token_tracker import ledger_service
+from token_tracker import insights, providers
 from token_tracker import ledger_store as store
 from token_tracker.ledger import Ledger, read_summary
 from token_tracker.ledger_service import CSV_COLUMNS, ENV_FLAG, LedgerService, csv_text
@@ -218,21 +221,49 @@ def test_csv_neutralises_formula_prefixes_and_keeps_plain_cells():
 
 # ------------------------------------------------------------------ hour-aligned windows (P9)
 
-def test_rolling_window_starts_at_hour_boundary_and_includes_exactly_that_bucket(tmp_path, no_current):
+def test_insights_window_is_shared_and_floored_to_stored_hour(tmp_path, no_current, monkeypatch):
     data, claude, codex = make_roots(tmp_path)
-    # 10:30 on 2026-11-02 (HOUR_START is 10:00): the 24h window starts at yesterday 10:00.
-    write_jsonl(claude_file(claude, "s1"), [claude_response(-87000, "before", output=5),
-                                            claude_response(-85500, "inside", output=7)])
+    # Old rolling start: yesterday 10:00. New Insights start: yesterday 11:00.
+    write_jsonl(claude_file(claude, "s1"), [claude_response(-83700, "before", output=5),
+                                            claude_response(-81900, "inside", output=7)])
     service = LedgerService(data_dir=data, claude_root=claude, codex_root=codex, policies=policies_for(),
                             environ={ENV_FLAG: "1"}, waiter=lambda seconds: True)
     service.start()
     service._thread.join(20)
     now = HOUR_START + 1800
+    monkeypatch.setattr(providers, "_local_timezone", lambda: timezone.utc)
     status, _headers, body = ledger_service.http_response("/api/ledger", {"range": ["24h"]}, now=now)
     payload = json.loads(body)
     assert status == 200
-    assert payload["range"]["start"] == "2026-11-01T10:00:00+00:00"
+    insight_start = insights._range_window("24h", datetime.fromtimestamp(now, timezone.utc))["start"]
+    expected_start = int(insight_start // ledger_service.HOUR_SECONDS) * ledger_service.HOUR_SECONDS
+    assert payload["range"]["start"] == datetime.fromtimestamp(expected_start, timezone.utc).isoformat()
     assert payload["totals"]["requests"] == 1 and payload["totals"]["outputTotal"] == 7
+
+
+@pytest.mark.parametrize(("zone", "now"), [
+    ("Asia/Kolkata", datetime(2026, 11, 2, 10, 30, tzinfo=timezone.utc)),
+    ("America/New_York", datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc)),
+])
+@pytest.mark.parametrize("range_name", ["24h", "7d", "30d"])
+def test_ledger_ranges_match_insights_start_with_local_hour_floor(no_current, monkeypatch, zone, now, range_name):
+    monkeypatch.setattr(providers, "_local_timezone", lambda: ZoneInfo(zone))
+    expected = insights._range_window(range_name, insights._local_now(now))["start"]
+    expected = int(expected // ledger_service.HOUR_SECONDS) * ledger_service.HOUR_SECONDS
+    assert ledger_service._range_start(range_name, now.timestamp()) == expected
+
+
+@pytest.mark.parametrize(("zone", "now", "range_name", "start"), [
+    # 16:00 IST: 30 calendar days open at 4 Oct 00:00 IST (3 Oct 18:30 UTC), floored to 18:00 UTC.
+    ("Asia/Kolkata", datetime(2026, 11, 2, 10, 30, tzinfo=timezone.utc), "30d", "2026-10-03T18:00:00+00:00"),
+    # 24 local hour points ending at 16:00 IST open at 17:00 IST the day before (11:30 UTC).
+    ("Asia/Kolkata", datetime(2026, 11, 2, 10, 30, tzinfo=timezone.utc), "24h", "2026-11-01T11:00:00+00:00"),
+    # The US fall-back day: 7 days open at 26 Oct 00:00 EDT.
+    ("America/New_York", datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc), "7d", "2026-10-26T04:00:00+00:00"),
+])
+def test_ledger_range_starts_are_calendar_windows(no_current, monkeypatch, zone, now, range_name, start):
+    monkeypatch.setattr(providers, "_local_timezone", lambda: ZoneInfo(zone))
+    assert datetime.fromtimestamp(ledger_service._range_start(range_name, now.timestamp()), timezone.utc).isoformat() == start
 
 
 # ------------------------------------------------------------------ coverage flagged in exports (P10)

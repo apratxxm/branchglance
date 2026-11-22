@@ -12,7 +12,7 @@ let responseQueue=[];
 const localStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))};
 const document={querySelector(){return null;},querySelectorAll(){return [];},addEventListener(){}};
 const window={__TOKEN_TRACKER_DASHBOARD_TEST__:true,addEventListener(){},TokenTrackerFormatModel:({model})=>String(model).replace(/^claude-(opus|sonnet|haiku)-([0-9.]+).*$/i,(_,family,version)=>family[0].toUpperCase()+family.slice(1)+" "+version).replace(/^gpt-([0-9.]+)-([a-z]+).*$/i,(_,version,family)=>"GPT-"+version+" "+family[0].toUpperCase()+family.slice(1))};
-const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,location:{origin:"http://127.0.0.1:8765"},requestAnimationFrame:f=>f(),setTimeout:(f)=>f(),fetch:async()=>responseQueue.shift()||{ok:false,status:404,json:async()=>({})}};
+const context={window,document,Intl,Date,Math,Number,JSON,Map,Set,Array,Promise,localStorage,AbortSignal:{timeout:ms=>({timeout:ms})},location:{origin:"http://127.0.0.1:8765"},requestAnimationFrame:f=>f(),setTimeout:(f)=>f(),fetch:async url=>String(url).startsWith("/api/ledger")?{ok:false,status:503}:responseQueue.shift()||{ok:false,status:404,json:async()=>({})}};
 vm.createContext(context);vm.runInContext(source,context);
 const dashboard=window.__tokenTrackerDashboardTest;
 
@@ -33,7 +33,7 @@ assert.equal(dashboard.state.metric,"tokens","unpriced payload switches the togg
 // (1) Hero shows the tokens headline, never an empty or "not available" cost hero.
 let html=dashboard.insightsHTML();
 assert.match(html,/class="dash-hero"/);
-assert.match(html,/<strong class="dash-hero-number">3\.57<\/strong><span class="dash-hero-unit">B tokens<\/span>/);
+assert.match(html,/<strong class="dash-hero-number">3\.57<span class="dash-hero-mag">B<\/span><\/strong><span class="sr-only"> tokens<\/span>/);
 assert.match(html,/Tokens over 30 days/);
 assert.doesNotMatch(html,/not available|dash-hero-currency/);
 
@@ -41,6 +41,8 @@ assert.doesNotMatch(html,/not available|dash-hero-currency/);
 assert.match(html,/class="dash-chart"/);
 assert.match(html,/area-fill claude/);assert.match(html,/area-fill codex/);
 assert.equal((html.match(/class="dash-point"/g)||[]).length,30,"one hover point per series day");
+assert.equal((html.match(/class="dash-point" tabindex="0"/g)||[]).length,1,"exactly one chart point is in the tab order");
+assert.equal((html.match(/class="dash-point" tabindex="-1"/g)||[]).length,29,"the other points are out of the tab order");
 const hitRects=markup=>[...markup.matchAll(/class="dash-hit" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)].map(m=>m.slice(1).map(Number));
 function checkHits(markup,count){
   const hits=hitRects(markup);assert.equal(hits.length,count);
@@ -56,46 +58,55 @@ for(const count of [1,2,0]){
   dashboard.state.insights=payload;checkHits(dashboard.insightsHTML(),count);
 }
 dashboard.state.insights=livePayload();
-assert.match(html,/Daily · tokens/);
+assert.match(html,/<span class="dash-section-title">Daily tokens<\/span>/);
 
-// (3) Zero figures next to non-zero tokens are treated as missing, not shown as 0.
-assert.doesNotMatch(html,/dash-summary|sessions|subagents|active|cache hits/);
+// (3) Reported zero figures stay visible beside non-zero tokens; missing fields stay unavailable.
+assert.match(html,/<dt>Sessions<\/dt><dd>0<\/dd>.*<dt>Subagents<\/dt><dd>0<\/dd>.*<dt>Active hours<\/dt><dd>0h<\/dd>/,"reported zero activity stays visible beside positive tokens");
+assert.match(html,/<dt>Cache hit rate<\/dt><dd><span aria-label="Not available">/,"a missing cache rate remains unavailable");
+dashboard.state.insights=livePayload({providers:[{...livePayload().providers[0],totals:{...livePayload().providers[0].totals,tokens:3.2e9,sessions:null,subagentsActive:null,activeHours:null}}]});
+const missingActivity=dashboard.insightsHTML();
+for(const label of ["Sessions","Subagents","Active hours"])assert.match(missingActivity,new RegExp(`<dt>${label}<\\/dt><dd><span aria-label="Not available">`),`${label} stays unavailable when the builder has no source inputs`);
+dashboard.state.insights=livePayload();
 
-// (4) Model table shows when rows exist; limit panel hidden when peaks are null; no empty lower band.
+// (4) Model table shows when rows exist; limit panel hidden when peaks are null.
 assert.match(html,/>Models</);assert.match(html,/Opus 5\.5/);assert.match(html,/GPT-6 Luna/);
-assert.match(html,/dash-model-head[^]*?<small>Tokens<\/small><small title="API-equivalent estimate">Est. cost<\/small>/);
-assert.equal((html.match(/class="dash-none" role="img" aria-label="No published price">—/g)||[]).length,2,"each unpriced model has a cost placeholder");
+assert.match(html,/<th scope="col">Tokens<\/th><th scope="col">Est\. cost<\/th>/,"Models is a semantic table with visible unit headers");
+assert.equal((html.match(/class="dash-none" role="img" aria-label="No published price">&mdash;/g)||[]).length,2,"each unpriced model has a cost placeholder");
 assert.doesNotMatch(html,/dash-share/);
 assert.equal((html.match(/class="dash-axis-value"/g)||[]).length,3);
 assert.doesNotMatch(html,/<text class="dash-(axis-value|date)"/,"chart labels remain undistorted HTML");
-assert.match(html,/class="dash-legend-name">Claude<\/span><b>3\.2B<\/b>/);
-assert.match(html,/class="dash-legend-name">Codex<\/span><b>370M<\/b>/);
+assert.match(html,/class="dash-legend-cell dash-legend-name">Claude<\/span><span class="dash-legend-cell dash-legend-value"><b>3\.20B<\/b><\/span>/);
+assert.match(html,/class="dash-legend-cell dash-legend-name">Codex<\/span><span class="dash-legend-cell dash-legend-value"><b>370M<\/b><\/span>/);
 // Provider filtering lives in explicit chips beside the chart heading, not in the split table.
 assert.match(html,/class="dash-chip claude-color" data-dashboard-provider="Claude" aria-pressed="true"/);assert.doesNotMatch(html,/dash-legend-toggle/);
-assert.match(html,/30d \/ plan/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
+assert.match(html,/30d vs plan <span class="sr-only">30-day API-equivalent estimate divided by the monthly plan price/);assert.doesNotMatch(html,/API use/,"the multiplier column is named for what it is");assert.match(html,/class="dash-chips"/);
 assert.ok(html.indexOf('dash-hero')<html.indexOf('dash-lower')&&html.indexOf('dash-lower')<html.indexOf('dash-chart-section'));
-assert.doesNotMatch(html,/Highest usage/);
-assert.match(html,/class="dash-lower is-single"/);
+assert.doesNotMatch(html,/Peak quota used/);
+assert.match(html,/class="dash-lower[^"]*"[\s\S]*class="[^"]*dash-quota[\s\S]*dash-quota-row/);
 
 // Models absent: the model table and empty panels are not rendered at all.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,models:[]}))})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/>Models</);
-assert.doesNotMatch(html,/dash-lower/,"no lower section when there are no models or peaks");
+assert.match(html,/class="dash-lower[^"]*"[\s\S]*class="dash-summary"/,"activity remains in the lower section when model rows are absent");
 assert.match(html,/class="dash-chart"/);
 
 // Limit peaks alone render their own panel (only when present).
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>({...p,models:[],limitPeaks:i===0?{fiveHour:76,weekly:58}:{fiveHour:null,weekly:null}}))})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
-assert.match(html,/Highest usage/);assert.match(html,/dash-lower is-single/);assert.match(html,/>5h</);assert.match(html,/76%/);
+assert.match(html,/Peak in this range/);assert.match(html,/class="dash-lower[^"]*"[\s\S]*class="[^"]*dash-quota[\s\S]*dash-quota-row/);assert.match(html,/>5h</);assert.match(html,/76%/);
+
+const peakBlock=html.match(/<div class="dash-quota-peak">([\s\S]*?)<\/div>/)?.[1]||"";
+assert.ok(peakBlock,"historical peaks stay grouped under the live quota block");
+assert.doesNotMatch(peakBlock,/<thead>/,"O501 reuses the live block's window headings");
 
 // Non-zero sessions are shown.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map((p,i)=>i===0?{...p,totals:{...p.totals,sessions:46,subagentsActive:18,activeHours:62}}:p)})}];
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
-assert.match(html,/<dt>Sessions<\/dt><dd>46<\/dd>.*<dt>Subagents<\/dt><dd>18<\/dd>.*<dt>Active<\/dt><dd>62h<\/dd>/);
+assert.match(html,/<dt>Sessions<\/dt><dd>46<\/dd>.*<dt>Subagents<\/dt><dd>18<\/dd>.*<dt>Active hours<\/dt><dd>62h<\/dd>/);
 
 // Priced payload keeps cost as the hero and chart metric; the toggle is not forced to Tokens.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,totals:{...p.totals,apiEquivalentCost:12.5},series:p.series.map(r=>({...r,apiEquivalentCost:1}))}))})}];
@@ -103,7 +114,7 @@ dashboard.state.metric="cost";dashboard.state.metricExplicit=true;dashboard.stat
 await dashboard.loadInsights();
 assert.equal(dashboard.state.metric,"cost");
 html=dashboard.insightsHTML();
-assert.match(html,/dash-hero-currency/);assert.match(html,/Daily · API-equivalent cost estimate/);
+assert.match(html,/dash-hero-currency/);assert.match(html,/<span class="dash-section-title">Daily cost<\/span>/);
 
 // Stats-only fallback with a cost-free window still shows tokens and no fake cost.
 responseQueue=[{ok:false,status:404,json:async()=>({})},{ok:true,json:async()=>({generatedAt:today.toISOString(),providers:[{name:"Claude",tracked31Days:1200,cache:{percent:null},activity:[{date:dateOffset(0),value:1200}],modelUsage:[]}]})}];
@@ -111,7 +122,7 @@ dashboard.state.metric="cost";dashboard.state.range="24h";dashboard.state.insigh
 await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.doesNotMatch(html,/dash-hero-currency/);
-assert.match(html,/dash-hero-number">1\.2<\/strong><span class="dash-hero-unit">K tokens/);
+assert.match(html,/dash-hero-number">1\.20<span class="dash-hero-mag">K<\/span><\/strong><span class="sr-only"> tokens/);
 assert.match(html,/latest recorded date/,"fallback describes daily coverage rather than rolling 24 hours");
 assert.match(html,/Insights unavailable · Daily fallback/,"stats fallback reports Insights unavailable, not a failed refresh");
 assert.doesNotMatch(html,/Update failed/);
@@ -136,7 +147,7 @@ await dashboard.loadInsights();
 html=dashboard.insightsHTML();
 assert.match(html,/dash-hero-currency/);
 assert.doesNotMatch(html,/Recorded subtotal \/ estimate/,"the line under the hero figure is removed");
-assert.match(html,/Daily estimate excludes Codex/,"chart explains provider exclusions separately");
+assert.match(html,/estimated · excl\. Codex/,"the unit line names the provider that is excluded from the cost total");
 // Complete pricing: no note.
 responseQueue=[{ok:true,json:async()=>livePayload({providers:livePayload().providers.map(p=>({...p,totals:{...p.totals,apiEquivalentCost:4,costPartial:false,unpricedModels:[]},series:p.series.map(r=>({...r,apiEquivalentCost:0.1}))}))})}];
 await dashboard.loadInsights();
@@ -157,12 +168,16 @@ assert.ok(page.indexOf('href="runway_refined.css"')<page.indexOf('href="dashboar
 {
   const hours=Array.from({length:24},(_,i)=>({date:`2026-10-06T${String(i).padStart(2,"0")}:00:00+00:00`,tokens:1000*(i+1),apiEquivalentCost:(i+1)/10}));
   dashboard.state.insights=livePayload({range:"24h",providers:livePayload().providers.map(p=>({...p,series:hours}))});
+  values.set("branchglanceClockFormat","24");
   const day=dashboard.insightsHTML();
-  assert.match(day,/class="dash-chart-section"/);assert.match(day,/Hourly · /);
+  assert.match(day,/class="dash-chart-section"/);assert.match(day,/<span class="dash-section-title">Hourly tokens<\/span>/);
   assert.equal((day.match(/class="dash-hit"/g)||[]).length,24);
-  for(const label of ["0:00","6:00","12:00","now"])assert.match(day,new RegExp(">"+label+"<"),"hour tick "+label);
+  for(const label of ["00:00","06:00","12:00","now"])assert.match(day,new RegExp(">"+label+"<"),"24-hour tick "+label);
   assert.match(day,/class="dash-chips"/,"provider chips are available at 24h");
   assert.doesNotMatch(day,/dash-lower is-single is-day|dash-lower is-day/,"the 24h view is no longer chartless");
+  values.set("branchglanceClockFormat","12");const twelve=dashboard.insightsHTML();
+  for(const label of ["12 AM","6 AM","12 PM"])assert.match(twelve,new RegExp(">"+label+"<"),"12-hour tick "+label);
+  values.delete("branchglanceClockFormat");
 }
 
 console.log("Insights payload contracts passed");

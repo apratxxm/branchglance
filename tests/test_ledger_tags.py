@@ -144,6 +144,10 @@ def test_registry_changes_take_effect_on_next_ingest(tmp_path):
     from test_ledger_support import append_jsonl
     append_jsonl(path, [user(15, "kind: banana"), claude_response(20, "m2", output=9)])
     ledger.ingest(ALL)
+    assert ("Claude", "banana") not in rows(ledger)  # deferred tail has not used the changed registry yet
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
+    ledger.ingest(ALL)
     assert rows(ledger)[("Claude", "banana")]["outputTotal"] == 9
     assert ledger.coverage()["unknownKinds"]["banana"] == 1
 

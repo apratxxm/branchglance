@@ -7,6 +7,7 @@ const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.
 const css=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");
 const refinedCss=fs.readFileSync(new URL("../token_tracker/static/runway_refined.css",import.meta.url),"utf8");
 const dashboardCss=fs.readFileSync(new URL("../token_tracker/static/dashboard.css",import.meta.url),"utf8");
+const resetCss=fs.readFileSync(new URL("../token_tracker/static/reset_actions.css",import.meta.url),"utf8");
 const dashboardScript=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8");
 const cssRule=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([,name])=>name.replace(/\/\*[\s\S]*?\*\//g,'').trim()===selector)?.[2]||"";
 assert.match(page,/window\.__TOKEN_TRACKER_RUNWAY__=true/);
@@ -18,8 +19,20 @@ assert.match(page,/id="sync-age"[^>]*data-action="refresh"[^>]*aria-label="Refre
 assert.doesNotMatch(page,/id="monitor-toggle"|id="toolbar-more"|id="toolbar-menu"/,"the dock has no monitor item or overflow menu");
 assert.match(page,/id="dashboard-open"[^>]*data-action="dashboard"[^>]*aria-label="Open Insights dashboard"/);
 assert.match(page,/id="window-recenter" class="icon-btn" aria-label="Recenter widget" title="Recenter widget"><svg class="ic"/,"the dock renders the Recenter icon button");
+assert.match(page,/id="chat-list" class="chat-list" tabindex="0" role="region" aria-label="Job list; scroll for more jobs"/,"the job list exposes keyboard scrolling and a continuation label");
 assert.match(page,/id="dashboard-settings-open" class="icon-btn" data-action="open-settings" aria-label="Open Settings" title="Settings"><svg class="ic"/,"the dock renders the Settings icon button");
-assert.ok(page.indexOf('id="dashboard-open"')<page.indexOf('id="dashboard-settings-open"')&&page.indexOf('id="dashboard-settings-open"')<page.indexOf('id="window-recenter"')&&page.indexOf('id="window-recenter"')<page.indexOf('class="tb-fill'),"the dock order is Insights, Settings, Recenter");
+assert.ok(page.indexOf('id="dashboard-open"')<page.indexOf('id="dashboard-settings-open"')&&page.indexOf('id="dashboard-settings-open"')<page.indexOf('id="sync-age"')&&page.indexOf('id="sync-age"')<page.indexOf('id="widget-lock"')&&page.indexOf('id="widget-lock"')<page.indexOf('id="widget-keep-open"')&&page.indexOf('id="widget-keep-open"')<page.indexOf('id="window-recenter"')&&page.indexOf('id="window-recenter"')<page.indexOf('class="tb-fill'),"dock order is Insights, Settings | Refresh | Lock, Keep open, Recenter");
+assert.match(page,/id="dashboard-refresh" type="button" aria-label="Refresh Insights" title="Refresh"><svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M10 4\.8A4\.5 4\.5 0 1 0 10 7"/);
+assert.match(dashboardCss,/\.dashboard-controls #dashboard-refresh\{[^}]*position:relative[^}]*width:28px[^}]*height:28px/);
+assert.match(dashboardCss,/\.dashboard-controls #dashboard-refresh::before\{[^}]*position:absolute;left:6px;top:6px/,"the refresh glyph is explicitly centred inside its button");
+assert.match(dashboardCss,/dashboard-refresh-spin \.8s linear infinite/);assert.match(dashboardCss,/prefers-reduced-motion:reduce\)\{\.dashboard-controls #dashboard-refresh\[aria-busy="true"\]::before\{animation:none;opacity:\.5/);
+assert.doesNotMatch(dashboardCss,/dashboard-controls #dashboard-refresh\{[^}]*min-width:92px/);
+assert.match(dashboardCss,/\.dash-settings-group h2\{[^}]*color:var\(--d-ink\);font-size:14px;font-weight:650/);
+assert.match(dashboardCss,/\.dash-h2-note\{[^}]*color:var\(--d-mute\);font-size:12px/);
+assert.match(resetCss,/\.settings-embedded legend\{[^}]*color:var\(--d-ink\);font-size:14px;font-weight:650/);
+assert.match(dashboardCss,/#dashboard-settings\{[^}]*overflow-y:scroll!important/);
+assert.match(dashboardCss,/#dashboard-settings::-webkit-scrollbar\{display:block!important;width:4px!important/);
+assert.match(dashboardCss,/#dashboard-settings::-webkit-scrollbar-thumb\{background:var\(--d-mute\)/);
 assert.match(page,/id="dashboard-view"[^>]*aria-label="Insights and Settings dashboard"/);
 assert.match(page,/src="dashboard.js"><\/script>\s*<script src="app.js"/);
 assert.match(dashboardCss,/data-notch-mode="dashboard"/);assert.match(dashboardCss,/prefers-reduced-motion/);
@@ -41,9 +54,24 @@ assert.doesNotMatch(css,/^\.t-live,\.t-attn,\.t-err/m); // telemetry overrides c
 assert.match(css,/\.rr-left\.last-known[^{}]*\{[^}]*opacity:\.62/);
 assert.match(css,/\.meter\.last-known i\{background:var\(--muted\)\}/);
 assert.match(refinedCss,/\.meter\.last-known i\{background:var\(--muted\);\}/);
-assert.match(refinedCss,/\.rr-left\.last-known i\{display:none;\}/,"the strip keeps the age in the tooltip so it cannot push into the countdown");
+assert.match(refinedCss,/\.rr-left\.last-known i\{display:inline;[^}]*white-space:nowrap;/,"the strip shows the full stale age beside the last-known value");
 assert.match(refinedCss,/\.rr \.rr-left\.last-known b\{color:var\(--muted\);\}/,"a last-known value is grey like its meter");
+assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr\{[^}]*grid-template-columns:minmax\(0,1fr\) max-content max-content;[^}]*column-gap:8px/,"compact quota cells keep a fixed gap and allow the value cell to shrink");
+assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr:not\(:has\(\.rr-banked:not\(\[hidden\]\)\)\)\{grid-template-columns:minmax\(0,1fr\) max-content;\}/,"rows without a banked-reset badge reserve only one fixed gap before the reset");
+assert.match(refinedCss,/\.rr-cd\.last-known\{color:var\(--muted\);\}/,"a stale countdown uses the mute ink");
+assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-left\.last-known i\{[^}]*flex:0 0 auto;white-space:nowrap;/,"the complete stale age remains visible without competing with its countdown");
+assert.match(refinedCss,/\.rr-cd\.last-known:empty::before\{content:"";\}/,"a stale cell's empty countdown track stays visually empty");
+assert.doesNotMatch(refinedCss,/runway-list-more/,"the job list never shows a +N more cue");
+assert.doesNotMatch(app,/runway-list-more|syncRunwayOverflowCue/,"no script inserts a +N more cue");
+assert.doesNotMatch(css,/body:has\(\.chat\[data-provider="Codex"\]\):not\(:has\(\.chat\[data-provider="Claude"\]\)\) \.runway-count\.t-live/,"single-provider counters keep the shared workload ink");
+assert.match(refinedCss,/body\.runway-refined\.runway-compact:not\(\.phone\) \.rr-moment\{grid-column:3;grid-row:1;justify-content:flex-end;\}/,"the reset time stays right-aligned in its own cell");
 assert.match(cssRule('.runway-count.t-live'),/color:var\(--green\)/);
+assert.match(refinedCss,/\.rr-cd\.last-known\{color:var\(--muted\);\}/);
+assert.match(refinedCss,/\.chat\[data-provider="Codex"\]>\.row:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)>\.runway-refined-row/);
+assert.match(refinedCss,/\.chat>\.row:not\(:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)\)::after\{content:none;background:none;/,"non-running and non-waiting root rows suppress the decorative wash");
+assert.match(refinedCss,/runway-compact\[data-notch-mode="inspect"\][^{}]*\.chat>\.row:not\(:has\(\.runway-refined-status\.t-live,\.runway-refined-status\.t-attn\)\)::after\{content:none;background:none;/,"the compact widget also suppresses the wash on unknown-status roots");
+assert.doesNotMatch(refinedCss,/\.chat\[data-provider="Codex"\]>\.row>\.runway-refined-row\{[^}]*background-image/,"unknown-status roots do not get the active row wash");
+assert.match(refinedCss,/\.icon-btn:disabled\{opacity:\.45/);
 assert.match(cssRule('.runway-count.t-attn'),/color:var\(--orange\)/);
 assert.match(css,/\.row:has\(\[data-own-waiting=true\]\) \.r-title/);
 assert.match(css,/\.row:has\(\[data-child-waiting=true\]\) \.r-title/);
@@ -87,7 +115,7 @@ const luminance=hex=>{const rgb=hex.match(/[\da-f]{2}/gi).map(channel=>parseInt(
 const contrast=(a,b)=>{const values=[luminance(a),luminance(b)].sort((x,y)=>y-x);return (values[0]+.05)/(values[1]+.05);};
 for(const color of [cssVars.ink,cssVars.muted,cssVars.green,cssVars.orange,cssVars.red])for(const surface of [cssVars.paper,cssVars.card,"#282116"])assert.ok(contrast(color,surface)>=4.5,`${color} must meet 4.5:1 on ${surface}`);
 
-const nodes=new Map(),saved=new Map(),scheduledTimers=new Map(),openRequests=[],dragRegionNodes=[],fixedNow=new Date("2026-10-06T12:00:00Z").getTime();let timerSequence=0,testNow=fixedNow;
+const nodes=new Map(),saved=new Map(),scheduledTimers=new Map(),openRequests=[],bridgeOpens=[],dragRegionNodes=[],fixedNow=new Date("2026-10-06T12:00:00Z").getTime();let timerSequence=0,testNow=fixedNow;
 const fakeSetTimeout=(callback,delay)=>{const id=++timerSequence;scheduledTimers.set(id,{callback,delay});return id;};
 const fakeClearTimeout=id=>scheduledTimers.delete(id);
 const node=selector=>{
@@ -100,13 +128,22 @@ class TestDate extends Date {constructor(...args){super(...(args.length?args:[te
 const context={window:{__TOKEN_TRACKER_TEST__:true,__TOKEN_TRACKER_RUNWAY__:true,__TOKEN_TRACKER_REFINED__:true,__TOKEN_TRACKER_COMPACT__:true},document:{querySelector:node,querySelectorAll(selector){return selector==='.pywebview-drag-region'?dragRegionNodes:[];},documentElement:{style:{setProperty(key,value){this[key]=value;}}},hidden:false,activeElement:null},
   localStorage:{getItem:key=>saved.get(key)??null,setItem:(key,value)=>saved.set(key,String(value))},fetch:async url=>{openRequests.push(String(url));return {ok:true,json:async()=>({ok:true})};},Intl,Date:TestDate,Math,Number,JSON,AbortController,AbortSignal,setTimeout:fakeSetTimeout,clearTimeout:fakeClearTimeout,setInterval(){return 0;}};
 context.window.addEventListener=()=>{};context.document.addEventListener=()=>{};
+context.window.pywebview={api:{open_thread:async(thread)=>{bridgeOpens.push(thread);return {ok:true};}}};
 vm.createContext(context);vm.runInContext(app,context);
 const T=context.window.__tokenTrackerTest,ago=minutes=>new Date(fixedNow-minutes*60000).toISOString();
-assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times">↻2<\/span>/);
+assert.match(T.runwayTelemetryHTML({title:'Thread',resumeCount:2},false), /class="runway-resume-badge" title="Resumed 2 times" aria-label="Resumed 2 times">↻2<\/span>/);
 assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread',resumeCount:1},false), /runway-resume-badge/);
 assert.doesNotMatch(T.runwayTelemetryHTML({title:'Thread'},false), /runway-resume-badge/);
+{
+  const full='A very long top-level job title that is intentionally truncated in the visible row';
+  const markup=T.runwayTelemetryHTML({title:full,status:'running'},false);
+  assert.match(markup,/title="A very long top-level job title that is intentionally truncated in the visible row" aria-label="A very long top-level job title that is intentionally truncated in the visible row"/,
+    'the root title tooltip and accessible name retain the full first line');
+  assert.match(markup,/class="runway-agent-label">A very long top-level job title[^<]*…/,'the visible label remains shortened while its tooltip keeps the full title');
+}
  assert.equal(T.openDashboard(),true,"the production widget opens the dashboard");
 assert.equal(T.closeDashboard(),true,"the dashboard returns to the widget");
+scheduledTimers.get(T.dashboardState.timer).callback();context.window.tokenTrackerNotchSettled(T.dashboardState.restoreMode,false,T.dashboardState.generation);scheduledTimers.get(T.dashboardState.timer).callback();
 assert.equal(T.writeInspectLayoutWidth(500),true);
 assert.equal(context.document.documentElement.style['--runway-inspect-clock-axis'],'250px');
 T.writeInspectLayoutWidth(556);
@@ -229,6 +266,8 @@ assert.doesNotMatch(idleParent,/Identifying safe cleanup targets|data-runway-slo
 const unavailableParent=T.rowHTML({...root,status:"unknown",telemetryUnavailable:true,latestUpdate:parentDoing,activity:null});
 assert.doesNotMatch(unavailableParent,/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
 assert.doesNotMatch(unavailableParent,/Identifying safe cleanup targets/);
+assert.match(T.rowHTML({...root,status:"unknown",statusSource:"unavailable"}),/runway-refined-status t-mute[^>]*>.*?Status unknown/s,"fresh rows with unknown status explain the missing telemetry in muted ink");
+assert.match(T.rowHTML({...root,status:undefined,executionStatus:undefined}),/runway-refined-status t-mute[^>]*>.*?Status unknown/s,"rows with no status use the muted unknown label");
 const oldParentDoing=T.rowHTML({...root,activeRunStartedAt:ago(1),latestUpdate:parentDoing,latestUpdateAt:ago(3),activity:null});
 assert.doesNotMatch(oldParentDoing,/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
 assert.doesNotMatch(oldParentDoing,/Identifying safe cleanup targets/);
@@ -247,31 +286,37 @@ const childRowHTML=overrides=>{
 const runningAgentWithoutActivity=childRowHTML({status:'running',activity:null});
 assert.match(runningAgentWithoutActivity,/runway-status-dot[^>]*aria-label="Running"/s,"a running child has a green status dot");
 assert.match(runningAgentWithoutActivity,/runway-agent-name[^>]*Agent worker/);
-assert.match(runningAgentWithoutActivity,/runway-refined-status t-live[^>]*>.*?runway-state-word">Running/s,"the refined row also shows the child's running state");
+assert.match(runningAgentWithoutActivity,/data-runway-slot="status" class="runway-refined-status t-live"/,"the refined child status column takes the running dot's tone");
+assert.doesNotMatch(runningAgentWithoutActivity,/runway-state-word|runway-state-glyph|>Running</,"the name dot carries a child's state; no status word or glyph repeats it");
+assert.doesNotMatch(runningAgentWithoutActivity,/data-runway-slot="timing"/,"a child has no separate timing column; its name takes that space");
 assert.doesNotMatch(runningAgentWithoutActivity,/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
 const stoppedChild={...child,status:'failed',stateDetail:'interrupted',activity:null};
 assert.equal(childRowHTML(stoppedChild),"","terminated children remain filtered from the visible tray");
 const stoppedChildTelemetry=T.runwayTelemetryHTML(stoppedChild,true);
 assert.match(stoppedChildTelemetry,/runway-status-dot[^>]*aria-label="Stopped"/);
-assert.match(stoppedChildTelemetry,/runway-refined-status t-mute[^>]*>.*?runway-state-word">Stopped/s,"the refined child row visibly labels a stopped status");
+assert.match(stoppedChildTelemetry,/data-runway-slot="status" class="runway-refined-status t-mute"/,"a stopped child's status column takes the muted dot tone");
+assert.doesNotMatch(stoppedChildTelemetry,/runway-state-word|>Stopped</,"a stopped child is labelled by its dot, not a status word");
 const readingRow=childRowHTML({contextModel:"gpt-6.1-sol",contextObservedAt:activityStamp,activity:{kind:"reading",files:["A:\\src\\app.js"],observedAt:activityStamp}});
 assert.match(readingRow,/data-runway-slot="activity" class="runway-workspace runway-activity" title="Reading app\.js · A:\\src\\app\.js"[^>]*>Reading app\.js/);
-assert.match(readingRow,/class="runway-refined-title"[\s\S]*?data-runway-slot="model"[\s\S]*?class="runway-refined-timing"/);
-assert.match(readingRow,/runway-refined-status t-live[^>]*>.*?runway-state-word">Running/s,"measured child action retains its running state");
+assert.match(readingRow,/class="runway-refined-title"[\s\S]*?data-runway-slot="model"[\s\S]*?class="runway-refined-status/);
+assert.match(readingRow,/runway-refined-status t-live"[^>]*><span class="runway-status-timer" title="Running"><span data-runway-slot="elapsed" class="runway-refined-elapsed">[^<]+<\/span><\/span>/,"a measured child action shows its timer in the running tone where the status word was");
+assert.doesNotMatch(readingRow,/runway-state-word/);
 assert.match(readingRow,/runway-status-dot[^>]*aria-label="Running"/s,"the running child status dot remains accessible");
 assert.equal((readingRow.match(/data-runway-slot="activity"/g)||[]).length,1,"a child displays its current activity once");
 assert.ok(readingRow.indexOf('data-runway-slot="activity"')>readingRow.indexOf('class="runway-refined-status"'),"the single activity follows the refined status column");
 const orderedChild=childRowHTML({activeRunStartedAt:ago(2),runStartedAt:ago(3),model:"gpt-6.1-sol",contextModel:"gpt-6.1-sol",contextObservedAt:activityStamp,contextTokens:12000,contextWindow:258400,objective:"Review the current tool result",activity:{kind:"reading",files:["A:\\src\\app.js"],observedAt:activityStamp}});
-const childOrder=["class=\"runway-refined-title\"","class=\"runway-refined-timing\"","class=\"runway-refined-status","class=\"runway-refined-activity\"","class=\"runway-refined-tokens\""].map(slot=>orderedChild.indexOf(slot));
+const childOrder=["class=\"runway-refined-title\"","class=\"runway-refined-status","data-runway-slot=\"elapsed\"","class=\"runway-refined-activity\"","class=\"runway-refined-tokens\""].map(slot=>orderedChild.indexOf(slot));
 assert.ok(childOrder.every((index,i)=>index>=0&&(i===0||index>childOrder[i-1])),"child content follows the refined production row order");
 assert.equal((orderedChild.match(/data-runway-slot="activity"/g)||[]).length,1,"the reordered child row keeps one activity label");
-assert.match(orderedChild,/runway-state-word">Running/);
+assert.match(orderedChild,/runway-refined-status t-live"[^>]*><span class="runway-status-timer" title="Running"><span data-runway-slot="elapsed" class="runway-refined-elapsed">2m 00s</);
+assert.doesNotMatch(orderedChild,/runway-state-word|data-runway-slot="timing"/);
 const unclassifiedThinking=childRowHTML({activeRunStartedAt:ago(2),activity:{kind:"thinking",files:[],observedAt:activityStamp}});
 assert.match(unclassifiedThinking,/runway-activity[^>]*>Reasoning<\/span>/,"fresh reasoning events use a concise evidence label");
 const duplicateObjective=childRowHTML({activeRunStartedAt:ago(2),objective:"Reading app.js",activity:{kind:"reading",files:["A:\\src\\app.js"],observedAt:activityStamp}});
 assert.match(duplicateObjective,/runway-activity[^>]*>Reading app\.js<\/span>/);
 const compactingChild=T.runwayTelemetryHTML({...child,status:'compacting',compactionStartedAt:ago(1)},true);
-assert.match(compactingChild,/runway-refined-status t-info[^>]*>.*?runway-state-word">Compacting/s,"the refined row labels an active compaction");
+assert.match(compactingChild,/runway-refined-status t-info"[^>]*><span class="runway-status-timer" title="Compacting"><span data-runway-slot="elapsed"/,"an active compaction shows the child's timer in the compaction tone");
+assert.doesNotMatch(compactingChild,/runway-state-word/);
 const trackerObjective=childRowHTML({activeRunStartedAt:ago(2),latestUpdate:'[tracker]{"task":"Repair current startup sequencing","doing":"Inspecting measured telemetry","next":"Add regression cases","blocked":null}[/tracker]',latestUpdateAt:ago(1)});
 const declaredPhase='[tracker]{"task":"Recover RAM for wake training","doing":"Identifying safe cleanup targets","next":"Measure the recovered memory","blocked":null}[/tracker]';
 const declaredPhaseRow=childRowHTML({activeRunStartedAt:ago(3),trackerUpdate:declaredPhase,trackerUpdateAt:ago(1),latestUpdate:"A later ordinary progress comment",latestUpdateAt:ago(0)});
@@ -291,10 +336,10 @@ assert.doesNotMatch(invalidDeclaredFallback,/Reviewing safe cleanup targets/);
 assert.doesNotMatch(childRowHTML({objective:"AGENTS.md instructions\\n# Must not show policy text",latestRequest:"Useful raw prompt fallback"}),/runway-agent-objective|Useful raw prompt fallback|Must not show policy text/,"policy instructions and raw request text do not become an assignment fallback");
 assert.doesNotMatch(childRowHTML({agentName:"agent-worker",title:"Generic worker",objective:"",assignment:"",latestRequest:""}),/runway-agent-objective/,"unknown assignment stays absent rather than falling back to a title");
 const timedRoot=T.rowHTML({...root,stateSince:ago(2),runStartedAt:ago(10),activeRunStartedAt:ago(4)});
-assert.match(timedRoot,/class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">2:00/,"the refined root row shows its measured state duration");
+assert.match(timedRoot,/class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">2m 00s/,"the refined root row shows its measured state duration");
 assert.equal((timedRoot.match(/data-runway-slot="elapsed"/g)||[]).length,1,"a root has one elapsed-time value");
 const timedChild=childRowHTML({...child,stateSince:ago(1),runStartedAt:ago(7),activeRunStartedAt:ago(3)});
-assert.match(timedChild,/class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">1:00/,"the refined child row shows its measured state duration");
+assert.match(timedChild,/runway-refined-status t-live"[^>]*><span class="runway-status-timer" title="Running"><span data-runway-slot="elapsed" class="runway-refined-elapsed">1m 00s/,"the refined child row shows its measured state duration in the status column");
 assert.equal((timedChild.match(/data-runway-slot="elapsed"/g)||[]).length,1,"a child has one elapsed-time value");
 const activityOnlyRow=childRowHTML({activity:{kind:"reading",files:["A:\\src\\app.js"],observedAt:activityStamp}});
 assert.doesNotMatch(activityOnlyRow,/class="ctx-tokens"/,"action rendering alone does not invent a context measurement");
@@ -326,14 +371,14 @@ for(const [kind,label] of [['searching','Searching files'],['reading','Reading f
   assert.match(childRowHTML({activity:{kind,label,files:[],observedAt:activityStamp}}),new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
 assert.doesNotMatch(childRowHTML({activity:{kind:'testing',label:'internalFunction(secret)',files:[],observedAt:activityStamp}}),/internalFunction|secret/);
 assert.doesNotMatch(childRowHTML({...child,status:"running",activity:null}),/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
-assert.match(childRowHTML({...child,status:"needs-input",pendingQuestion:"Wait?",pendingQuestionAt:ago(1),activity:null}),/runway-waiting-link[^>]*>Waiting<\/button>/);
+assert.match(childRowHTML({...child,status:"needs-input",pendingQuestion:"Wait?",pendingQuestionAt:ago(1),activity:null}),/runway-refined-status t-attn"[^>]*><button class="runway-waiting-link runway-status-timer" data-action="runway-question"[^>]*aria-label="Open waiting chat to answer [^"]+"[^>]*><span data-runway-slot="elapsed" class="runway-refined-elapsed">1m 00s<\/span><\/button>/,"a waiting child's timer is its question control, in the waiting tone");
 assert.match(childRowHTML({...child,status:"compacting",compactionStartedAt:ago(1),activity:null}),/>Compacting<\/span>/);
 assert.match(childRowHTML({activity:{kind:"reading",files:["A:\\src\\<unsafe>.js"],observedAt:activityStamp}}),/Reading &lt;unsafe&gt;\.js/);
 for(const staleChild of [{activityUnavailable:true},{telemetryUnavailable:true}])
   assert.doesNotMatch(childRowHTML({activity:{kind:"editing",files:["A:\\src\\widget.py"]},...staleChild}),/Editing widget\.py|Last known|Last ·/);
 assert.match(childRowHTML({activity:{kind:"editing",files:["A:\\src\\widget.py"],observedAt:activityStamp},metricsUnavailable:true}),/Editing widget\.py/);
 assert.doesNotMatch(childRowHTML({status:"running",activity:null}),/Working/);
-assert.match(childRowHTML({status:"needs-input",pendingQuestion:"Wait?",pendingQuestionAt:ago(1),activity:null}),/runway-waiting-link[^>]*>Waiting<\/button>/);
+assert.match(childRowHTML({status:"needs-input",pendingQuestion:"Wait?",pendingQuestionAt:ago(1),activity:null}),/runway-waiting-link runway-status-timer[^>]*><span data-runway-slot="elapsed" class="runway-refined-elapsed">[^<]+<\/span><\/button>/);
 assert.doesNotMatch(childRowHTML({status:"compacting",activity:null}),/data-runway-slot="activity"|Activity unavailable|Telemetry unavailable/);
 assert.match(T.rowHTML(root),/data-runway-slot="workspace" class="runway-workspace" title="Workspace · D:\\work\\sample app"/);
 assert.match(T.rowHTML({...root,status:'compacting',compactionStartedAt:ago(1)}),/runway-status-dot[^>]*aria-label="Compacting"/);
@@ -353,16 +398,16 @@ assert.match(node("#chat-list").innerHTML,/data-key="Codex:grandchild"/); // old
 assert.equal(T.runwayStateElapsed({...root,status:"quiet",provider:"Codex"}),"—"); // session age is not quiet-state duration
 assert.equal(T.runwayStateElapsed({...root,status:"compacting",provider:"Codex"}),"—"); // compaction needs its own start
 assert.equal(T.runwayStateElapsed({...root,status:"needs-input",attentionSince:ago(2)}),"—");
-assert.equal(T.runwayStateElapsed({...root,status:"running",pendingQuestion:"Reply?",pendingQuestionAt:ago(2)}),"2:00");
+assert.equal(T.runwayStateElapsed({...root,status:"running",pendingQuestion:"Reply?",pendingQuestionAt:ago(2)}),"2m 00s");
 assert.equal(T.runwayStateElapsed({...root,status:"running",pendingQuestion:"Reply?",stateSince:ago(5),pendingQuestionAt:null}),"—");
-assert.equal(T.runwayStateElapsed({...root,pendingQuestion:"Expired?",pendingQuestionExpired:true,pendingQuestionAt:ago(3)}),"3:00");
+assert.equal(T.runwayStateElapsed({...root,pendingQuestion:"Expired?",pendingQuestionExpired:true,pendingQuestionAt:ago(3)}),"3m 00s");
 assert.equal(T.runwayStateElapsed({...root,status:"running",activeRunStartedAt:new Date(fixedNow+60000).toISOString()}),"—");
-assert.equal(T.runwayStateElapsed({...root,status:"running",stateSince:ago(1),activeRunStartedAt:ago(50)}),"1:00");
-assert.equal(T.runwayStateElapsed({...root,status:"compacting",stateSince:ago(8),compactionStartedAt:ago(2)}),"2:00");
+assert.equal(T.runwayStateElapsed({...root,status:"running",stateSince:ago(1),activeRunStartedAt:ago(50)}),"1m 00s");
+assert.equal(T.runwayStateElapsed({...root,status:"compacting",stateSince:ago(8),compactionStartedAt:ago(2)}),"2m 00s");
 const soloExecution={...root,descendants:[],status:"needs-input",pendingQuestion:"Old question",pendingQuestionExpired:true,pendingQuestionAt:ago(25*60*60),executionStatus:"running",executionSource:"transcript",executionObservedAt:ago(1),executionSince:ago(4),executionActivity:{kind:"testing"}};
 assert.equal(T.runwayWaiting(soloExecution),false);
 assert.equal(T.runwayRunning(soloExecution),true,"a fresh solo execution survives expired attention without children");
-assert.equal(T.runwayStateElapsed(soloExecution),"4:00");
+assert.equal(T.runwayStateElapsed(soloExecution),"4m 00s");
 assert.equal(T.runInfo(soloExecution).seconds,240,"run time uses the proven current run start");
 assert.equal(T.runwayCounts({roots:[soloExecution]}).total,1);
 assert.match(T.rowHTML(soloExecution),/Running checks/);
@@ -390,7 +435,7 @@ assert.equal(T.runInfo(blockingQuestion),null);
 assert.doesNotMatch(T.rowHTML(blockingQuestion),/Running checks/);
 assert.match(T.rowHTML(blockingQuestion),/runway-activity[^>]*>Waiting for input/);
 const compactExecution={...soloExecution,executionStatus:"compacting",executionCompactionStartedAt:ago(2),executionActivity:null};
-assert.equal(T.runwayStateElapsed(compactExecution),"2:00");
+assert.equal(T.runwayStateElapsed(compactExecution),"2m 00s");
 assert.equal(T.runwayEffectiveStatus(compactExecution),"compacting");
 assert.match(T.rowHTML(compactExecution),/>Compacting<\/span>/);
 const compactWithoutStart={...compactExecution,executionCompactionStartedAt:null,executionSince:ago(4)};
@@ -617,13 +662,31 @@ assert.equal((node('#notch-counts').innerHTML.match(/class="count-value"/g)||[])
 assert.equal(T.notch.counts.roots,4);assert.equal(T.notch.counts.total,8);assert.equal(T.notch.counts.waiting,2);
 assert.ok(T.notch.active>0);
 T.state.query='';T.render(countSnapshot);
-assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:(?:quiet-root|idle-root|failed-only|stopped|deleted|expired-question)"/);
+assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:(?:quiet-root|idle-root|stopped|deleted|expired-question)"/);
+assert.match(node('#chat-list').innerHTML,/data-key="Codex:failed-only"[\s\S]*?runway-refined-status t-mute[\s\S]*?runway-state-word">Failed/,"a recent standalone failure remains visible with muted status ink");
+assert.match(T.rowHTML({...root,id:'failed-only',status:'failed',stateDetail:'errored',updatedAt:ago(1)}),/runway-refined-elapsed">[^<]+<\/span>/,"a recent failed root retains its elapsed age");
+testNow=fixedNow+31*60000;T.render(countSnapshot);
+assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:failed-only"/,"a failed root ages out at the existing recent-failure boundary");
+testNow=fixedNow;T.render(countSnapshot);
 const parent=T.state.forest.roots.find(chat=>chat.id==='finished-parent');
 assert.match(T.rowHTML(parent),/runway-refined-status t-attn[^>]*data-child-waiting="true"/);
 assert.doesNotMatch(T.rowHTML(parent),/Agent waiting/);
 assert.match(T.rowHTML({...parent,status:'running',stateDetail:'running'}),/runway-refined-status t-live[^>]*data-own-waiting="false" data-child-waiting="true"[^>]*>.*?runway-state-word">Running/s);
 assert.doesNotMatch(T.rowHTML({...parent,status:'running',stateDetail:'running'}),/runway-waiting-link|>Agent waiting/,"a running parent remains Running while its waiting child exposes its own row control");
-assert.match(T.rowHTML({...parent,status:'failed',stateDetail:'errored'}),/runway-refined-status t-err[^>]*>.*?runway-state-word">Failed/);
+assert.match(T.rowHTML({...parent,status:'failed',stateDetail:'errored'}),/runway-refined-status t-mute[^>]*>.*?runway-state-word">Failed/,"failed jobs use the muted state ink");
+{
+  const firstWaiting=T.state.forest.rows.find(T.runwayWaiting),clicked=[];
+  const waitingRoot=T.state.forest.roots.find(root=>root===firstWaiting||root.descendants.includes(firstWaiting));
+  T.state.hiddenChats.add(waitingRoot.key);
+  const link={dataset:{key:firstWaiting.key},focus(){clicked.push('focus');},scrollIntoView(){clicked.push('scroll');},click(){clicked.push('click');}};
+  const original=context.document.querySelectorAll.bind(context.document);
+  context.document.querySelectorAll=selector=>selector==='.runway-waiting-link'?[link]:original(selector);
+  T.state.query='query-that-hides-the-waiting-job';T.jumpToWaiting();
+  assert.equal(T.state.query,'','the waiting shortcut clears a filter that hides its target');
+  assert.equal(T.state.hiddenChats.has(waitingRoot.key),false,'the waiting shortcut reveals a target under a hidden root');
+  assert.deepEqual(clicked,['scroll','focus','click'],'the first counted waiting job is revealed, focused, then opened');
+  context.document.querySelectorAll=original;
+}
 assert.match(node('#chat-list').innerHTML,/data-key="Codex:live-review"/);
 assert.doesNotMatch(node('#chat-list').innerHTML,/data-key="Codex:completed-review"/);
 T.state.query='worker is:running';T.state.windowDays=30;
@@ -719,6 +782,25 @@ assert.equal(T.resetView({...provider,weekly:{percent:78,resetAt:fixedNow/1000-1
 assert.equal(T.resetView({...provider,weekly:{percent:78},limitsUpdatedAt:new Date(fixedNow).toISOString()},"weekly").countdown,"");
 assert.equal(T.watcherPopoverHTML('Codex'),'<p class="policy-notice" data-policy-warning hidden></p><button class="ghost" data-action="reset-settings">Reset action settings</button>');
 assert.equal(T.watcherTone(null,'Codex').tip,'');
+const offWatcher={enabled:true,running:true,providers:{Codex:{automationMode:"off",phase:"off",nextGreetingAt:fixedNow/1000+600,lastTriggerAt:fixedNow/1000,lastGreetingOutcome:"completed"}}};
+const offTone=T.watcherTone(offWatcher,"Codex");
+assert.equal(offTone.tone,"mute");assert.equal(offTone.tip,"Auto-greet off","Off overrides stale greeting schedules while the quota watcher is running");
+T.state.watcher=offWatcher;
+T.renderGreeterStatus([{name:"Codex"}]);
+assert.equal(node("#runway-greeter-status").textContent,"Auto-greet off");
+assert.match(node("#runway-greeter-status").title,/quota tracking continues/);
+assert.match(T.watcherPopoverHTML("Codex"),/<dt>phase<\/dt><dd>off<\/dd>/);
+assert.doesNotMatch(T.watcherPopoverHTML("Codex"),/<dt>next<\/dt>/,"Off hides greeting schedule but keeps historical outcome data");
+const offWithPollError={enabled:true,running:true,providers:{Codex:{automationMode:"off",phase:"off",nextGreetingAt:fixedNow/1000+600,lastTriggerAt:fixedNow/1000,lastGreetingOutcome:"completed",lastPollError:"Codex quota request timed out",lastError:"old greeting error",needsLogin:true}}};
+const pollErrorTone=T.watcherTone(offWithPollError,"Codex");
+assert.equal(pollErrorTone.tone,"err");assert.match(pollErrorTone.tip,/Auto-greet off.*Codex quota request timed out/);
+assert.doesNotMatch(pollErrorTone.tip,/old greeting error/);
+T.state.watcher=offWithPollError;T.renderGreeterStatus([{name:"Codex"}]);
+assert.match(node("#runway-greeter-status").textContent,/Auto-greet off.*Quota check error/);
+assert.match(node("#runway-greeter-status").title,/Codex quota request timed out/);
+assert.doesNotMatch(node("#runway-greeter-status").title,/old greeting error/);
+assert.match(T.watcherPopoverHTML("Codex"),/Codex quota request timed out/);
+assert.doesNotMatch(T.watcherPopoverHTML("Codex"),/old greeting error/);
 T.state.watcher={enabled:true,running:true,providers:{Codex:{phase:'<img src=x onerror=alert(1)>',lastTriggerAt:fixedNow/1000,lastVerifiedAt:fixedNow/1000,verificationEvidence:'usage_and_deadline'}}};
 const watcherMarkup=T.watcherPopoverHTML('Codex');
 assert.match(watcherMarkup,/&lt;img/);
@@ -759,17 +841,24 @@ const staleQuota=T.resetView({...provider,limitsUpdatedAt:ago(11)},"fiveHour");
 assert.equal(staleQuota.measured,false);assert.equal(staleQuota.lastKnown,true);assert.equal(staleQuota.usedLabel,"92%");assert.equal(staleQuota.lastKnownAge,"11m ago");assert.equal(staleQuota.countdown,"25m 00s");assert.equal(staleQuota.tone,"");assert.equal(staleQuota.stale,"");
 assert.equal(T.resetView({...provider,limitsUpdatedAt:ago(11)},"weekly").countdown,"22h 13m");
 T.renderResets([{...provider,limitsUpdatedAt:ago(11)}]);
-assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>11m ago</i></span>');
-assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Last reported by Codex 11m ago');
+assert.equal(node('#r0-fiveHour-left').innerHTML,'<span class="rr-value"><b>92%</b><i>11m ago</i></span><span class="sr-only">Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.</span>');
+assert.equal(node('#r0-fiveHour-left').className,'rr-left last-known');assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s. Last reported 11m ago.');assert.match(node('#r0-fiveHour-left').title,/Last reported 11m ago/);assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),null,"screen-reader wording is nested text rather than a name on the generic span");
 assert.equal(node('#r0-fiveHour-row').title,'Last reported by Codex 11m ago');
 assert.equal(node('#r0-fiveHour-meter').className,'meter last-known');assert.equal(node('#r0-fiveHour-meter').getAttribute('aria-valuetext'),'Last known: 92% used');assert.equal(node('#r0-fiveHour-bar').className,'last-known');
-assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.notEqual(node('#r0-fiveHour-cd').textContent,'');
+assert.notEqual(node('#r0-fiveHour-day').textContent,'');assert.notEqual(node('#r0-fiveHour-time').textContent,'');assert.equal(node('#r0-fiveHour-cd').textContent,'');
+assert.match(node('#r0-fiveHour-left').title,/resets in 25m 00s/);assert.match(node('#r0-fiveHour-left').innerHTML,/sr-only">[^<]*resets in 25m 00s/);assert.equal(node('#r0-fiveHour-cd').title,'Resets in 25m 00s');
 assert.doesNotMatch(node('#r0-fiveHour-cd').className,/unknown/);
+assert.match(node('#r0-fiveHour-cd').className,/last-known/);
 {
   const staleAt=ago(110),claude={name:"Claude",connected:true,identityVerified:true,identityGeneration:"account-1",fiveHour:{percent:14,resetAt:fixedNow/1000+3600},weekly:{percent:27,resetAt:fixedNow/1000+6*86400},limitsUpdatedAt:staleAt};
   const fiveHour=T.resetView(claude,"fiveHour"),weekly=T.resetView(claude,"weekly");
   assert.equal(fiveHour.measured,false);assert.equal(fiveHour.lastKnown,true);assert.equal(fiveHour.usedLabel,"14%");assert.equal(fiveHour.lastKnownAge,"1h 50m ago");assert.equal(fiveHour.tone,"");
   assert.equal(fiveHour.tip,"Last reported by Claude 1h 50m ago");assert.notEqual(fiveHour.countdown,"");
+  T.renderResets([claude]);
+  assert.match(node('#r0-fiveHour-left').innerHTML,/<i>1h 50m ago<\/i>/,"the stale quota cell displays the complete reported age");
+  assert.match(node('#r0-fiveHour-cd').className,/last-known/);
+  assert.equal(node('#r0-fiveHour-cd').textContent,'',"the stale countdown is not shown in the compact cell");
+  assert.match(node('#r0-fiveHour-left').title,/resets in 1h 00m/,"the full reset countdown remains in the stale cell's title");
   assert.equal(T.resetView({...claude,identityVerified:false},"fiveHour").tip,"Account unverified · Last reported by Claude 1h 50m ago");
   assert.equal(weekly.lastKnown,true);assert.equal(weekly.usedLabel,"27%");
   const nearWeeklyLimit=T.resetView({...claude,limitsUpdatedAt:ago(6*24*60+23*60),weekly:{percent:27,resetAt:fixedNow/1000+3600}},"weekly");
@@ -786,6 +875,23 @@ assert.doesNotMatch(node('#r0-fiveHour-cd').className,/unknown/);
   assert.equal(T.watcherTone(null,"Codex").tone,"mute","last-known quota does not change greeter state");
 }
 T.renderResets([provider]);
+{
+  const unavailable={name:"Fixture",fiveHour:{percent:null},weekly:{percent:null}};
+  T.renderResets([unavailable]);
+  for(const window of ["fiveHour","weekly"]){
+    const cell=node(`#r0-${window}-left`),label="No live reading for Fixture";
+    assert.equal(cell.innerHTML,'<span class="rr-value"><span class="rr-provider">Fixture</span><b>—</b><i></i></span><span class="sr-only">No live reading for Fixture</span>',`${window} quota names its provider before the unavailable marker and exposes the hidden explanation`);
+    assert.equal(cell.title,label,`${window} quota explains the unavailable marker on hover`);
+    assert.equal(cell.getAttribute("aria-label"),null,`${window} quota keeps the accessible explanation as text rather than naming the generic span`);
+    assert.match(cell.className,/\bis-unavailable\b/);
+    assert.equal(node(`#r0-${window}-cd`).textContent,"",`${window} countdown slot stays empty rather than duplicating the unavailable dash`);
+    assert.equal(node(`#r0-${window}-cd`).getAttribute("aria-hidden"),"true");
+  }
+  T.renderResets([provider]);
+  assert.equal(node('#r0-fiveHour-left').title,'Codex 5-hour: 92% used, resets in 25m 00s.','a quota reading names its provider and window on hover');
+  assert.equal(node('#r0-fiveHour-left').getAttribute('aria-label'),null,'a quota reading uses nested text rather than naming the generic span');
+  assert.match(node('#r0-fiveHour-left').innerHTML,/<span class="sr-only">Codex 5-hour: 92% used, resets in 25m 00s\.<\/span>/,'a quota reading exposes the provider and window to assistive technology');
+}
 {
   const countdown=node('#r0-fiveHour-cd');let writes=0,value=countdown.textContent;
   Object.defineProperty(countdown,'textContent',{configurable:true,get(){return value;},set(next){writes++;value=next;}});
@@ -866,8 +972,8 @@ const questionRoot=T.state.forest.roots.find(chat=>chat.id==="question-parent");
 assert.match(T.rowHTML(questionRoot),/runway-refined-status t-live[^>]*>.*?runway-state-word">Running/);
 assert.doesNotMatch(T.rowHTML(questionRoot),/runway-waiting-link|>Waiting<|data-runway-slot="question"|>\?</,"a running parent keeps its own state and has no waiting-question control");
 const actualQuestionChild=T.trayEntries(questionRoot,T.parseQuery("")).find(entry=>entry.key==="Codex:exact-ask").html;
-assert.match(actualQuestionChild,/runway-refined-status t-attn[^>]*data-own-waiting="true"[^>]*>.*?runway-waiting-link[^>]*data-key="Codex:exact-ask"[^>]*>Waiting<\/button>/s,"a waiting child exposes its question action in the refined status column");
-assert.match(actualQuestionChild,/runway-state-glyph is-waiting/);
+assert.match(actualQuestionChild,/runway-refined-status t-attn[^>]*data-own-waiting="true"[^>]*>.*?runway-waiting-link[^>]*data-key="Codex:exact-ask"[^>]*><span data-runway-slot="elapsed"[^>]*>[^<]+<\/span><\/button>/s,"a waiting child exposes its question action as its timer in the refined status column");
+assert.doesNotMatch(actualQuestionChild,/runway-state-glyph|runway-state-word/,"the waiting child's dot carries the state");
 const exactPanel=T.runwayQuestionPopover(T.state.forest.rows.find(chat=>chat.id==="exact-ask"));
 assert.match(exactPanel,/runway-question-panel/);
 assert.match(exactPanel,/Continue &lt;now&gt;\?/);
@@ -876,27 +982,31 @@ assert.match(exactPanel,/Queue this as a message for the next turn\. It will not
 assert.match(exactPanel,/data-action="close-popover"/);
 const questionButton={dataset:{action:"runway-question",key:"Codex:exact-ask"},getBoundingClientRect:()=>({left:12,bottom:36})};
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?questionButton:null}});
-assert.deepEqual(openRequests,["/api/open?thread=exact-ask"]);
+await Promise.resolve();
+assert.deepEqual(bridgeOpens,["exact-ask"]);
 assert.equal(T.state.popover,null);assert.equal(T.notch.manual,false);
 const ownAsk={...questionParent,status:"needs-input",pendingQuestion:"Own question"};
 T.render({...snapshot,providers:[{...provider,chats:[ownAsk,exactAsk]}]});
 assert.match(T.rowHTML(T.state.forest.roots.find(chat=>chat.id==="question-parent")),/runway-refined-status t-attn[^>]*data-own-waiting="true"[^>]*>.*?runway-waiting-link[^>]*data-key="Codex:question-parent"[^>]*>Waiting<\/button>/s);
 const ownButton={dataset:{action:"runway-question",key:"Codex:question-parent"}};
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?ownButton:null}});
-assert.equal(openRequests.at(-1),"/api/open?thread=question-parent","the parent's own pending question takes precedence");
+await Promise.resolve();
+assert.equal(bridgeOpens.at(-1),"question-parent","the parent's own pending question takes precedence");
 const noTextWait={...exactAsk,pendingQuestion:"",status:"needs-input"};
 T.render({...snapshot,providers:[{...provider,chats:[questionParent,noTextWait]}]});
 assert.match(T.rowHTML(T.state.forest.roots.find(chat=>chat.id==="question-parent")),/runway-refined-status t-live[^>]*>.*?runway-state-word">Running/);
 assert.doesNotMatch(T.rowHTML(T.state.forest.roots.find(chat=>chat.id==="question-parent")),/runway-waiting-link|>Waiting<|data-runway-slot="question"/);
 const noTextChild=T.trayEntries(T.state.forest.roots.find(chat=>chat.id==="question-parent"),T.parseQuery("")).find(entry=>entry.key==="Codex:exact-ask").html;
-assert.match(noTextChild,/runway-waiting-link[^>]*data-action="runway-question" data-key="Codex:exact-ask"[^>]*>Waiting<\/button>/,"a waiting child remains directly openable without recorded question text");
+assert.match(noTextChild,/runway-waiting-link runway-status-timer" data-action="runway-question" data-key="Codex:exact-ask"[^>]*><span data-runway-slot="elapsed"[^>]*>[^<]+<\/span><\/button>/,"a waiting child remains directly openable without recorded question text");
 assert.match(noTextChild,/runway-status-dot[^>]*aria-label="Waiting"/s,"waiting children retain their accessible status dot");
-assert.equal((noTextChild.match(/>Waiting<\/button>/g)||[]).length,1,"a waiting child exposes one direct open control beside its name dot");
+assert.equal((noTextChild.match(/runway-waiting-link/g)||[]).length,1,"a waiting child exposes one direct open control beside its name dot");
 const staleButton={dataset:{action:"runway-question",key:"Codex:exact-ask"}};
 T.render({...snapshot,providers:[{...provider,chats:[questionParent,{...noTextWait,status:"running"}]}]});
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?staleButton:null}});
-assert.equal(openRequests.length,2,"resolved waiting indicators safely ignore stale clicks");
-assert.ok(openRequests.every(url=>url.startsWith("/api/open?thread=")),"desktop Waiting text issues only exact-chat open requests");
+await Promise.resolve();
+assert.equal(bridgeOpens.length,2,"resolved waiting indicators safely ignore stale clicks");
+assert.ok(bridgeOpens.every(thread=>thread==="exact-ask"||thread==="question-parent"),"desktop Waiting text passes only exact-chat ids to the native bridge");
+assert.deepEqual(openRequests,[],"the native Windows bridge path does not issue HTTP open requests");
 const futureMessage={...child,parentId:"question-parent",latestMessageAt:new Date(fixedNow+5000).toISOString()};
 assert.equal(T.runwayAgentHasNewMessage(futureMessage),false);
 assert.match(T.runwayQuestionPopover({...exactAsk,pendingQuestionId:"q2"}),/Continue &lt;now&gt;\?/);
@@ -904,51 +1014,19 @@ const asks={...snapshot,providers:[{...provider,chats:[root,ask]}]};
 T.render(asks);
 assert.match(node("#chat-list").innerHTML,/data-key="Codex:ask"[\s\S]*?runway-refined-status t-attn"[\s\S]*?data-action="runway-question" data-key="Codex:ask"/,"the waiting child row shows its Waiting control");
 
-// Selecting a display uses the native API; refresh does not alter placement.
+// Monitor discovery state is updated through the live sync path.
 let selected="one";const nativeCalls=[];
-context.window.pywebview={api:{
-  get_monitors:async()=>[{id:"one",index:1,label:"Monitor",kind:"external",selected:selected==="one"},{id:"two",index:2,label:"Laptop",kind:"internal",selected:selected==="two"}],
-  select_monitor:async id=>{nativeCalls.push(["select",id]);selected=id;},
-  set_notch:async (...args)=>nativeCalls.push(["size",...args]),
-  recenter:async()=>nativeCalls.push(["recenter"])
-}};
-nativeCalls.length=0;
-await T.syncMonitors();assert.equal(node("#monitor-toggle").textContent,"Monitor");
-assert.equal(node("#monitor-toggle").hidden,false);assert.equal(node("#monitor-toggle").disabled,false);
-nativeCalls.length=0;
-await T.toggleMonitor();assert.equal(node("#monitor-toggle").textContent,"Laptop");
-assert.deepEqual(nativeCalls,[["select","two"]]);
-const monitorGetter=context.window.pywebview.api.get_monitors;
-context.window.pywebview.api.get_monitors=async()=>[{id:'\\\\.\\DISPLAY1',index:2,label:'Laptop',kind:'internal',selected:true}];
-await T.syncMonitors();assert.equal(node('#monitor-toggle').textContent,'Laptop');
-context.window.pywebview.api.get_monitors=async()=>[{id:'\\\\.\\DISPLAY2',index:1,label:'Monitor',kind:'external',selected:true}];
-await T.syncMonitors();assert.equal(node('#monitor-toggle').textContent,'Monitor');
-context.window.pywebview.api.get_monitors=async()=>[{id:'\\\\.\\DISPLAY2',index:1,label:'Monitor 1',selected:true}];
-await T.syncMonitors();assert.equal(node('#monitor-toggle').textContent,'Monitor 1');
-assert.equal(node('#monitor-toggle').hidden,true,"one confirmed display hides the monitor control");
-let finishPendingMonitors;
-context.window.pywebview.api.get_monitors=()=>new Promise(resolve=>{finishPendingMonitors=resolve;});
-const pendingMonitorSync=T.syncMonitors();
-assert.equal(node('#monitor-toggle').hidden,false);assert.equal(node('#monitor-toggle').disabled,true,"pending discovery keeps the control visible and disabled");
-finishPendingMonitors([{id:'one',label:'Laptop',kind:'internal',selected:true}]);await pendingMonitorSync;
-assert.equal(node('#monitor-toggle').hidden,true);
-context.window.pywebview.api.get_monitors=async()=>({monitors:[{label:'missing identity'}]});
-await T.syncMonitors();assert.equal(node('#monitor-toggle').hidden,false);assert.equal(node('#monitor-toggle').disabled,true);
-assert.match(node('#monitor-toggle').title,/unavailable/i);
-context.window.pywebview.api.get_monitors=async()=>{throw new Error('discovery failed');};
-await T.syncMonitors();assert.equal(node('#monitor-toggle').hidden,false);assert.equal(node('#monitor-toggle').disabled,true);
-context.window.pywebview.api.get_monitors=monitorGetter;await T.syncMonitors();
-nativeCalls.length=0;
-selected="one"; // native selection changed after a manual cross-monitor drag
-const requests=[];
-const refreshedSnapshot={...asks,providers:[{...provider,chats:[{...root,title:"Refreshed parent"},ask]}]};
-requests.length=0;
-context.fetch=async (url,options)=>{
-  requests.push([url,options]);
-  assert.equal(options.signal.aborted,false);
+context.window.pywebview={api:{get_monitors:async()=>[{id:"one",index:1,label:"Monitor",kind:"external",selected:selected==="one"},{id:"two",index:2,label:"Laptop",kind:"internal",selected:selected==="two"}],set_notch:async (...args)=>nativeCalls.push(["size",...args]),recenter:async()=>nativeCalls.push(["recenter"])}};
+const requests=[];const refreshedSnapshot={...asks,providers:[{...provider,chats:[{...root,title:"Refreshed parent"},ask]}]};
+nativeCalls.length=0;await T.syncMonitors();assert.equal(T.getMonitorState().current.id,"one");
+context.window.pywebview.api.get_monitors=async()=>({monitors:[{label:"missing identity"}]});await T.syncMonitors();assert.equal(T.getMonitorState().known,false);
+context.window.pywebview.api.get_monitors=async()=>{throw new Error("discovery failed");};await T.syncMonitors();assert.equal(T.getMonitorState().known,false);
+context.window.pywebview.api.get_monitors=async()=>[{id:"one",selected:true}];await T.syncMonitors();
+nativeCalls.length=0;selected="one";requests.length=0;
+context.fetch=async(url,options)=>{
+  requests.push([url,options]);assert.equal(options.signal.aborted,false);
   if(url.startsWith("/api/stats"))return {ok:true,json:async()=>refreshedSnapshot};
-  assert.equal(url,"/api/limit-reset");
-  return {ok:true,json:async()=>({enabled:false,running:false,providers:{}})};
+  assert.equal(url,"/api/limit-reset");return {ok:true,json:async()=>({enabled:false,running:false,providers:{}})};
 };
 T.handleClick({target:{closest:s=>s==="[data-action]"?{dataset:{action:"refresh"}}:null}});
 await new Promise(resolve=>setImmediate(resolve));
@@ -959,16 +1037,14 @@ assert.equal(T.state.snapshot,refreshedSnapshot);
 assert.match(node("#chat-list").innerHTML,/Refreshed parent/);
 assert.equal(T.state.loading,false);
 assert.equal(T.state.failSince,null);
-assert.equal(node("#monitor-toggle").textContent,"Monitor");
 assert.ok(!nativeCalls.some(call=>["select","recenter","fit"].includes(call[0])));
-
 // The real hover handlers protect header targets until the pointer enters content.
 T.render({...asks,providers:[{...provider,chats:[]}]});
 T.notch.manual=false;T.notch.inspecting=false;T.notch.keyboardInspecting=false;T.notch.autoExpanded=false;T.setNotch(false);
 const widgetEvents=new Map(),buttonEvents=new Map();
 node(".widget").addEventListener=(name,handler)=>widgetEvents.set(name,handler);
 node(".titlebar").getBoundingClientRect=()=>({left:0,right:400,top:0,bottom:30});
-for(const selector of ["#monitor-toggle","#dashboard-open","#window-recenter"])
+for(const selector of ["#dashboard-open","#window-recenter"])
   node(selector).addEventListener=(name,handler)=>buttonEvents.set(selector+":"+name,handler);
 const notchDocumentEvents=new Map();
 context.document.addEventListener=(name,handler)=>notchDocumentEvents.set(name,handler);
@@ -1109,12 +1185,12 @@ failLockWrite=true;T.handleClick({target:{closest:selector=>selector==='[data-ac
 assert.equal(T.widgetLock.locked,false);assert.equal(node('#widget-lock').getAttribute('aria-pressed'),'false','failed native writes do not optimistically change the lock button');
 assert.equal(await T.setWidgetLock(true),true);assert.deepEqual(lockWriteArgs,[true,true,null,nativeLock.revision-1]);
 assert.equal(T.widgetLock.locked,true);assert.equal(node('#widget-lock').getAttribute('aria-pressed'),'true');
-assert.equal(node('#window-recenter').disabled,true,'the dock Recenter button is disabled while the position is locked');assert.equal(node('#window-recenter').title,'Unlock the widget to move it');
+assert.equal(node('#window-recenter').disabled,true,'the dock Recenter button is disabled while the position is locked');assert.equal(node('#window-recenter').getAttribute('aria-disabled'),'true');assert.equal(node('#window-recenter').title,'Unlock the widget to move it');
 assert.match(node('#widget-lock').innerHTML,/M4 5V3\.8a2 2 0 0 1 4 0V5/,'the locked button uses the closed shackle icon');
 assert.equal(dragBrand.classList.contains('pywebview-drag-region'),true);assert.equal(dragFill.classList.contains('pywebview-drag-region'),true,"compact position lock still allows deliberate dragging");
 widgetEvents.get('pointerleave')();T.syncNotch(0,[]);
 assert.equal(T.notch.expanded,true,'an open lock survives zero active work and pointer exit');assert.equal(T.notch.autoTimer,null);
-assert.equal(await T.toggleMonitor(),undefined);assert.equal(nativeCalls.some(call=>call[0]==='select'),false,'monitor cycling is ignored while locked');
+
 const newerRevision=nativeLock.revision+1;
 nativeLock={locked:true,expanded:false,revision:newerRevision};assert.equal(T.applyWidgetLock({...nativeLock}),true);
 assert.equal(T.applyWidgetLock({locked:false,expanded:true,revision:newerRevision+0.5}),false,'lock callbacks require a safe integer revision');
@@ -1124,7 +1200,7 @@ T.setNotch(true);T.syncNotch(1,[{key:'Codex:locked-launch',active:true,subagent:
 assert.equal(T.notch.expanded,true,'new work can reveal the widget while position is locked');assert.notEqual(T.notch.autoTimer,null);
 assert.equal(T.applyWidgetLock({locked:false,expanded:false,revision:newerRevision-1}),false,'older native messages cannot restore stale lock state');
 assert.equal(T.widgetLock.locked,true);
-await T.setWidgetLock(false);assert.equal(T.widgetLock.locked,false);assert.equal(node('#window-recenter').disabled,false,'unlocking re-enables the dock Recenter button');
+await T.setWidgetLock(false);assert.equal(T.widgetLock.locked,false);assert.equal(node('#window-recenter').disabled,false,'unlocking re-enables the dock Recenter button');assert.equal(node('#window-recenter').getAttribute('aria-disabled'),'false');
 assert.equal(dragBrand.classList.contains('pywebview-drag-region'),true);assert.equal(dragFill.classList.contains('pywebview-drag-region'),true,'unlock restores original drag-region class membership');
 T.notch.active=1;T.setNotch(true);assert.equal(T.notch.expanded,true);
 await T.setWidgetLock(true);assert.equal(T.widgetLock.locked,true);
@@ -1145,7 +1221,7 @@ assert.match(page,/id="widget-lock"/);
 
 const openedDashboards=[];context.window.TokenTrackerDashboard={open:options=>openedDashboards.push(options),close(){}};context.window.tokenTrackerCloseDashboard();
 T.handleClick({target:{closest:selector=>selector==="[data-action]"?{dataset:{action:"open-settings"}}:null}});
-assert.deepEqual(openedDashboards.map(options=>options.tab),["settings"],"the dock Settings button opens the dashboard on the Settings tab");context.window.tokenTrackerCloseDashboard();nativeCalls.length=0;
+assert.deepEqual(openedDashboards.map(options=>options.tab),["settings"],"the dock Settings button opens the dashboard on the Settings tab");context.window.tokenTrackerCloseDashboard();scheduledTimers.get(T.dashboardState.timer).callback();context.window.tokenTrackerNotchSettled(T.dashboardState.restoreMode,false,T.dashboardState.generation);scheduledTimers.get(T.dashboardState.timer).callback();nativeCalls.length=0;
 // A failed first snapshot retries quickly while visible, without quota fetches until data exists.
 T.state.snapshot=null;T.state.loading=false;T.state.refreshPending=false;T.state.bootstrapRetryMs=2000;
 const bootstrapCalls=[];
@@ -1180,3 +1256,4 @@ console.log("Token Tracker Runway telemetry contracts passed");
   assert.deepEqual(keys([live('lead'),live('kid','lead'),stopped('done','lead')]),['Claude:kid'],'stopped child under a running parent is hidden');
   assert.deepEqual(keys([live('lead'),stopped('mid','lead'),live('leaf','mid')]).sort(),['Claude:leaf','Claude:mid'],'a stopped middle agent stays while its descendant runs');
 }
+{const runwayCss=fs.readFileSync(new URL("../token_tracker/static/runway.css",import.meta.url),"utf8");assert.match(runwayCss,/(?:^|[\s}])\.sr-only\{position:absolute;width:1px;height:1px;[^}]*clip-path:inset\(50%\)/,"widget screen-reader text is visually hidden outside the dashboard too");}

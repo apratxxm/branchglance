@@ -98,8 +98,37 @@ def _clear_codex_ledger(conn: sqlite3.Connection) -> None:
     meta_set(conn, "revision", int(meta_value(conn, "revision") or 0) + 1)
 
 
+def _migrate_claude_prompt_tiers(conn: sqlite3.Connection) -> None:
+    """Schema 4: retain Claude prompt evidence and derive Haiku 5.5 pricing tiers."""
+    conn.execute("ALTER TABLE facts ADD COLUMN prompt_peak INTEGER")
+    # Legacy facts lost raw-counter provenance; their stored input_total is the documented estimate.
+    conn.execute("UPDATE facts SET prompt_peak=input_total WHERE provider=?", (model_mod.CLAUDE,))
+    rows = conn.execute("SELECT fact_key, model, prompt_peak FROM facts WHERE provider=?",
+                         (model_mod.CLAUDE,)).fetchall()
+    for fact_key, model, prompt_peak in rows:
+        tier = model_mod.claude_price_tier(model, prompt_peak)
+        conn.execute("UPDATE facts SET price_tier=? WHERE provider=? AND fact_key=?",
+                     (tier, model_mod.CLAUDE, fact_key))
+    # Staged observations written by schema 3 have no prompt_evidence key at all; give them the same
+    # stored-input-total estimate. An explicit null (written by this schema) means invalid counters and stays.
+    staged = conn.execute("SELECT rowid, observation FROM provisional_facts WHERE provider=?",
+                          (model_mod.CLAUDE,)).fetchall()
+    for rowid, text in staged:
+        observation = json.loads(text)
+        if "prompt_evidence" in observation:
+            continue
+        fields = observation.get("fields") or {}
+        observation["prompt_evidence"] = fields.get("input_total")
+        observation["price_tier"] = model_mod.claude_price_tier(observation.get("model"), observation["prompt_evidence"])
+        conn.execute("UPDATE provisional_facts SET observation=? WHERE rowid=?", (json.dumps(observation), rowid))
+    rebuild_rollups(conn, load_overrides(conn))
+    meta_set(conn, "revision", int(meta_value(conn, "revision") or 0) + 1)
+
+
 # A migration step is SQL text or a callable taking the connection (for steps that need Python).
-MIGRATIONS: dict[int, tuple[Any, ...]] = {1: _SCHEMA_V1, 2: _SCHEMA_V2, 3: (_clear_codex_ledger,)}
+MIGRATIONS: dict[int, tuple[Any, ...]] = {
+    1: _SCHEMA_V1, 2: _SCHEMA_V2, 3: (_clear_codex_ledger,), 4: (_migrate_claude_prompt_tiers,)
+}
 
 
 class LedgerSchemaError(RuntimeError):
@@ -288,35 +317,51 @@ def upsert_fact(conn: sqlite3.Connection, fact: Mapping[str, Any], *, merge: boo
     """
     provider, key = fact["provider"], fact["fact_key"]
     row = conn.execute(
-        "SELECT thread_id, model, price_tier, hour, kind, rule, " + ", ".join(FACT_COLUMNS)
+        "SELECT thread_id, model, price_tier, hour, kind, rule, prompt_peak, " + ", ".join(FACT_COLUMNS)
         + " FROM facts WHERE provider=? AND fact_key=?", (provider, key)).fetchone()
     if row is None:
         kind, rule = effective_class(overrides, provider, fact["thread_id"], fact["kind"], fact["rule"])
+        prompt_peak = fact.get("prompt_evidence") if provider == model_mod.CLAUDE else None
+        tier = (model_mod.claude_price_tier(fact["model"], prompt_peak)
+                if provider == model_mod.CLAUDE else fact["price_tier"])
         conn.execute(
             "INSERT INTO facts(provider, fact_key, thread_id, model, price_tier, hour, kind, rule, slug, "
-            "classification_version, segment_turn, " + ", ".join(FACT_COLUMNS) + ") VALUES ("
-            + ", ".join("?" * (11 + len(FACT_COLUMNS))) + ")",
-            (provider, key, fact["thread_id"], fact["model"], fact["price_tier"], fact["hour"],
+            "classification_version, segment_turn, prompt_peak, " + ", ".join(FACT_COLUMNS) + ") VALUES ("
+            + ", ".join("?" * (12 + len(FACT_COLUMNS))) + ")",
+            (provider, key, fact["thread_id"], fact["model"], tier, fact["hour"],
              fact["kind"], fact["rule"], fact.get("slug"), fact["classification_version"],
-             fact.get("segment_turn"), *(fact["fields"][name] for name in FACT_COLUMNS)))
-        _add_rollup(conn, (fact["hour"], provider, fact["model"], fact["price_tier"], kind, rule),
+             fact.get("segment_turn"), prompt_peak, *(fact["fields"][name] for name in FACT_COLUMNS)))
+        _add_rollup(conn, (fact["hour"], provider, fact["model"], tier, kind, rule),
                     vector(fact["fields"]), 1)
         return True
     if not merge:
         return False
-    thread_id, model, tier, hour, stored_kind, stored_rule = row[:6]
-    old = dict(zip(FACT_COLUMNS, row[6:]))
+    thread_id, model, old_tier, hour, stored_kind, stored_rule, old_peak = row[:7]
+    old = dict(zip(FACT_COLUMNS, row[7:]))
     new = merge_fields(old, fact["fields"])
-    if all(new[name] == old[name] for name in FACT_COLUMNS):
+    prompt_peak = old_peak
+    if provider == model_mod.CLAUDE and fact.get("prompt_evidence") is not None:
+        prompt_peak = max(old_peak or 0, fact["prompt_evidence"])
+    tier = model_mod.claude_price_tier(model, prompt_peak) if provider == model_mod.CLAUDE else old_tier
+    tier_changed = tier != old_tier
+    if all(new[name] == old[name] for name in FACT_COLUMNS) and prompt_peak == old_peak and not tier_changed:
         return False
     conn.execute(
         "UPDATE facts SET " + ", ".join(f"{name}=?" for name in FACT_COLUMNS)
-        + ", revisions = revisions + 1 WHERE provider=? AND fact_key=?",
-        (*(new[name] for name in FACT_COLUMNS), provider, key))
+        + ", prompt_peak=?, price_tier=?, revisions = revisions + 1 WHERE provider=? AND fact_key=?",
+        (*(new[name] for name in FACT_COLUMNS), prompt_peak, tier, provider, key))
     kind, rule = effective_class(overrides, provider, thread_id, stored_kind, stored_rule)
     before, after = vector(old), vector(new)
-    _add_rollup(conn, (hour, provider, model, tier, kind, rule),
-                {column: after[column] - before[column] for column in VALUE_COLUMNS}, 0)
+    if tier_changed:
+        _add_rollup(conn, (hour, provider, model, old_tier, kind, rule),
+                    {column: -before[column] for column in VALUE_COLUMNS}, -1)
+        conn.execute("DELETE FROM hourly WHERE hour=? AND provider=? AND model=? AND price_tier=? AND kind=? AND rule=? "
+                     "AND requests=0 AND " + " AND ".join(f"{column}=0" for column in VALUE_COLUMNS),
+                     (hour, provider, model, old_tier, kind, rule))
+        _add_rollup(conn, (hour, provider, model, tier, kind, rule), after, 1)
+    else:
+        _add_rollup(conn, (hour, provider, model, tier, kind, rule),
+                    {column: after[column] - before[column] for column in VALUE_COLUMNS}, 0)
     return True
 
 
@@ -365,7 +410,7 @@ def recompute_globals(conn: sqlite3.Connection) -> None:
 
 
 # Only normalized accounting attributes are stored; arbitrary input records are never serialized.
-_OBSERVATION_KEYS = ("provider", "fact_key", "thread_id", "model", "price_tier", "hour",
+_OBSERVATION_KEYS = ("provider", "fact_key", "thread_id", "model", "price_tier", "prompt_evidence", "hour",
                      "kind", "rule", "slug", "classification_version", "segment_turn", "merge")
 
 
@@ -382,6 +427,8 @@ def stage_observation(conn: sqlite3.Connection, source_key: str, generation: int
         if not clean["merge"]:
             return
         previous["fields"] = merge_fields(previous["fields"], clean["fields"])
+        evidence = (previous.get("prompt_evidence"), clean.get("prompt_evidence"))
+        previous["prompt_evidence"] = max((value for value in evidence if value is not None), default=None)
         clean = previous
     conn.execute("INSERT INTO provisional_facts VALUES (?, ?, ?, ?, ?, ?) "
                  "ON CONFLICT(provider, source_key, generation, epoch, fact_key) "
@@ -407,14 +454,33 @@ def provisional_exists(conn: sqlite3.Connection, providers: list[str]) -> bool:
                         providers).fetchone() is not None
 
 
+def verification_debt_bytes(conn: sqlite3.Connection, providers: list[str]) -> int:
+    """Consumed prefix bytes with open deferred exact-verification markers."""
+    if not providers:
+        return 0
+    placeholders = ",".join("?" for _ in providers)
+    total = 0
+    for offset, raw in conn.execute(f"SELECT byte_offset, state FROM sources WHERE provider IN ({placeholders})", providers):
+        try:
+            state = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if state.get("verification_debt"):
+            total += max(1, int(offset))
+    return total
+
+
 def unverified_sources(conn: sqlite3.Connection, provider: str) -> list[dict[str, Any]]:
     """Persisted sources of one provider whose state holds provisional facts or an open verification."""
     rows = conn.execute("SELECT path_key, generation, byte_offset, head_key, state FROM sources WHERE provider=? "
-                        "AND (state LIKE '%\"verify\"%' OR state LIKE '%\"provisional\"%')", (provider,)).fetchall()
+                        "AND (state LIKE '%\"verify\"%' OR state LIKE '%\"provisional\"%' "
+                        "OR state LIKE '%\"verification_debt\"%' "
+                        "OR state LIKE '%\"ordered_tail_pending\"%')", (provider,)).fetchall()
     found = []
     for path_key, generation, byte_offset, head_key, text in rows:
         state = json.loads(text)
-        if state.get("verify") or state.get("provisional"):
+        if (state.get("verify") or state.get("provisional") or state.get("verification_debt")
+                or state.get("ordered_tail_pending")):
             found.append({"path_key": path_key, "generation": generation, "byte_offset": byte_offset,
                           "head_key": head_key, "state": state})
     return found
@@ -493,19 +559,25 @@ def summary_rows(conn: sqlite3.Connection, start_hour: int, end_hour: int) -> li
             target[name] += sign * value
 
     for (provider, key), observations in groups.items():
-        row = conn.execute("SELECT thread_id, model, price_tier, hour, kind, rule, " + ", ".join(FACT_COLUMNS)
+        row = conn.execute("SELECT thread_id, model, price_tier, hour, kind, rule, prompt_peak, " + ", ".join(FACT_COLUMNS)
                            + " FROM facts WHERE provider=? AND fact_key=?", (provider, key)).fetchone()
         effective = None
         if row:
-            effective = dict(zip(("thread_id", "model", "price_tier", "hour", "kind", "rule"), row[:6]))
-            effective.update(provider=provider, fields=dict(zip(FACT_COLUMNS, row[6:])))
+            effective = dict(zip(("thread_id", "model", "price_tier", "hour", "kind", "rule", "prompt_peak"), row[:7]))
+            effective.update(provider=provider, fields=dict(zip(FACT_COLUMNS, row[7:])))
             adjust(effective, -1)
         for observation in observations:
             if effective is None:
                 effective = observation
             elif observation["merge"]:
                 effective["fields"] = merge_fields(effective["fields"], observation["fields"])
+                evidence = (effective.get("prompt_peak"), effective.get("prompt_evidence"),
+                            observation.get("prompt_evidence"))
+                effective["prompt_peak"] = max((value for value in evidence if value is not None), default=None)
         if effective is not None:
+            if provider == model_mod.CLAUDE:
+                peak = effective.get("prompt_peak", effective.get("prompt_evidence"))
+                effective["price_tier"] = model_mod.claude_price_tier(effective["model"], peak)
             adjust(effective, 1)
     return [dict(zip(("provider", "model", "price_tier", "kind", "rule"), key), **values)
             for key, values in buckets.items() if values["requests"]]

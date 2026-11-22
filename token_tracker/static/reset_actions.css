@@ -4,8 +4,7 @@
 
 .settings-embedded{scrollbar-width:none;background:transparent}.settings-embedded::-webkit-scrollbar,.settings-embedded *::-webkit-scrollbar{display:none;width:0;height:0}.settings-embedded *{scrollbar-width:none}.settings-embedded .settings{width:100%;min-height:0;margin:0;padding:2px 0 8px;gap:10px}.settings-embedded .settings>header,.settings-embedded .intro,.settings-embedded .settings>.note:last-of-type{display:none}.settings-embedded .claude-collection{margin-top:0}.settings-embedded .settings>footer{position:sticky;bottom:0;padding-top:8px;background:linear-gradient(180deg,transparent,var(--bg) 34%)}
 
-html.settings-embedded,body.settings-embedded{height:100%;min-height:100%;overflow:auto;scrollbar-width:none;background:transparent;color:#e8edf7;--bg:#0b0e15;--panel:#10151e;--line:#252d3b;--text:#e8edf7;--muted:#8994a8;--accent:#425df6;--error:#f08d88}
-html.settings-embedded[data-source="Claude"],body.settings-embedded[data-source="Claude"]{--accent:#e8813f}
+html.settings-embedded,body.settings-embedded{height:100%;min-height:100%;overflow:auto;scrollbar-width:none;background:transparent;color:#e8edf7;--bg:#0b0e15;--panel:#10151e;--line:#252d3b;--text:#e8edf7;--muted:#8994a8;--accent:#6c72ff;--error:#f08d88}
 html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scrollbar,body.settings-embedded *::-webkit-scrollbar{display:none;width:0;height:0}
 .settings-embedded *{scrollbar-width:none}
 .settings-embedded .settings{width:100%;height:auto;min-height:100%;margin:0;padding:8px 10px 10px;gap:8px;background:transparent}
@@ -59,12 +58,12 @@ html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scroll
 /* Round 3: the embedded frame is part of the Settings surface. No boxes, no scrolling, one 13px/600 heading style. */
 .settings-embedded .settings{padding:0;gap:4px;}
 .settings-embedded fieldset{gap:0;}
-.settings-embedded legend{margin:0 0 1px;padding:0;color:#8d929c;font-size:12px;font-weight:600;letter-spacing:0;}
+.settings-embedded legend{margin:0 0 1px;padding:0;color:var(--d-ink);font-size:14px;font-weight:650;letter-spacing:0;}
 .settings-embedded .mode{padding:4px 0;border:0;border-radius:0;background:transparent;gap:10px;align-items:flex-start;}
 .settings-embedded .mode input{margin:2px 0 0;}
 .settings-embedded .mode b{color:#f3f4f6;font-size:13px;font-weight:550;}
 .settings-embedded .mode small{color:#a9afbb;font-size:12px;line-height:1.35;}
-.settings-embedded .mode:has(input:disabled) b{color:#8d929c;}
+.mode:has(input:disabled) b,.mode:has(input:disabled) small{color:#8d929c;}
 .settings-embedded .claude-collection{display:block;padding:2px 0;border:0;border-radius:0;background:transparent;}
 .settings-embedded .claude-collection>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
 .settings-embedded .claude-collection h2{flex:none;font-size:13px;font-weight:550;color:#f3f4f6;margin:0;}
@@ -98,16 +97,50 @@ html.settings-embedded,body.settings-embedded{--d-ink:#f3f4f6;--d-sub:#b7bcc8;--
 .settings-embedded .settings>footer{margin-top:6px;}
 .settings-embedded .mode small{color:var(--d-sub);}
 .settings-embedded .note,.settings-embedded .status,.settings-embedded .search-label,.settings-embedded legend{color:var(--d-mute);}
+.settings-embedded legend{color:var(--d-ink);}
 .settings-embedded input[type=search]{border-color:var(--d-edge);background:var(--d-well);}
 .settings-embedded .quiet,.settings-embedded .primary{border-color:var(--d-edge);}
+.settings-embedded .mode+.mode{border-top:1px solid var(--d-edge);padding-top:8px;}
 
 /* Saved usage history: one row per provider, same surface and text tokens as the Claude Code section. */
 .ledger-history{display:grid;gap:8px;padding:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .ledger-history h2{font-size:14px;margin:0;font-weight:600}
 .ledger-history .ledger-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:2px 12px}
+.purge-confirm{grid-column:1/-1;display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.purge-confirm span{flex:1 1 220px;color:var(--muted);font-size:12px}.purge-confirm[hidden]{display:none!important}
 .ledger-history .ledger-name{grid-column:1;grid-row:1;font-weight:600}
 .ledger-history .ledger-row button{grid-column:2;grid-row:1;white-space:nowrap}
 .ledger-history .ledger-row .note,.ledger-history .ledger-row .message{grid-column:1/-1;margin:0;font-size:12px}
 .ledger-history .ledger-row .message:empty{display:none}
 .settings-embedded .ledger-history{padding:6px 8px;gap:4px}
 .settings-embedded .ledger-history h2{font-size:13px}
+
+/* The embedded reset form has its own reachable scroll path and does not expose disabled history controls. */
+html.settings-embedded,body.settings-embedded{height:auto;min-height:100%;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#667085 transparent;}
+html.settings-embedded::-webkit-scrollbar,body.settings-embedded::-webkit-scrollbar{display:block;width:6px;}
+html.settings-embedded::-webkit-scrollbar-thumb,body.settings-embedded::-webkit-scrollbar-thumb{background:#667085;border-radius:8px;}
+.settings-embedded .settings{height:auto;min-height:100%;overflow:visible;padding-bottom:12px;}
+.settings-embedded .ledger-history .ledger-row{display:none;}
+.embedded-policy-state{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 8px;border:1px solid #30394a;border-radius:7px;color:#c0cada;font-size:12px;}
+.embedded-policy-state[hidden],.embedded-policy-state button[hidden]{display:none!important;}
+
+/* Final embedded layout: the parent sizes the frame to this content (dashboard-reset-height), so nothing scrolls inside it.
+   Saved history and Manage live in the parent's Providers group; the parent heading names the group, so the legend is for screen readers. */
+html.settings-embedded,body.settings-embedded{height:auto;min-height:0;overflow:hidden;}
+.settings-embedded .settings{height:auto;min-height:0;padding:0 0 2px;}
+.settings-embedded .ledger-history{display:none;}
+.settings-embedded #modes>legend{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+.settings-embedded .embedded-policy-state{padding:2px 0;border:0;border-radius:0;color:var(--d-sub);font-size:12px;line-height:17px;}
+.settings-embedded .embedded-policy-state .quiet{padding:0 6px;height:24px;border:0;color:var(--d-link);background:transparent;}
+.settings-embedded .embedded-policy-state .quiet:hover{background:#9bb0ff14;}
+
+.settings-embedded #modes[hidden],.settings-embedded #oneshot-note[hidden],.settings-embedded #message[hidden],.settings-embedded #picker[hidden],.settings-embedded .settings>footer[hidden]{display:none;}
+.settings-embedded .embedded-policy-state .quiet{margin-right:-6px;}
+.settings-embedded #oneshot-note{padding-top:8px;border-top:1px solid var(--d-edge);color:var(--d-sub);font-size:12px;}
+.settings-embedded .saved-action-state{margin:0;padding-top:4px;color:var(--d-sub);font-size:12px;}
+
+/* Round 4 (embedded frame): the Codex accent, link-coloured quiet actions, a tinted primary, 24px pager buttons, accent checkboxes. */
+.settings-embedded .quiet{border:0;background:transparent;color:var(--d-link);}
+.settings-embedded .quiet:hover{background:#9bb0ff14;}
+.settings-embedded .primary{border:0;background:color-mix(in srgb,#6c72ff 18%,transparent);color:#f5f6f8;}
+.settings-embedded .pager .quiet{width:24px;height:24px;border:0;background:transparent;}
+.settings-embedded input[type=checkbox],.settings-embedded .thread input{accent-color:#6c72ff;}

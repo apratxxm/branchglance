@@ -42,28 +42,49 @@ def _check_path(path, *, allow_missing=False, directory=None):
     return info
 
 
+_WINDOWS_FILE_API = None
+_WINDOWS_FILE_API_LOCK = threading.Lock()
+
+
+def _windows_file_api():
+    """Build the kernel32 bindings and the file-information struct once per process.
+
+    ctypes.POINTER caches every struct class it sees for the life of the process, so
+    defining the struct per call retained a new class on each guarded open.
+    """
+    global _WINDOWS_FILE_API
+    with _WINDOWS_FILE_API_LOCK:
+        if _WINDOWS_FILE_API is None:
+            import ctypes
+            from ctypes import wintypes
+
+            class Info(ctypes.Structure):
+                _fields_ = [("attributes", wintypes.DWORD), ("creation", wintypes.FILETIME),
+                            ("access", wintypes.FILETIME), ("write", wintypes.FILETIME),
+                            ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD),
+                            ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
+                            ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
+
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(Info)]
+            kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            _WINDOWS_FILE_API = (kernel, Info)
+        return _WINDOWS_FILE_API
+
+
 def _windows_open(path, access, share, disposition, directory=False):
     import ctypes
     from ctypes import wintypes
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    create = kernel.CreateFileW
-    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
-    create.restype = wintypes.HANDLE
+    kernel, Info = _windows_file_api()
     flags = 0x00200000 | (0x02000000 if directory else 0)  # OPEN_REPARSE_POINT, BACKUP_SEMANTICS
-    handle = create(str(path), access, share, None, disposition, flags, None)
+    handle = kernel.CreateFileW(str(path), access, share, None, disposition, flags, None)
     if handle == wintypes.HANDLE(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
-    class Info(ctypes.Structure):
-        _fields_ = [("attributes", wintypes.DWORD), ("creation", wintypes.FILETIME),
-                    ("access", wintypes.FILETIME), ("write", wintypes.FILETIME),
-                    ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD),
-                    ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
-                    ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
     info = Info()
-    kernel.GetFileInformationByHandle.argtypes = [wintypes.HANDLE, ctypes.POINTER(Info)]
-    kernel.GetFileInformationByHandle.restype = wintypes.BOOL
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
         error = ctypes.get_last_error(); kernel.CloseHandle(handle); raise ctypes.WinError(error)
     if info.attributes & 0x400 or bool(info.attributes & 0x10) != directory or (not directory and info.links != 1):

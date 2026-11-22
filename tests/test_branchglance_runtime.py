@@ -1110,7 +1110,7 @@ def test_unified_tree_static_assets_have_no_source_switch_and_share_provider_tra
     assert 'parentKey' in app and 'graphValue.edges' in app
     assert 'GPT-' in app and 'family[0].toUpperCase()' in app
     assert 'is-codex-model' in refined and 'is-claude-model' in refined
-    assert 'grid-template-columns:minmax(0,1fr) 52px 112px 96px 80px' in refined
+    assert 'grid-template-columns:minmax(0,1fr) 62px 112px 96px 80px' in refined
     assert '.runway-refined-title>.runway-agent-name{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;text-overflow:ellipsis' in refined
     assert '.runway-refined-title .runway-agent-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' in refined
     assert '.rr.provider-codex .rr-cd' in refined and '.rr.provider-claude .rr-cd' in refined
@@ -1137,7 +1137,10 @@ def test_dashboard_assets_expose_insights_controls_without_settings_token_access
     page = (static / "runway.html").read_text(encoding="utf-8")
     dashboard = (static / "dashboard.js").read_text(encoding="utf-8")
     styles = (static / "dashboard.css").read_text(encoding="utf-8")
-    assert 'data-dashboard-range="24h"' in page and 'data-dashboard-range="all"' in page
+    # "All" duplicated 30d and was removed; a stored "all" migrates to 30d in dashboard.js.
+    assert 'data-dashboard-range="24h"' in page and 'data-dashboard-range="30d"' in page
+    assert 'data-dashboard-range="all"' not in page
+    assert 'if(value==="all"){value="30d";' in dashboard
     assert 'data-dashboard-metric="tokens"' in page and 'data-dashboard-metric="cost"' in page
     assert '/api/insights?range=' in dashboard and '/api/stats?background=1' in dashboard
     assert 'branchglanceInsightsRange' in dashboard and 'branchglanceInsightsMetric' in dashboard

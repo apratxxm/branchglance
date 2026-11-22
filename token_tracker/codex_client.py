@@ -14,6 +14,94 @@ from typing import Any
 
 from . import product
 
+_WINDOWS_CODEX_LOCK = threading.RLock()
+_WINDOWS_CODEX_TYPES = None
+_WINDOWS_CODEX_API = None
+_WINDOWS_CODEX_DLL_FACTORY = None
+
+
+def _windows_codex_types():
+    """Create job/process structures once before ctypes caches their pointer types."""
+    global _WINDOWS_CODEX_TYPES
+    import ctypes
+    from ctypes import wintypes as wt
+    with _WINDOWS_CODEX_LOCK:
+        if _WINDOWS_CODEX_TYPES is None:
+            class IO_COUNTERS(ctypes.Structure):
+                _fields_ = [(name, ctypes.c_ulonglong) for name in
+                            ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                             "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+            class BASIC_LIMIT(ctypes.Structure):
+                _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                            ("LimitFlags", wt.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wt.DWORD),
+                            ("Affinity", ctypes.c_size_t), ("PriorityClass", wt.DWORD), ("SchedulingClass", wt.DWORD)]
+
+            class EXTENDED_LIMIT(ctypes.Structure):
+                _fields_ = [("BasicLimitInformation", BASIC_LIMIT), ("IoInfo", IO_COUNTERS),
+                            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+            class STARTUPINFO(ctypes.Structure):
+                _fields_ = [("cb", wt.DWORD), ("lpReserved", wt.LPWSTR), ("lpDesktop", wt.LPWSTR),
+                            ("lpTitle", wt.LPWSTR), ("dwX", wt.DWORD), ("dwY", wt.DWORD),
+                            ("dwXSize", wt.DWORD), ("dwYSize", wt.DWORD), ("dwXCountChars", wt.DWORD),
+                            ("dwYCountChars", wt.DWORD), ("dwFillAttribute", wt.DWORD), ("dwFlags", wt.DWORD),
+                            ("wShowWindow", wt.WORD), ("cbReserved2", wt.WORD),
+                            ("lpReserved2", ctypes.c_void_p), ("hStdInput", wt.HANDLE),
+                            ("hStdOutput", wt.HANDLE), ("hStdError", wt.HANDLE)]
+
+            class STARTUPINFOEX(ctypes.Structure):
+                _fields_ = [("StartupInfo", STARTUPINFO), ("lpAttributeList", ctypes.c_void_p)]
+
+            class PROCESS_INFORMATION(ctypes.Structure):
+                _fields_ = [("hProcess", wt.HANDLE), ("hThread", wt.HANDLE),
+                            ("dwProcessId", wt.DWORD), ("dwThreadId", wt.DWORD)]
+
+            _WINDOWS_CODEX_TYPES = (IO_COUNTERS, BASIC_LIMIT, EXTENDED_LIMIT,
+                                    STARTUPINFO, STARTUPINFOEX, PROCESS_INFORMATION)
+        return _WINDOWS_CODEX_TYPES
+
+
+def _windows_codex_api():
+    """Cache the job-object bindings once for the Windows launch path."""
+    global _WINDOWS_CODEX_API, _WINDOWS_CODEX_DLL_FACTORY
+    import ctypes
+    from ctypes import wintypes as wt
+    with _WINDOWS_CODEX_LOCK:
+        factory = ctypes.WinDLL
+        if _WINDOWS_CODEX_API is None or _WINDOWS_CODEX_DLL_FACTORY is not factory:
+            kernel = factory("kernel32", use_last_error=True)
+            STARTUPINFO, _STARTUPINFOEX, PROCESS_INFORMATION = _windows_codex_types()[3:]
+            kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
+            kernel.CreateJobObjectW.restype = wt.HANDLE
+            kernel.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+            kernel.SetInformationJobObject.restype = wt.BOOL
+            kernel.CloseHandle.argtypes = [wt.HANDLE]
+            kernel.CloseHandle.restype = wt.BOOL
+            kernel.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wt.DWORD, wt.DWORD,
+                                                                 ctypes.POINTER(ctypes.c_size_t)]
+            kernel.InitializeProcThreadAttributeList.restype = wt.BOOL
+            kernel.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wt.DWORD, ctypes.c_size_t,
+                                                         ctypes.c_void_p, ctypes.c_size_t,
+                                                         ctypes.c_void_p, ctypes.c_void_p]
+            kernel.UpdateProcThreadAttribute.restype = wt.BOOL
+            kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+            kernel.CreateProcessW.argtypes = [wt.LPCWSTR, wt.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+                                              wt.BOOL, wt.DWORD, ctypes.c_void_p, wt.LPCWSTR,
+                                              ctypes.POINTER(STARTUPINFO), ctypes.POINTER(PROCESS_INFORMATION)]
+            kernel.CreateProcessW.restype = wt.BOOL
+            kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+            kernel.WaitForSingleObject.restype = wt.DWORD
+            kernel.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+            kernel.GetExitCodeProcess.restype = wt.BOOL
+            kernel.TerminateJobObject.argtypes = [wt.HANDLE, wt.UINT]
+            kernel.TerminateJobObject.restype = wt.BOOL
+            _WINDOWS_CODEX_API = kernel
+            _WINDOWS_CODEX_DLL_FACTORY = factory
+        return _WINDOWS_CODEX_API
+
 
 @dataclass(frozen=True)
 class CodexExecutable:
@@ -217,31 +305,8 @@ def _run_contained_codex(resolved: CodexExecutable, args: list[str], *, timeout:
         return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
     import ctypes
-    from ctypes import wintypes as wt
-
-    class IO_COUNTERS(ctypes.Structure):
-        _fields_ = [(name, ctypes.c_ulonglong) for name in
-                    ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                     "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-    class BASIC_LIMIT(ctypes.Structure):
-        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
-                    ("LimitFlags", wt.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wt.DWORD),
-                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wt.DWORD), ("SchedulingClass", wt.DWORD)]
-
-    class EXTENDED_LIMIT(ctypes.Structure):
-        _fields_ = [("BasicLimitInformation", BASIC_LIMIT), ("IoInfo", IO_COUNTERS),
-                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
-    kernel.CreateJobObjectW.restype = wt.HANDLE
-    kernel.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
-    kernel.SetInformationJobObject.restype = wt.BOOL
-    kernel.CloseHandle.argtypes = [wt.HANDLE]
-    kernel.CloseHandle.restype = wt.BOOL
+    EXTENDED_LIMIT = _windows_codex_types()[2]
+    kernel = _windows_codex_api()
     job = kernel.CreateJobObjectW(None, None)  # default security attributes: non-inheritable
     if not job:
         raise OSError(ctypes.get_last_error(), "could not create containment job")
@@ -262,38 +327,8 @@ def _windows_process_in_job(kernel: Any, job: Any, command: list[str], cwd: Path
     import msvcrt
     from ctypes import wintypes as wt
 
-    class STARTUPINFO(ctypes.Structure):
-        _fields_ = [("cb", wt.DWORD), ("lpReserved", wt.LPWSTR), ("lpDesktop", wt.LPWSTR),
-                    ("lpTitle", wt.LPWSTR), ("dwX", wt.DWORD), ("dwY", wt.DWORD),
-                    ("dwXSize", wt.DWORD), ("dwYSize", wt.DWORD), ("dwXCountChars", wt.DWORD),
-                    ("dwYCountChars", wt.DWORD), ("dwFillAttribute", wt.DWORD), ("dwFlags", wt.DWORD),
-                    ("wShowWindow", wt.WORD), ("cbReserved2", wt.WORD),
-                    ("lpReserved2", ctypes.c_void_p), ("hStdInput", wt.HANDLE),
-                    ("hStdOutput", wt.HANDLE), ("hStdError", wt.HANDLE)]
+    STARTUPINFO, STARTUPINFOEX, PROCESS_INFORMATION = _windows_codex_types()[3:]
 
-    class STARTUPINFOEX(ctypes.Structure):
-        _fields_ = [("StartupInfo", STARTUPINFO), ("lpAttributeList", ctypes.c_void_p)]
-
-    class PROCESS_INFORMATION(ctypes.Structure):
-        _fields_ = [("hProcess", wt.HANDLE), ("hThread", wt.HANDLE),
-                    ("dwProcessId", wt.DWORD), ("dwThreadId", wt.DWORD)]
-
-    kernel.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wt.DWORD, wt.DWORD, ctypes.POINTER(ctypes.c_size_t)]
-    kernel.InitializeProcThreadAttributeList.restype = wt.BOOL
-    kernel.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wt.DWORD, ctypes.c_size_t, ctypes.c_void_p,
-                                                 ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
-    kernel.UpdateProcThreadAttribute.restype = wt.BOOL
-    kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
-    kernel.CreateProcessW.argtypes = [wt.LPCWSTR, wt.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, wt.BOOL,
-                                      wt.DWORD, ctypes.c_void_p, wt.LPCWSTR,
-                                      ctypes.POINTER(STARTUPINFO), ctypes.POINTER(PROCESS_INFORMATION)]
-    kernel.CreateProcessW.restype = wt.BOOL
-    kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
-    kernel.WaitForSingleObject.restype = wt.DWORD
-    kernel.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
-    kernel.GetExitCodeProcess.restype = wt.BOOL
-    kernel.TerminateJobObject.argtypes = [wt.HANDLE, wt.UINT]
-    kernel.TerminateJobObject.restype = wt.BOOL
     fds: set[int] = set()
     info = PROCESS_INFORMATION()
     attr_initialized = False

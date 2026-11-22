@@ -30,7 +30,7 @@ assert.match(refined,/\.runway-model-name\.is-codex-model\{color:#b3a8ff/);
 assert.match(css,/\.meter i\{[^}]*background:var\(--source-accent\)/);
 assert.match(css,/transition:--source-accent var\(--motion-source\)/,"source colors transition with the selected provider");
 assert.match(page,/placeholder="[^"]*is:hidden/);
-assert.match(refined,/compact-toolbar #monitor-toggle\{position:relative;width:20px[^}]*font-size:0/);
+assert.doesNotMatch(refined,/monitor-toggle/);
 assert.match(refined,/compact-toolbar #toolbar-clock\{order:1;flex:0 0 58px/);
 assert.doesNotMatch(refined,/compact-toolbar \.notch-counts\{display:none/,"the toolbar keeps its chat, active and waiting counts");
 assert.match(refined,/compact-toolbar \.window-controls button\{width:20px/);
@@ -62,12 +62,18 @@ function boot(initialStorage={}) {
   const instance=boot({}, {compact:true});instance.T.notch.mode="controls";
   assert.equal(instance.T.openDashboard(),true);assert.equal(instance.T.notch.mode,"dashboard");
   assert.equal(instance.node("#dashboard-view").hidden,false);
-  assert.equal(instance.T.closeDashboard(),true);assert.equal(instance.T.notch.mode,"controls");
-  assert.equal(instance.node("#dashboard-view").hidden,true,"closing returns to the previous compact mode");
+  assert.equal(instance.T.closeDashboard(),true);assert.equal(instance.T.notch.mode,"dashboard","the dashboard remains laid out during close");
+  assert.equal(instance.node("#dashboard-view").hidden,false,"the dashboard stays visible during close");
+  instance.timers.get(instance.T.dashboardState.timer)();instance.context.window.tokenTrackerNotchSettled("controls",false,instance.T.dashboardState.generation);
+  instance.timers.get(instance.T.dashboardState.timer)();
+  assert.equal(instance.T.notch.mode,"controls");assert.equal(instance.node("#dashboard-view").hidden,true,"closing returns to the previous compact mode");
   instance.T.openDashboard();
   const escape={key:"Escape",target:{tagName:"BODY"},preventDefault(){this.prevented=true;},stopImmediatePropagation(){}};
   instance.T.handleKey(escape);
-  assert.equal(escape.prevented,true);assert.equal(instance.T.notch.mode,"controls");assert.equal(instance.node("#dashboard-view").hidden,true,"Escape closes the dashboard and restores the compact widget");
+  assert.equal(escape.prevented,true);assert.equal(instance.T.notch.mode,"dashboard");assert.equal(instance.node("#dashboard-view").hidden,false,"Escape keeps the dashboard visible during close");
+  instance.timers.get(instance.T.dashboardState.timer)();instance.context.window.tokenTrackerNotchSettled("controls",false,instance.T.dashboardState.generation);
+  instance.timers.get(instance.T.dashboardState.timer)();
+  assert.equal(instance.T.notch.mode,"controls");assert.equal(instance.node("#dashboard-view").hidden,true,"Escape closes the dashboard and restores the compact widget");
 }
 const policies=(codex=true,claude=true)=>({schemaVersion:1,generation:"g"+codex+claude,providers:[
   {name:"Codex",collect:codex,show:codex,send:false,sendOrigin:"default",capabilities:{greet:false,continue:false}},
@@ -78,6 +84,19 @@ const running=(extra={})=>({status:"running",activeRunStartedAt:ago(2),runStarte
 const quota={fiveHour:{percent:80,resetAt:fixedNow/1000+1500},weekly:{percent:60,resetAt:fixedNow/1000+80000},limitsUpdatedAt:ago(1)};
 const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>({generatedAt:ago(0),enabledProviders:["Codex","Claude"],providerPolicies:policy,
   providers:[{name:"Codex",connected:true,chats:codex,...quota,fiveHour:{percent:92,resetAt:fixedNow/1000+1500}},{name:"Claude",connected:true,chats:claude,...claudeQuota}]});
+
+// A visibility policy and the availability of a quota reading are separate facts.
+{
+  const widget=boot();
+  const snapshot=snapshotOf();
+  snapshot.providers=snapshot.providers.filter(provider=>provider.name==="Codex");
+  widget.T.render(snapshot);
+  assert.equal(widget.node("#resets").dataset.providerCount,"2");
+  assert.match(widget.node("#r1-fiveHour-left").innerHTML,/Claude<\/span><b>—<\/b>/);
+  assert.equal(widget.node("#r1-weekly-left").title,"No live reading for Claude");
+  widget.T.render({...snapshot,providerPolicies:policies(true,false)});
+  assert.equal(widget.node("#resets").dataset.providerCount,"1","a policy-hidden provider gets no placeholder");
+}
 
 // Provider selection remains available to the dashboard, but never filters the compact tree.
 {
@@ -104,7 +123,7 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   assert.equal(verified.fiveHour,undefined,"a different account's sample remains unrendered");
   assert.equal(early.T.applyQuotaSamples(samples,1,[verified],{requireDated:true}),true);
   assert.equal(verified.fiveHour.percent,43);
-  assert.equal(early.node("#r0-fiveHour-left").innerHTML,'<span class="rr-value"><b>55%</b><i>used</i></span>');
+  assert.match(early.node("#r0-fiveHour-left").innerHTML,/^<span class="rr-value"><b>55%<\/b><i>used<\/i><\/span><span class="sr-only">Codex 5-hour: 55% used[^<]*<\/span>$/);
 }
 
 // Startup's first active snapshot chooses the provider with work before painting and ignores a stale saved manual window.
@@ -131,6 +150,12 @@ const snapshotOf=({codex=[],claude=[],policy=policies(),claudeQuota=quota}={})=>
   empty.T.render(snapshotOf({codex:idle,claude:[]}));
   assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty tree-empty">No active chats</div>',"idle-only roster paints its empty state, never a blank panel");
   assert.doesNotMatch(empty.node("#chat-list").innerHTML,/Nothing in|data-action="window"/);
+  empty.T.render({...snapshotOf(),generatedAt:ago(1)});
+  assert.match(empty.node("#chat-list").innerHTML,/>Live job status unavailable</);
+  assert.match(empty.node("#compact-counts").innerHTML,/>Jobs stale</);
+  empty.T.render(snapshotOf());
+  assert.doesNotMatch(empty.node("#compact-counts").innerHTML,/Jobs stale/);
+  assert.match(empty.node("#chat-list").innerHTML,/>No active chats</);
   empty.T.state.searchOpen=true;empty.T.state.query="not-found";
   empty.T.render(snapshotOf({codex:idle,claude:[]}));
   assert.equal(empty.node("#chat-list").innerHTML,'<div class="empty">No matches</div>');

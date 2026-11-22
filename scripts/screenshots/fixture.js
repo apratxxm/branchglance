@@ -7,7 +7,7 @@
     get_monitors: () => Promise.resolve([])
   }};
   window.addEventListener("load", async () => {
-    const liveCapture = (mode === "tree" || mode === "collapsed") && new URLSearchParams(location.search).get("live") === "1";
+    const liveCapture = (mode?.startsWith("tree") || mode === "collapsed") && new URLSearchParams(location.search).get("live") === "1";
     const prefetched = window.__captureLive;
     if (liveCapture && !prefetched) throw new Error("Missing prefetched live snapshot");
     const snapshot = liveCapture ? prefetched.stats : await (await fetch("/api/stats")).json();
@@ -39,7 +39,7 @@
       }
       tracker.render(low);
     }
-    if (mode === "tree") {
+    if (mode === "tree" || mode === "tree-dock-row") {
       tracker.notch.manual = true;
       tracker.notch.inspecting = true;
       tracker.setNotch(true);
@@ -49,6 +49,12 @@
       const surface = document.querySelector('.layout');
       surface.style.setProperty('width', '100%', 'important');
       surface.style.setProperty('min-width', '100%', 'important');
+      if (mode === "tree-dock-row") {
+        tracker.notch.manual = false;
+        tracker.notch.inspecting = false;
+        tracker.notch.keyboardInspecting = false;
+        tracker.setNotch(false);
+      }
     } else if (mode === "settings") {
       tracker.openDashboard();
       window.TokenTrackerDashboard.selectTab("settings");
@@ -57,6 +63,17 @@
       const range = mode.split("-")[1];
       localStorage.setItem("branchglanceInsightsRange", ["24h", "7d", "30d", "all"].includes(range) ? range : "30d");
       localStorage.setItem("branchglanceChartStyle", mode.includes("-lines") ? "lines" : "stacked");
+      if (mode === "insights-30d-work") {
+        localStorage.setItem("branchglanceInsightsMetric", "tokens");
+        localStorage.setItem("branchglanceModelsView", "work");
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          const url = typeof input === "string" ? input : input.url;
+          if (url === "/api/insights?range=30d") return originalFetch("/api/insights-work-overflow?range=30d", init);
+          if (url === "/api/ledger?range=30d") return originalFetch("/api/ledger-work-overflow?range=30d", init);
+          return originalFetch(input, init);
+        };
+      }
       const waitFor = selector => new Promise(resolve => {
         const started = Date.now();
         const poll = () => {

@@ -1435,6 +1435,99 @@ def test_real_shell_link_adapter_uses_only_temp_shortcuts_and_removes_them(tmp_p
         assert adapter.read_shortcut(path) is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_temp_is_removed_when_the_rename_fails(tmp_path, monkeypatch):
+    from pathlib import Path
+    from branchglance_installer import windows
+    adapter = windows.WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+
+    def failing_move(source, destination, **_kwargs):
+        assert Path(source).is_file()
+        raise OSError(32, "sharing violation", str(destination))
+
+    monkeypatch.setattr(windows, "move_file_ex", failing_move)
+    monkeypatch.setattr(windows, "_SHORTCUT_MOVE_DELAY", 0)
+    with pytest.raises(OSError):
+        adapter.replace_shortcut(startup / "Branchglance.lnk", target=str(target), arguments="--background",
+                                 workdir=str(tmp_path), app_id="Branchglance.Test",
+                                 description="Branchglance managed shortcut")
+    assert list(startup.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_rename_waits_out_a_brief_lock(tmp_path, monkeypatch):
+    # A scanner holding the new .lnk made setup fail with access denied (r21 install).
+    from branchglance_installer import windows
+    adapter = windows.WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+    real_move = windows.move_file_ex
+    failures = [5, 32]
+    attempts = []
+
+    def flaky_move(source, destination, **kwargs):
+        attempts.append(destination)
+        if failures:
+            code = failures.pop(0)
+            raise OSError(code, "transient lock", str(destination))
+        return real_move(source, destination, **kwargs)
+
+    monkeypatch.setattr(windows, "move_file_ex", flaky_move)
+    monkeypatch.setattr(windows, "_SHORTCUT_MOVE_DELAY", 0)
+    shortcut = startup / "Branchglance.lnk"
+    adapter.replace_shortcut(shortcut, target=str(target), arguments="--background", workdir=str(tmp_path),
+                             app_id="Branchglance.Test", description="Branchglance managed shortcut")
+    assert len(attempts) == 3
+    assert [p.name for p in startup.iterdir()] == ["Branchglance.lnk"]
+    assert adapter.read_shortcut(shortcut)["arguments"] == "--background"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_rename_does_not_retry_a_permanent_error(tmp_path, monkeypatch):
+    from branchglance_installer import windows
+    adapter = windows.WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+    attempts = []
+
+    def missing_path(source, destination, **_kwargs):
+        attempts.append(destination)
+        raise OSError(3, "path not found", str(destination))
+
+    monkeypatch.setattr(windows, "move_file_ex", missing_path)
+    with pytest.raises(OSError):
+        adapter.replace_shortcut(startup / "Branchglance.lnk", target=str(target), arguments="", workdir=str(tmp_path),
+                                 app_id="Branchglance.Test", description="Branchglance managed shortcut")
+    assert len(attempts) == 1
+    assert list(startup.iterdir()) == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows COM shortcut adapter")
+def test_shortcut_write_sweeps_only_its_own_stale_temps(tmp_path):
+    from branchglance_installer.windows import WindowsIntegrationAdapter
+    adapter = WindowsIntegrationAdapter(uninstall_key=r"Software\BranchglanceTest\unused")
+    target = tmp_path / "fake-Branchglance.exe"
+    target.write_bytes(b"not an executable")
+    startup = tmp_path / "Startup"
+    startup.mkdir()
+    stale = startup / ".Branchglance.4465ed9ac138417983c726c7c7dcd3e4.tmp.lnk"
+    stale.write_bytes(b"left by an interrupted install")
+    keep = [startup / ".Branchglance.not-a-uuid.tmp.lnk", startup / ".Other.4465ed9ac138417983c726c7c7dcd3e4.tmp.lnk",
+            startup / "Branchglance.4465ed9ac138417983c726c7c7dcd3e4.tmp.lnk", startup / "Other.lnk"]
+    for path in keep:
+        path.write_bytes(b"not ours")
+    adapter.replace_shortcut(startup / "Branchglance.lnk", target=str(target), arguments="--background",
+                             workdir=str(tmp_path), app_id="Branchglance.Test",
+                             description="Branchglance managed shortcut")
+    assert not stale.exists()
+    assert sorted(p.name for p in startup.iterdir()) == sorted([*(p.name for p in keep), "Branchglance.lnk"])
+
+
 @pytest.mark.skipif(sys.platform != "win32" or os.environ.get("BRANCHGLANCE_SKIP_REAL_REGISTRY_WRITE") == "1",
                     reason="HKCU adapter contract unavailable in this sandbox")
 def test_real_registry_adapter_uses_and_deletes_only_a_throwaway_test_key():
@@ -2116,3 +2209,65 @@ def test_bg_codex_restore_destination_race_keeps_foreign_and_backup(tmp_path, mo
         ReleaseOps(root).recover()
     assert (root / "bg-codex.exe").read_bytes() == b"foreign"
     assert (root / entry["backup"]).read_bytes() == b"old"
+
+
+def _install_while_old_wrapper_runs(tmp_path, root, source, monkeypatch):
+    from branchglance_installer import core
+    real_delete = core._delete_wrapper
+    def running_image(path, expected):
+        if Path(path).name.startswith("bg-codex.exe.old-"):
+            raise PermissionError(5, "Access is denied", str(path))
+        return real_delete(path, expected)
+    with monkeypatch.context() as patch:
+        patch.setattr(core, "_delete_wrapper", running_image)
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+            _release(tmp_path, "r2", version="1.0.1", build_id="b"), "1.0.1", "b")
+
+
+def _wrapper_backups(root):
+    return sorted(p.name for p in root.iterdir() if p.name.startswith("bg-codex.exe.old-"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
+def test_bg_codex_backup_kept_while_running_is_deleted_by_the_next_install(tmp_path, monkeypatch):
+    from branchglance_installer.core import read_owned_ledger
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "r1"), "1.0.0", "a")
+    source.write_bytes(b"second wrapper")
+    # A running Codex session keeps the old wrapper's image mapped: it can be renamed aside
+    # but not deleted, so the install has to keep its backup.
+    _install_while_old_wrapper_runs(tmp_path, root, source, monkeypatch)
+    kept = _wrapper_backups(root)
+    assert len(kept) == 1 and kept[0] in read_owned_ledger(root)["tools"]
+    source.write_bytes(b"third wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+        _release(tmp_path, "r3", version="1.0.2", build_id="c"), "1.0.2", "c")
+    assert (root / "bg-codex.exe").read_bytes() == b"third wrapper"
+    assert _wrapper_backups(root) == []
+    tools = read_owned_ledger(root)["tools"]
+    assert not any(name.startswith("bg-codex.exe.old-") for name in tools)
+    assert set(read_owned_ledger(root).get("wrapperFiles", {})) <= set(tools)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: bg-codex wrapper ownership uses handle-bound Windows file operations")
+def test_bg_codex_retained_backup_replaced_by_a_foreign_file_is_kept(tmp_path, monkeypatch):
+    from branchglance_installer.core import read_owned_ledger
+    root = _root(tmp_path)
+    source = tmp_path / "bg-codex.exe"
+    source.write_bytes(b"first wrapper")
+    ReleaseOps(root, tools={"bg-codex.exe": source}).install(_release(tmp_path, "r1"), "1.0.0", "a")
+    source.write_bytes(b"second wrapper")
+    _install_while_old_wrapper_runs(tmp_path, root, source, monkeypatch)
+    (backup_name,) = _wrapper_backups(root)
+    (root / backup_name).unlink()
+    (root / backup_name).write_bytes(b"someone else's file")
+    source.write_bytes(b"third wrapper")
+    # The install's ownership check refuses before any retry can touch the replaced name.
+    with pytest.raises(SafetyError, match="Wrapper ownership cannot be verified"):
+        ReleaseOps(root, tools={"bg-codex.exe": source}).install(
+            _release(tmp_path, "r3", version="1.0.2", build_id="c"), "1.0.2", "c")
+    assert (root / backup_name).read_bytes() == b"someone else's file"
+    assert backup_name in read_owned_ledger(root)["tools"]
+    assert (root / "bg-codex.exe").read_bytes() == b"second wrapper"
