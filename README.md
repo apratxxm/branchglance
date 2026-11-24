@@ -14,35 +14,43 @@
   <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-3776AB">
 </p>
 
-**Branchglance is a small always-on-top widget that shows what your Codex and Claude Code agents are doing: which are running, which are waiting on you, and how much of your usage limit is left.**
+<h3 align="center">Every Codex and Claude Code agent in one tree: what's running, what needs you, and how much limit is left.</h3>
 
 <p align="center">
-  <img alt="Branchglance showing a tree of Codex and Claude Code chats with subagents, plus 5-hour and weekly limits" src="docs/images/widget.png" width="560">
+  <img alt="Branchglance showing a tree of Codex and Claude Code chats with subagents, plus 5-hour and weekly limits" src="docs/images/widget.png" width="600">
 </p>
 
-All screenshots use synthetic sample data.
+<p align="center">
+  <img alt="The collapsed widget: clock, chat counts, and 5-hour and weekly limit bands" src="docs/images/widget-collapsed.png" width="400"><br>
+  <sub>Collapsed, it is a thin strip with a clock and limit bands. Hover over it, or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>, to open the tree.</sub>
+</p>
 
-> These docs describe `master`. For the latest release, use the docs at its release tag; features in [Unreleased](CHANGELOG.md) require a source build.
+<table>
+  <tr>
+    <td width="50%" valign="top"><img alt="Branchglance Insights: tokens, estimated cost, models and quota use" src="docs/images/insights.png"></td>
+    <td width="50%" valign="top"><img alt="Branchglance Settings: widget controls, providers and plan prices" src="docs/images/settings.png"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Insights</b>: tokens, estimated cost, models and quota peaks, from 24 hours to 30 days.</td>
+    <td align="center"><b>Settings</b>: widget controls, provider policy and plan prices in one place.</td>
+  </tr>
+</table>
+
+<p align="center"><sub>All screenshots use synthetic sample data.</sub></p>
+
+> These docs describe `master`. For the latest release, use the docs at its release tag; features in [Unreleased](CHANGELOG.md) need a source build.
 
 ## Features
 
 Items marked **(0.2.0)** are in the development version.
 
-<p align="center"><img alt="Branchglance chat tree and usage limits" src="docs/images/widget.png" width="560"></p>
-<p align="center">The chat tree, waiting count and provider limits stay in view.</p>
-
-<p align="center"><img alt="Branchglance Insights dashboard" src="docs/images/insights.png" width="560"></p>
-<p align="center">Insights summarize tokens, estimated cost, models and quota use.</p>
-
-<p align="center"><img alt="Branchglance Settings dashboard" src="docs/images/settings.png" width="560"></p>
-<p align="center">Settings keep widget controls, provider policy and plan prices together.</p>
-
-- **Chat tree.** Codex and Claude Code chats with subagents; Codex jobs started from a Claude chat nest under it. A status or parent link appears only when there is evidence for it.
-- **Needs-you count.** Waiting chats are marked and counted; click the count to jump to the next one.
-- **Usage limits.** 5-hour and weekly limits for both providers include reset countdowns. Optional live Claude usage (off by default) refreshes about every 180 seconds **(0.2.0)**.
-- **Insights.** Compare tokens, estimated cost, models and quota peaks from 24 hours to 30 days. Models without a known price are listed, never guessed.
+- **One tree for every agent.** Codex and Claude Code chats with their subagents; Codex jobs started from a Claude chat nest under it. A status or parent link appears only when there is evidence for it.
+- **Status at a glance.** The dot beside each name shows its state. Subagents show their timer in the dot's colour with what they are doing underneath, so long names fit **(0.2.0)**.
+- **Needs-you count.** Waiting chats are marked and counted; click the count to jump to the next one, or click a waiting subagent's timer to open its question.
+- **Usage limits.** 5-hour and weekly limits for both providers, with reset countdowns. Optional live Claude usage (off by default) refreshes about every 180 seconds **(0.2.0)**.
+- **Insights.** Compare tokens, estimated cost, models and quota peaks. Models without a known price are listed, never guessed.
 - **Reset actions (off by default).** A greeting keeps Claude's 5-hour window rolling **(0.2.0)**; a one-time `continue` can be queued for chats you pick.
-- **Out of the way.** The widget collapses to a thin strip with a clock and limit bands (into the notch on macOS). Hover over it, or press Ctrl+Shift+T, to open the tree.
+- **Out of the way.** The widget collapses to a thin strip (into the notch on macOS) and expands on hover.
 
 ## How it works
 

@@ -19,6 +19,13 @@ from token_tracker.providers import ClaudeDesktopProvider, CodexProvider, CodexU
 from token_tracker.provider_policy import load_policies
 
 
+def _observed_now():
+    # Whole milliseconds, rounded down: isoformat's microsecond rounding can land past time.time() on the same
+    # clock tick, and a supplied future stamp is rejected by design.
+    now = datetime.now(timezone.utc)
+    return now.replace(microsecond=now.microsecond // 1000 * 1000).isoformat()
+
+
 @pytest.fixture(autouse=True)
 def isolated_agent_homes(tmp_path_factory, monkeypatch):
     """Provider tests must never read the real Claude or Codex transcripts on this machine."""
@@ -4036,7 +4043,7 @@ def test_missing_rollout_safe_thread_keeps_running_appserver_fallback(tmp_path, 
     monkeypatch.setattr(providers, "_incremental_jsonl_reduce_group", capture)
     row = CodexProvider._safe_thread({
         "id": "missing-running", "status": {"type": "running"},
-        "statusObservedAt": datetime.now(timezone.utc).isoformat(), "path": str(missing),
+        "statusObservedAt": _observed_now(), "path": str(missing),
     })
     assert row["status"] == "running"
     assert "dataError" not in row
@@ -5305,7 +5312,7 @@ def test_silent_codex_tool_remains_running_when_fresh_app_snapshot_confirms_it(t
                                    "payload": {"type": "task_started"}}) + "\n", encoding="utf-8")
     old = time.time() - 600
     os.utime(rollout, (old, old))
-    observed = datetime.now(timezone.utc).isoformat()
+    observed = _observed_now()
     thread = CodexProvider._thread({"id": "silent", "status": "running", "statusObservedAt": observed,
                                     "path": str(rollout)})
     assert thread["status"] == "running"
@@ -5348,7 +5355,7 @@ def test_app_running_does_not_reuse_a_completed_state_clock(tmp_path):
     old_completion = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
     rollout.write_text(json.dumps({"type": "event_msg", "timestamp": old_completion,
                                    "payload": {"type": "task_complete"}}) + "\n", encoding="utf-8")
-    observed = datetime.now(timezone.utc).isoformat()
+    observed = _observed_now()
     thread = CodexProvider._thread({"id": "resumed", "status": "running",
                                     "statusObservedAt": observed, "path": str(rollout)})
     assert thread["status"] == "running"
@@ -5360,7 +5367,7 @@ def test_future_terminal_timestamp_cannot_override_fresh_app_running(tmp_path):
     future_completion = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
     rollout.write_text(json.dumps({"type": "event_msg", "timestamp": future_completion,
                                    "payload": {"type": "task_complete"}}) + "\n", encoding="utf-8")
-    observed = datetime.now(timezone.utc).isoformat()
+    observed = _observed_now()
     thread = CodexProvider._thread({"id": "future-complete", "status": "running",
                                     "statusObservedAt": observed, "path": str(rollout)})
     assert thread["status"] == "running"
@@ -5542,7 +5549,7 @@ def test_active_run_does_not_reuse_context_sample_from_before_task_started(tmp_p
         {"type": "event_msg", "timestamp": run_start, "payload": {"type": "task_started"}},
     ]
     _rollout(rollout, rows)
-    observed = datetime.now(timezone.utc).isoformat()
+    observed = _observed_now()
     thread = CodexProvider._thread({"id": "new-run", "status": "running", "statusObservedAt": observed,
                                     "path": str(rollout)})
     assert thread["contextTokens"] is None
@@ -5575,7 +5582,7 @@ def test_active_run_keeps_zero_context_from_a_fresh_sample(tmp_path):
             "model_context_window": 200}}},
     ])
     thread = CodexProvider._thread({"id": "fresh-zero", "status": "running",
-                                    "statusObservedAt": datetime.now(timezone.utc).isoformat(), "path": str(rollout)})
+                                    "statusObservedAt": _observed_now(), "path": str(rollout)})
     assert thread["contextTokens"] == 0
     assert thread["contextWindow"] == 200
     assert thread["contextPercent"] == 0
@@ -5599,7 +5606,7 @@ def test_active_run_keeps_context_sample_across_ordinary_tool_call(tmp_path):
             "type": "function_call_output", "call_id": "read-1", "output": "read complete"}},
     ])
     thread = CodexProvider._thread({"id": "same-run", "status": "running",
-                                    "statusObservedAt": datetime.now(timezone.utc).isoformat(), "path": str(rollout)})
+                                    "statusObservedAt": _observed_now(), "path": str(rollout)})
     assert thread["contextTokens"] == 60
     assert thread["contextWindow"] == 200
     assert thread["contextPercent"] == 30
@@ -5623,7 +5630,7 @@ def test_active_run_accepts_a_new_context_sample_after_task_started(tmp_path):
             "model_context_window": 200}}},
     ])
     thread = CodexProvider._thread({"id": "new-sample", "status": "running",
-                                    "statusObservedAt": datetime.now(timezone.utc).isoformat(), "path": str(rollout)})
+                                    "statusObservedAt": _observed_now(), "path": str(rollout)})
     assert thread["contextTokens"] == 5
     assert thread["contextObservedAt"] == sampled
 
@@ -5680,7 +5687,7 @@ def test_context_delta_and_model_change_timestamp_match_full_and_live_rows(tmp_p
             "model_context_window": 100}}},
     ])
     full = CodexProvider._thread({"id": "delta-live", "status": "running", "model": "model-b",
-                                  "statusObservedAt": datetime.now(timezone.utc).isoformat(), "path": str(rollout)})
+                                  "statusObservedAt": _observed_now(), "path": str(rollout)})
     assert full["contextDelta"] == 5
     assert full["contextDeltaObservedAt"] == at(4)
     assert full["modelChangeAt"] == at(2)
@@ -5986,7 +5993,7 @@ def test_fresh_app_running_preserves_recorded_compaction_in_full_and_live_state(
     rollout.write_text(json.dumps(event) + "\n", encoding="utf-8")
     old = time.time() - 600
     os.utime(rollout, (old, old))
-    observed = datetime.now(timezone.utc).isoformat()
+    observed = _observed_now()
 
     thread = CodexProvider._thread({"id": "active-compaction", "status": "running",
                                     "statusObservedAt": observed, "path": str(rollout)})
@@ -6005,7 +6012,7 @@ def test_newer_app_failure_overrides_old_compaction(tmp_path):
     rollout.write_text(json.dumps(event) + "\n", encoding="utf-8")
     old = time.time() - 600
     os.utime(rollout, (old, old))
-    observed = datetime.now(timezone.utc).isoformat()
+    observed = _observed_now()
 
     thread = CodexProvider._thread({"id": "failed-compaction", "status": "failed",
                                     "statusObservedAt": observed, "path": str(rollout)})
@@ -6018,7 +6025,7 @@ def test_newer_app_failure_overrides_old_compaction(tmp_path):
 def test_stale_provider_retains_active_row_without_extending_validity(tmp_path):
     rollout = tmp_path / "stale-provider.jsonl"
     rollout.write_text("{}\n", encoding="utf-8")
-    observed = datetime.now(timezone.utc).isoformat()
+    observed = _observed_now()
     active = {"id": "stale-provider", "path": str(rollout), "status": "running",
               "statusSource": "app", "statusObservedAt": observed, "appStatus": "running"}
     providers._index_live_paths([{"name": "Codex", "chats": [dict(active)]}])
@@ -6052,7 +6059,7 @@ def test_successful_empty_snapshot_removes_previously_active_row(tmp_path):
     rollout.write_text("{}\n", encoding="utf-8")
     providers._index_live_paths([{"name": "Codex", "chats": [{
         "id": "removed-provider", "path": str(rollout), "status": "running",
-        "statusSource": "app", "statusObservedAt": datetime.now(timezone.utc).isoformat(),
+        "statusSource": "app", "statusObservedAt": _observed_now(),
     }]}])
     providers._index_live_paths([{"name": "Codex", "stale": False, "chats": []}])
     assert "Codex:removed-provider" not in providers._LIVE_INDEX
@@ -6064,7 +6071,7 @@ def test_valid_null_message_and_context_fields_do_not_restore_stale_values(tmp_p
     rollout.write_text("{}\n", encoding="utf-8")
     providers._index_live_paths([{"name": "Codex", "chats": [{
         "id": "cleared-fields", "path": str(rollout), "status": "running",
-        "statusSource": "app", "statusObservedAt": datetime.now(timezone.utc).isoformat(),
+        "statusSource": "app", "statusObservedAt": _observed_now(),
         "latestMessageAt": "2026-10-07T09:00:00Z", "latestMessageDirection": "parent-to-agent",
         "contextTokens": 50, "contextWindow": 100, "contextPercent": 50,
         "contextObservedAt": "2026-10-07T09:00:00Z", "contextModel": "model-a",
@@ -6072,7 +6079,7 @@ def test_valid_null_message_and_context_fields_do_not_restore_stale_values(tmp_p
     }]}])
     providers._index_live_paths([{"name": "Codex", "chats": [{
         "id": "cleared-fields", "path": str(rollout), "status": "running",
-        "statusSource": "app", "statusObservedAt": datetime.now(timezone.utc).isoformat(),
+        "statusSource": "app", "statusObservedAt": _observed_now(),
         "latestMessageAt": None, "latestMessageDirection": None, "latestMessageSourceId": None,
         "latestMessageTargetId": None, "contextTokens": None, "contextWindow": None,
         "contextPercent": None, "contextObservedAt": None, "contextModel": None,

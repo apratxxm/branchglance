@@ -16,7 +16,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import webbrowser
@@ -26,6 +25,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse, urlsplit
 
 from . import product, providers as provider_module
+from .timeutil import parse_iso_datetime
 from .providers import build_snapshot, live_state, today_usage, trim_chats
 
 
@@ -123,7 +123,6 @@ def _codex_queue_allowed() -> bool:
         return False
 
 
-PRODUCT = "Branchglance"
 BUILD = os.environ.get("BRANCHGLANCE_BUILD", "dev")
 
 
@@ -158,7 +157,7 @@ def _identity_payload() -> dict:
         from . import product
         who = product.identity()
     except Exception:
-        who = {"product": PRODUCT, "build": BUILD, "pid": os.getpid(), "stateRoot": None, "policyWarnings": []}
+        who = {"product": product.PRODUCT, "build": BUILD, "pid": os.getpid(), "stateRoot": None, "policyWarnings": []}
     try:
         from .provider_policy import public_policies
         policies = public_policies()
@@ -464,15 +463,7 @@ class SnapshotCache:
 
     @staticmethod
     def _parse_utc(value: object) -> datetime | None:
-        if not isinstance(value, str):
-            return None
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                return None
-            return parsed.astimezone(timezone.utc)
-        except (OverflowError, ValueError, TypeError):
-            return None
+        return parse_iso_datetime(value, naive="reject")
 
     @staticmethod
     def _authenticated_bytes(envelope: dict) -> bytes:
@@ -502,20 +493,7 @@ class SnapshotCache:
 
     @staticmethod
     def _atomic_write(path: Path, payload: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        temp_path = Path(temp_name)
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, path)
-        finally:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        product.atomic_write_bytes(path, payload)
 
     def _ensure_persistence_key(self) -> bytes:
         try:
@@ -1784,7 +1762,7 @@ class Handler(SimpleHTTPRequestHandler):
             parsed = urlsplit("//" + host)
             return (bool(host) and "@" not in parsed.netloc and not parsed.path
                     and not parsed.query and not parsed.fragment
-                    and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                    and parsed.hostname in product.LOOPBACK_HOSTS
                     and parsed.port == self.server.server_port)
         except ValueError:
             return False
@@ -1803,7 +1781,7 @@ class Handler(SimpleHTTPRequestHandler):
                 host = self.headers.get("Host", "")
                 referer_valid = (parsed.scheme == "http" and parsed.netloc == host
                                  and "@" not in parsed.netloc
-                                 and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                                 and parsed.hostname in product.LOOPBACK_HOSTS
                                  and parsed.port == self.server.server_port)
             except ValueError:
                 referer_valid = False
@@ -1820,7 +1798,7 @@ class Handler(SimpleHTTPRequestHandler):
         host = self.headers.get("Host", "")
         parsed = urlparse(origin)
         return (parsed.scheme == "http" and parsed.netloc == host and not parsed.path
-                and parsed.hostname in {"127.0.0.1", "localhost", "::1"})
+                and parsed.hostname in product.LOOPBACK_HOSTS)
 
     def _send_live_json(self, value, plain: bytes | None, compressed: bytes | None) -> None:
         gzip_ok, identity_ok = _live_encodings(self.headers.get("Accept-Encoding", ""))
@@ -1930,7 +1908,7 @@ def main() -> None:
     from . import claude_usage_api
     claude_usage_api.REFRESHER.start()
     url = f"http://{args.host}:{args.port}"
-    print(f"Token Tracker running at {url}")
+    print(f"{product.PRODUCT} running at {url}")
     if not args.no_open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:

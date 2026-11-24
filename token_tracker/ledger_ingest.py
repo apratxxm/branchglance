@@ -17,6 +17,7 @@ import json
 import stat as stat_module
 import time
 import bisect
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -30,6 +31,9 @@ HEAD_BYTES = 512
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
 _HASH_CHUNK = 64 * 1024
+# Keep the recurring cursor and missing-source scans in this writer's page cache.
+# SQLite's default cache is smaller than the sources table on typical installations.
+_WRITER_CACHE_KIB = 16 * 1024
 # A prefix whose verification restarted this many times (the file kept growing) is verified in one pass.
 _VERIFY_RESTART_LIMIT = 8
 IDLE_VERIFY_SECONDS = 120
@@ -49,6 +53,14 @@ class _VerificationReadError(OSError):
         super().__init__(message)
         self.work = work
         self.state = deepcopy(dict(state)) if state is not None else None
+
+
+class _PassChanged(Exception):
+    """The pass index no longer describes the database or a source identity."""
+
+
+class _PassStopped(Exception):
+    """A cooperative stop was requested during snapshot acquisition."""
 
 
 def _digest(data: bytes) -> str:
@@ -241,12 +253,26 @@ class Ingestor:
     def __init__(self, conn: Any, *, claude_root: Path, codex_root: Path,
                  clock: Callable[[], float] = time.time, kind_registry_path: Path | None = None) -> None:
         self.conn = conn
+        self.conn.execute(f"PRAGMA cache_size=-{_WRITER_CACHE_KIB}")
         self.claude_root = Path(claude_root)
         self.codex_root = Path(codex_root)
         self.clock = clock
         self.kind_registry_path = kind_registry_path
         self.registry = dict(classify_mod.DEFAULT_KIND_REGISTRY)
         self.stats = {"sourceReads": 0}
+        self._pass_paths: dict[str, str] | None = None
+        self._pass_cursors: dict[tuple[str, str], dict[str, Any] | None] | None = None
+        self._pass_identities: set[tuple[str, str]] = set()
+        self._pass_providers: list[str] = []
+        self._pass_version: int | None = None
+        self._last_fast_idle = False
+        self._last_identity: tuple[str, str] | None = None
+        self._last_cursor: dict[str, Any] | None = None
+        self._active_source: tuple[str, Path] | None = None
+        self._pass_visited = 0
+        self._pass_read_total = 0
+        self._pass_invalidated = False
+        self._conflict_streak = 0
         self._verification_turn: tuple[str, str] | None = None
         self._last_outcome: dict[str, bool] = {}
         self._thread_hint_cache: dict[tuple[str, str], tuple[tuple[int, ...], str | None]] = {}
@@ -269,20 +295,74 @@ class Ingestor:
         self.conn.execute("CREATE TABLE IF NOT EXISTS ledger_gap_details("
                           "gap_id INTEGER PRIMARY KEY, thread_id TEXT, interval_start INTEGER, interval_end INTEGER)")
 
+    def _path_key(self, path: Path) -> str:
+        if self._pass_paths is None:
+            return path_key(path)
+        raw = str(path)
+        if raw not in self._pass_paths:
+            self._pass_paths[raw] = path_key(path)
+        return self._pass_paths[raw]
+
+    def _current_identity(self, provider: str, path: Path) -> tuple[str, str]:
+        """Resolve again at cursor and reconciliation boundaries."""
+        key = path_key(path)
+        if self._pass_paths is not None:
+            if self._pass_paths.get(str(path)) != key:
+                raise _PassChanged
+        identity = (provider, key)
+        return identity
+
+    def _refresh_pass_cursors(self, *, force: bool = False,
+                              should_stop: Callable[[], bool] | None = None) -> None:
+        if self._pass_cursors is None:
+            return
+        if self._pass_invalidated:
+            raise _PassChanged
+        version = self.conn.execute("PRAGMA data_version").fetchone()[0]
+        if self._pass_version is not None and version != self._pass_version:
+            raise _PassChanged
+        if not force:
+            if version != self._pass_version:
+                raise _PassChanged
+            return
+        loaded = store.load_sources(self.conn, self._pass_providers, self._pass_identities)
+        after = self.conn.execute("PRAGMA data_version").fetchone()[0]
+        if after != version:
+            if should_stop and should_stop():
+                raise _PassStopped
+            raise _PassChanged
+        self._pass_cursors.clear()
+        self._pass_cursors.update(loaded)
+        self._pass_version = after
+
+    @contextmanager
+    def _transaction(self):
+        with store.transaction(self.conn) as conn:
+            if self._pass_version is not None:
+                if (self._pass_invalidated
+                        or conn.execute("PRAGMA data_version").fetchone()[0] != self._pass_version):
+                    raise _PassChanged
+                if self._active_source is not None:
+                    self._current_identity(*self._active_source)
+            yield conn
+
     def forget_provider(self, provider: str) -> None:
         """Drop in-memory partial verification for one provider (its stored rows were purged)."""
+        if self._pass_cursors is not None:
+            self._pass_invalidated = True
+            for key in [key for key in self._pass_cursors if key[0] == provider]:
+                del self._pass_cursors[key]
         for key in [key for key in self._partial_verification if key[0] == provider]:
             del self._partial_verification[key]
         for key in [key for key in self._thread_hint_cache if key[0] == provider]:
             del self._thread_hint_cache[key]
-
     def _codex_thread_hint(self, path: Path) -> Any:
         """Read only the bounded leading metadata needed to order a first-seen rollout.
 
         Returns the thread id, None when the leading records name no thread, or
         _PENDING_THREAD when a leading record is incomplete or unreadable, so the
         caller orders the rollout conservatively until its metadata can be read."""
-        key = (model_mod.CODEX, path_key(path))
+        key = (model_mod.CODEX, self._path_key(path))
         try:
             stamp = tuple(_file_stamp(path.stat()))
         except OSError:
@@ -321,37 +401,85 @@ class Ingestor:
 
     def run(self, collect: Mapping[str, bool], budget: int | None = None,
             fault: FaultHook | None = None, should_stop: Callable[[], bool] | None = None) -> dict[str, Any]:
+        compat = self._conflict_streak >= 3
+        self._pass_paths = None if compat else {}
+        self._pass_visited = 0
+        self._pass_read_total = 0
+        self._pass_invalidated = False
+        try:
+            if not compat:
+                self._pass_version = self.conn.execute("PRAGMA data_version").fetchone()[0]
+            result = self._run(collect, budget, fault, should_stop, compat=compat)
+            if not result.get("stopped"):
+                self._conflict_streak = 0
+            return result
+        except _PassStopped:
+            return {"filesVisited": self._pass_visited, "bytesRead": self._pass_read_total,
+                    "pendingBytes": None, "stopped": True}
+        except _PassChanged:
+            self._conflict_streak += 1
+            self._partial_verification.clear()
+            self._thread_hint_cache.clear()
+            return {"filesVisited": self._pass_visited, "bytesRead": self._pass_read_total,
+                    "pendingBytes": None, "stopped": True, "retryAfterChange": True}
+        finally:
+            self._pass_paths = None
+            self._pass_cursors = None
+            self._pass_identities = set()
+            self._pass_providers = []
+            self._pass_version = None
+            self._active_source = None
+
+    def _run(self, collect: Mapping[str, bool], budget: int | None,
+             fault: FaultHook | None, should_stop: Callable[[], bool] | None,
+             *, compat: bool = False) -> dict[str, Any]:
         self.registry = classify_mod.load_kind_registry(self.kind_registry_path) if self.kind_registry_path else dict(classify_mod.DEFAULT_KIND_REGISTRY)
         discovered = discover(self.claude_root, self.codex_root, collect)
         read_total = 0
         visited = 0
         now = self.clock()
+        self._pass_identities = (set() if compat else
+                                 {(provider, self._path_key(path)) for provider, path in discovered})
+        self._pass_providers = [name for name in (model_mod.CLAUDE, model_mod.CODEX) if collect.get(name)]
         source_cursors: dict[tuple[str, str], dict[str, Any] | None] = {}
+        if not compat:
+            self._pass_cursors = source_cursors
+            self._refresh_pass_cursors(force=True, should_stop=should_stop)
         source_threads: dict[tuple[str, str], str | None] = {}
         source_positions: dict[tuple[str, str], int] = {}
         unresolved_positions: dict[str, list[int]] = {}
         pending_hints: set[tuple[str, str]] = set()
-        for position, (provider, path) in enumerate(discovered):
-            identity = (provider, path_key(path))
-            source_positions[identity] = position
-            cursor = store.load_source(self.conn, provider, identity[1]) if collect.get(provider) else None
-            source_cursors[identity] = cursor
-            state = (cursor or {}).get("state", {})
-            thread = state.get("thread")
-            if provider == model_mod.CODEX and not thread:
-                thread = self._codex_thread_hint(path)
-                if thread is _PENDING_THREAD:
-                    pending_hints.add(identity)
-                    thread = None
-            source_threads[identity] = thread
-            unresolved = bool(state.get("verification_debt") or state.get("verify")
-                              or state.get("provisional") or state.get("ordered_tail_pending"))
-            if provider == model_mod.CODEX and thread and unresolved:
-                unresolved_positions.setdefault(thread, []).append(position)
+
+        def rebuild_ordering() -> None:
+            source_threads.clear()
+            source_positions.clear()
+            unresolved_positions.clear()
+            pending_hints.clear()
+            for position, (provider, path) in enumerate(discovered):
+                identity = (provider, self._path_key(path))
+                source_positions[identity] = position
+                if compat:
+                    cursor = store.load_source(self.conn, *identity) if collect.get(provider) else None
+                    source_cursors[identity] = cursor
+                else:
+                    cursor = source_cursors.get(identity)
+                state = (cursor or {}).get("state", {})
+                thread = state.get("thread")
+                if provider == model_mod.CODEX and not thread:
+                    thread = self._codex_thread_hint(path)
+                    if thread is _PENDING_THREAD:
+                        pending_hints.add(identity)
+                        thread = None
+                source_threads[identity] = thread
+                unresolved = bool(state.get("verification_debt") or state.get("verify")
+                                  or state.get("provisional") or state.get("ordered_tail_pending"))
+                if provider == model_mod.CODEX and thread and unresolved:
+                    unresolved_positions.setdefault(thread, []).append(position)
+        rebuild_ordering()
 
         def debt_due(entry: tuple[str, Path]) -> bool:
             provider, path = entry
-            cursor = source_cursors.get((provider, path_key(path)))
+            cursor = source_cursors.get((provider, self._path_key(path)))
             debt = (cursor or {}).get("state", {}).get("verification_debt")
             if not debt:
                 return False
@@ -375,23 +503,23 @@ class Ingestor:
         for entry in discovered:
             if not collect.get(entry[0]):
                 continue
-            cursor = source_cursors.get((entry[0], path_key(entry[1])))
+            cursor = source_cursors.get((entry[0], self._path_key(entry[1])))
             if (cursor or {}).get("state", {}).get("verification_debt"):
                 debt_entries.append(entry)
-        debt_ids = [(provider, path_key(path)) for provider, path in debt_entries]
+        debt_ids = [(provider, self._path_key(path)) for provider, path in debt_entries]
         if self._verification_turn not in debt_ids:
             self._verification_turn = debt_ids[0] if debt_ids else None
         if debt_ids:
             start = debt_ids.index(self._verification_turn)
             rotated_debt_ids = debt_ids[start:] + debt_ids[:start]
-            due_by_id = {(provider, path_key(path)): (provider, path)
+            due_by_id = {(provider, self._path_key(path)): (provider, path)
                          for provider, path in discovered if collect.get(provider) and debt_due((provider, path))}
             due_entries = [due_by_id[identity] for identity in rotated_debt_ids if identity in due_by_id]
         else:
             rotated_debt_ids = []
             due_entries = []
         due_keys = {(name, path) for name, path in due_entries}
-        due_identities = {(provider, path_key(path)) for provider, path in due_entries}
+        due_identities = {(provider, self._path_key(path)) for provider, path in due_entries}
         ordered = due_entries + [entry for entry in discovered if entry not in due_keys]
         self._capped_scan_used = False
         cadence = {"cursorAdvanced": False, "actionableBytes": 0,
@@ -403,9 +531,11 @@ class Ingestor:
             if should_stop and should_stop():
                 # Cooperative stop between files: nothing from this pass is left half-applied.
                 return {"filesVisited": visited, "bytesRead": read_total, "pendingBytes": None, "stopped": True}
-            identity = (provider, path_key(path))
-            source_position = source_positions[identity]
-            thread = source_threads.get(identity)
+            self._refresh_pass_cursors()
+            old_identity = (provider, self._path_key(path))
+            identity = old_identity if compat else self._current_identity(provider, path)
+            source_position = source_positions[old_identity]
+            thread = source_threads.get(old_identity)
             prior = unresolved_positions.get(thread, []) if provider == model_mod.CODEX and thread else []
             blocked = bool(prior and bisect.bisect_left(prior, source_position) > 0)
             if identity in pending_hints and source_cursors.get(identity) is None:
@@ -418,10 +548,21 @@ class Ingestor:
                 break
             remaining = None if budget is None else budget - read_total
             before = source_cursors.get(identity)
+            self._last_fast_idle = False
+            self._last_identity = identity
+            self._last_cursor = before
+            self._active_source = (provider, path)
             result = self.ingest_file(provider, path, remaining, fault, should_stop, block_events=blocked)
+            self._active_source = None
             read_total += result
             visited += 1
-            after = store.load_source(self.conn, provider, identity[1])
+            self._pass_read_total = read_total
+            self._pass_visited = visited
+            if not compat:
+                identity = self._last_identity or identity
+            if not compat:
+                before = self._last_cursor
+            after = source_cursors.get(identity) if self._last_fast_idle else store.load_source(self.conn, provider, identity[1])
             source_cursors[identity] = after
             after_thread = (after or {}).get("state", {}).get("thread")
             if after_thread:
@@ -453,7 +594,9 @@ class Ingestor:
         for provider, path in discovered:
             if not collect.get(provider):
                 continue
-            cursor = store.load_source(self.conn, provider, path_key(path))
+            identity = self._current_identity(provider, path)
+            cursor = (store.load_source(self.conn, provider, identity[1]) if compat
+                      else source_cursors.get(identity))
             try:
                 info = path.stat()
             except OSError:
@@ -475,15 +618,15 @@ class Ingestor:
                 verification_left += self._remaining(provider, path, cursor)
         cadence["actionableBytes"] = actionable
         cadence["verificationRemaining"] = verification_left
-        pending_by_provider = {provider: self._pending(discovered, {provider: bool(collect.get(provider))})
+        pending_by_provider = {provider: self._pending(discovered, {provider: bool(collect.get(provider))}, None if compat else source_cursors)
                                for provider in (model_mod.CLAUDE, model_mod.CODEX)}
-        verifying = {provider: self._verifying(discovered, provider) if collect.get(provider) else 0
+        verifying = {provider: self._verifying(discovered, provider, None if compat else source_cursors) if collect.get(provider) else 0
                      for provider in (model_mod.CLAUDE, model_mod.CODEX)}
         pending = sum(pending_by_provider.values())
         now = int(self.clock())
-        found = {provider: {path_key(path) for name, path in discovered if name == provider}
+        found = {provider: {self._current_identity(name, path)[1] for name, path in discovered if name == provider}
                  for provider in (model_mod.CLAUDE, model_mod.CODEX)}
-        with store.transaction(self.conn) as conn:
+        with self._transaction() as conn:
             for provider in (model_mod.CLAUDE, model_mod.CODEX):
                 if collect.get(provider) and self._resolve_missing(conn, provider, found[provider], now):
                     store.meta_set(conn, "revision", int(store.meta_value(conn, "revision") or 0) + 1)
@@ -516,7 +659,7 @@ class Ingestor:
     def _remaining(self, provider: str, path: Path, cursor: dict[str, Any]) -> int:
         """Unverified bytes, less the partially hashed span this process is holding."""
         remaining = _verify_remaining(cursor["state"], cursor["byte_offset"])
-        partial = self._partial_verification.get((provider, path_key(path)))
+        partial = self._partial_verification.get((provider, self._path_key(path)))
         if partial and cursor["state"].get("verify"):
             remaining = max(1, remaining - partial["position"])
         return remaining
@@ -533,7 +676,8 @@ class Ingestor:
         newline = line.find(b"\n")
         return (start + newline + 1 if newline >= 0 else None), len(line)
 
-    def _pending(self, discovered: list[tuple[str, Path]], collect: Mapping[str, bool]) -> int:
+    def _pending(self, discovered: list[tuple[str, Path]], collect: Mapping[str, bool],
+                 source_cursors: Mapping[tuple[str, str], dict[str, Any] | None] | None) -> int:
         total = 0
         for provider, path in discovered:
             if not collect.get(provider):
@@ -543,7 +687,9 @@ class Ingestor:
                 size = info.st_size
             except OSError:
                 continue
-            cursor = store.load_source(self.conn, provider, path_key(path))
+            identity = self._current_identity(provider, path)
+            cursor = (source_cursors.get(identity) if source_cursors is not None
+                      else store.load_source(self.conn, *identity))
             total += max(0, size - (cursor["byte_offset"] if cursor else 0))
             if cursor:
                 verify = cursor["state"].get("verify")
@@ -555,12 +701,15 @@ class Ingestor:
                     total += cursor["byte_offset"]
         return total
 
-    def _verifying(self, discovered: list[tuple[str, Path]], provider: str) -> int:
+    def _verifying(self, discovered: list[tuple[str, Path]], provider: str,
+                   source_cursors: Mapping[tuple[str, str], dict[str, Any] | None] | None) -> int:
         total = 0
         for name, path in discovered:
             if name != provider:
                 continue
-            cursor = store.load_source(self.conn, provider, path_key(path))
+            identity = self._current_identity(provider, path)
+            cursor = (source_cursors.get(identity) if source_cursors is not None
+                      else store.load_source(self.conn, *identity))
             if cursor and cursor["state"].get("verify"):
                 total += self._remaining(provider, path, cursor)
             elif cursor and cursor["state"].get("verification_debt"):
@@ -575,18 +724,33 @@ class Ingestor:
 
     def ingest_file(self, provider: str, path: Path, budget: int | None, fault: FaultHook | None,
                     should_stop: Callable[[], bool] | None = None, *, block_events: bool = False) -> int:
-        key = path_key(path)
         self._last_outcome = {"cursorAdvanced": False, "verificationAdvanced": False}
+        self._last_fast_idle = False
+        identity = self._current_identity(provider, path)
+        self._last_identity = identity
+        key = identity[1]
         cursor = None
         try:
             info = path.stat()
-            cursor = store.load_source(self.conn, provider, key)
+            self._refresh_pass_cursors()
+            if self._pass_cursors is not None:
+                identity = self._current_identity(provider, path)
+                self._last_identity = identity
+                key = identity[1]
+            cursor = (self._pass_cursors.get((provider, key)) if self._pass_cursors is not None
+                      else store.load_source(self.conn, provider, key))
+            self._last_cursor = cursor
             if block_events:
                 return self._defer_ordered_source(provider, path, info, cursor, fault)
-            plan = self._plan(provider, path, info, cursor, budget, should_stop)
+            state = (cursor or {}).get("state", {})
+            idle = bool(self._pass_cursors is not None and cursor and info.st_size == cursor["byte_offset"]
+                        and state.get("file_stamp") == _file_stamp(info)
+                        and not any(state.get(k) for k in
+                                    ("verification_debt", "verify", "provisional", "ordered_tail_pending")))
+            plan = None if idle else self._plan(provider, path, info, cursor, budget, should_stop)
         except _VerificationReadError as error:
             self._partial_verification.pop((provider, key), None)
-            with store.transaction(self.conn) as conn:
+            with self._transaction() as conn:
                 store.bump_counter(conn, provider, "readFailures")
                 if cursor and cursor["byte_offset"]:
                     state = error.state or {**_fresh_state(), **deepcopy(cursor["state"])}
@@ -612,8 +776,15 @@ class Ingestor:
         except OSError:
             stable = False
             final_stat_failed = True
+            # A read failure is a fact about this attempt: it is counted on its own, even when the pass
+            # index is stale or the cursor write that follows fails.
             with store.transaction(self.conn) as conn:
                 store.bump_counter(conn, provider, "readFailures")
+        if plan is None:
+            if not stable:
+                self._partial_verification.pop((provider, key), None)
+            self._last_fast_idle = True
+            return 0
         if not stable:
             self._partial_verification.pop((provider, key), None)
             scan_work = int(plan.get("verification_work", 0))
@@ -649,7 +820,7 @@ class Ingestor:
                                     retry_delay_seconds=min(VERIFY_RETRY_MAX_SECONDS, delay * 2))
                     state["verification_debt"] = debt
                     state.pop("verify", None)
-                with store.transaction(self.conn) as conn:
+                with self._transaction() as conn:
                     if debt and changed_stamp is None and not final_stat_failed:
                         store.bump_counter(conn, provider, "readFailures")
                     store.save_source(conn, provider, key, generation=cursor["generation"],
@@ -657,7 +828,7 @@ class Ingestor:
             return plan.get("work", plan["consumed"])
         if cursor is not None and not plan["consumed"] and not plan["gaps"] and not plan.get("state_changed"):
             return plan.get("work", 0)
-        with store.transaction(self.conn) as conn:
+        with self._transaction() as conn:
             self._apply(conn, provider, key, plan, fault)
         old_generation = cursor["generation"] if cursor else plan["generation"]
         generation_changed = plan["generation"] != old_generation
@@ -671,7 +842,7 @@ class Ingestor:
     def _defer_ordered_source(self, provider: str, path: Path, info: Any,
                               cursor: dict[str, Any] | None, fault: FaultHook | None) -> int:
         """Observe queued Codex files without committing their counter or tag events."""
-        key = path_key(path)
+        key = self._path_key(path)
         if cursor is not None and info.st_size < cursor["byte_offset"]:
             state = _replay_state(info.st_size)
             plan = {"generation": cursor["generation"] + 1, "offset": 0, "head_key": None,
@@ -685,7 +856,7 @@ class Ingestor:
                 with store.transaction(self.conn) as conn:
                     store.bump_counter(conn, provider, "readFailures")
             if stable:
-                with store.transaction(self.conn) as conn:
+                with self._transaction() as conn:
                     self._apply(conn, provider, key, plan, fault)
                 return 0
             return 0
@@ -729,7 +900,7 @@ class Ingestor:
             state["verification_debt"] = debt
             changed = True
         if changed:
-            with store.transaction(self.conn) as conn:
+            with self._transaction() as conn:
                 store.save_source(conn, provider, key, generation=cursor["generation"],
                                   byte_offset=cursor["byte_offset"], head_key=cursor["head_key"], state=state)
         return 0
@@ -799,7 +970,7 @@ class Ingestor:
                         verify = state.get("verify")
                         restarts = int(verify.get("restarts") or 0) if verify else 0
                         if verify and verify.get("stamp") != stamp:
-                            cache_key = (provider, path_key(path))
+                            cache_key = (provider, self._path_key(path))
                             partial = self._partial_verification.get(cache_key)
                             scan_progress_lost = bool(verify.get("boundary") or int(verify.get("next", 0))
                                                      or (partial and partial.get("position")))
@@ -856,7 +1027,7 @@ class Ingestor:
                     limit = offset + _HASH_CHUNK if budget is None or capped else max(1, budget - tail_reserve)
                     # Finish the boundary span first. A partial digest is process-local;
                     # only completed spans advance the durable cursor.
-                    cache_key = (provider, path_key(path))
+                    cache_key = (provider, self._path_key(path))
                     stopped = False
                     if verify:
                         try:
@@ -939,7 +1110,7 @@ class Ingestor:
                                 budget = max(1, budget - work) if not capped else max(1, budget)
                                 tail_read = True
             if reset:
-                self._partial_verification.pop((provider, path_key(path)), None)
+                self._partial_verification.pop((provider, self._path_key(path)), None)
                 gaps.append((reset, offset))
                 generation, offset, head_key = generation + 1, 0, None
                 debt = state.get("verification_debt") or {}
@@ -1107,7 +1278,7 @@ class Ingestor:
     def _record_tag(self, state: dict[str, Any], provider: str, path: Path,
                     item: dict[str, Any], thread: str, tag: str) -> None:
         if tag not in self.registry and tag != "other":
-            event = model_mod.fact_key(provider, path_key(path), json.dumps(item, sort_keys=True))
+            event = model_mod.fact_key(provider, self._path_key(path), json.dumps(item, sort_keys=True))
             state.setdefault("unknown_tags", []).append((tag, event))
             tag = "other"
         _tag_turn(state, thread, tag)
@@ -1184,7 +1355,7 @@ class Ingestor:
         ambiguous: list[tuple[Any, ...]] = []
         counter_epochs: dict[str, int | None] = {}
         counter_sources: dict[str, str | None] = {}
-        source = path_key(path)  # immutable path key; session_meta's chat source is kept separately
+        source = self._path_key(path)  # immutable path key; session_meta's chat source is kept separately
         flagged: set[str] = set()
         omissions: list[tuple[str, bool]] = []
         if not state["thread_loaded"]:
