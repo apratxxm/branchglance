@@ -162,3 +162,27 @@ def test_exec_scanner_matches_baseline_on_adversarial_sources():
     sources.extend("".join(rng.choice(parts) for _ in range(rng.randint(0, 60))) for _ in range(5000))
     for source in sources:
         assert providers._scan_literal_exec_commands(source) == _baseline_exec(source)
+
+
+def test_scanners_match_baseline_on_samples_built_from_whole_calls():
+    rng = random.Random(1207)
+    noise = [" ", "\n", "\r\n", ";", "x", "ç", "'a'", '"b"', "`c`", "\\", "// note\n", "/* note */",
+             "tools", "tools.", "foo", "$", "await ", '"', "'", "`"]
+    patches = ['apply_patch("*** Begin Patch a")', "tools . apply_patch('*** Begin Patch b')",
+               "tools\n.\tapply_patch ( `*** Begin Patch\nc`)", 'apply_patch("no header")',
+               'apply_patch(value)', 'apply_patch("*** Begin Patch \\"q\\"")']
+    commands = ['exec_command({cmd:"one"})', "exec_command ( { cmd : 'two' , x:1})",
+                'exec_command({\ncmd:"three \\"q\\""\n})', 'exec_command({cmd:"four"+x})',
+                'exec_command({cmd:`five`})', 'exec_command({cmd:"six"', '_exec_command({cmd:"seven"})']
+    patch_hits = command_hits = several = 0
+    for _ in range(4000):
+        sample = "".join(rng.choice(noise if rng.random() < 0.6 else patches + commands)
+                         for _ in range(rng.randint(1, 8)))
+        patch = providers._literal_apply_patch_argument(sample)
+        found = providers._scan_literal_exec_commands(sample)
+        assert patch == _baseline(sample)
+        assert found == _baseline_exec(sample)
+        patch_hits += patch is not None
+        command_hits += bool(found)
+        several += len(found) > 1
+    assert patch_hits > 500 and command_hits > 500 and several > 50, (patch_hits, command_hits, several)
