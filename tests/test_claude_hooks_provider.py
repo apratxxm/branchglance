@@ -173,6 +173,7 @@ def interrupted_user(ts, text="[Request interrupted by user]", *, text_block=Tru
 
 @pytest.fixture()
 def world(tmp_path, monkeypatch):
+    from token_tracker import t3_projection
     home = tmp_path / "claude"
     projects = home / "projects" / "A--proj"
     projects.mkdir(parents=True)
@@ -180,7 +181,11 @@ def world(tmp_path, monkeypatch):
     events.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    monkeypatch.setattr(claude_provider, "_t3_database", lambda: tmp_path / "t3.sqlite")
+    def checked(path):
+        return [(path, path.lstat())]
+    monkeypatch.setattr(t3_projection, "_checked_files", checked)
+    monkeypatch.setattr(t3_projection, "POLL_SECONDS", 0)
+    monkeypatch.setattr(t3_projection, "MAX_UNCHANGED_SECONDS", 0)
     claude_provider.reset_memo()
 
     class World:
@@ -199,8 +204,10 @@ def world(tmp_path, monkeypatch):
         (events / name).write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
 
     def rows(now=NOW, alive=True):
-        return {r["id"]: r for r in claude_provider.build_rows(
-            now, lambda pid, created: alive, events, home / "projects")}
+        result = claude_provider.build_rows(now, lambda pid, created: alive, events, home / "projects")
+        projection = t3_projection.poll({"Claude"}, path=tmp_path / "t3.sqlite")
+        claude_provider._apply_t3_titles(result, projection)
+        return {r["id"]: r for r in result}
 
     w.transcript, w.hooks, w.rows = transcript, hooks, rows
     return w
@@ -664,7 +671,7 @@ def test_parent_title_tracks_t3_rename_and_survives_missing_source(world):
     assert world.rows()[SID]["title"] == "Renamed T3 title"
     with sqlite3.connect(database) as db:
         db.execute("DELETE FROM provider_session_runtime")
-    assert world.rows()[SID]["title"] == "Renamed T3 title"
+    assert world.rows()[SID]["title"] == "Original first prompt"
 
 
 def test_t3_deep_invalid_cursor_is_skipped(world):

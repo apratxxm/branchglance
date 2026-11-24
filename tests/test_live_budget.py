@@ -140,6 +140,50 @@ def test_skipped_parent_stays_in_the_roster_so_its_child_lineage_resolves(claude
     assert snapshot_graph(roster)["edges"]["Codex:child"] == "Claude:parent"
 
 
+def test_live_host_link_is_display_only_and_is_removed(claude_live, monkeypatch):
+    from token_tracker import t3_projection
+    claude_live.index([claude_live.add("parent", 60), claude_live.add("child", 60)])
+    edges = [("Claude:child", "Claude:parent")]
+    monkeypatch.setattr(t3_projection, "poll", lambda *args, **kwargs: t3_projection._publish(edges))
+    live = providers.live_state()
+    assert live["graph"]["edges"]["Claude:child"] is None
+    assert live["hostEdges"]["Claude:child"] == "Claude:parent"
+    assert not providers._LIVE_INDEX["Claude:child"].get("parentId")
+    edges.clear()
+    assert providers.live_state()["hostEdges"] == {}
+
+
+def test_full_and_live_publish_same_overlay_with_different_rosters(claude_live, monkeypatch):
+    from token_tracker import t3_projection
+    candidates = [("Claude:child", "Claude:parent")]
+    calls = []
+    def poll(scope, **kwargs):
+        calls.append(scope)
+        return t3_projection._publish(candidates, scope=scope)
+    monkeypatch.setattr(t3_projection, "poll", poll)
+    monkeypatch.setattr(providers, "_provider_snapshot", lambda *args: {
+        "name": "Claude", "connected": True, "chats": [{"id": "parent"}, {"id": "child"}], "activity": []})
+    full = providers.build_snapshot()
+    claude_live.index([claude_live.add("child", 60)])
+    live = providers.live_state()
+    assert full["hostEdges"] == live["hostEdges"] == {"Claude:child": "Claude:parent"}
+    assert {row["id"] for row in live["chats"]} == {"child"}
+    assert full["graph"]["edges"]["Claude:child"] is None
+    assert live["graph"]["edges"]["Claude:child"] is None
+    assert calls == [frozenset({"Claude"}), frozenset({"Claude"})]
+
+
+def test_both_off_never_invokes_t3_reader(monkeypatch):
+    from token_tracker import t3_projection
+    monkeypatch.setattr(providers, "ENABLED_PROVIDERS", ("Claude", "Codex"))
+    monkeypatch.setattr(providers, "LIMIT_ONLY_PROVIDERS", ())
+    monkeypatch.setattr(providers, "POLICIES", load_policies({
+        "TOKEN_TRACKER_CLAUDE_COLLECT": "false", "TOKEN_TRACKER_CODEX_COLLECT": "false"}))
+    monkeypatch.setattr(t3_projection, "poll", lambda *args, **kwargs: pytest.fail("T3 reader invoked"))
+    assert providers.build_snapshot()["hostEdges"] == {}
+    assert providers.live_state()["hostEdges"] == {}
+
+
 def test_unbudgeted_payload_matches_today_apart_from_the_two_new_keys(claude_live):
     claude_live.index([claude_live.add("a", 60), claude_live.add("b", 3 * 3600), claude_live.add("c", 600)])
     plain = providers.live_state()

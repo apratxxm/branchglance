@@ -2686,6 +2686,39 @@ def test_server_filters_all_roots_before_limiting_and_compares_timezone_instants
     assert providers.trim_chats(snapshot, 1, provider_filter="Codex")["providers"][0]["chats"] == []
 
 
+def test_trim_cross_provider_graph_keeps_tree_for_limit_search_and_pin():
+    snapshot = {"providers": [
+        {"name": "Claude", "chats": [{"id": "parent", "title": "Parent"}]},
+        {"name": "Codex", "chats": [{"id": "child", "title": "Worker"}]},
+    ], "graph": {"edges": {"Claude:parent": None, "Codex:child": "Claude:parent"}}}
+    for options in ({}, {"query": "Worker"}, {"pinned": ["Claude:parent"]},
+                    {"pinned": ["Codex:child"]}):
+        result = providers.trim_chats(snapshot, 1, **options)
+        assert [[c["id"] for c in p["chats"]] for p in result["providers"]] == [["parent"], ["child"]]
+        assert [p["chatTotal"] for p in result["providers"]] == [1, 0]
+
+
+def test_trim_numeric_native_parent_with_sparse_graph_and_host_cycle():
+    snapshot = {"providers": [
+        {"name": "Claude", "chats": [{"id": 1, "title": "Parent"}, {"id": 2, "parentId": 1, "title": "Needle"}]},
+        {"name": "Codex", "chats": [{"id": 3, "title": "Other"}]},
+    ], "graph": {"edges": {}}, "hostEdges": {"Claude:1": "Claude:2", "Codex:3": "Claude:1"}}
+    for options in ({"query": "Needle"}, {"pinned": ["Claude:2"]}, {"pinned": ["Codex:3"]}):
+        result = providers.trim_chats(snapshot, 1, **options)
+        assert [[str(c["id"]) for c in p["chats"]] for p in result["providers"]] == [["1", "2"], ["3"]]
+    parents = providers._display_parents(snapshot)
+    assert parents["Claude:1"] is None and parents["Claude:2"] == "Claude:1"
+    snapshot["providers"][0]["chats"].append({"id": 1, "title": "Duplicate"})
+    assert providers._display_parents(snapshot)["Codex:3"] is None
+
+
+def test_trim_uses_valid_usage_recency_when_update_timestamp_is_invalid():
+    snapshot = {"providers": [{"name": "Codex", "chats": [
+        {"id": "usage", "updatedAt": "invalid", "usageUpdatedAt": "2026-11-23T00:00:00Z"},
+        {"id": "older", "updatedAt": "2026-11-22T00:00:00Z"}]}]}
+    assert [row["id"] for row in providers.trim_chats(snapshot, 1)["providers"][0]["chats"]] == ["usage"]
+
+
 def test_claude_nested_agents_and_metadata_only_label_changes(tmp_path):
     provider = ClaudeDesktopProvider(str(tmp_path))
     provider.root = tmp_path

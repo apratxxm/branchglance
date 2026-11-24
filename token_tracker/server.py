@@ -560,6 +560,33 @@ class SnapshotCache:
             for provider in snapshot["providers"]
         )
 
+    @staticmethod
+    def _strip_host_overlay(snapshot: dict) -> None:
+        """Discard both the current overlay and legacy graph-embedded host links."""
+        snapshot.pop("hostEdges", None)
+        graph = snapshot.get("graph")
+        if not isinstance(graph, dict):
+            return
+        sources = graph.get("edgeSources")
+        edges = graph.get("edges")
+        if not isinstance(sources, dict) or not isinstance(edges, dict):
+            return
+        legacy = {key: edges.get(key) for key, source in sources.items() if source == "t3-host"}
+        for key in legacy:
+            edges[key] = None
+            sources.pop(key, None)
+        if not sources:
+            graph.pop("edgeSources", None)
+        for provider in snapshot.get("providers", []):
+            if not isinstance(provider, dict):
+                continue
+            for row in provider.get("chats", []):
+                if not isinstance(row, dict):
+                    continue
+                key = f"{provider.get('name')}:{row.get('id')}"
+                if key in legacy and row.get("parentId") is None and row.get("parentKey") == legacy[key]:
+                    row["parentKey"] = None
+
     def _restore_persisted(self) -> None:
         with self._publication_lock:
             self._restore_persisted_guarded()
@@ -612,6 +639,9 @@ class SnapshotCache:
                 return
             snapshot = copy.deepcopy(snapshot)
             snapshot.pop("snapshotCache", None)
+            self._strip_host_overlay(snapshot)
+            if isinstance(snapshot.get("graph"), dict):
+                snapshot["graph"]["revision"] = -1
             with self.condition:
                 if self._value is not None:
                     return  # a fresh build won; disk data must never replace it
@@ -653,6 +683,8 @@ class SnapshotCache:
                 if not stat.S_ISREG(existing.st_mode) or reparse:
                     raise OSError("snapshot cache path is not a regular file")
             key = self._ensure_persistence_key()
+            snapshot = copy.deepcopy(snapshot)
+            self._strip_host_overlay(snapshot)
             envelope = {
                 "schemaVersion": self.PERSISTED_SCHEMA_VERSION,
                 "compatibility": self.compatibility,

@@ -73,6 +73,36 @@ const claudeHaiku={id:"haiku",key:"Claude:haiku",parentKey:"Claude:op",title:"te
 const providers=[{name:"Codex",connected:true,chats:[codexLuna,codexSol],...quota},{name:"Claude",connected:true,chats:[claudeParent,claudeHaiku],...quota}];
 const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:sol":"Codex:luna","Claude:haiku":"Claude:op"}};
 
+// Host edges are display-only and a complete live overlay withdraws them.
+{
+  const {T}=boot();
+  const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[
+    {name:'Claude',chats:[{id:'parent',title:'Parent',status:'idle'}]},
+    {name:'Codex',chats:[{id:'child',title:'Override',status:'needs-input',pendingQuestion:'Question'}]},
+  ],graph:{revision:1,edges:{'Claude:parent':null,'Codex:child':null}},hostEdges:{'Codex:child':'Claude:parent'}};
+  const forest=T.buildForest(snapshot);
+  assert.equal(forest.roots.length,1);
+  assert.equal(forest.rows.find(row=>row.id==='child').canonicalParentKey,null);
+  T.state.liveSampleAccepted=true;T.state.liveAcceptedGeneratedAt=fixedNow;
+  assert.equal(T.runwayWaiting(forest.rows.find(row=>row.id==='child')),true);
+  T.state.forest=forest;
+  T.handleClick({target:{closest:()=>({dataset:{action:'pin',key:'Codex:child'}})}});
+  assert.equal(T.state.pins.has('Codex:child'),true);
+  assert.equal(T.state.pins.has('Claude:parent'),false);
+  const html=T.runwayTelemetryHTML(forest.rows.find(row=>row.id==='parent'));
+  assert.doesNotMatch(html,/data-action="runway-question"/);
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[]});
+  assert.equal(snapshot.hostEdges['Codex:child'],'Claude:parent','missing overlay keeps the last value');
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'child',key:'Codex:child',provider:'Codex',title:'Transcript'}],hostEdges:{}});
+  assert.equal(snapshot.providers[1].chats[0].title,'Transcript');
+  assert.equal(T.buildForest(snapshot).roots.length,2,'empty overlay withdraws the association');
+  const cyclic={...snapshot,hostEdges:{'Codex:child':'Claude:parent','Claude:parent':'Codex:child'}};
+  assert.equal(T.buildForest(cyclic).roots.length,2,'a host cycle drops every edge');
+  const duplicate={...snapshot,hostEdges:{'Codex:child':'Claude:parent'},providers:[
+    {name:'Claude',chats:[{id:'parent'},{id:'parent'}]},snapshot.providers[1]]};
+  assert.equal(T.buildForest(duplicate).roots.length,2,'duplicate endpoint blocks a host association');
+}
+
 // Repeated stats failures cannot postpone the graphless first-paint fallback.
 {
   const {T,timers,context}=boot();

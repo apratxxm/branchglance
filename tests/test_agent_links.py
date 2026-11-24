@@ -1015,6 +1015,29 @@ def test_graph_missing_parent_and_cycle_become_roots(monkeypatch):
     assert graph["edges"] == {"Codex:left": None, "Codex:right": None, "Claude:orphan": None}
 
 
+def test_host_graph_is_display_only_and_rejects_conflicts(monkeypatch):
+    from token_tracker.t3_projection import _publish
+    monkeypatch.setattr(agent_links, "_GRAPH_EDGES", {})
+    monkeypatch.setattr(agent_links, "_GRAPH_REVISION", 0)
+    parent = {"id": "parent", "provider": "Claude"}
+    child = {"id": "child", "provider": "Codex"}
+    edge = ("Codex:child", "Claude:parent")
+    graph = agent_links.snapshot_graph([parent, child])
+    assert graph["edges"]["Codex:child"] is None
+    assert dict(_publish([edge]).edges) == {"Codex:child": "Claude:parent"}
+    assert "parentId" not in child
+    assert agent_links.snapshot_graph([parent, child])["edges"]["Codex:child"] is None
+    parent["parentId"] = "child"
+    parent["parentProvider"] = "Codex"
+    graph = agent_links.snapshot_graph([parent, child])
+    assert graph["edges"]["Claude:parent"] == "Codex:child"
+    assert graph["edges"]["Codex:child"] is None
+    parent.pop("parentId")
+    assert agent_links.snapshot_graph([parent, dict(parent), child])["edges"]["Codex:child"] is None
+    other = {"id": "other", "provider": "Claude"}
+    assert not _publish([edge, ("Codex:child", "Claude:other")]).edges
+
+
 def _link_fixture():
     sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     thread = "01234567-89ab-cdef-0123-456789abcdef"

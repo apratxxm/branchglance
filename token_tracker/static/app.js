@@ -1013,15 +1013,34 @@ function snapshotParentKey(provider, raw, edges=null) {
   }
   return rowParent||nativeParent;
 }
+function displayParents(providers,graph,hosts) {
+  const edges=graph&&typeof graph.edges==='object'&&!Array.isArray(graph.edges)?graph.edges:null;
+  const rows=new Map(),parents=new Map(),hostKeys=new Set(),duplicates=new Set();
+  for(const provider of providers||[])for(const raw of provider.chats||[]){const key=keyOf({...raw,provider:provider.name});if(rows.has(key))duplicates.add(key);rows.set(key,{provider,raw});}
+  for(const [key,{provider,raw}] of rows){
+    let parent=snapshotParentKey(provider,raw,edges);
+    if(!parent&&hosts&&typeof hosts[key]==='string'&&rows.has(hosts[key])&&!duplicates.has(key)&&!duplicates.has(hosts[key])){parent=hosts[key];hostKeys.add(key);}
+    parents.set(key,parent||null);
+  }
+  const cyclic=new Set();
+  for(const key of parents.keys()){
+    const seen=new Map(),path=[];let node=key;
+    while(parents.has(node)&&!seen.has(node)){seen.set(node,path.length);path.push(node);node=parents.get(node);}
+    if(seen.has(node))for(const item of path.slice(seen.get(node)))cyclic.add(item);
+  }
+  for(const key of cyclic)if(hostKeys.has(key))parents.set(key,null);
+  return parents;
+}
 // State precedence: Needs you (0, 1) > Running (2) > Finished (2.5, idle after a run that ended in the last 10 minutes) > Idle (3).
 function runwayRank(chat) {
   if(chat.pendingQuestion)return 0;
   const rank=statusRank(chat.status);
   return rank===3&&stamp(chat.runEndedAt)>Date.now()-600000?2.5:rank;
 }
-function buildForest(providers, graph=undefined) {
-  if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){graph=providers.graph;providers=providers.providers;}
+function buildForest(providers, graph=undefined, hostEdges=undefined) {
+  if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){hostEdges=providers.hostEdges;graph=providers.graph;providers=providers.providers;}
   const graphValue=graph,edges=graphValue&&typeof graphValue.edges==="object"&&!Array.isArray(graphValue.edges)?graphValue.edges:null;
+  const display=displayParents(providers,graph,hostEdges);
   const map=new Map();
   for(const provider of providers)for(const raw of provider.chats||[]) {
     const chat={...raw,provider:provider.name,status:normalizeStatus(raw.status),children:[]};
@@ -1029,7 +1048,8 @@ function buildForest(providers, graph=undefined) {
     if(raw.statusSource==="unavailable"){chat.status="unknown";chat.telemetryUnavailable=true;}
     const fallbackKey=keyOf(chat),validKey=typeof raw.key==="string"&&raw.key===fallbackKey?raw.key:fallbackKey;
     chat.key=validKey;
-    const parent=snapshotParentKey(provider,raw,edges);
+    chat.canonicalParentKey=snapshotParentKey(provider,raw,edges);
+    const parent=display.get(chat.key);
     chat.treeParentKey=typeof parent==="string"&&parent?parent:null;
     map.set(chat.key,chat);
   }
@@ -1110,7 +1130,7 @@ function visibleRoots(forest, days=state.windowDays) {
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||runwayActionable(chat)||chat.descendants.some(runwayActionable))&&matches;
+      (hiddenMatch||rows.some(row=>state.pins.has(row.key)||row.retainedRun===true||runwayVisibleActive(row))||runwayActionable(chat)||chat.descendants.some(runwayActionable))&&matches;
   });
 }
 function nextWindowWithChats(forest) {
@@ -1623,7 +1643,8 @@ function runwayTelemetryHTML(chat,agent=false) {
   const fullTitle=agent?agentLabel(chat):runwayFirstLine(chat.title||'Untitled');
   const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(fullTitle)+'" aria-label="'+esc(fullTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
-  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);
+  const canonicalDescendant=child=>{const rows=state.forest?.rows||[],seen=new Set();let node=child;while(node?.canonicalParentKey&&!seen.has(node.key)){seen.add(node.key);if(node.canonicalParentKey===chat.key)return true;node=rows.find(row=>row.key===node.canonicalParentKey);}return false;};
+  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(child=>runwayWaiting(child)&&canonicalDescendant(child)):null);
   const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
   {
     const stateIcon=runwayStatusGlyph(status==='Waiting'?'needs-input':status==='Compacting'?'compacting':status==='Running'||status==='Agents running'?'running':statusCode);
@@ -1820,7 +1841,7 @@ function selectSourceForNewWork(items) {
 }
 function renderChats(providers) {
   scheduleNotchSize();
-  const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
+  const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph,state.snapshot?.hostEdges);stabilizeRunwayForest(forest,previousForest);
   let roots=visibleRoots(forest);const query=parseQuery(state.query);
   state.forest=forest;
   if(state.popover?.dataset?.action==='runway-question'&&!runwayCurrentEvidenceFresh())closePopover({restoreFocus:true});
@@ -2069,7 +2090,7 @@ function initialActiveSource(snapshot){
   const candidates=[];
   for(const provider of snapshot?.providers||[]){
     if(!sourceNames(snapshot).includes(provider.name))continue;
-       const forest=buildForest([provider],snapshot?.graph);
+       const forest=buildForest([provider],snapshot?.graph,snapshot?.hostEdges);
     for(const root of forest.roots){
       if(!state.showHidden&&state.hiddenChats.has(root.key))continue;
       for(const chat of [root,...root.descendants]){
@@ -2102,6 +2123,7 @@ function render(snapshot) {
   restrictSnapshotProviders(snapshot);
   acceptSnapshotCache(snapshot);
   reconcileSnapshotQuotas(snapshot);
+  if(!Object.prototype.hasOwnProperty.call(snapshot,'hostEdges')&&state.snapshot?.hostEdges)snapshot.hostEdges=state.snapshot.hostEdges;
   state.snapshot=snapshot;
   state.initialBootstrapPending=false;
   if(firstRunwayPaint){const activeSource=initialActiveSource(snapshot);if(activeSource)state.source=activeSource;}
@@ -2388,6 +2410,9 @@ function applyLive(snapshot, live) {
   if(!snapshot||!live||stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
   restrictSnapshotProviders(snapshot);
   let graphChanged=false;
+  if(Object.prototype.hasOwnProperty.call(live,'hostEdges')&&live.hostEdges&&typeof live.hostEdges==='object'&&!Array.isArray(live.hostEdges)){
+    if(JSON.stringify(snapshot.hostEdges||{})!==JSON.stringify(live.hostEdges)){snapshot.hostEdges={...live.hostEdges};graphChanged=true;}
+  }
   if(live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
     const incoming=Number(live.graph.revision),current=Number(snapshot.graph?.revision);
     if(!snapshot.graph||Number.isFinite(incoming)&&(!Number.isFinite(current)||incoming>current)){snapshot.graph=live.graph;graphChanged=true;}
@@ -2412,6 +2437,7 @@ function applyLive(snapshot, live) {
       target.chats.push(record);known.add(item.key);changed=true;
     }
   }
+  const display=displayParents(snapshot.providers||[],snapshot.graph,snapshot.hostEdges);
   for(const provider of snapshot.providers||[])for(const chat of provider.chats||[]){
     const key=keyOf({...chat,provider:provider.name});
     const next=byKey.get(key);
@@ -2429,13 +2455,13 @@ function applyLive(snapshot, live) {
         if(next[field]!==undefined&&JSON.stringify(next[field])!==JSON.stringify(chat[field])){chat[field]=next[field];changed=true;}
       }
     }
-    const parent=snapshotParentKey(provider,chat,snapshot.graph?.edges||null);
+    const parent=display.get(key);
     if(!parent)oldestShown=Math.min(oldestShown,stamp(chat.updatedAt));
   }
   // Retention is decided server-side: a retained row carries its thread key, so
   // dropping it here when a live poll omits the thread would remove the whole thread.
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
-  const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!snapshotParentKey(p,c,snapshot.graph?.edges||null)).length,0);
+  const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!display.get(keyOf({...c,provider:p.name}))).length,0);
   const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})()&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
   return {changed,outside};
 }
@@ -2529,7 +2555,7 @@ async function copyText(text, button) {
 function togglePin(key) {
   let chat=state.forest?.rows.find(c=>c.key===key);
   const visited=new Set();
-  while(hasTreeParent(chat)&&!visited.has(chat.key)){visited.add(chat.key);const parent=state.forest.rows.find(c=>c.key===treeParentKey(chat));if(!parent)break;chat=parent;}
+  while(chat?.canonicalParentKey&&!visited.has(chat.key)){visited.add(chat.key);const parent=state.forest.rows.find(c=>c.key===chat.canonicalParentKey);if(!parent)break;chat=parent;}
   if(!chat)return;
   state.pins.has(chat.key)?state.pins.delete(chat.key):state.pins.add(chat.key);
   try{localStorage.setItem("tokenTrackerPinsV2",JSON.stringify([...state.pins]));}catch{}
