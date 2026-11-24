@@ -25,7 +25,7 @@ from typing import Callable
 
 from token_tracker import product
 
-from .core import (CODEX_WRAPPER, JOURNAL, LAUNCHER, MANIFEST, OWNER_FILE, SCHEMA, UNINSTALLER, Journal, LocalFileSystem,
+from .core import (CODEX_WRAPPER, LAUNCHER, MANIFEST, OWNER_FILE, SCHEMA, UNINSTALLER, Journal, LocalFileSystem,
                    ReleaseOps, SafetyError, atomic_json, create_owner, is_reparse, read_json, require_owned_root, uninstall_preflight,
                    uninstall_owned_root, validate_version, verify_manifest)
 from .integration import Integrations

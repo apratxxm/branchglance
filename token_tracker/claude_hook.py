@@ -213,7 +213,6 @@ def _process_table() -> dict[int, tuple[int, str]]:
     if sys.platform == "darwin":
         return _macos_process().process_table()
     import ctypes
-    import ctypes.wintypes as wt
 
     ProcessEntry = _windows_hook_types()[0]
     kernel = _windows_hook_api("process")

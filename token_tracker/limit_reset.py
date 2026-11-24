@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -20,6 +19,7 @@ from typing import Any, Callable
 from collections.abc import Mapping
 
 from . import product
+from .timeutil import parse_iso_epoch
 from .codex_client import CodexAppServer, CodexNotStarted, CodexUnavailable, resolve_codex, run_contained_codex
 from .providers import _usage_percent
 from . import claude_statusline, claude_identity
@@ -48,9 +48,8 @@ PERSIST_RETRY_MAX_SECONDS = 15 * 60
 # the reset action remains deterministic even if the user's default model or
 # CLI configuration changes.
 CODEX_GREETING_MODEL = "gpt-5.6-luna"
-CLAUDE_GREETING_MODEL = "claude-haiku-4-5-20251001"
+CLAUDE_GREETING_MODEL = "claude-haiku-5-5"
 GREETER_ENABLED_PROVIDERS = ("Claude", "Codex")
-CLAUDE_RESET_DROP_PERCENT = 20
 ERROR_LIMIT = 300
 WEEKLY_BLOCKED_ERROR = "weekly limit exhausted"
 LOGIN_ERRORS = {
@@ -112,13 +111,7 @@ def _epoch_seconds(value: Any) -> float | None:
             return None
         return float(value) / 1000 if value > 10_000_000_000 else float(value)
     if isinstance(value, str) and value.strip():
-        try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.timestamp()
+        return parse_iso_epoch(value.strip(), naive="utc")
     return None
 
 
@@ -849,36 +842,15 @@ class LimitResetService:
                 self._reconcile_codex_finalization()
             if not self._persistence_ready():
                 return False
-            temporary = None
-            fd = None
             try:
-                self.state_path.parent.mkdir(parents=True, exist_ok=True)
-                fd, temporary = tempfile.mkstemp(prefix=self.state_path.name + ".", suffix=".tmp", dir=self.state_path.parent)
-                stream = os.fdopen(fd, "w", encoding="utf-8")
-                fd = None  # the stream now owns the descriptor
-                with stream:
-                    json.dump(self._state, stream, indent=2, sort_keys=True)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, self.state_path)
-                temporary = None
+                payload = json.dumps(self._state, indent=2, sort_keys=True).encode("utf-8")
+                product.atomic_write_bytes(self.state_path, payload)
             except OSError as exc:
                 self._persistence_failed("state", exc)
                 return False
             else:
                 self._persistence_succeeded("state")
                 return True
-            finally:
-                if fd is not None:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-                if temporary is not None:
-                    try:
-                        os.unlink(temporary)
-                    except OSError:
-                        pass
 
     def _reconcile_codex_finalization(self) -> None:
         action = self._state.get("resetAction")
