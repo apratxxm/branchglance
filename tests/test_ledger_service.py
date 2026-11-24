@@ -68,6 +68,24 @@ def test_policy_is_resolved_once_at_start_and_gates_collection(tmp_path):
 
 # ------------------------------------------------------------------ cadence
 
+def test_changed_snapshot_retries_at_live_cadence(tmp_path):
+    class ScriptedLedger:
+        def ingest(self, *_args, **_kwargs):
+            return {"stopped": True, "retryAfterChange": True, "pendingBytes": None}
+
+        def close(self):
+            pass
+
+    waits = []
+    service = LedgerService(data_dir=tmp_path / "data", claude_root=tmp_path / "claude",
+                            codex_root=tmp_path / "codex", policies=policies_for(),
+                            environ={ENV_FLAG: "1"}, waiter=lambda seconds: waits.append(seconds) or len(waits) >= 2,
+                            ledger_factory=lambda *_args, **_kwargs: ScriptedLedger())
+    service.start()
+    service._thread.join(10)
+    assert waits == [STARTUP_DELAY_SECONDS, LIVE_INTERVAL_SECONDS]
+
+
 def test_backfill_progresses_then_goes_live(tmp_path):
     data, claude, codex = make_roots(tmp_path)
     write_jsonl(claude_file(claude, "s1"), [claude_response(60 + i, f"m{i}", output=5) for i in range(6)])

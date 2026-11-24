@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,435 @@ from token_tracker.ledger import Ledger
 from token_tracker.ledger_store import LedgerSchemaError
 
 ALL = {"Claude": True, "Codex": True}
+
+
+def test_writer_page_cache_is_configured_for_repeated_cursor_scans(tmp_path):
+    ledger, _, _ = open_ledger(tmp_path)
+    assert ledger.conn.execute("PRAGMA cache_size").fetchone()[0] == -ledger_ingest._WRITER_CACHE_KIB
+
+
+def test_idle_pass_uses_one_cursor_query_and_does_not_open_sources(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    paths = [claude_file(claude, f"idle-{index}") for index in range(12)]
+    for index, path in enumerate(paths):
+        write_jsonl(path, claude_lines((10, f"idle-message-{index}", 1)))
+    ledger.ingest(ALL)
+    statements = []
+    ledger.conn.set_trace_callback(statements.append)
+    original_open = Path.open
+
+    def reject_source_open(path, *args, **kwargs):
+        assert path not in paths, "idle source was opened"
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_source_open)
+    for _ in range(2):
+        statements.clear()
+        result = ledger.ingest(ALL)
+        cursor_queries = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")
+                          and "FROM SOURCES" in sql.upper()]
+        assert len(cursor_queries) == 3  # one bulk load and one missing-source scan per provider
+        assert sum("SELECT PROVIDER, PATH_KEY, GENERATION" in sql.upper() for sql in cursor_queries) == 1
+        assert result["filesVisited"] == len(paths)
+        assert result["bytesRead"] == 0
+        assert not result["cursorAdvanced"] and not result["verificationAdvanced"]
+    ledger.conn.set_trace_callback(None)
+
+
+def test_idle_source_changed_between_passes_is_ingested(tmp_path):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "idle-then-changed")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    ledger.ingest(ALL)
+    append_jsonl(path, claude_lines((20, "second", 2)))
+    ledger.ingest(ALL)
+    cursor = store.load_source(ledger.conn, "Claude", ledger_ingest.path_key(path))
+    assert cursor["state"]["verification_debt"]["open"] is True
+    ledger._ingestor.clock = clock_at(3720)
+    ledger.clock = clock_at(3720)
+    _drain_ledger(ledger)
+    assert total_requests(ledger) == 2
+
+
+def test_bulk_cursor_load_ignores_malformed_undiscovered_source(tmp_path):
+    ledger, _, _ = open_ledger(tmp_path)
+    ledger.conn.execute("INSERT INTO sources(provider, path_key, generation, byte_offset, head_key, state) "
+                        "VALUES (?, ?, ?, ?, ?, ?)", ("Claude", "missing", 1, 0, None, "invalid"))
+    ledger.ingest(ALL)
+
+
+def test_idle_stat_failure_is_recorded_without_retry(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "idle-stat-error")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    monkeypatch.setattr(ledger_ingest, "discover", lambda *args: [("Claude", path)])
+    key = ledger_ingest.path_key(path)
+    monkeypatch.setattr(ledger_ingest, "path_key", lambda candidate: key)
+    original_stat = Path.stat
+    calls = []
+
+    def fail_once(self, *args, **kwargs):
+        if self == path:
+            calls.append(self)
+            if len(calls) == 1:
+                raise OSError("injected")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_once)
+    ledger.ingest(ALL)
+    assert ledger.coverage()["readFailures"] == 1
+
+
+@pytest.mark.parametrize("append", [False, True])
+def test_external_purge_after_snapshot_is_seen_before_ingest(tmp_path, append):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "external-purge")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    if append:
+        append_jsonl(path, claude_lines((20, "second", 2)))
+    other = store.connect(ledger.db_path)
+    fired = [False]
+
+    def purge_once():
+        if not fired[0]:
+            fired[0] = True
+            with store.transaction(other):
+                store.purge_provider(other, "Claude")
+        return False
+
+    try:
+        result = ledger.ingest(ALL, should_stop=purge_once)
+    finally:
+        other.close()
+    assert fired[0]
+    assert result.get("stopped") is True and result["pendingBytes"] is None
+    assert store.load_source(ledger.conn, "Claude", ledger_ingest.path_key(path)) is None
+    result = ledger.ingest(ALL)
+    assert result["pendingBytes"] == 0
+    assert total_requests(ledger) == (2 if append else 1)
+    assert store.load_source(ledger.conn, "Claude", ledger_ingest.path_key(path))["byte_offset"] == path.stat().st_size
+
+
+def test_external_purge_before_totals_refreshes_pending(tmp_path):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "external-purge-totals")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    other = store.connect(ledger.db_path)
+    calls = [0]
+
+    def clock():
+        calls[0] += 1
+        if calls[0] == 2:
+            with store.transaction(other):
+                store.purge_provider(other, "Claude")
+        return HOUR_START + 3600
+
+    ledger._ingestor.clock = clock
+    try:
+        result = ledger.ingest(ALL)
+    finally:
+        other.close()
+    assert result.get("stopped") is True and result["pendingBytes"] is None
+    result = ledger.ingest(ALL)
+    assert result["pendingBytes"] == 0 and total_requests(ledger) == 1
+
+
+def test_external_purge_during_idle_stat_is_seen_before_skip(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "external-purge-stat")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    key = ledger_ingest.path_key(path)
+    monkeypatch.setattr(ledger_ingest, "discover", lambda *args: [("Claude", path)])
+    monkeypatch.setattr(ledger_ingest, "path_key", lambda candidate: key)
+    other = store.connect(ledger.db_path)
+    original_stat = Path.stat
+    fired = [False]
+
+    def purge_after_stat(self, *args, **kwargs):
+        info = original_stat(self, *args, **kwargs)
+        if self == path and not fired[0]:
+            fired[0] = True
+            with store.transaction(other):
+                store.purge_provider(other, "Claude")
+        return info
+
+    monkeypatch.setattr(Path, "stat", purge_after_stat)
+    try:
+        result = ledger.ingest(ALL)
+    finally:
+        other.close()
+    assert fired[0]
+    assert result.get("stopped") is True
+    ledger.ingest(ALL)
+    assert total_requests(ledger) == 1
+    assert store.load_source(ledger.conn, "Claude", key)["byte_offset"] == path.stat().st_size
+
+
+def test_external_purge_after_plan_stops_before_apply(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "purge-before-apply")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    append_jsonl(path, claude_lines((20, "second", 2)))
+    other = store.connect(ledger.db_path)
+    original_plan = ledger._ingestor._plan
+    fired = [False]
+
+    def purge_after_plan(*args, **kwargs):
+        plan = original_plan(*args, **kwargs)
+        if not fired[0]:
+            fired[0] = True
+            with store.transaction(other):
+                store.purge_provider(other, "Claude")
+        return plan
+
+    monkeypatch.setattr(ledger._ingestor, "_plan", purge_after_plan)
+    try:
+        result = ledger.ingest(ALL)
+    finally:
+        other.close()
+    assert fired[0] and result.get("stopped") is True
+    assert store.load_source(ledger.conn, "Claude", ledger_ingest.path_key(path)) is None
+    assert ledger.conn.execute("SELECT COUNT(*) FROM facts WHERE provider='Claude'").fetchone()[0] == 0
+    result = ledger.ingest(ALL)
+    assert result["pendingBytes"] == 0
+    assert total_requests(ledger) == 2
+    assert store.load_source(ledger.conn, "Claude", ledger_ingest.path_key(path))["byte_offset"] == path.stat().st_size
+
+
+def test_snapshot_stops_if_external_commit_races_bulk_load(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "external-purge-load")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    other = store.connect(ledger.db_path)
+    original_load = store.load_sources
+    calls = [0]
+
+    def racing_load(*args):
+        result = original_load(*args)
+        calls[0] += 1
+        if calls[0] == 1:
+            with store.transaction(other):
+                store.purge_provider(other, "Claude")
+        return result
+
+    monkeypatch.setattr(store, "load_sources", racing_load)
+    try:
+        result = ledger.ingest(ALL)
+    finally:
+        other.close()
+    assert calls[0] == 1
+    assert result.get("stopped") and result.get("retryAfterChange")
+    assert total_requests(ledger) == 0
+    assert not ledger.ingest(ALL).get("stopped")
+    assert total_requests(ledger) == 1
+
+
+@pytest.mark.parametrize('stop_after_first', [False, True])
+def test_snapshot_acquisition_stops_on_conflict_and_honors_stop(tmp_path, monkeypatch, stop_after_first):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, 'snapshot-contention')
+    write_jsonl(path, claude_lines((10, 'first', 1)))
+    ledger.ingest(ALL)
+    other = store.connect(ledger.db_path)
+    original = store.load_sources
+    attempts = [0]
+
+    def conflicting_load(*args):
+        rows = original(*args)
+        attempts[0] += 1
+        with store.transaction(other):
+            store.bump_counter(other, 'Codex', 'readFailures')
+        return rows
+
+    monkeypatch.setattr(store, 'load_sources', conflicting_load)
+    try:
+        result = ledger.ingest(ALL, should_stop=lambda: stop_after_first and attempts[0] > 0)
+    finally:
+        other.close()
+    assert result.get('stopped') is True
+    assert attempts[0] == 1
+    assert bool(result.get('retryAfterChange')) is not stop_after_first
+
+
+def test_busy_writer_cannot_starve_fresh_source_after_three_conflicts(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, 'contention-fallback')
+    write_jsonl(path, claude_lines((10, 'first', 1)))
+    request, attempted, committed, stop = (threading.Event() for _ in range(4))
+    errors = []
+    commits = [0]
+
+    def writer():
+        other = store.connect(ledger.db_path)
+        try:
+            while request.wait(10):
+                request.clear()
+                if stop.is_set():
+                    return
+                attempted.set()
+                with store.transaction(other):
+                    store.bump_counter(other, 'Codex', 'readFailures')
+                commits[0] += 1
+                committed.set()
+        except Exception as error:
+            errors.append(error)
+        finally:
+            other.close()
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    original_plan = ledger._ingestor._plan
+
+    def compete(*args, **kwargs):
+        plan = original_plan(*args, **kwargs)
+        attempted.clear()
+        committed.clear()
+        request.set()
+        assert attempted.wait(5)
+        assert committed.wait(5)
+        return plan
+
+    monkeypatch.setattr(ledger._ingestor, '_plan', compete)
+    try:
+        for _ in range(3):
+            result = ledger.ingest(ALL)
+            assert result.get('stopped') and result.get('retryAfterChange')
+            assert store.load_source(ledger.conn, 'Claude', ledger_ingest.path_key(path)) is None
+        result = ledger.ingest(ALL)
+        assert not result.get('stopped') and total_requests(ledger) == 1
+        assert ledger._ingestor._conflict_streak == 0
+        assert committed.wait(5)
+    finally:
+        stop.set()
+        request.set()
+        thread.join(10)
+    assert not thread.is_alive() and not errors and commits[0] >= 4
+
+
+def test_compat_fallback_can_stop_between_files(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    paths = [claude_file(claude, f'serial-stop-{i}') for i in range(2)]
+    for index, path in enumerate(paths):
+        write_jsonl(path, claude_lines((10 + index, f'msg-{index}', 1)))
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [('Claude', path) for path in paths])
+    ledger._ingestor._conflict_streak = 3
+    original = ledger._ingestor._plan
+    planned = [False]
+
+    def plan(*args, **kwargs):
+        result = original(*args, **kwargs)
+        planned[0] = True
+        return result
+
+    monkeypatch.setattr(ledger._ingestor, '_plan', plan)
+    result = ledger.ingest(ALL, should_stop=lambda: planned[0])
+    assert result.get('stopped') is True and result['filesVisited'] == 1
+    assert store.load_source(ledger.conn, 'Claude', ledger_ingest.path_key(paths[0])) is not None
+    assert store.load_source(ledger.conn, 'Claude', ledger_ingest.path_key(paths[1])) is None
+    assert total_requests(ledger) == 1
+
+
+def test_idle_final_stat_failure_is_counted_and_clears_partial(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "idle-final-stat-error")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    key = ledger_ingest.path_key(path)
+    monkeypatch.setattr(ledger_ingest, "discover", lambda *args: [("Claude", path)])
+    monkeypatch.setattr(ledger_ingest, "path_key", lambda candidate: key)
+    ledger._ingestor._partial_verification[("Claude", key)] = {"position": 1}
+    original_stat = Path.stat
+    calls = []
+
+    def fail_second(self, *args, **kwargs):
+        if self == path:
+            calls.append(self)
+            if len(calls) == 2:
+                raise OSError("injected final stat failure")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_second)
+    ledger.ingest(ALL)
+    assert ledger.coverage()["readFailures"] == 1
+    assert ("Claude", key) not in ledger._ingestor._partial_verification
+
+
+
+
+def test_idle_source_resets_last_outcome_after_progress(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    idle = claude_file(claude, "idle-last")
+    write_jsonl(idle, claude_lines((10, "idle", 1)))
+    ledger.ingest(ALL)
+    fresh = claude_file(claude, "fresh-first")
+    write_jsonl(fresh, claude_lines((20, "fresh", 2)))
+    monkeypatch.setattr(ledger_ingest, "discover", lambda *args: [("Claude", fresh), ("Claude", idle)])
+    result = ledger.ingest(ALL)
+    assert result["cursorAdvanced"] is True
+    assert ledger._ingestor._last_outcome == {"cursorAdvanced": False, "verificationAdvanced": False}
+
+
+def test_retargeted_path_is_missing_under_its_original_identity(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "retarget")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    append_jsonl(path, claude_lines((20, "second", 2)))
+    ledger.ingest(ALL)
+    original_key = ledger_ingest.path_key(path)
+    before_meta = list(ledger.conn.execute('SELECT key, value FROM meta ORDER BY key'))
+    original_path_key = ledger_ingest.path_key
+    switched = [False]
+    original_ingest = ledger._ingestor.ingest_file
+
+    def switch_after_ingest(*args, **kwargs):
+        result = original_ingest(*args, **kwargs)
+        switched[0] = True
+        return result
+
+    monkeypatch.setattr(ledger_ingest, "path_key", lambda candidate:
+                        "retargeted-key" if candidate == path and switched[0] else original_path_key(candidate))
+    monkeypatch.setattr(ledger._ingestor, "ingest_file", switch_after_ingest)
+    result = ledger.ingest(ALL)
+    old = store.load_source(ledger.conn, "Claude", original_key)
+    assert result.get("stopped") is True
+    assert old["generation"] == 1
+    assert list(ledger.conn.execute('SELECT key, value FROM meta ORDER BY key')) == before_meta
+    result = ledger.ingest(ALL)
+    old = store.load_source(ledger.conn, "Claude", original_key)
+    assert old["generation"] == 2 and old["byte_offset"] == 0
+    assert ledger.conn.execute("SELECT COUNT(*) FROM gaps WHERE kind='source-missing-unverified'").fetchone()[0] == 1
+    assert result["pendingBytes"] == 0
+
+
+def test_retargeted_path_uses_new_cursor_before_ingestion(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "retarget-before")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    original_key = ledger_ingest.path_key(path)
+    original_path_key = ledger_ingest.path_key
+    switched = [False]
+    monkeypatch.setattr(ledger_ingest, "path_key", lambda candidate:
+                        "new-target-key" if candidate == path and switched[0] else original_path_key(candidate))
+
+    def retarget():
+        switched[0] = True
+        return False
+
+    result = ledger.ingest(ALL, should_stop=retarget)
+    assert result.get("stopped") is True
+    assert store.load_source(ledger.conn, "Claude", "new-target-key") is None
+    ledger.ingest(ALL)
+    assert store.load_source(ledger.conn, "Claude", "new-target-key")["byte_offset"] == path.stat().st_size
+    assert store.load_source(ledger.conn, "Claude", original_key)["byte_offset"] == path.stat().st_size
 
 
 def test_discovery_never_probes_disabled_provider(tmp_path, monkeypatch):
@@ -348,6 +778,76 @@ def test_short_verification_read_is_charged_and_backed_off(tmp_path, monkeypatch
     assert ledger.coverage()["readFailures"] == 1
     debt = store.load_source(ledger.conn, "Claude", ledger_ingest.path_key(path))["state"]["verification_debt"]
     assert debt["next_attempt_epoch"] == now[0] + ledger_ingest.VERIFY_RETRY_START_SECONDS
+
+
+def test_idle_final_stat_failure_survives_a_competing_commit(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, "idle-final-stat-race")
+    write_jsonl(path, claude_lines((10, "first", 1)))
+    ledger.ingest(ALL)
+    key = ledger_ingest.path_key(path)
+    monkeypatch.setattr(ledger_ingest, "discover", lambda *args: [("Claude", path)])
+    monkeypatch.setattr(ledger_ingest, "path_key", lambda candidate: key)
+    other = store.connect(ledger.db_path)
+    original_stat = Path.stat
+    calls = []
+
+    def fail_second(self, *args, **kwargs):
+        if self == path:
+            calls.append(self)
+            if len(calls) == 2:
+                with store.transaction(other):
+                    store.bump_counter(other, "Codex", "unknownTags")
+                raise OSError("injected final stat failure")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_second)
+    try:
+        assert ledger.ingest(ALL).get("retryAfterChange") is True
+    finally:
+        other.close()
+    assert ledger.coverage()["readFailures"] == 1
+    assert ledger.ingest(ALL).get("stopped") is not True
+    assert ledger.coverage()["readFailures"] == 1
+
+
+def test_final_stat_failure_is_kept_when_the_recovery_cursor_write_fails(tmp_path, monkeypatch):
+    data, claude, codex = make_roots(tmp_path)
+    now = [float(HOUR_START + 3600)]
+    ledger = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    path = claude_file(claude, "final-stat-save-failure")
+    write_jsonl(path, [claude_response(1, "first", output=5)])
+    _drain_ledger(ledger)
+    append_jsonl(path, [claude_response(2, "tail", output=3)])
+    ledger.ingest(ALL)
+    now[0] += ledger_ingest.IDLE_VERIFY_SECONDS
+    original_plan, original_stat, original_save = ledger._ingestor._plan, Path.stat, store.save_source
+    armed = [False]
+    failing = [False]
+
+    def arm_after_scan(*args, **kwargs):
+        plan = original_plan(*args, **kwargs)
+        armed[0] = bool(plan.get("verification_work"))
+        return plan
+
+    def fail_once_after_scan(self, *args, **kwargs):
+        if self == path and armed[0]:
+            armed[0] = False
+            failing[0] = True
+            raise OSError("injected final stat failure")
+        return original_stat(self, *args, **kwargs)
+
+    def rejected_save(*args, **kwargs):
+        if failing[0]:
+            raise RuntimeError("injected cursor write failure")
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(ledger._ingestor, "_plan", arm_after_scan)
+    monkeypatch.setattr(Path, "stat", fail_once_after_scan)
+    monkeypatch.setattr(store, "save_source", rejected_save)
+    with pytest.raises(RuntimeError, match="injected cursor write failure"):
+        ledger.ingest(ALL, budget_bytes=1024)
+    assert ledger.coverage()["readFailures"] == 1
 
 
 def test_failed_final_stat_is_recorded_even_if_followup_stat_succeeds(tmp_path, monkeypatch):
@@ -2063,6 +2563,279 @@ def _assert_ordered_after_drain(ledger, now):
     assert by_hour[HOUR_START] == 100
     assert by_hour[HOUR_START + 3600] == 20
     assert by_hour[HOUR_START + 7200] == 30
+
+
+def test_compat_fallback_preserves_codex_debt_order(tmp_path):
+    ledger, now, later = _codex_with_earlier_debt(tmp_path)
+    write_jsonl(later, codex_meta('T1', 7200) + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    ledger._ingestor._conflict_streak = 3
+    result = ledger.ingest(ALL)
+    assert not result.get('stopped')
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(later)) is None
+    assert summary(ledger)['totals']['totalTokens'] == 100
+    _assert_ordered_after_drain(ledger, now)
+
+
+def test_budget_exhaustion_excludes_blocked_rollout_from_actionable(tmp_path):
+    ledger, now, later = _codex_with_earlier_debt(tmp_path)
+    write_jsonl(later, codex_meta('T1', 7200) + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    now[0] += ledger_ingest.IDLE_VERIFY_SECONDS
+    result = ledger.ingest(ALL, budget_bytes=1)
+    assert result['bytesRead'] >= 1
+    assert result['actionableBytes'] < later.stat().st_size
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(later)) is None
+
+
+
+
+
+
+
+
+def test_fast_pass_stops_after_provider_forget(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    paths = [claude_file(claude, f'serial-purge-{i}') for i in range(2)]
+    for i, path in enumerate(paths):
+        write_jsonl(path, claude_lines((10 + i, f'msg-{i}', 1)))
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [('Claude', path) for path in paths])
+    purged = False
+
+    def purge_between_files():
+        nonlocal purged
+        if not purged and ledger._ingestor._pass_visited == 1:
+            purged = True
+            ledger.purge('Claude')
+        return False
+
+    ledger._ingestor._conflict_streak = 0
+    result = ledger.ingest(ALL, should_stop=purge_between_files)
+    assert purged and result.get('stopped') and result.get('retryAfterChange')
+    assert ledger.conn.execute("SELECT COUNT(*) FROM sources WHERE provider='Claude'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('purged_provider', ['Claude', 'Codex'])
+def test_fast_external_purge_between_same_provider_files_stops(tmp_path, monkeypatch, purged_provider):
+    ledger, claude, codex = open_ledger(tmp_path)
+    root = claude if purged_provider == 'Claude' else codex
+    make_file = claude_file if purged_provider == 'Claude' else codex_file
+    paths = [make_file(root, f'external-purge-{i}') for i in range(2)]
+    for i, path in enumerate(paths):
+        records = (claude_lines((10 + i, f'msg-{i}', 1)) if purged_provider == 'Claude'
+                   else codex_meta(f'T{i}', 1) + [codex_count(2, input_tokens=10, output_tokens=0)])
+        write_jsonl(path, records)
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [(purged_provider, path) for path in paths])
+    other = Ledger(ledger.db_path.parent, claude_root=claude, codex_root=codex)
+    fired = False
+
+    def purge_between_files():
+        nonlocal fired
+        if not fired and ledger._ingestor._pass_visited == 1:
+            fired = True
+            other.purge(purged_provider)
+        return False
+
+    ledger._ingestor._conflict_streak = 0
+    result = ledger.ingest(ALL, should_stop=purge_between_files)
+    assert fired and result.get('stopped') and result.get('retryAfterChange')
+    assert ledger.conn.execute('SELECT COUNT(*) FROM sources WHERE provider=?', (purged_provider,)).fetchone()[0] == 0
+    other.close()
+
+
+@pytest.mark.parametrize('purged_provider', ['Claude', 'Codex'])
+def test_fast_external_purge_stops_and_next_pass_recovers(tmp_path, monkeypatch, purged_provider):
+    ledger, claude, codex = open_ledger(tmp_path)
+    claude_path = claude_file(claude, 'purge-generation')
+    codex_path = codex_file(codex, 'purge-generation')
+    write_jsonl(claude_path, claude_lines((10, 'message', 1)))
+    write_jsonl(codex_path, codex_meta('T1', 1) + [codex_count(2, input_tokens=10, output_tokens=0)])
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [('Claude', claude_path), ('Codex', codex_path)])
+    other = Ledger(ledger.db_path.parent, claude_root=claude, codex_root=codex)
+    fired = False
+
+    def purge_between_files():
+        nonlocal fired
+        if not fired and ledger._ingestor._pass_visited == 1:
+            fired = True
+            other.purge(purged_provider)
+        return False
+
+    ledger._ingestor._conflict_streak = 0
+    result = ledger.ingest(ALL, should_stop=purge_between_files)
+    assert fired and result.get('stopped') and result.get('retryAfterChange')
+    assert ledger.conn.execute('SELECT COUNT(*) FROM sources WHERE provider=?', (purged_provider,)).fetchone()[0] == 0
+    remaining = 'Codex' if purged_provider == 'Claude' else 'Claude'
+    resumed = ledger.ingest({name: name == remaining for name in ALL})
+    assert not resumed.get('stopped')
+    assert ledger.conn.execute('SELECT COUNT(*) FROM sources WHERE provider=?', (remaining,)).fetchone()[0] == 1
+    assert ledger.conn.execute('SELECT COUNT(*) FROM sources WHERE provider=?', (purged_provider,)).fetchone()[0] == 0
+    assert ledger.conn.execute('SELECT COALESCE(SUM(total), 0) FROM facts WHERE provider=?',
+                               (remaining,)).fetchone()[0] == (11 if remaining == 'Claude' else 10)
+    other.close()
+    ledger.close()
+
+
+def test_fast_external_purge_before_final_accounting_stops(tmp_path, monkeypatch):
+    ledger, claude, codex = open_ledger(tmp_path)
+    path = claude_file(claude, 'purge-before-accounting')
+    write_jsonl(path, claude_lines((10, 'message', 1)))
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [('Claude', path)])
+    other = Ledger(ledger.db_path.parent, claude_root=claude, codex_root=codex)
+    original = ledger._ingestor._transaction
+    calls = 0
+
+    @contextmanager
+    def purge_before_final():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            other.purge('Claude')
+        with original() as conn:
+            yield conn
+
+    monkeypatch.setattr(ledger._ingestor, '_transaction', purge_before_final)
+    ledger._ingestor._conflict_streak = 0
+    result = ledger.ingest(ALL)
+    assert calls == 2 and result.get('stopped') and result.get('retryAfterChange')
+    assert ledger.conn.execute("SELECT COUNT(*) FROM sources WHERE provider='Claude'").fetchone()[0] == 0
+    other.close()
+
+
+def test_final_accounting_allows_file_growth(tmp_path, monkeypatch):
+    ledger, claude, _ = open_ledger(tmp_path)
+    path = claude_file(claude, 'accounting-stamp-change')
+    write_jsonl(path, claude_lines((10, 'first', 1)))
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [('Claude', path)])
+    original = ledger._ingestor._transaction
+    calls = 0
+
+    @contextmanager
+    def append_before_final_lock():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            append_jsonl(path, claude_lines((20, 'second', 1)))
+        with original() as conn:
+            yield conn
+
+    monkeypatch.setattr(ledger._ingestor, '_transaction', append_before_final_lock)
+    ledger._ingestor._conflict_streak = 0
+    result = ledger.ingest(ALL)
+    assert calls == 2 and not result.get('stopped')
+
+
+
+
+def test_external_debt_opened_after_earlier_file_stops_fast_pass(tmp_path, monkeypatch):
+    data, claude, codex = make_roots(tmp_path)
+    now = [float(HOUR_START + 3600)]
+    ledger = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    earlier = codex_file(codex, 'a-known')
+    later = codex_file(codex, 'b-new')
+    write_jsonl(earlier, codex_meta('T1', 1) + [codex_count(2, input_tokens=100, output_tokens=0)])
+    _drain_ledger(ledger)
+    write_jsonl(later, codex_meta('T1', 7200) + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [('Codex', earlier), ('Codex', later)])
+    other = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    fired = False
+
+    def open_debt_between_files():
+        nonlocal fired
+        if not fired and ledger._ingestor._pass_visited == 1:
+            fired = True
+            append_jsonl(earlier, [codex_count(3600, input_tokens=120, output_tokens=0)])
+            other._ingestor.ingest_file('Codex', earlier, None, None)
+        return False
+
+    result = ledger.ingest(ALL, should_stop=open_debt_between_files)
+    assert fired and result.get('stopped') and result.get('retryAfterChange')
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(later)) is None
+    _assert_ordered_after_drain(ledger, now)
+    other.close()
+
+
+def test_external_ingestor_debt_stops_pass_before_later_thread_rollout(tmp_path):
+    data, claude, codex = make_roots(tmp_path)
+    now = [float(HOUR_START + 3600)]
+    ledger = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    earlier = codex_file(codex, 'a-known')
+    later = codex_file(codex, 'b-first-discovery')
+    write_jsonl(earlier, codex_meta('T1', 1) + [codex_count(2, input_tokens=100, output_tokens=0)])
+    _drain_ledger(ledger)
+    append_jsonl(earlier, [codex_count(3600, input_tokens=120, output_tokens=0)])
+    write_jsonl(later, codex_meta('T1', 7200) + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    other = Ledger(data, claude_root=claude, codex_root=codex, clock=lambda: now[0])
+    fired = [False]
+
+    def open_debt():
+        if not fired[0]:
+            fired[0] = True
+            other._ingestor.ingest_file('Codex', earlier, None, None)
+        return False
+
+    try:
+        stopped = ledger.ingest(ALL, should_stop=open_debt)
+    finally:
+        other.close()
+    assert fired[0] and stopped.get('stopped') is True
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(later)) is None
+    assert summary(ledger)['totals']['totalTokens'] == 100
+    ledger.ingest(ALL)
+    assert store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(later)) is None
+    _assert_ordered_after_drain(ledger, now)
+    assert ledger.pending_bytes() == 0
+    for path in (earlier, later):
+        cursor = store.load_source(ledger.conn, 'Codex', ledger_ingest.path_key(path))
+        assert cursor['byte_offset'] == path.stat().st_size
+        assert not cursor['state'].get('verification_debt') and not cursor['state'].get('ordered_tail_pending')
+    assert store.load_thread(ledger.conn, 'Codex', 'T1')['counters']['total_tokens'] == 150
+
+
+@pytest.mark.parametrize('inside_ingest', [False, True])
+def test_codex_alias_retarget_to_discovered_thread_stops_before_write(tmp_path, monkeypatch, inside_ingest):
+    ledger, now, later = _codex_with_earlier_debt(tmp_path)
+    earlier = later.with_name('rollout-a-known.jsonl')
+    alias = later.with_name('rollout-b-alias.jsonl')
+    write_jsonl(alias, codex_meta('OTHER', 2) + [codex_count(3, input_tokens=10, output_tokens=0)])
+    write_jsonl(later, codex_meta('T1', 7200) + [codex_count(7201, input_tokens=150, output_tokens=0)])
+    switched = [False]
+    original_key, original_stat, original_open = ledger_ingest.path_key, Path.stat, Path.open
+    alias_key, later_key = original_key(alias), original_key(later)
+    alias_stats = [0]
+    monkeypatch.setattr(ledger_ingest, 'discover', lambda *args: [('Codex', earlier), ('Codex', alias), ('Codex', later)])
+    monkeypatch.setattr(ledger_ingest, 'path_key', lambda path:
+                        (later_key if switched[0] else alias_key) if path == alias else original_key(path))
+
+    def alias_stat(path, *args, **kwargs):
+        if path == alias:
+            alias_stats[0] += 1
+            if inside_ingest and alias_stats[0] == 2:
+                switched[0] = True
+        return original_stat(later if path == alias and switched[0] else path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', alias_stat)
+    monkeypatch.setattr(Path, 'open', lambda path, *args, **kwargs:
+                        original_open(later if path == alias and switched[0] else path, *args, **kwargs))
+    calls = [0]
+
+    def retarget_before_alias():
+        calls[0] += 1
+        if calls[0] == 2 and not inside_ingest:
+            switched[0] = True
+        return False
+
+    stopped = ledger.ingest(ALL, should_stop=retarget_before_alias)
+    assert stopped.get('stopped') is True
+    assert store.load_source(ledger.conn, 'Codex', original_key(later)) is None
+    assert summary(ledger)['totals']['totalTokens'] == 100
+    ledger.ingest(ALL)
+    assert store.load_source(ledger.conn, 'Codex', original_key(later)) is None
+    _assert_ordered_after_drain(ledger, now)
+    assert ledger.pending_bytes() == 0
+    for path in (earlier, later):
+        cursor = store.load_source(ledger.conn, 'Codex', original_key(path))
+        assert cursor['byte_offset'] == path.stat().st_size
+        assert not cursor['state'].get('verification_debt') and not cursor['state'].get('ordered_tail_pending')
+    assert store.load_thread(ledger.conn, 'Codex', 'T1')['counters']['total_tokens'] == 150
 
 
 def test_first_discovered_rollout_with_large_session_meta_is_queued(tmp_path):
