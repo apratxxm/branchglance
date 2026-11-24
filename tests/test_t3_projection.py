@@ -1,6 +1,8 @@
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -453,19 +455,46 @@ def test_cached_projection_and_digest_are_scoped_to_consent(running_projection_f
     assert claude.digest != codex.digest
 
 
-def test_publication_epoch_and_sequence_follow_scope_policy_and_content(running_projection_file, monkeypatch):
+def test_publication_generation_and_sequence_follow_scope_policy_and_content(running_projection_file, monkeypatch):
     monkeypatch.setattr(t3, "MAX_UNCHANGED_SECONDS", 0)
     first = t3.poll(SCOPE, generation="policy-a")
-    assert first.epoch and first.seq > 0
+    assert first.instance and first.generation > 0 and first.seq > 0
     assert t3.poll(SCOPE, generation="policy-a") == first
     with sqlite3.connect(running_projection_file) as writer:
         writer.execute(f"UPDATE {P}threads SET title='renamed again' WHERE thread_id='parent'")
     changed = t3.poll(SCOPE, generation="policy-a")
-    assert changed.epoch == first.epoch and changed.seq == first.seq + 1
+    assert changed.instance == first.instance and changed.generation == first.generation and changed.seq == first.seq + 1
     other = t3.poll(SCOPE, generation="policy-b")
-    assert other.epoch != changed.epoch
+    assert other.instance == changed.instance and other.generation > changed.generation
     scoped = t3.poll({"Claude"}, generation="policy-b")
-    assert scoped.epoch != other.epoch
+    assert scoped.instance == other.instance and scoped.generation > other.generation
+
+
+def test_process_restart_receives_a_new_instance():
+    code = "from token_tracker.t3_projection import empty; print(empty(set(), 'policy').instance)"
+    first = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, timeout=5).stdout.strip()
+    second = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True, timeout=5).stdout.strip()
+    assert first and second and first != second
+
+
+def test_inflight_full_keeps_its_captured_generation(running_projection_file, monkeypatch):
+    ready, release, captured = threading.Event(), threading.Event(), []
+    original = t3._connect
+    def paused(path, **kwargs):
+        ready.set()
+        assert release.wait(2)
+        return original(path, **kwargs)
+    monkeypatch.setattr(t3, "_connect", paused)
+    thread = threading.Thread(target=lambda: captured.append(t3.poll(SCOPE, generation="old")))
+    thread.start()
+    try:
+        assert ready.wait(2)
+        current = t3.empty({"Codex"}, "new")
+    finally:
+        release.set()
+        thread.join(3)
+    assert captured and captured[0].instance == current.instance
+    assert captured[0].generation < current.generation
 
 
 def test_deadline_and_cancellation_during_python_parsing_keep_previous(running_projection_file, monkeypatch):
@@ -540,6 +569,30 @@ def test_expired_projection_is_cleared_even_when_cancelled(running_projection_fi
     assert first.edges
     next(iter(t3._CACHE.values()))["successful_at"] -= 61
     cleared = t3.poll(SCOPE, cancelled=lambda: True)
+    assert not cleared.edges and cleared.seq == first.seq + 1
+
+
+def test_verified_offline_checkpoint_survives_contender_and_cancellation(projection_file, monkeypatch):
+    writer = sqlite3.connect(projection_file)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+    writer.commit()
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    first = t3.poll(SCOPE)
+    writer.close()
+    assert t3.poll(SCOPE) == first
+    cache = next(iter(t3._CACHE.values()))
+    assert cache["offline"] is True
+    cache["successful_at"] -= 120
+    assert t3.poll(SCOPE, cancelled=lambda: True) == first
+    assert t3._OWNER.acquire(blocking=False)
+    try:
+        assert t3.poll(SCOPE, live=True) == first
+    finally:
+        t3._OWNER.release()
+    info = projection_file.stat()
+    os.utime(projection_file, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+    cleared = t3.poll(SCOPE)
     assert not cleared.edges and cleared.seq == first.seq + 1
 
 

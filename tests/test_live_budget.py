@@ -195,7 +195,7 @@ def test_collect_only_provider_is_excluded_from_both_overlays_and_stamp(claude_l
     def poll(scope, **kwargs):
         calls.append(scope)
         edges = [("Codex:hidden", "Claude:visible")] if "Codex" in scope else []
-        return t3_projection._publish(edges, {"visible": "Overlay"}, scope=scope)._replace(epoch="test", seq=1)
+        return t3_projection._publish(edges, {"visible": "Overlay"}, scope=scope)._replace(instance="test", generation=1, seq=1)
     monkeypatch.setattr(t3_projection, "poll", poll)
     monkeypatch.setattr(providers, "_provider_snapshot", lambda factory, name, accent, generation: {
         "name": name, "connected": True, "chats": [dict(row)] if name == "Claude" else [{"id": "hidden"}], "activity": []})

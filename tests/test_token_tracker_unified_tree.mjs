@@ -81,7 +81,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[
     {name:'Claude',chats:[{id:'parent',title:'Parent',status:'idle'}]},
     {name:'Codex',chats:[{id:'child',title:'Override',status:'needs-input',pendingQuestion:'Question'}]},
-  ],graph:{revision:1,edges:{'Claude:parent':null,'Codex:child':null}},hostOverlay:{epoch:'e',seq:1,edges:{'Codex:child':'Claude:parent'},titles:{}}};
+  ],graph:{revision:1,edges:{'Claude:parent':null,'Codex:child':null}},hostOverlay:{instance:'e',generation:1,seq:1,edges:{'Codex:child':'Claude:parent'},titles:{}}};
   const forest=T.buildForest(snapshot);
   assert.equal(forest.roots.length,1);
   assert.equal(forest.rows.find(row=>row.id==='child').canonicalParentKey,null);
@@ -93,11 +93,13 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.equal(T.state.pins.has('Claude:parent'),false);
   const html=T.runwayTelemetryHTML(forest.rows.find(row=>row.id==='parent'));
   assert.doesNotMatch(html,/data-action="runway-question"/);
+  T.acceptHostOverlay(snapshot.hostOverlay,T.nextHostOverlayRequest());
   T.applyLive(snapshot,{generatedAt:ago(0),chats:[]});
   assert.equal(snapshot.hostOverlay.edges['Codex:child'],'Claude:parent','missing overlay keeps the last value');
-  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'child',key:'Codex:child',provider:'Codex',title:'Transcript'}],hostOverlay:{epoch:'e',seq:2,edges:{},titles:{}}});
+  T.acceptHostOverlay({instance:'e',generation:1,seq:2,edges:{},titles:{}},T.nextHostOverlayRequest());
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'child',key:'Codex:child',provider:'Codex',title:'Transcript'}]});
   assert.equal(snapshot.providers[1].chats[0].title,'Transcript');
-  assert.equal(T.buildForest(snapshot).roots.length,2,'empty overlay withdraws the association');
+  assert.equal(T.buildForest(snapshot.providers,snapshot.graph,T.getAcceptedHostOverlay()).roots.length,2,'empty overlay withdraws the association');
   const cyclic={...snapshot,hostOverlay:{edges:{'Codex:child':'Claude:parent','Claude:parent':'Codex:child'},titles:{}}};
   assert.equal(T.buildForest(cyclic).roots.length,2,'a host cycle drops every edge');
   const duplicate={...snapshot,hostOverlay:{edges:{'Codex:child':'Claude:parent'},titles:{}},providers:[
@@ -108,23 +110,28 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
 // Overlay generations order full and live responses independently of their timestamps.
 {
   const {T}=boot();
-  const overlay=(epoch,seq,edges={},titles={})=>({epoch,seq,edges,titles});
+  const overlay=(instance,generation,seq,edges={},titles={})=>({instance,generation,seq,edges,titles});
   const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[{name:'Claude',chats:[
     {id:'parent',title:'Transcript',status:'idle'},{id:'child',title:'Child',status:'needs-input',pendingQuestion:'Question'}]}],
     graph:{revision:1,edges:{'Claude:parent':null,'Claude:child':null}},
-    hostOverlay:overlay('first',1,{'Claude:child':'Claude:parent'},{'Claude:child':'Override'})};
-  T.applyLive(snapshot,{generatedAt:ago(0),chats:[],hostOverlay:overlay('first',2,{'Claude:child':'Claude:parent'},{'Claude:child':'New title'})});
+    hostOverlay:overlay('first',1,1,{'Claude:child':'Claude:parent'},{'Claude:child':'Override'})};
+  T.acceptHostOverlay(snapshot.hostOverlay,T.nextHostOverlayRequest());
+  T.acceptHostOverlay(overlay('first',1,2,{'Claude:child':'Claude:parent'},{'Claude:child':'New title'}),T.nextHostOverlayRequest());
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[]});
   T.state.liveSampleAccepted=true;T.state.liveAcceptedGeneratedAt=fixedNow;T.state.query='New title';
-  assert.equal(T.visibleRoots(T.buildForest(snapshot)).length,1,'client search uses the overlay title');
+  assert.equal(T.visibleRoots(T.buildForest(snapshot.providers,snapshot.graph,T.getAcceptedHostOverlay())).length,1,'client search uses the overlay title');
   T.state.query='';
-  const late={...snapshot,generatedAt:ago(0),hostOverlay:overlay('first',1,{'Claude:child':'Claude:parent'},{'Claude:child':'Override'})};
+  const late={...snapshot,generatedAt:ago(0),hostOverlay:overlay('first',1,1,{'Claude:child':'Claude:parent'},{'Claude:child':'Override'})};
+  T.acceptHostOverlay(late.hostOverlay,1);
   T.applyLive(late,{generatedAt:ago(0),chats:[]});
-  assert.equal(late.hostOverlay.seq,2,'late full response cannot roll back a newer live overlay');
-  T.applyLive(late,{generatedAt:ago(0),chats:[{id:'child',key:'Claude:child',provider:'Claude',detailPending:true}],hostOverlay:overlay('first',3)});
-  assert.equal(T.buildForest(late).rows.find(row=>row.id==='child').title,'Child','deferred row falls back to transcript title');
-  T.applyLive(late,{generatedAt:ago(0),chats:[],hostOverlay:overlay('second',0)});
-  T.applyLive(late,{generatedAt:ago(0),chats:[],hostOverlay:overlay('first',99,{'Claude:child':'Claude:parent'})});
-  assert.equal(late.hostOverlay.epoch,'second','retired epoch cannot return');
+  assert.equal(T.getAcceptedHostOverlay().seq,2,'late full response cannot roll back a newer live overlay');
+  assert.equal(late.hostOverlay.seq,1,'wire payload remains unchanged');
+  T.acceptHostOverlay(overlay('first',1,3),T.nextHostOverlayRequest());
+  T.applyLive(late,{generatedAt:ago(0),chats:[{id:'child',key:'Claude:child',provider:'Claude',detailPending:true}]});
+  assert.equal(T.buildForest(late.providers,late.graph,T.getAcceptedHostOverlay()).rows.find(row=>row.id==='child').title,'Child','deferred row falls back to transcript title');
+  T.acceptHostOverlay(overlay('first',2,0),T.nextHostOverlayRequest());
+  T.acceptHostOverlay(overlay('first',1,99,{'Claude:child':'Claude:parent'}),T.nextHostOverlayRequest());
+  assert.equal(T.getAcceptedHostOverlay().generation,2,'older generation cannot return');
 }
 
 // Hidden host anchors do not hide pinned waiting children; canonical replies remain available.
@@ -134,16 +141,83 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   T.state.hiddenChats.add('Claude:parent');T.state.pins.add('Codex:child');
   const snapshot={providers:[{name:'Claude',chats:[{id:'parent',title:'Hidden',status:'idle'}]},
     {name:'Codex',chats:[{id:'child',title:'Waiting',status:'needs-input',pendingQuestion:'Question'}]}],
-    hostOverlay:{epoch:'h',seq:1,edges:{'Codex:child':'Claude:parent'},titles:{}}};
+    hostOverlay:{instance:'h',generation:1,seq:1,edges:{'Codex:child':'Claude:parent'},titles:{}}};
   const forest=T.buildForest(snapshot);T.state.forest=forest;
   assert.ok(forest.roots.some(row=>row.key==='Codex:child'));
   assert.ok(T.visibleRoots(forest).some(row=>row.key==='Codex:child'));
   assert.equal(T.runwayCounts(forest).waiting,1);
   const canonical={providers:[{name:'Codex',chats:[{id:'host',status:'idle'}]},
     {name:'Claude',chats:[{id:'root',status:'idle'},{id:'worker',parentId:'root',status:'needs-input',pendingQuestion:'Question'}]}],
-    hostOverlay:{epoch:'h',seq:2,edges:{'Claude:root':'Codex:host'},titles:{}}};
+    hostOverlay:{instance:'h',generation:1,seq:2,edges:{'Claude:root':'Codex:host'},titles:{}}};
   const tree=T.buildForest(canonical);T.state.forest=tree;
   assert.match(T.runwayTelemetryHTML(tree.rows.find(row=>row.key==='Claude:root'),true),/data-action="runway-question"/);
+}
+
+// A restored tab and a previously active tab both reject an unseen delayed old instance.
+{
+  const tabs=[boot().T,boot().T];
+  const old={instance:'old-process',generation:9,seq:7,edges:{},titles:{'Claude:old':'Old title'}};
+  const denial={instance:'new-process',generation:1,seq:0,edges:{},titles:{}};
+  const restarted={instance:'restart-process',generation:1,seq:0,edges:{},titles:{}};
+  tabs[0].acceptHostOverlay(old,tabs[0].nextHostOverlayRequest());
+  for(const T of tabs){
+    const delayedFullRequest=T.nextHostOverlayRequest();
+    const liveRequest=T.nextHostOverlayRequest();
+    const cachedLive={generatedAt:ago(0),chats:[],hostOverlay:denial};
+    const wire=JSON.stringify(cachedLive);
+    assert.equal(T.acceptHostOverlay(cachedLive.hostOverlay,liveRequest),true);
+    assert.equal(T.acceptHostOverlay(old,delayedFullRequest),false,'unseen older instance is rejected');
+    assert.equal(T.getAcceptedHostOverlay().instance,'new-process');
+    const restored={generatedAt:ago(1),providerPolicies:policy,providers:[]};
+    T.applyLive(restored,cachedLive);
+    assert.equal(JSON.stringify(cachedLive),wire,'cached live wire payload is unchanged');
+    assert.equal(Object.hasOwn(restored,'hostOverlay'),false,'overlay-free restore is not mutated');
+    assert.equal(T.acceptHostOverlay(restarted,T.nextHostOverlayRequest()),true,'newer request accepts a restart');
+    assert.equal(T.getAcceptedHostOverlay().instance,'restart-process');
+    assert.equal(T.acceptHostOverlay({instance:'restart-process',generation:0,seq:100,edges:{},titles:{}},T.nextHostOverlayRequest()),false);
+  }
+}
+
+// A hidden canonical grand-ancestor prevents its descendant from anchoring a host child.
+{
+  const {T}=boot();
+  T.state.liveSampleAccepted=true;T.state.liveAcceptedGeneratedAt=fixedNow;
+  T.state.hiddenChats.add('Claude:grand');T.state.pins.add('Codex:child');
+  const snapshot={providers:[
+    {name:'Claude',chats:[{id:'grand',status:'idle'},{id:'anchor',parentId:'grand',status:'idle'}]},
+    {name:'Codex',chats:[{id:'child',status:'needs-input',pendingQuestion:'Question'}]}],
+    hostOverlay:{instance:'current',generation:1,seq:1,edges:{'Codex:child':'Claude:anchor'},titles:{}}};
+  const forest=T.buildForest(snapshot);T.state.forest=forest;
+  assert.ok(forest.roots.some(row=>row.key==='Codex:child'));
+  assert.ok(T.visibleRoots(forest).some(row=>row.key==='Codex:child'));
+  assert.equal(T.runwayCounts(forest).waiting,1);
+  assert.equal(forest.rows.find(row=>row.key==='Claude:anchor').treeParentKey,'Claude:grand');
+}
+
+// Request IDs are assigned when the real full/live fetches start, not when they finish.
+for(const previouslySeen of [false,true]){
+  const {T,context}=boot();
+  const old={instance:'old-server',generation:3,seq:8,edges:{},titles:{'Claude:old':'Old title'}};
+  const denial={instance:'new-server',generation:1,seq:0,edges:{},titles:{}};
+  if(previouslySeen)T.acceptHostOverlay(old,T.nextHostOverlayRequest());
+  T.state.snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[],graph:{revision:0,edges:{}}};
+  T.state.runwaySnapshotPainted=true;
+  let finishFull,finishLive;
+  context.fetch=url=>{
+    if(String(url).startsWith('/api/stats'))return new Promise(resolve=>{finishFull=resolve;});
+    if(String(url)==='/api/live')return new Promise(resolve=>{finishLive=resolve;});
+    return Promise.resolve({ok:false,status:503,json:async()=>({})});
+  };
+  const full=T.refresh(),live=T.pollLive();
+  assert.ok(finishFull&&finishLive);
+  const liveWire={generatedAt:ago(0),chats:[],hostOverlay:denial};
+  const frozenLive=JSON.stringify(liveWire);
+  finishLive({ok:true,json:async()=>liveWire});await live;
+  const fullWire={generatedAt:ago(0),providerPolicies:policy,providers:[],graph:{revision:1,edges:{}},hostOverlay:old};
+  finishFull({ok:true,json:async()=>fullWire});await full;
+  assert.equal(T.getAcceptedHostOverlay().instance,'new-server');
+  assert.equal(JSON.stringify(liveWire),frozenLive,'cached live overlay is never rewritten');
+  assert.equal(fullWire.hostOverlay.instance,'old-server','old full wire overlay is never rewritten');
 }
 
 // Repeated stats failures cannot postpone the graphless first-paint fallback.

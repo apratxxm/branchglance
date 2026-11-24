@@ -182,7 +182,7 @@ def test_host_only_parent_never_admits_open_or_queue(monkeypatch):
     parent = "01234567-89ab-cdef-0123-456789abcdef"
     child = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     host_edges = {f"Claude:{child}": f"Codex:{parent}"}
-    overlay = {"epoch": "test", "seq": 1, "edges": host_edges, "titles": {}}
+    overlay = {"instance": "test", "generation": 1, "seq": 1, "edges": host_edges, "titles": {}}
     monkeypatch.setattr(server, "CACHE", SimpleNamespace(value={"providers": [], "hostOverlay": overlay}))
     monkeypatch.setattr(server, "LIVE_CACHE", SimpleNamespace(value={"chats": [], "hostOverlay": overlay}))
     monkeypatch.setattr(server, "_codex_allows", lambda action: True)

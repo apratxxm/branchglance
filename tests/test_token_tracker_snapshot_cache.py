@@ -148,7 +148,7 @@ def test_host_overlay_is_not_persisted_or_restored(tmp_path, monkeypatch):
     value = {"generatedAt": stamp, "enabledProviders": ["Codex"], "providers": [
         {"name": "Codex", "connected": True, "chats": [{"id": "child"}]}],
         "graph": {"revision": 500, "edges": {}}, "hostEdges": {"Codex:child": "Codex:parent"},
-        "hostOverlay": {"epoch": "test", "seq": 1, "edges": {"Codex:child": "Codex:parent"}, "titles": {"Codex:child": "Override"}}}
+        "hostOverlay": {"instance": "test", "generation": 1, "seq": 1, "edges": {"Codex:child": "Codex:parent"}, "titles": {"Codex:child": "Override"}}}
     cache._write_persisted(value, 1, stamp)
     envelope = json.loads(path.read_text(encoding="utf-8"))
     assert "hostEdges" not in envelope["snapshot"]

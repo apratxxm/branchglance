@@ -25,6 +25,8 @@ _LOCK = threading.Lock()
 _OWNER = threading.Lock()
 _CACHE: dict[tuple[frozenset[str], str], dict[str, Any]] = {}
 _ACTIVE_KEY = None
+_INSTANCE = secrets.token_hex(16)
+_GENERATION = 0
 POLL_SECONDS = 1.0
 DEADLINE_SECONDS = 0.5
 MAX_UNCHANGED_SECONDS = 5.0
@@ -36,11 +38,12 @@ class Projection(NamedTuple):
     titles: tuple[tuple[str, str], ...]
     digest: str
     scope: tuple[str, ...]
-    epoch: str = ""
+    instance: str = ""
+    generation: int = 0
     seq: int = 0
 
     def overlay(self) -> dict[str, Any]:
-        return {"epoch": self.epoch, "seq": self.seq, "edges": dict(self.edges),
+        return {"instance": self.instance, "generation": self.generation, "seq": self.seq, "edges": dict(self.edges),
                 "titles": {f"Claude:{key}": value for key, value in self.titles}}
 
 
@@ -92,24 +95,25 @@ def reset() -> None:
 
 
 def _entry(scope: frozenset[str], generation: str) -> dict[str, Any]:
-    global _ACTIVE_KEY
+    global _ACTIVE_KEY, _GENERATION
     key = (scope, generation)
     with _LOCK:
         if key != _ACTIVE_KEY:
             _ACTIVE_KEY = key
             _CACHE.clear()
+            _GENERATION += 1
         if key not in _CACHE:
-            initial = _publish(scope=scope)._replace(epoch=secrets.token_hex(16))
+            initial = _publish(scope=scope)._replace(instance=_INSTANCE, generation=_GENERATION)
             _CACHE[key] = {"path": None, "at": None, "result": initial, "identity": None,
                            "bindings": {}, "stamps": None, "successful_at": None,
-                           "checkpoint": None}
+                           "checkpoint": None, "offline": False}
         return _CACHE[key]
 
 
 def _set_result(cache: dict[str, Any], candidate: Projection) -> Projection:
     with _LOCK:
         previous = cache["result"]
-        result = candidate._replace(epoch=previous.epoch,
+        result = candidate._replace(instance=previous.instance, generation=previous.generation,
                                     seq=previous.seq + (candidate.digest != previous.digest))
         cache["result"] = result
         return result
@@ -244,14 +248,14 @@ def poll(allowed: frozenset[str] | set[str], *, generation: str = "", path: Path
             raise _Deadline()
     output = cache["result"]
     if cancelled():
-        if cache["successful_at"] is not None and started - cache["successful_at"] >= MAX_STALE_SECONDS:
+        if not cache["offline"] and cache["successful_at"] is not None and started - cache["successful_at"] >= MAX_STALE_SECONDS:
             cache.update(bindings={}, stamps=None, successful_at=None, checkpoint=None)
             output = _set_result(cache, _publish(scope=scope))
         return output
     if cache["at"] is not None and started - cache["at"] < POLL_SECONDS:
         return output
     if not _OWNER.acquire(blocking=False):
-        if cache["successful_at"] is not None and started - cache["successful_at"] >= MAX_STALE_SECONDS:
+        if not cache["offline"] and cache["successful_at"] is not None and started - cache["successful_at"] >= MAX_STALE_SECONDS:
             cache.update(bindings={}, stamps=None, successful_at=None, checkpoint=None)
             output = _set_result(cache, _publish(scope=scope))
         return output
@@ -259,7 +263,7 @@ def poll(allowed: frozenset[str] | set[str], *, generation: str = "", path: Path
         check()
         path = Path(path) if path is not None else database()
         if cache["path"] != path:
-            cache.update(path=path, identity=None, bindings={}, stamps=None, successful_at=None, checkpoint=None)
+            cache.update(path=path, identity=None, bindings={}, stamps=None, successful_at=None, checkpoint=None, offline=False)
             output = _set_result(cache, _publish(scope=scope))
         cache["at"] = started
         snapshots = _checked_files(path, check=check)
@@ -278,11 +282,14 @@ def poll(allowed: frozenset[str] | set[str], *, generation: str = "", path: Path
             if (cache["checkpoint"] is None or cache["checkpoint"] != main or stamp(after_main) != main
                     or len(sidecars) != 2 or any(item is not None for item in sidecars)
                     or len(after_sidecars) != 2 or any(item is not None for item in after_sidecars)):
-                cache.update(bindings={}, stamps=None, successful_at=None, checkpoint=None)
+                cache.update(bindings={}, stamps=None, successful_at=None, checkpoint=None, offline=False)
                 output = _set_result(cache, _publish(scope=scope))
+            else:
+                cache["offline"] = True
             return output
         # SQLite may recreate a sidecar if T3 removes it between this check and open.
         cache["checkpoint"] = None
+        cache["offline"] = False
         identity = (info.st_dev, info.st_ino)
         if cache["identity"] is not None and cache["identity"] != identity:
             cache.update(bindings={}, stamps=None, successful_at=None)
@@ -322,10 +329,10 @@ def poll(allowed: frozenset[str] | set[str], *, generation: str = "", path: Path
             output = _set_result(cache, candidate)
             cache.update(bindings=bindings, stamps=stamps, successful_at=time.monotonic(), checkpoint=checkpoint)
     except FileNotFoundError:
-        cache.update(identity=None, bindings={}, stamps=None, successful_at=None, checkpoint=None)
+        cache.update(identity=None, bindings={}, stamps=None, successful_at=None, checkpoint=None, offline=False)
         output = _set_result(cache, _publish(scope=scope))
     except (_Deadline, sqlite3.Error, OSError, ValueError, claude_hook_install.HookInstallError):
-        if cache["successful_at"] is not None and time.monotonic() - cache["successful_at"] >= MAX_STALE_SECONDS:
+        if not cache["offline"] and cache["successful_at"] is not None and time.monotonic() - cache["successful_at"] >= MAX_STALE_SECONDS:
             cache.update(bindings={}, stamps=None, successful_at=None, checkpoint=None)
             output = _set_result(cache, _publish(scope=scope))
     finally:
