@@ -185,9 +185,9 @@ def _recheck(snapshots: list[tuple[Path, Any]], *, check=lambda: None) -> None:
             raise
         if (product.info_is_reparse(after)
                 or not (stat.S_ISDIR(after.st_mode) if is_directory else stat.S_ISREG(after.st_mode))):
-            raise OSError("T3 file changed during read")
+            raise _SourceRejected("T3 file changed during read")
         if not is_sidecar and (before is None or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)):
-            raise OSError("T3 file changed during read")
+            raise _SourceRejected("T3 file changed during read")
 
 
 def _connect(path: Path, *, live: bool = False, cancelled=lambda: False, deadline: float | None = None) -> sqlite3.Connection:

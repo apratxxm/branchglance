@@ -43,7 +43,7 @@ import webview
 from PIL import Image
 
 from .limit_reset import LimitResetService, _runtime_dir
-from .server import CACHE, Handler, ThreadingHTTPServer
+from .server import CACHE, Handler, ThreadingHTTPServer, _claim_address
 from . import agent_links, debug_report, product, reset_delivery, server as server_module
 from . import ledger_service
 
@@ -1271,26 +1271,8 @@ class WindowApi:
 
 
 
-def _claim_address(sock: socket.socket) -> None:
-    """Make a listening socket single-owner.
-
-    On Windows SO_REUSEADDR lets a second process bind a port that is already
-    listening, so two widgets launched together could both "own" 8765/8766.
-    SO_EXCLUSIVEADDRUSE makes the loser's bind fail instead.
-    """
-    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
-    if exclusive is not None:
-        sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
-    else:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-
-
 class _ExclusiveHTTPServer(ThreadingHTTPServer):
-    allow_reuse_address = False
-
-    def server_bind(self) -> None:
-        _claim_address(self.socket)
-        super().server_bind()
+    """The widget's server; the shared class already claims its address."""
 
 
 RESET_ACTIONS_URL = f"http://{HTTP_HOST}:{HTTP_PORT}/reset_actions.html"

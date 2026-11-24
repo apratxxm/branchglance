@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -180,12 +181,32 @@ def _without_codex_thread_ids(value):
     return value
 
 
+def _claim_address(sock: socket.socket) -> None:
+    """Make a listening socket single-owner.
+
+    On Windows SO_REUSEADDR lets a second process bind a port that is already
+    listening, so two servers launched together could both "own" 8765/8766.
+    SO_EXCLUSIVEADDRUSE makes the loser's bind fail instead.
+    """
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if exclusive is not None:
+        sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+
 class ThreadingHTTPServer(_BaseThreadingHTTPServer):
     """Application server restricted to explicit IPv4 loopback bindings."""
 
     # The standard library queues 5 pending connections. A page opens more than that at once, and on a busy
     # machine Windows refuses the extra ones, so a script never loads.
     request_queue_size = 128
+    # One listener per port: the page relies on a newer server having replaced the older one.
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        _claim_address(self.socket)
+        super().server_bind()
 
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
         if not isinstance(server_address, tuple) or len(server_address) != 2:

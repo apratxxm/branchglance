@@ -697,3 +697,26 @@ def test_redirected_database_file_is_rejected_conclusively(projection_file, monk
         t3._checked_files(projection_file)
     assert not t3.poll(SCOPE).edges
     monkeypatch.setattr(t3.product, "info_is_reparse", real)
+
+
+@pytest.mark.parametrize("change", ["replaced", "redirected sidecar"])
+def test_owner_drops_an_offline_checkpoint_rejected_on_reinspection(projection_file, monkeypatch, change):
+    first = _verified_offline(projection_file)
+    original = t3._recheck
+    def recheck(snapshots, *, check=lambda: None):
+        if change == "replaced":
+            other = projection_file.with_name("other.sqlite")
+            other.write_bytes(projection_file.read_bytes())
+            os.replace(other, projection_file)
+        else:
+            os.mkdir(str(projection_file) + "-wal")  # wrong file type, like a redirect
+        return original(snapshots, check=check)
+    monkeypatch.setattr(t3, "_recheck", recheck)
+    cleared = t3.poll(SCOPE)
+    assert not cleared.edges and cleared.seq == first.seq + 1
+
+
+def test_owner_keeps_an_offline_checkpoint_when_reinspection_fails_transiently(projection_file, monkeypatch):
+    first = _verified_offline(projection_file)
+    monkeypatch.setattr(t3, "_recheck", lambda *a, **k: (_ for _ in ()).throw(PermissionError()))
+    assert t3.poll(SCOPE) == first
