@@ -2208,6 +2208,28 @@ def _literal_exec_commands(value: Any) -> list[str]:
 
 
 _EXEC_COMMAND_HEADER = re.compile(r"\bexec_command\s*\(\s*\{\s*cmd\s*:\s*")
+_EXEC_COMMAND_SCAN_TOKEN = re.compile(r"[/'\"`]|exec_command")
+_PATCH_SCAN_TOKEN = re.compile(r"[/'\"`]|tools|apply_patch")
+# The former matcher examined value[i:], so its lookbehind always saw the
+# beginning of a string, even when the call was preceded by a word character.
+_PATCH_CALL = re.compile(r"(?:tools\s*\.\s*)?apply_patch\s*\(\s*")
+_QUOTE_TOKENS = {(quote, newline): re.compile(r"[\\" + re.escape(quote) + (r"\r\n" if newline else "") + "]")
+                 for quote in "'\"`" for newline in (False, True)}
+
+
+def _quoted_end(source: str, start: int, quote: str, *, stop_newline: bool = False) -> int:
+    """Return the first unescaped terminator, or the position past the end."""
+    search = _QUOTE_TOKENS[quote, stop_newline].search
+    cursor = start
+    while cursor < len(source):
+        match = search(source, cursor)
+        if match is None:
+            return len(source)
+        cursor = match.start()
+        if source[cursor] != "\\":
+            return cursor
+        cursor += 2
+    return cursor
 
 
 def _decode_js_string(raw: str, quote: str) -> str | None:
@@ -2263,6 +2285,12 @@ def _scan_literal_exec_commands(source: str) -> list[str]:
     i = 0
     length = len(source)
     while i < length:
+        # Only comments, quoted strings and call headers can change the
+        # scanner state. Skip ordinary characters in the regex engine.
+        token = _EXEC_COMMAND_SCAN_TOKEN.search(source, i)
+        if token is None:
+            break
+        i = token.start()
         if source.startswith("//", i):
             end = source.find("\n", i + 2)
             i = length if end < 0 else end + 1
@@ -2274,15 +2302,7 @@ def _scan_literal_exec_commands(source: str) -> list[str]:
         char = source[i]
         if char in {"'", '"', "`"}:
             quote = char
-            start = i + 1
-            cursor = start
-            while cursor < length:
-                if source[cursor] == "\\":
-                    cursor += 2
-                    continue
-                if source[cursor] == quote:
-                    break
-                cursor += 1
+            cursor = _quoted_end(source, i + 1, quote)
             i = min(length, cursor + 1)
             continue
         header = _EXEC_COMMAND_HEADER.match(source, i)
@@ -2290,16 +2310,7 @@ def _scan_literal_exec_commands(source: str) -> list[str]:
             quote_at = header.end()
             if quote_at < length and source[quote_at] in {"'", '"'}:
                 quote = source[quote_at]
-                cursor = quote_at + 1
-                while cursor < length:
-                    if source[cursor] == "\\":
-                        cursor += 2
-                        continue
-                    if source[cursor] == quote:
-                        break
-                    if source[cursor] in "\r\n":
-                        break
-                    cursor += 1
+                cursor = _quoted_end(source, quote_at + 1, quote, stop_newline=True)
                 if cursor < length and source[cursor] == quote:
                     command = _decode_js_string(source[quote_at + 1:cursor], quote)
                     if command is None:
@@ -2415,9 +2426,17 @@ def _literal_apply_patch_argument(value: Any) -> str | None:
                     return literal
     if not isinstance(value, str):
         return None
+    # No executable call can match without this literal token; nested decoded
+    # arguments have already been checked above.
+    if "apply_patch" not in value:
+        return None
     i = 0
     n = len(value)
     while i < n:
+        token = _PATCH_SCAN_TOKEN.search(value, i)
+        if token is None:
+            break
+        i = token.start()
         if value.startswith("//", i):
             end = value.find("\n", i + 2)
             i = n if end < 0 else end + 1
@@ -2428,32 +2447,19 @@ def _literal_apply_patch_argument(value: Any) -> str | None:
             continue
         if value[i] in "'\"`":
             quote = value[i]
-            i += 1
-            while i < n:
-                if value[i] == "\\":
-                    i += 2
-                elif value[i] == quote:
-                    i += 1
-                    break
-                else:
-                    i += 1
+            i = min(n, _quoted_end(value, i + 1, quote) + 1)
             continue
-        call = re.match(r"(?<![\w$])(?:tools\s*\.\s*)?apply_patch\s*\(\s*", value[i:])
+        call = _PATCH_CALL.match(value, i)
         if call:
-            j = i + call.end()
+            j = call.end()
             if j < n and value[j] in "'\"`":
                 quote = value[j]
                 start = j + 1
-                j = start
-                while j < n:
-                    if value[j] == "\\":
-                        j += 2
-                    elif value[j] == quote:
-                        literal = value[start:j]
-                        return literal if "*** Begin Patch" in literal else None
-                    else:
-                        j += 1
-            i += call.end()
+                j = _quoted_end(value, start, quote)
+                if j < n:
+                    literal = value[start:j]
+                    return literal if "*** Begin Patch" in literal else None
+            i = call.end()
             continue
         i += 1
     return None

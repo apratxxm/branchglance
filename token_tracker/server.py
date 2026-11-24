@@ -183,6 +183,10 @@ def _without_codex_thread_ids(value):
 class ThreadingHTTPServer(_BaseThreadingHTTPServer):
     """Application server restricted to explicit IPv4 loopback bindings."""
 
+    # The standard library queues 5 pending connections. A page opens more than that at once, and on a busy
+    # machine Windows refuses the extra ones, so a script never loads.
+    request_queue_size = 128
+
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
         if not isinstance(server_address, tuple) or len(server_address) != 2:
             raise ValueError("Token Tracker server address must be an IPv4 host and port pair")
