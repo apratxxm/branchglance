@@ -941,16 +941,17 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
                     if needs_scan:
                         handle.seek(start_offset)
                         rolling_tail = b""
+                        line_end = start_offset
                         while True:
                             _raise_if_snapshot_shutdown()
-                            line_start = handle.tell()
+                            line_start = line_end
                             line = handle.readline()
                             if not line:
                                 break
                             if line_start < _JSONL_GUARD_BYTES:
                                 prefix = (prefix + line)[:_JSONL_GUARD_BYTES]
                             rolling_tail = (rolling_tail + line)[-_JSONL_GUARD_BYTES:]
-                            line_end = handle.tell()
+                            line_end += len(line)
                             complete = line.endswith(b"\n")
                             candidates = [item for item in needs_scan
                                           if item["spec"]["kind"] not in failed
@@ -1068,6 +1069,22 @@ def _incremental_jsonl_reduce_group(path: Path, reducers: list[dict[str, Any]]) 
 
 
 _STALE_PRE_READ_STAT = object()
+_TOKEN_EVENT_NEEDLES = (b"total_token_usage", b"turn_context", b"session_meta")
+
+
+def _token_line_is_inert(line: bytes) -> bool:
+    """True when a complete line cannot change a token pass.
+
+    Only three record kinds matter there. A unicode escape or invalid UTF-8 (dropped
+    on decode) could hide a key, and a failed check proves nothing: parse those.
+    """
+    if b"\\u" in line or any(needle in line for needle in _TOKEN_EVENT_NEEDLES):
+        return False
+    try:
+        line.decode("utf-8")
+    except (UnicodeDecodeError, MemoryError):
+        return False
+    return True
 
 
 def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_state: Any,
@@ -1143,7 +1160,7 @@ def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_s
                 reduce_record(state, item)
                 valid_unterminated_record = True
                 break
-            committed_offset = handle.tell()
+            committed_offset += len(line)
             # A reducer that only reads records carrying a key can skip lines
             # without that key's bytes. A \u escape or invalid UTF-8 (dropped on
             # decode) could hide the key, so those lines are always parsed.
@@ -4039,7 +4056,9 @@ class CodexProvider:
                         # later append replays it from the committed boundary once.
                         parse_line(line, committed=False)
                         break
-                    consumed = handle.tell()
+                    consumed += len(line)
+                    if _token_line_is_inert(line):
+                        continue
                     model, started = parse_line(line, committed=True)
                     complete_rows = len(events._rows)
                 return model, started, consumed, complete_rows, digest_before(handle, consumed)
