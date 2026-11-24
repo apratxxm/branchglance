@@ -173,6 +173,7 @@ def interrupted_user(ts, text="[Request interrupted by user]", *, text_block=Tru
 
 @pytest.fixture()
 def world(tmp_path, monkeypatch):
+    from token_tracker import t3_projection
     home = tmp_path / "claude"
     projects = home / "projects" / "A--proj"
     projects.mkdir(parents=True)
@@ -180,7 +181,15 @@ def world(tmp_path, monkeypatch):
     events.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    monkeypatch.setattr(claude_provider, "_t3_database", lambda: tmp_path / "t3.sqlite")
+    def checked(path, **kwargs):
+        result = [(path, path.lstat())]
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(path) + suffix)
+            result.append((sidecar, sidecar.lstat() if sidecar.exists() else None))
+        return result
+    monkeypatch.setattr(t3_projection, "_checked_files", checked)
+    monkeypatch.setattr(t3_projection, "POLL_SECONDS", 0)
+    monkeypatch.setattr(t3_projection, "MAX_UNCHANGED_SECONDS", 0)
     claude_provider.reset_memo()
 
     class World:
@@ -188,6 +197,7 @@ def world(tmp_path, monkeypatch):
 
     w = World()
     w.projects, w.events, w.tmp = projects, events, tmp_path
+    w.writer = None
 
     def transcript(sid, records):
         path = projects / f"{sid}.jsonl"
@@ -199,11 +209,22 @@ def world(tmp_path, monkeypatch):
         (events / name).write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
 
     def rows(now=NOW, alive=True):
-        return {r["id"]: r for r in claude_provider.build_rows(
-            now, lambda pid, created: alive, events, home / "projects")}
+        result = claude_provider.build_rows(now, lambda pid, created: alive, events, home / "projects")
+        return {r["id"]: r for r in result}
 
-    w.transcript, w.hooks, w.rows = transcript, hooks, rows
-    return w
+    def t3_titles():
+        path = tmp_path / "t3.sqlite"
+        if w.writer is None:
+            w.writer = sqlite3.connect(path)
+            w.writer.execute("PRAGMA journal_mode=WAL")
+            w.writer.execute("UPDATE projection_threads SET title=title")
+            w.writer.commit()
+        return dict(t3_projection.poll({"Claude"}, path=path).titles)
+
+    w.transcript, w.hooks, w.rows, w.t3_titles = transcript, hooks, rows, t3_titles
+    yield w
+    if w.writer is not None:
+        w.writer.close()
 
 
 def test_hook_row_follows_codex_contract(world):
@@ -658,13 +679,15 @@ def test_parent_title_tracks_t3_rename_and_survives_missing_source(world):
     world.transcript(SID, [{"type": "ai-title", "aiTitle": "Original first prompt"},
                            user(NOW - 100), assistant(NOW - 60, "m1")])
     world.hooks([ev(NOW - 90, "UserPromptSubmit")])
-    assert world.rows()[SID]["title"] == "Original T3 title"
+    assert world.rows()[SID]["title"] == "Original first prompt"
+    assert world.t3_titles()[SID] == "Original T3 title"
     with sqlite3.connect(database) as db:
         db.execute("UPDATE projection_threads SET title = ?", ("Renamed T3 title",))
-    assert world.rows()[SID]["title"] == "Renamed T3 title"
+    assert world.t3_titles()[SID] == "Renamed T3 title"
     with sqlite3.connect(database) as db:
         db.execute("DELETE FROM provider_session_runtime")
-    assert world.rows()[SID]["title"] == "Renamed T3 title"
+    assert SID not in world.t3_titles()
+    assert world.rows()[SID]["title"] == "Original first prompt"
 
 
 def test_t3_deep_invalid_cursor_is_skipped(world):
@@ -676,6 +699,7 @@ def test_t3_deep_invalid_cursor_is_skipped(world):
         db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("deep", "claudeAgent", "[" * 1500 + "]" * 1500))
     world.transcript(SID, [{"type": "ai-title", "aiTitle": "Transcript"}, user(NOW - 5)])
     world.hooks([ev(NOW - 5, "UserPromptSubmit")])
+    assert SID not in world.t3_titles()
     assert world.rows()[SID]["title"] == "Transcript"
 
 
@@ -688,10 +712,11 @@ def test_t3_ambiguous_binding_evicts_cached_title(world):
         db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("one", "claudeAgent", json.dumps({"resume": SID})))
     world.transcript(SID, [{"type": "ai-title", "aiTitle": "Transcript"}, user(NOW - 5)])
     world.hooks([ev(NOW - 5, "UserPromptSubmit")])
-    assert world.rows()[SID]["title"] == "T3 title"
+    assert world.t3_titles()[SID] == "T3 title"
     with sqlite3.connect(database) as db:
         db.execute("INSERT INTO projection_threads VALUES ('two', 'Other', NULL, NULL)")
         db.execute("INSERT INTO provider_session_runtime VALUES (?, ?, ?)", ("two", "claudeAgent", json.dumps({"resume": SID})))
+    assert SID not in world.t3_titles()
     assert world.rows()[SID]["title"] == "Transcript"
 
 

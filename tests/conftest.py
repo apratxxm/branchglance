@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from token_tracker import claude_provider, product
+from token_tracker import claude_provider, product, t3_projection
+
+
+@pytest.fixture(autouse=True)
+def isolate_t3_database(tmp_path, monkeypatch):
+    monkeypatch.setattr(t3_projection, "database", lambda: tmp_path / "absent-t3.sqlite")
+    t3_projection.reset()
+    yield
+    t3_projection.reset()
 
 
 @pytest.fixture(autouse=True)

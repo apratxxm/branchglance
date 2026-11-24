@@ -5262,6 +5262,7 @@ LIVE_RECENT_SECONDS = 15 * 60
 _LIVE_DETAILED: dict[str, tuple[str, float]] = {}
 _LIVE_INDEX: dict[str, dict[str, Any]] = {}
 _LIVE_INDEX_POLICY_GENERATION: str | None = None
+_T3_STAMP_PROJECTION: ContextVar[Any] = ContextVar("t3_stamp_projection", default=None)
 
 
 def _structure_stamp(provider_names: Iterable[str] | None = None) -> str:
@@ -5299,7 +5300,9 @@ def _structure_stamp(provider_names: Iterable[str] | None = None) -> str:
             latest = max(latest, directory.stat().st_mtime_ns)
         except OSError:
             continue
-    return f"{len(directories)}:{latest}"
+    projection = _T3_STAMP_PROJECTION.get()
+    digest = hashlib.sha256(json.dumps([sorted(names), projection.digest if projection else ""], separators=(",", ":")).encode()).hexdigest()
+    return f"{len(directories)}:{latest}:{digest}"
 
 
 def _subdirectories(path: Path) -> list[Path]:
@@ -5584,6 +5587,10 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     full_collect, _limit_collect = _provider_collection_sets(policies)
     visible_full = tuple(name for name in full_collect if policy_for(name, policies).allows("show"))
     policy_payload = public_policies(policies)
+    from .t3_projection import empty as t3_empty, poll as t3_poll
+    _raise_if_snapshot_shutdown()
+    projection = (t3_poll(frozenset(visible_full), generation=policy_payload["generation"], live=True, cancelled=lambda: _snapshot_shutdown)
+                  if visible_full else t3_empty(set(), policy_payload["generation"]))
     policy_generation = policy_payload["generation"]
     # Refresh identity cheaply from the bounded SQLite index before taking the
     # live roster copy. This does no app-server work and never promotes SQLite
@@ -5977,8 +5984,13 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     # Full edges, not a delta: the revision is process-wide, so a delta is
     # "changes since anyone's last request" and other pollers would eat it.
     graph = snapshot_graph(chats)
+    stamp_token = _T3_STAMP_PROJECTION.set(projection)
+    try:
+        structure_stamp = _structure_stamp(visible_full)
+    finally:
+        _T3_STAMP_PROJECTION.reset(stamp_token)
     return {"generatedAt": datetime.now(timezone.utc).isoformat(),
-            "structureStamp": _structure_stamp(visible_full), "chats": chats,
+            "structureStamp": structure_stamp, "chats": chats, "hostOverlay": projection.overlay(),
             "providerPolicies": policy_payload, "graph": graph,
             "complete": pending == 0, "pendingChats": pending}
 
@@ -6000,36 +6012,90 @@ def today_usage() -> dict[str, Any]:
             "providerPolicies": public_policies(policies)}
 
 
+def _display_parents(snapshot: dict[str, Any]) -> dict[str, str | None]:
+    rows, duplicates = {}, set()
+    for provider in snapshot.get("providers") or []:
+        for chat in provider.get("chats") or []:
+            key = f"{provider.get('name')}:{chat.get('id')}"
+            if key in rows:
+                duplicates.add(key)
+            rows[key] = (str(provider.get("name")), chat)
+    edges = (snapshot.get("graph") or {}).get("edges")
+    hosts = (snapshot.get("hostOverlay") or {}).get("edges") or {}
+    parents, host_keys = {}, set()
+    for key, (name, row) in rows.items():
+        native = f"{name}:{row['parentId']}" if row.get("parentId") is not None else None
+        row_parent = row.get("parentKey") if isinstance(row.get("parentKey"), str) and row.get("parentKey") else None
+        local = row_parent if row_parent and row_parent.startswith(name + ":") else None
+        if isinstance(edges, dict) and key in edges:
+            edge = edges[key]
+            parent = (native or local or edge) if isinstance(edge, str) and edge.startswith(name + ":") else (edge or native or local)
+        else:
+            parent = row_parent or native
+        if (not parent and isinstance(hosts, dict) and hosts.get(key) in rows
+                and key not in duplicates and hosts.get(key) not in duplicates):
+            parent = hosts[key]
+            host_keys.add(key)
+        parents[key] = parent
+    # Reject every host edge participating in a cycle; canonical edges survive.
+    cyclic = set()
+    for start in parents:
+        path, seen, node = [], {}, start
+        while node in parents and node not in seen:
+            seen[node] = len(path)
+            path.append(node)
+            node = parents[node]
+        if node in seen:
+            cyclic.update(path[seen[node]:])
+    for key in cyclic & host_keys:
+        parents[key] = None
+    return parents
+
+
 def trim_chats(snapshot: dict[str, Any], limit: int = 15, pinned: Iterable[str] = (), *,
                query: str = "", provider_filter: str = "all", status_filter: str = "all",
                sort: str = "latest", days: int = 7) -> dict[str, Any]:
     """Return the latest `limit` root chats across providers plus pinned roots, with their agents."""
     pinned = set(pinned)
+    eligible = [provider for provider in snapshot.get("providers") or []
+                if provider_filter == "all" or provider.get("name") == provider_filter]
+    grouping_snapshot = {**snapshot, "providers": eligible}
+    overlay_titles = (snapshot.get("hostOverlay") or {}).get("titles") or {}
+    row_providers = {id(chat): str(provider.get("name")) for provider in eligible for chat in provider.get("chats") or []}
     latest: dict[str, float] = {}
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     roots_by_provider: dict[str, dict[Any, Any]] = {}
-    for provider in snapshot.get("providers") or []:
+    all_keys = {f"{provider.get('name')}:{chat.get('id')}"
+                for provider in eligible
+                for chat in provider.get("chats") or []}
+    display_parents = _display_parents(grouping_snapshot)
+    for provider in eligible:
         name = str(provider.get("name"))
         chats = provider.get("chats") or []
-        parents = {chat.get("id"): chat.get("parentId") for chat in chats}
         roots: dict[Any, Any] = {}
         for chat in chats:
             # Walk to the top-most known ancestor; unknown or cyclic lineage stays a root.
-            node, seen = chat.get("id"), set()
-            while parents.get(node) in parents and node not in seen:
+            start = f"{name}:{chat.get('id')}"
+            node, seen = start, set()
+            while node not in seen:
                 seen.add(node)
-                node = parents[node]
-            if node in seen:  # Match the frontend's cycle handling.
-                node = chat.get("id")
-            roots[chat.get("id")] = node
-            key = f"{name}:{node}"
-            try:
-                at = datetime.fromisoformat(str(chat.get("updatedAt") or "").replace("Z", "+00:00")).timestamp()
-            except (ValueError, OSError, OverflowError):
-                at = 0
+                parent = display_parents.get(node)
+                if parent not in all_keys:
+                    break
+                node = parent
+            else:
+                node = start
+            roots[str(chat.get("id"))] = node
+            key = node
+            at = max(_timestamp_epoch(chat.get(field)) or 0.0 for field in ("updatedAt", "usageUpdatedAt"))
             latest[key] = max(latest.get(key, 0), at)
             groups[key].append(chat)
         roots_by_provider[name] = roots
+    # Pins may name any row in a tree; selecting one selects its resolved root.
+    root_for_key = {f"{name}:{identity}": root
+                    for name, roots in roots_by_provider.items()
+                    for identity, root in roots.items()}
+    pinned = {root_for_key.get(key, key) for key in pinned}
     # A root's recency includes its agents, matching the widget's ordering.
     query = query.strip().casefold()
     def status(chat):
@@ -6037,7 +6103,8 @@ def trim_chats(snapshot: dict[str, Any], limit: int = 15, pinned: Iterable[str] 
         return {"needs-attention": "needs-input", "needs-input": "needs-input", "active": "running",
                 "error": "failed", "inactive": "idle"}.get(value, value)
     def matches(chat):
-        text = " ".join(str(chat.get(k) or "") for k in ("title", "model", "agentName", "reasoningEffort", "workspace", "latestRequest")).casefold()
+        overlay_title = overlay_titles.get(f"{row_providers.get(id(chat))}:{chat.get('id')}")
+        text = " ".join([str(overlay_title or ""), *(str(chat.get(k) or "") for k in ("title", "model", "agentName", "reasoningEffort", "workspace", "latestRequest"))]).casefold()
         state = status(chat)
         return (not query or query in text) and (
             status_filter == "all" or status_filter == "running" and state == "running"
@@ -6063,8 +6130,9 @@ def trim_chats(snapshot: dict[str, Any], limit: int = 15, pinned: Iterable[str] 
         name = str(provider.get("name"))
         roots = roots_by_provider.get(name, {})
         chats = provider.get("chats") or []
-        kept = [chat for chat in chats if f"{name}:{roots.get(chat.get('id'))}" in keep]
-        providers_out.append({**provider, "chats": kept, "chatTotal": len(set(roots.values()))})
+        kept = [chat for chat in chats if roots.get(str(chat.get('id'))) in keep]
+        owned_roots = {root for root in roots.values() if root.startswith(name + ":")}
+        providers_out.append({**provider, "chats": kept, "chatTotal": len(owned_roots)})
     return {**snapshot, "providers": providers_out, "chatLimit": limit, "chatMatches": len(ordered)}
 
 
@@ -6156,10 +6224,18 @@ def build_snapshot() -> dict[str, Any]:
     # should not delay the Claude transcript scan (or the reverse).
     # Taken before scanning so a session created during the build still
     # changes the stamp that live polling compares against.
+    from .t3_projection import empty as t3_empty, poll as t3_poll
+    if _snapshot_shutdown:
+        raise RuntimeError("provider snapshots are shutting down")
+    projection = (t3_poll(frozenset(visible_full), generation=policy_payload["generation"], cancelled=lambda: _snapshot_shutdown)
+                  if visible_full else t3_empty(set(), policy_payload["generation"]))
+    stamp_token = _T3_STAMP_PROJECTION.set(projection)
     try:
         structure_stamp = _structure_stamp(visible_full)
     except Exception:
         structure_stamp = None
+    finally:
+        _T3_STAMP_PROJECTION.reset(stamp_token)
     factories = {"Claude": (_claude_code_provider, "#e8813f"), "Codex": (CodexProvider, "#4a95e0")}
     limit_factories = {"Claude": (ClaudeLimitsProvider, "#e8813f")}
     jobs = [(name, *factories[name]) for name in full_collect] + [(name, *limit_factories[name]) for name in limit_only]
@@ -6247,6 +6323,7 @@ def build_snapshot() -> dict[str, Any]:
         },
         "providers": visible_provider_data,
         "graph": graph,
+        "hostOverlay": projection.overlay(),
         "activity": [{"date": date, "value": value} for date, value in sorted(activity.items())],
         "activityMeta": {
             "activeDays": len(active_dates),

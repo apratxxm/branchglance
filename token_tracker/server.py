@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -180,12 +181,32 @@ def _without_codex_thread_ids(value):
     return value
 
 
+def _claim_address(sock: socket.socket) -> None:
+    """Make a listening socket single-owner.
+
+    On Windows SO_REUSEADDR lets a second process bind a port that is already
+    listening, so two servers launched together could both "own" 8765/8766.
+    SO_EXCLUSIVEADDRUSE makes the loser's bind fail instead.
+    """
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if exclusive is not None:
+        sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+
 class ThreadingHTTPServer(_BaseThreadingHTTPServer):
     """Application server restricted to explicit IPv4 loopback bindings."""
 
     # The standard library queues 5 pending connections. A page opens more than that at once, and on a busy
     # machine Windows refuses the extra ones, so a script never loads.
     request_queue_size = 128
+    # One listener per port: the page relies on a newer server having replaced the older one.
+    allow_reuse_address = False
+
+    def server_bind(self) -> None:
+        _claim_address(self.socket)
+        super().server_bind()
 
     def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
         if not isinstance(server_address, tuple) or len(server_address) != 2:
@@ -357,7 +378,8 @@ def _live_encodings(header: str) -> tuple[bool, bool]:
 class SnapshotCache:
     RETRY_COOLDOWN_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 10.0
-    PERSISTED_SCHEMA_VERSION = 1
+    # Older snapshots may contain T3 titles embedded in transcript rows.
+    PERSISTED_SCHEMA_VERSION = 2
     PERSISTED_MAX_BYTES = 32 * 1024 * 1024
     PERSISTED_KEY_NAME = "snapshot-cache.key"
     PERSISTED_KEY_BYTES = 32
@@ -542,6 +564,34 @@ class SnapshotCache:
             for provider in snapshot["providers"]
         )
 
+    @staticmethod
+    def _strip_host_overlay(snapshot: dict) -> None:
+        """Discard both the current overlay and legacy graph-embedded host links."""
+        snapshot.pop("hostEdges", None)
+        snapshot.pop("hostOverlay", None)
+        graph = snapshot.get("graph")
+        if not isinstance(graph, dict):
+            return
+        sources = graph.get("edgeSources")
+        edges = graph.get("edges")
+        if not isinstance(sources, dict) or not isinstance(edges, dict):
+            return
+        legacy = {key: edges.get(key) for key, source in sources.items() if source == "t3-host"}
+        for key in legacy:
+            edges[key] = None
+            sources.pop(key, None)
+        if not sources:
+            graph.pop("edgeSources", None)
+        for provider in snapshot.get("providers", []):
+            if not isinstance(provider, dict):
+                continue
+            for row in provider.get("chats", []):
+                if not isinstance(row, dict):
+                    continue
+                key = f"{provider.get('name')}:{row.get('id')}"
+                if key in legacy and row.get("parentId") is None and row.get("parentKey") == legacy[key]:
+                    row["parentKey"] = None
+
     def _restore_persisted(self) -> None:
         with self._publication_lock:
             self._restore_persisted_guarded()
@@ -594,6 +644,9 @@ class SnapshotCache:
                 return
             snapshot = copy.deepcopy(snapshot)
             snapshot.pop("snapshotCache", None)
+            self._strip_host_overlay(snapshot)
+            if isinstance(snapshot.get("graph"), dict):
+                snapshot["graph"]["revision"] = -1
             with self.condition:
                 if self._value is not None:
                     return  # a fresh build won; disk data must never replace it
@@ -635,6 +688,8 @@ class SnapshotCache:
                 if not stat.S_ISREG(existing.st_mode) or reparse:
                     raise OSError("snapshot cache path is not a regular file")
             key = self._ensure_persistence_key()
+            snapshot = copy.deepcopy(snapshot)
+            self._strip_host_overlay(snapshot)
             envelope = {
                 "schemaVersion": self.PERSISTED_SCHEMA_VERSION,
                 "compatibility": self.compatibility,

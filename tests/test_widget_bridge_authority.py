@@ -177,6 +177,27 @@ def test_widget_open_bridge_refuses_invalid_or_uncollected_threads(monkeypatch):
     assert len(opened) == 1
 
 
+def test_host_only_parent_never_admits_open_or_queue(monkeypatch):
+    from types import SimpleNamespace
+    parent = "01234567-89ab-cdef-0123-456789abcdef"
+    child = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    host_edges = {f"Claude:{child}": f"Codex:{parent}"}
+    overlay = {"instance": "test", "generation": 1, "seq": 1, "edges": host_edges, "titles": {}}
+    monkeypatch.setattr(server, "CACHE", SimpleNamespace(value={"providers": [], "hostOverlay": overlay}))
+    monkeypatch.setattr(server, "LIVE_CACHE", SimpleNamespace(value={"chats": [], "hostOverlay": overlay}))
+    monkeypatch.setattr(server, "_codex_allows", lambda action: True)
+    monkeypatch.setattr(server, "_codex_queue_allowed", lambda: True)
+    app = widget.WidgetApp.__new__(widget.WidgetApp)
+    app.quitting = False
+    app._bridge_authority, app.window = _bound_authority()
+    for operation in ("open_thread", "queue_message"):
+        receipt = app._bridge_authority.receive(app.window, operation, TRUSTED, TRUSTED,
+                                                widget._MAIN_BRIDGE_OPERATIONS)
+        result = (app.open_thread(parent, receipt, app.window) if operation == "open_thread"
+                  else app.queue_message(parent, "hello", receipt, app.window))
+        assert result["error"] == "unknown Codex thread"
+
+
 def test_bridge_policy_matches_parent_display_and_collection_denials(monkeypatch):
     thread = "01234567-89ab-cdef-0123-456789abcdef"
     cached_ids = frozenset({thread})

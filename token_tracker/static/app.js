@@ -1013,15 +1013,47 @@ function snapshotParentKey(provider, raw, edges=null) {
   }
   return rowParent||nativeParent;
 }
+function displayParents(providers,graph,hosts) {
+  const edges=graph&&typeof graph.edges==='object'&&!Array.isArray(graph.edges)?graph.edges:null;
+  const rows=new Map(),parents=new Map(),canonical=new Map(),hiddenMemo=new Map(),hostKeys=new Set(),duplicates=new Set();
+  for(const provider of providers||[])for(const raw of provider.chats||[]){const key=keyOf({...raw,provider:provider.name});if(rows.has(key))duplicates.add(key);rows.set(key,{provider,raw});}
+  for(const [key,{provider,raw}] of rows)canonical.set(key,snapshotParentKey(provider,raw,edges));
+  const hiddenAnchor=start=>{
+    const path=[],seen=new Set();let node=start,hidden=false;
+    while(node&&!seen.has(node)){
+      if(hiddenMemo.has(node)){hidden=hiddenMemo.get(node);break;}
+      seen.add(node);path.push(node);
+      if(state.hiddenChats.has(node)){hidden=true;break;}
+      node=canonical.get(node);
+    }
+    for(const key of path)hiddenMemo.set(key,hidden);
+    return hidden;
+  };
+  for(const [key,{provider,raw}] of rows){
+    let parent=canonical.get(key);
+    if(!parent&&hosts&&typeof hosts[key]==='string'&&rows.has(hosts[key])&&!duplicates.has(key)&&!duplicates.has(hosts[key])&&(state.showHidden||!hiddenAnchor(hosts[key]))){parent=hosts[key];hostKeys.add(key);}
+    parents.set(key,parent||null);
+  }
+  const cyclic=new Set(),visited=new Set();
+  for(const key of parents.keys()){
+    const seen=new Map(),path=[];let node=key;
+    while(parents.has(node)&&!seen.has(node)&&!visited.has(node)){seen.set(node,path.length);path.push(node);node=parents.get(node);}
+    if(seen.has(node))for(const item of path.slice(seen.get(node)))cyclic.add(item);
+    for(const item of path)visited.add(item);
+  }
+  for(const key of cyclic)if(hostKeys.has(key))parents.set(key,null);
+  return parents;
+}
 // State precedence: Needs you (0, 1) > Running (2) > Finished (2.5, idle after a run that ended in the last 10 minutes) > Idle (3).
 function runwayRank(chat) {
   if(chat.pendingQuestion)return 0;
   const rank=statusRank(chat.status);
   return rank===3&&stamp(chat.runEndedAt)>Date.now()-600000?2.5:rank;
 }
-function buildForest(providers, graph=undefined) {
-  if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){graph=providers.graph;providers=providers.providers;}
+function buildForest(providers, graph=undefined, hostOverlay=undefined) {
+  if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){hostOverlay=providers.hostOverlay;graph=providers.graph;providers=providers.providers;}
   const graphValue=graph,edges=graphValue&&typeof graphValue.edges==="object"&&!Array.isArray(graphValue.edges)?graphValue.edges:null;
+  const display=displayParents(providers,graph,hostOverlay?.edges);
   const map=new Map();
   for(const provider of providers)for(const raw of provider.chats||[]) {
     const chat={...raw,provider:provider.name,status:normalizeStatus(raw.status),children:[]};
@@ -1029,7 +1061,9 @@ function buildForest(providers, graph=undefined) {
     if(raw.statusSource==="unavailable"){chat.status="unknown";chat.telemetryUnavailable=true;}
     const fallbackKey=keyOf(chat),validKey=typeof raw.key==="string"&&raw.key===fallbackKey?raw.key:fallbackKey;
     chat.key=validKey;
-    const parent=snapshotParentKey(provider,raw,edges);
+    chat.title=hostOverlay?.titles?.[chat.key]||chat.title;
+    chat.canonicalParentKey=snapshotParentKey(provider,raw,edges);
+    const parent=display.get(chat.key);
     chat.treeParentKey=typeof parent==="string"&&parent?parent:null;
     map.set(chat.key,chat);
   }
@@ -1110,7 +1144,7 @@ function visibleRoots(forest, days=state.windowDays) {
     const rows=[chat,...chat.descendants],matches=!query.active||rows.some(row=>matchesQuery(row,query));
     const hiddenMatch=query.flags.has("hidden")&&rows.some(row=>state.hiddenChats.has(row.key)&&matchesQuery(row,query));
     return (state.showHidden||!state.hiddenChats.has(chat.key)||hiddenMatch)&&
-      (hiddenMatch||rows.some(row=>row.retainedRun===true||runwayVisibleActive(row))||runwayActionable(chat)||chat.descendants.some(runwayActionable))&&matches;
+      (hiddenMatch||rows.some(row=>state.pins.has(row.key)||row.retainedRun===true||runwayVisibleActive(row))||runwayActionable(chat)||chat.descendants.some(runwayActionable))&&matches;
   });
 }
 function nextWindowWithChats(forest) {
@@ -1623,7 +1657,8 @@ function runwayTelemetryHTML(chat,agent=false) {
   const fullTitle=agent?agentLabel(chat):runwayFirstLine(chat.title||'Untitled');
   const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(fullTitle)+'" aria-label="'+esc(fullTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
-  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(runwayWaiting):null);
+  const canonicalDescendant=child=>{const rows=state.forest?.rows||[],seen=new Set();let node=child;while(node?.canonicalParentKey&&!seen.has(node.key)){seen.add(node.key);if(node.canonicalParentKey===chat.key)return true;node=rows.find(row=>row.key===node.canonicalParentKey);}return false;};
+  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!chat.canonicalParentKey?(chat.descendants||[]).find(child=>runwayWaiting(child)&&canonicalDescendant(child)):null);
   const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
   {
     const stateIcon=runwayStatusGlyph(status==='Waiting'?'needs-input':status==='Compacting'?'compacting':status==='Running'||status==='Agents running'?'running':statusCode);
@@ -1824,7 +1859,7 @@ function selectSourceForNewWork(items) {
 }
 function renderChats(providers) {
   scheduleNotchSize();
-  const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph);stabilizeRunwayForest(forest,previousForest);
+  const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph,acceptedHostOverlay);stabilizeRunwayForest(forest,previousForest);
   let roots=visibleRoots(forest);const query=parseQuery(state.query);
   state.forest=forest;
   if(state.popover?.dataset?.action==='runway-question'&&!runwayCurrentEvidenceFresh())closePopover({restoreFocus:true});
@@ -2073,7 +2108,7 @@ function initialActiveSource(snapshot){
   const candidates=[];
   for(const provider of snapshot?.providers||[]){
     if(!sourceNames(snapshot).includes(provider.name))continue;
-       const forest=buildForest([provider],snapshot?.graph);
+       const forest=buildForest([provider],snapshot?.graph,acceptedHostOverlay);
     for(const root of forest.roots){
       if(!state.showHidden&&state.hiddenChats.has(root.key))continue;
       for(const chat of [root,...root.descendants]){
@@ -2352,9 +2387,10 @@ async function refresh(force=false) {
   state.loading=true;state.refreshing=true;renderTitle(providersFor(state.snapshot||{providers:[]}));
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),25000);
   try {
+    const overlayRequest=nextHostOverlayRequest();
     const response=await fetch(requestedUrl,{cache:"no-store",signal:controller.signal});
     if(!response.ok)throw new Error("HTTP "+response.status);
-    const snapshot=await response.json();if(!snapshot||typeof snapshot!=="object"||!Array.isArray(snapshot.providers))throw new Error("Invalid stats snapshot");applyLive(snapshot,state.live);markOk();
+    const snapshot=await response.json();if(!snapshot||typeof snapshot!=="object"||!Array.isArray(snapshot.providers))throw new Error("Invalid stats snapshot");acceptHostOverlay(snapshot.hostOverlay,overlayRequest);applyLive(snapshot,state.live);markOk();
     const present=new Set((snapshot.providers||[]).flatMap(provider=>(provider.chats||[]).map(chat=>provider.name+':'+chat.id)));
     for(const [key,at] of state.pendingOutside)if(present.has(key)){state.outsideSeen.set(key,at);state.pendingOutside.delete(key);}
     if(selection===statsUrl(false)){if(render(snapshot)===false)scheduleBootstrapRetry();else clearBootstrapRetry(true);}
@@ -2387,9 +2423,29 @@ function liveIdentity(item) {
   for(const name of SOURCES)if(item.key===keyOf({...item,provider:name}))return !item.provider||item.provider===name?name:null;
   return null;
 }
+// Overlay ordering is independent of full/live response completion times.
+let acceptedHostOverlay=null;
+// A request issued after a server was first seen reaches that server or a later one.
+// Anything issued before may still be answered by the server it replaced.
+let hostOverlayRequestCounter=0,hostOverlayInstanceBarrier=0;
+const nextHostOverlayRequest=()=>++hostOverlayRequestCounter;
+function acceptHostOverlay(incoming,requestOrder) {
+  const current=acceptedHostOverlay;
+  if(!incoming||typeof incoming.instance!=='string'||!incoming.instance||!Number.isSafeInteger(incoming.generation)||incoming.generation<0||
+     !Number.isSafeInteger(incoming.seq)||incoming.seq<0||!Number.isSafeInteger(requestOrder)||requestOrder<1||
+     !incoming.edges||typeof incoming.edges!=='object'||Array.isArray(incoming.edges)||!incoming.titles||typeof incoming.titles!=='object'||Array.isArray(incoming.titles))return false;
+  if(current&&(incoming.instance===current.instance
+    ? incoming.generation<current.generation||(incoming.generation===current.generation&&incoming.seq<current.seq)
+    : requestOrder<=hostOverlayInstanceBarrier))return false;
+  const changed=JSON.stringify(incoming)!==JSON.stringify(current);
+  acceptedHostOverlay={instance:incoming.instance,generation:incoming.generation,seq:incoming.seq,edges:{...incoming.edges},titles:{...incoming.titles}};
+  if(current?.instance!==incoming.instance)hostOverlayInstanceBarrier=hostOverlayRequestCounter;
+  return changed;
+}
 // Overlay seconds-fresh activity/state from /api/live onto the last full snapshot.
 function applyLive(snapshot, live) {
-  if(!snapshot||!live||stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
+  if(!snapshot||!live)return {changed:false,outside:[]};
+  if(stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
   restrictSnapshotProviders(snapshot);
   let graphChanged=false;
   if(live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
@@ -2416,6 +2472,7 @@ function applyLive(snapshot, live) {
       target.chats.push(record);known.add(item.key);changed=true;
     }
   }
+  const display=displayParents(snapshot.providers||[],snapshot.graph,acceptedHostOverlay?.edges);
   for(const provider of snapshot.providers||[])for(const chat of provider.chats||[]){
     const key=keyOf({...chat,provider:provider.name});
     const next=byKey.get(key);
@@ -2433,13 +2490,13 @@ function applyLive(snapshot, live) {
         if(next[field]!==undefined&&JSON.stringify(next[field])!==JSON.stringify(chat[field])){chat[field]=next[field];changed=true;}
       }
     }
-    const parent=snapshotParentKey(provider,chat,snapshot.graph?.edges||null);
+    const parent=display.get(key);
     if(!parent)oldestShown=Math.min(oldestShown,stamp(chat.updatedAt));
   }
   // Retention is decided server-side: a retained row carries its thread key, so
   // dropping it here when a live poll omits the thread would remove the whole thread.
   // A valid unseen identity or newer outside activity means the structure needs enrichment.
-  const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!snapshotParentKey(p,c,snapshot.graph?.edges||null)).length,0);
+  const roots=(snapshot.providers||[]).reduce((n,p)=>n+(p.chats||[]).filter(c=>!display.get(keyOf({...c,provider:p.name}))).length,0);
   const outside=(live.chats||[]).filter(item=>!initiallyLoaded.has(item.key)&&(()=>{const owner=liveIdentity(item);return Boolean(owner&&(snapshot.providers||[]).some(provider=>provider.name===owner));})()&&(roots<CHAT_LIMIT||stamp(item.activityAt)>oldestShown)).map(item=>[item.key,item.activityAt]);
   return {changed,outside};
 }
@@ -2449,17 +2506,19 @@ async function pollLive() {
   if(state.liveBusy||(state.loading&&(!state.snapshot)))return;
   state.liveBusy=true;
   try{
+    const overlayRequest=nextHostOverlayRequest();
     const response=await fetch("/api/live",{cache:"no-store",signal:AbortSignal.timeout(5000)});
     if(!response.ok)throw new Error("HTTP "+response.status);
     const sample=await response.json(),sampleAt=stamp(sample?.generatedAt),now=Date.now();
     if(!sample||typeof sample!=='object'||!Array.isArray(sample.chats)||!Number.isFinite(sampleAt)||sampleAt<=0||sampleAt>now)throw new Error('Invalid live sample timestamp');
+    const overlayChanged=acceptHostOverlay(sample.hostOverlay,overlayRequest);
     if(state.liveAcceptedGeneratedAt==null||sampleAt>=state.liveAcceptedGeneratedAt){
       if(!runwayCurrentEvidenceFresh(now))state.liveRecoveryPending=true;
       state.live=sample;state.liveAcceptedGeneratedAt=sampleAt;state.liveSampleAccepted=true;
     }
     markOk();
     const result=applyLive(state.snapshot,state.live);
-    if(state.snapshot&&(result.changed||state.loading))tick();
+    if(state.snapshot&&(overlayChanged||result.changed||state.loading))tick();
     if(Date.now()-state.lastWatcherFetchAt>10000)void loadWatcher();
     const structural=Boolean(state.live.structureStamp&&state.snapshot?.structureStamp&&state.live.structureStamp!==state.snapshot.structureStamp);
     const fresh=result.outside.filter(([key,at])=>state.outsideSeen.get(key)!==at);
@@ -2533,7 +2592,7 @@ async function copyText(text, button) {
 function togglePin(key) {
   let chat=state.forest?.rows.find(c=>c.key===key);
   const visited=new Set();
-  while(hasTreeParent(chat)&&!visited.has(chat.key)){visited.add(chat.key);const parent=state.forest.rows.find(c=>c.key===treeParentKey(chat));if(!parent)break;chat=parent;}
+  while(chat?.canonicalParentKey&&!visited.has(chat.key)){visited.add(chat.key);const parent=state.forest.rows.find(c=>c.key===chat.canonicalParentKey);if(!parent)break;chat=parent;}
   if(!chat)return;
   state.pins.has(chat.key)?state.pins.delete(chat.key):state.pins.add(chat.key);
   try{localStorage.setItem("tokenTrackerPinsV2",JSON.stringify([...state.pins]));}catch{}
@@ -2620,7 +2679,7 @@ function handleKey(event) {
 function queueSelectionRefresh(){if(window.__TOKEN_TRACKER_TEST__)return;clearTimeout(state.selectionTimer);state.selectionTimer=setTimeout(()=>refresh(),250);}
 window.tokenTrackerRefresh=refresh;
 window.__tokenTrackerTest={state,render,buildForest,visibleRoots,renderRunwayCounts,jumpToWaiting,tick,renderChats,renderResets,renderTotals,handleClick,handleKey,applyLive,pollLive,runwayRank,dataIsStale,clockNow,renderUpdatedMarker,refresh,scheduleBootstrapRetry,loadWatcher,applyWatcherLimits,applyQuotaSamples,reconcileSnapshotQuotas,acceptSnapshotCache,validateSnapshotCache,isoObservationTime,watcherLoader,statsUrl,runway:true,compact:true,keepOpenState,handleVisibilityChange,trackerSnippet,notch,widgetLock,setNotch,syncNotch,notchHeight,syncMonitors,selectMonitor,applyMonitorResult,monitorSignature,predictedInspectLayoutWidth,writeInspectLayoutWidth,applyInspectLayoutWidth,refreshInspectCssScale,noteInspectViewportResize,cancelInspectLayoutReconcile,getMonitorState:()=>monitorState,getInspectWidthState:()=>({width:inspectLayoutWidth,signature:inspectMonitorSignature,cssScale:inspectCssScaleSignature,cacheKey:inspectWidthCacheKey,generation:inspectLayoutGeneration,correctionUsed:inspectWidthCorrectionUsed,correctedWidths:new Map(correctedInspectWidths),expectedSignature:inspectExpectedSignature,requestGeneration:inspectRequestGeneration,resizeGeneration:inspectResizeGeneration,requestResizeGeneration:inspectRequestResizeGeneration,bridgeBusy:compactBridge.busy,appliedSignature:compactBridge.appliedSignature,pendingSignature:compactBridge.pending?.signature||null}),syncWidgetLock,applyWidgetLock,setWidgetLock,toggleWidgetLock,recenterWidget,syncKeepOpen,applyKeepOpen,setKeepOpen,toggleKeepOpen,runwayCurrentEvidenceFresh,RUNWAY_EVIDENCE_MAX_AGE_MS,runwayStateElapsed,runwayCounts,runwayTitle,runwayAgentHasNewMessage,runwayMessageAge,runwayQuestionPopover,runwayVisibleActive,runwayRecentlyUnavailable,runwayPatchContent,patchKeyed,isAsking,runwayWaiting,runwayExecutionView,runwayEffectiveStatus,runwayRunning,runInfo,setupWindowDrag,
-  renderLoading,
+  renderLoading,acceptHostOverlay,nextHostOverlayRequest,getAcceptedHostOverlay:()=>acceptedHostOverlay,
   nextWindowWithChats,parseQuery,cacheWarmth,warmthView,resetAt,resetParts,resetView,countdown,quotaCountdown,elapsedDuration,runSpan,ageShort,dayWord,providersFor,limitProvidersFor,sourceNames,effectiveSource,treeParentKey,runwayModelLabel,syncCompactClock,
   setupNotch,questionDismissToken,watcherTone,rollup,ownState,rowHTML,trayEntries,traySummaryHTML,trayState,agentStats,totalStats,statStripHTML,watcherPopoverHTML,isVisibleAgent,chatBlockHTML,runwayTreePathGeometry,
   normalizeStatus,statusRank,contextTone,fmt,money,safeNumber,agentLabel,modelLabel,runwayStatus,runwayActivityAge,runwayActivityEvidence,runwayDetailHTML,runwayTelemetryHTML,jumpTo,isAutoReview,setWindow,filesHTML,optionsHTML,copyAndOpenAnswer,queueAnswer,analyticsHTML,renderAnalytics,renderGreeterStatus};

@@ -140,6 +140,52 @@ def test_rotated_epoch_rejects_old_authenticated_snapshot_on_restart(tmp_path, m
     assert restored.value is None
 
 
+def test_host_overlay_is_not_persisted_or_restored(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    stamp = datetime.now(timezone.utc).isoformat()
+    cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Codex"}))
+    value = {"generatedAt": stamp, "enabledProviders": ["Codex"], "providers": [
+        {"name": "Codex", "connected": True, "chats": [{"id": "child"}]}],
+        "graph": {"revision": 500, "edges": {}}, "hostEdges": {"Codex:child": "Codex:parent"},
+        "hostOverlay": {"instance": "test", "generation": 1, "seq": 1, "edges": {"Codex:child": "Codex:parent"}, "titles": {"Codex:child": "Override"}}}
+    cache._write_persisted(value, 1, stamp)
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert "hostEdges" not in envelope["snapshot"]
+    assert "hostOverlay" not in envelope["snapshot"]
+    envelope["snapshot"]["hostEdges"] = value["hostEdges"]
+    envelope["snapshot"]["hostOverlay"] = value["hostOverlay"]
+    envelope["snapshot"]["graph"]["edges"] = {"Codex:child": "Codex:parent"}
+    envelope["snapshot"]["graph"]["edgeSources"] = {"Codex:child": "t3-host"}
+    envelope["snapshot"]["providers"][0]["chats"][0]["parentKey"] = "Codex:parent"
+    envelope["mac"] = cache._snapshot_mac(envelope, cache._read_persistence_key())
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    restored = server.SnapshotCache(persist_path=path, compatibility="test")
+    restored._ensure_restored()
+    assert "hostEdges" not in restored._value
+    assert "hostOverlay" not in restored._value
+    assert restored._value["graph"]["revision"] == -1
+    assert restored._value["graph"]["edges"]["Codex:child"] is None
+    assert restored._value["providers"][0]["chats"][0]["parentKey"] is None
+
+
+def test_prior_title_source_snapshot_schema_is_not_restored(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot.json"
+    stamp = datetime.now(timezone.utc).isoformat()
+    cache = server.SnapshotCache(persist_path=path, compatibility="test")
+    monkeypatch.setattr(server.SnapshotCache, "_shown_provider_names", staticmethod(lambda: {"Codex"}))
+    value = {"generatedAt": stamp, "enabledProviders": ["Codex"], "providers": [
+        {"name": "Codex", "connected": True, "chats": [{"id": "a", "title": "Old override"}]}]}
+    cache._write_persisted(value, 1, stamp)
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    envelope["schemaVersion"] = 1
+    envelope["mac"] = cache._snapshot_mac(envelope, cache._read_persistence_key())
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+    restored = server.SnapshotCache(persist_path=path, compatibility="test")
+    restored._ensure_restored()
+    assert restored._value is None
+
+
 def test_restore_and_epoch_change_are_serialized(tmp_path, monkeypatch):
     path = tmp_path / "snapshot.json"
     stamp = datetime.now(timezone.utc).isoformat()
