@@ -298,6 +298,9 @@ class LedgerService:
                     if result.get("stopped"):
                         if self._stop.is_set():
                             break
+                        if result.get("retryAfterChange") and not self._purge_requested():
+                            if self._pause(LIVE_INTERVAL_SECONDS):
+                                break
                         continue  # a queued purge ended this pass: run it at the top of the loop
                     duration = self._monotonic() - began
                     # Scheduling is separate from API coverage: deferred debt must not keep the worker hot.
