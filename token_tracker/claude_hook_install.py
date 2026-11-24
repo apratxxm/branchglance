@@ -209,10 +209,7 @@ def _touches_marker(group: Any) -> bool:
 
 # --------------------------------------------------------------------- files
 
-def _is_reparse(path: Path, info: os.stat_result | None) -> bool:
-    """Fails closed: when the lstat result is missing, the path counts as a reparse point."""
-    if info is None:
-        return product.is_reparse(path)
+def _is_reparse(path: Path, info: os.stat_result) -> bool:
     return os.path.islink(path) or product.info_is_reparse(info)
 
 

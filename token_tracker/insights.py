@@ -385,10 +385,10 @@ def _fresh_limit_observations(providers: list[dict[str, Any]], *, now: datetime)
         if (not isinstance(provider, dict) or provider.get("connected") is not True
                 or provider.get("stale") is True):
             continue
-        observed = parse_iso_datetime(str(provider.get("limitsUpdatedAt", "")), naive="utc")
-        if observed is None:
-            continue
         try:
+            observed = parse_iso_datetime(str(provider.get("limitsUpdatedAt", "")), naive="utc")
+            if observed is None:
+                continue
             if observed > now_utc or now_utc - observed > timedelta(minutes=10):
                 continue
             result.append((provider, _local_now(observed)))

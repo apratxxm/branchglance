@@ -939,7 +939,7 @@ def test_state_replace_failure_cleans_unique_temporary_file(tmp_path, monkeypatc
         raise OSError("replacement failed")
     monkeypatch.setattr(limit_reset.os, "replace", fail_replace)
     assert watcher._save_state() is False
-    assert not list(tmp_path.glob("state.json.*.tmp"))
+    assert not list(tmp_path.glob("*.tmp"))
     assert "replacement failed" in watcher.status()["persistenceError"]
 
 
@@ -953,14 +953,29 @@ def test_state_save_reports_each_io_failure(tmp_path, monkeypatch, step):
     elif step == "fdopen":
         monkeypatch.setattr(limit_reset.os, "fdopen", enospc)
     elif step == "write":
-        monkeypatch.setattr(limit_reset.json, "dumps", enospc)
+        real_fdopen = limit_reset.os.fdopen
+
+        def fdopen_with_failing_write(*args, **kwargs):
+            stream = real_fdopen(*args, **kwargs)
+
+            class FailingWrite:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_exc):
+                    stream.close()
+
+                write = staticmethod(enospc)
+
+            return FailingWrite()
+        monkeypatch.setattr(limit_reset.os, "fdopen", fdopen_with_failing_write)
     elif step == "fsync":
         monkeypatch.setattr(limit_reset.os, "fsync", enospc)
     else:
         monkeypatch.setattr(limit_reset.os, "replace", enospc)
     assert watcher._save_state() is False
     assert "No space left on device" in watcher.status()["persistenceError"]
-    assert not list(tmp_path.glob("state.json.*.tmp"))
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_event_log_write_failure_is_reported_and_does_not_raise(tmp_path, monkeypatch):

@@ -694,10 +694,13 @@ def atomic_write_bytes(path: Path | str, payload: bytes, *,
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(descriptor)
+        finally:
+            os.close(descriptor)  # before any unlink: Windows cannot delete an open file
         if before_replace is not None and not before_replace():
             return
         os.replace(temporary, path)
@@ -720,7 +723,10 @@ def _fsync_directory(directory: Path) -> None:
     except OSError:
         pass
     finally:
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass  # the rename already happened; callers must not treat it as failed
 
 
 def is_finite_number(value) -> bool:
