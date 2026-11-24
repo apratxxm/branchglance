@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from . import claude_collection, claude_hook_install
+from . import claude_hook_install, product
 
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
 _PROVIDERS = {"claudeAgent": "Claude", "codex": "Codex"}
@@ -90,7 +90,7 @@ def _checked_files(path: Path) -> list[tuple[Path, Any]]:
     directories = []
     for directory in (expected.parent, expected):
         info = directory.lstat()
-        if claude_collection._info_is_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        if product.info_is_reparse(info) or not stat.S_ISDIR(info.st_mode):
             raise OSError("redirected T3 directory")
         directories.append((directory, info))
     snapshots = directories
@@ -102,7 +102,7 @@ def _checked_files(path: Path) -> list[tuple[Path, Any]]:
                 raise
             snapshots.append((item, None))
             continue
-        if claude_collection._info_is_reparse(before) or not stat.S_ISREG(before.st_mode):
+        if product.info_is_reparse(before) or not stat.S_ISREG(before.st_mode):
             raise OSError("redirected T3 file")
         snapshots.append((item, before))
     return snapshots
@@ -122,7 +122,7 @@ def _recheck(snapshots: list[tuple[Path, Any]], *, immutable: bool = False) -> N
             if is_sidecar:
                 continue
             raise
-        if (claude_collection._info_is_reparse(after)
+        if (product.info_is_reparse(after)
                 or not (stat.S_ISDIR(after.st_mode) if is_directory else stat.S_ISREG(after.st_mode))):
             raise OSError("T3 file changed during read")
         if not is_sidecar and (before is None or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)):

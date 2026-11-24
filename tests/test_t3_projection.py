@@ -174,7 +174,7 @@ def test_reparse_source_rejected_and_transient_connection_keeps_title(tmp_path, 
         writer.rollback()
         writer.close()
     with monkeypatch.context() as m:
-        m.setattr(t3.claude_collection, "_info_is_reparse", lambda info: True)
+        m.setattr(t3.product, "info_is_reparse", lambda info: True)
         assert poll()[0] == []
 
 
@@ -314,10 +314,10 @@ def test_recheck_rejects_main_identity_swap_and_redirected_sources(projection_fi
     monkeypatch.setattr(Path, "lstat", original_lstat)
     wal = Path(str(projection_file) + "-wal")
     wal.write_bytes(b"sidecar")
-    original_reparse = t3.claude_collection._info_is_reparse
+    original_reparse = t3.product.info_is_reparse
     for item in (projection_file.parent, projection_file, wal):
         identity = (item.lstat().st_dev, item.lstat().st_ino)
-        monkeypatch.setattr(t3.claude_collection, "_info_is_reparse",
+        monkeypatch.setattr(t3.product, "info_is_reparse",
                             lambda info, identity=identity: (info.st_dev, info.st_ino) == identity or original_reparse(info))
         with pytest.raises((OSError, t3.claude_hook_install.HookInstallError)):
             t3._checked_files(projection_file)
