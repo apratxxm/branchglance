@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+// Visible text of rendered markup (test helper; drops everything between < and >).
+const visibleText=(html)=>{let out="",depth=0;for(const ch of String(html)){if(ch==="<")depth+=1;else if(ch===">"&&depth)depth-=1;else if(!depth)out+=ch;}return out;};
 
 const app=fs.readFileSync(new URL("../token_tracker/static/app.js",import.meta.url),"utf8");
 const page=fs.readFileSync(new URL("../token_tracker/static/runway.html",import.meta.url),"utf8");
@@ -234,8 +236,8 @@ assert.match(html,/runway-context-total">258K/);
 const parentRowMarkup=T.rowHTML(T.state.forest.roots[0]);
 assert.match(parentRowMarkup,/class="runway-refined-context"/);
 const compactContext=parentRowMarkup.slice(parentRowMarkup.indexOf('class="runway-refined-context">'));
-assert.equal(compactContext.replace(/^class="runway-refined-context">/,"").split("Cache")[0].replace(/<[^>]*>/g,""),"160K / 258K");
-assert.doesNotMatch(compactContext.replace(/<[^>]*>/g,""),/\btokens?\b/i);
+assert.equal(visibleText(compactContext.replace(/^class="runway-refined-context">/,"").split("Cache")[0]),"160K / 258K");
+assert.doesNotMatch(visibleText(compactContext),/\btokens?\b/i);
 assert.match(html,/data-runway-slot="elapsed" class="runway-refined-elapsed"/);
 assert.match(html,/runway-refined-cache">Cache 80%/);
 assert.match(html,/runway-refined-status t-live/);
@@ -496,7 +498,7 @@ assert.match(detail60,/class="f-l">Recorded usage<\/span><span class="f-v"><span
 assert.doesNotMatch(detail60,/Context/);
 assert.match(detail60,/runway-context-separator"> \/ <\/span><span class="runway-context-total">100/);
 const detailContext60=detail60.match(/<div class="facts runway-context-facts">([\s\S]*?)<\/div><div class="meta">/)[1];
-assert.doesNotMatch(detailContext60.replace(/<[^>]*>/g,""),/\btokens?\b/i);
+assert.doesNotMatch(visibleText(detailContext60),/\btokens?\b/i);
 const detail76=T.runwayDetailHTML({...root,contextTokens:76,contextWindow:100,contextPercent:null});
 assert.match(detail76,/class="f-l">Recorded usage<\/span><span class="f-v"><span class="runway-context-used t-err">76/);
 assert.doesNotMatch(detail76,/Context/);
@@ -506,7 +508,7 @@ assert.doesNotMatch(T.runwayDetailHTML({...root,model:"Codex",workspace:null,roo
 const driveRootRow=T.rowHTML({...root,workspace:"D:\\"});
 assert.match(driveRootRow,/runway-path-leaf">D: D:\\/);
 assert.ok(driveRootRow.includes('title="Workspace · D:\\"'));
-const workspaceText=row=>row.match(/<span data-runway-slot="workspace"[^>]*>([\s\S]*?)<\/span>/)[1].replace(/<[^>]*>/g,"");
+const workspaceText=row=>visibleText(row.match(/<span data-runway-slot="workspace"[^>]*>([\s\S]*?)<\/span>/)[1]);
 assert.equal(workspaceText(driveRootRow),"D: D:\\");
 assert.equal(workspaceText(T.rowHTML({...root,workspace:"D:\\memoir"})),"D: memoir");
 assert.equal(workspaceText(T.rowHTML({...root,workspace:"C:\\Projects\\memoir\\child"})),"C: child");
