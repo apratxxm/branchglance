@@ -1019,7 +1019,7 @@ function displayParents(providers,graph,hosts) {
   for(const provider of providers||[])for(const raw of provider.chats||[]){const key=keyOf({...raw,provider:provider.name});if(rows.has(key))duplicates.add(key);rows.set(key,{provider,raw});}
   for(const [key,{provider,raw}] of rows){
     let parent=snapshotParentKey(provider,raw,edges);
-    if(!parent&&hosts&&typeof hosts[key]==='string'&&rows.has(hosts[key])&&!duplicates.has(key)&&!duplicates.has(hosts[key])){parent=hosts[key];hostKeys.add(key);}
+    if(!parent&&hosts&&typeof hosts[key]==='string'&&rows.has(hosts[key])&&!duplicates.has(key)&&!duplicates.has(hosts[key])&&(state.showHidden||!state.hiddenChats.has(hosts[key]))){parent=hosts[key];hostKeys.add(key);}
     parents.set(key,parent||null);
   }
   const cyclic=new Set();
@@ -1037,10 +1037,10 @@ function runwayRank(chat) {
   const rank=statusRank(chat.status);
   return rank===3&&stamp(chat.runEndedAt)>Date.now()-600000?2.5:rank;
 }
-function buildForest(providers, graph=undefined, hostEdges=undefined) {
-  if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){hostEdges=providers.hostEdges;graph=providers.graph;providers=providers.providers;}
+function buildForest(providers, graph=undefined, hostOverlay=undefined) {
+  if(!Array.isArray(providers)&&Array.isArray(providers?.providers)){hostOverlay=providers.hostOverlay;graph=providers.graph;providers=providers.providers;}
   const graphValue=graph,edges=graphValue&&typeof graphValue.edges==="object"&&!Array.isArray(graphValue.edges)?graphValue.edges:null;
-  const display=displayParents(providers,graph,hostEdges);
+  const display=displayParents(providers,graph,hostOverlay?.edges);
   const map=new Map();
   for(const provider of providers)for(const raw of provider.chats||[]) {
     const chat={...raw,provider:provider.name,status:normalizeStatus(raw.status),children:[]};
@@ -1048,6 +1048,7 @@ function buildForest(providers, graph=undefined, hostEdges=undefined) {
     if(raw.statusSource==="unavailable"){chat.status="unknown";chat.telemetryUnavailable=true;}
     const fallbackKey=keyOf(chat),validKey=typeof raw.key==="string"&&raw.key===fallbackKey?raw.key:fallbackKey;
     chat.key=validKey;
+    chat.title=hostOverlay?.titles?.[chat.key]||chat.title;
     chat.canonicalParentKey=snapshotParentKey(provider,raw,edges);
     const parent=display.get(chat.key);
     chat.treeParentKey=typeof parent==="string"&&parent?parent:null;
@@ -1644,7 +1645,7 @@ function runwayTelemetryHTML(chat,agent=false) {
   const titleHTML='<span data-runway-slot="title" class="'+(agent?'runway-agent-name':'r-title')+'" title="'+esc(fullTitle)+'" aria-label="'+esc(fullTitle)+'">'+'<span data-runway-slot="label" class="runway-agent-label">'+esc(displayTitle)+'</span>'+resumeBadge+messageLane+'</span>';
   const context=contextHTML(chat);
   const canonicalDescendant=child=>{const rows=state.forest?.rows||[],seen=new Set();let node=child;while(node?.canonicalParentKey&&!seen.has(node.key)){seen.add(node.key);if(node.canonicalParentKey===chat.key)return true;node=rows.find(row=>row.key===node.canonicalParentKey);}return false;};
-  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!hasTreeParent(chat)?(chat.descendants||[]).find(child=>runwayWaiting(child)&&canonicalDescendant(child)):null);
+  const waitingTarget=runwayWaiting(chat)?chat:(!ownCurrent&&childWaiting&&!chat.canonicalParentKey?(chat.descendants||[]).find(child=>runwayWaiting(child)&&canonicalDescendant(child)):null);
   const waitingLabel=waitingTarget?(isCodexChat(waitingTarget)?'Open waiting chat to answer ':'Show question for ')+(waitingTarget.title||runwayTitle(waitingTarget,hasTreeParent(waitingTarget))):'';
   {
     const stateIcon=runwayStatusGlyph(status==='Waiting'?'needs-input':status==='Compacting'?'compacting':status==='Running'||status==='Agents running'?'running':statusCode);
@@ -1845,7 +1846,7 @@ function selectSourceForNewWork(items) {
 }
 function renderChats(providers) {
   scheduleNotchSize();
-  const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph,state.snapshot?.hostEdges);stabilizeRunwayForest(forest,previousForest);
+  const previousForest=state.forest,forest=buildForest(providers,state.snapshot?.graph,state.snapshot?.hostOverlay);stabilizeRunwayForest(forest,previousForest);
   let roots=visibleRoots(forest);const query=parseQuery(state.query);
   state.forest=forest;
   if(state.popover?.dataset?.action==='runway-question'&&!runwayCurrentEvidenceFresh())closePopover({restoreFocus:true});
@@ -2094,7 +2095,7 @@ function initialActiveSource(snapshot){
   const candidates=[];
   for(const provider of snapshot?.providers||[]){
     if(!sourceNames(snapshot).includes(provider.name))continue;
-       const forest=buildForest([provider],snapshot?.graph,snapshot?.hostEdges);
+       const forest=buildForest([provider],snapshot?.graph,snapshot?.hostOverlay);
     for(const root of forest.roots){
       if(!state.showHidden&&state.hiddenChats.has(root.key))continue;
       for(const chat of [root,...root.descendants]){
@@ -2127,7 +2128,7 @@ function render(snapshot) {
   restrictSnapshotProviders(snapshot);
   acceptSnapshotCache(snapshot);
   reconcileSnapshotQuotas(snapshot);
-  if(!Object.prototype.hasOwnProperty.call(snapshot,'hostEdges')&&state.snapshot?.hostEdges)snapshot.hostEdges=state.snapshot.hostEdges;
+  mergeHostOverlay(snapshot);
   state.snapshot=snapshot;
   state.initialBootstrapPending=false;
   if(firstRunwayPaint){const activeSource=initialActiveSource(snapshot);if(activeSource)state.source=activeSource;}
@@ -2409,14 +2410,33 @@ function liveIdentity(item) {
   for(const name of SOURCES)if(item.key===keyOf({...item,provider:name}))return !item.provider||item.provider===name?name:null;
   return null;
 }
+// Overlay ordering is independent of full/live response completion times.
+let acceptedHostOverlay=null;
+const retiredHostEpochs=[];
+function mergeHostOverlay(snapshot) {
+  const incoming=snapshot?.hostOverlay,current=acceptedHostOverlay;
+  let changed=false;
+  if(incoming&&typeof incoming.epoch==='string'&&incoming.epoch&&Number.isSafeInteger(incoming.seq)&&incoming.seq>=0&&
+     incoming.edges&&typeof incoming.edges==='object'&&!Array.isArray(incoming.edges)&&incoming.titles&&typeof incoming.titles==='object'&&!Array.isArray(incoming.titles)){
+    if(!retiredHostEpochs.includes(incoming.epoch)&&(!current||incoming.epoch!==current.epoch||incoming.seq>=current.seq)){
+      if(current&&incoming.epoch!==current.epoch){retiredHostEpochs.push(current.epoch);if(retiredHostEpochs.length>8)retiredHostEpochs.shift();}
+      changed=JSON.stringify(incoming)!==JSON.stringify(current);
+      acceptedHostOverlay={epoch:incoming.epoch,seq:incoming.seq,edges:{...incoming.edges},titles:{...incoming.titles}};
+    }
+  }
+  if(acceptedHostOverlay)snapshot.hostOverlay=acceptedHostOverlay;
+  else delete snapshot.hostOverlay;
+  return changed;
+}
 // Overlay seconds-fresh activity/state from /api/live onto the last full snapshot.
 function applyLive(snapshot, live) {
-  if(!snapshot||!live||stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:false,outside:[]};
+  if(!snapshot||!live)return {changed:false,outside:[]};
+  mergeHostOverlay(snapshot);
+  const overlayChanged=Object.prototype.hasOwnProperty.call(live,'hostOverlay')?mergeHostOverlay(live):false;
+  if(acceptedHostOverlay)snapshot.hostOverlay=acceptedHostOverlay;
+  if(stamp(live.generatedAt)<stamp(snapshot.generatedAt))return {changed:overlayChanged,outside:[]};
   restrictSnapshotProviders(snapshot);
-  let graphChanged=false;
-  if(Object.prototype.hasOwnProperty.call(live,'hostEdges')&&live.hostEdges&&typeof live.hostEdges==='object'&&!Array.isArray(live.hostEdges)){
-    if(JSON.stringify(snapshot.hostEdges||{})!==JSON.stringify(live.hostEdges)){snapshot.hostEdges={...live.hostEdges};graphChanged=true;}
-  }
+  let graphChanged=overlayChanged;
   if(live.graph&&typeof live.graph.edges==="object"&&!Array.isArray(live.graph.edges)){
     const incoming=Number(live.graph.revision),current=Number(snapshot.graph?.revision);
     if(!snapshot.graph||Number.isFinite(incoming)&&(!Number.isFinite(current)||incoming>current)){snapshot.graph=live.graph;graphChanged=true;}
@@ -2441,7 +2461,7 @@ function applyLive(snapshot, live) {
       target.chats.push(record);known.add(item.key);changed=true;
     }
   }
-  const display=displayParents(snapshot.providers||[],snapshot.graph,snapshot.hostEdges);
+  const display=displayParents(snapshot.providers||[],snapshot.graph,snapshot.hostOverlay?.edges);
   for(const provider of snapshot.providers||[])for(const chat of provider.chats||[]){
     const key=keyOf({...chat,provider:provider.name});
     const next=byKey.get(key);

@@ -2709,7 +2709,7 @@ def test_trim_numeric_native_parent_with_sparse_graph_and_host_cycle():
     snapshot = {"providers": [
         {"name": "Claude", "chats": [{"id": 1, "title": "Parent"}, {"id": 2, "parentId": 1, "title": "Needle"}]},
         {"name": "Codex", "chats": [{"id": 3, "title": "Other"}]},
-    ], "graph": {"edges": {}}, "hostEdges": {"Claude:1": "Claude:2", "Codex:3": "Claude:1"}}
+    ], "graph": {"edges": {}}, "hostOverlay": {"edges": {"Claude:1": "Claude:2", "Codex:3": "Claude:1"}}}
     for options in ({"query": "Needle"}, {"pinned": ["Claude:2"]}, {"pinned": ["Codex:3"]}):
         result = providers.trim_chats(snapshot, 1, **options)
         assert [[str(c["id"]) for c in p["chats"]] for p in result["providers"]] == [["1", "2"], ["3"]]
@@ -2724,6 +2724,19 @@ def test_trim_uses_valid_usage_recency_when_update_timestamp_is_invalid():
         {"id": "usage", "updatedAt": "invalid", "usageUpdatedAt": "2026-11-23T00:00:00Z"},
         {"id": "older", "updatedAt": "2026-11-22T00:00:00Z"}]}]}
     assert [row["id"] for row in providers.trim_chats(snapshot, 1)["providers"][0]["chats"]] == ["usage"]
+
+
+def test_filtered_search_ignores_host_parent_outside_provider_and_matches_both_titles():
+    snapshot = {"providers": [
+        {"name": "Claude", "chats": [{"id": "parent", "title": "Parent"}]},
+        {"name": "Codex", "chats": [{"id": "child", "title": "Transcript phrase"}]},
+    ], "hostOverlay": {"edges": {"Codex:child": "Claude:parent"},
+                        "titles": {"Codex:child": "Overlay phrase"}}}
+    for query in ("Overlay", "Transcript"):
+        result = providers.trim_chats(snapshot, 1, query=query, provider_filter="Codex")
+        assert result["chatMatches"] == 1
+        assert [row["id"] for row in result["providers"][1]["chats"]] == ["child"]
+    assert snapshot["providers"][1]["chats"][0]["title"] == "Transcript phrase"
 
 
 def test_claude_nested_agents_and_metadata_only_label_changes(tmp_path):

@@ -81,7 +81,7 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[
     {name:'Claude',chats:[{id:'parent',title:'Parent',status:'idle'}]},
     {name:'Codex',chats:[{id:'child',title:'Override',status:'needs-input',pendingQuestion:'Question'}]},
-  ],graph:{revision:1,edges:{'Claude:parent':null,'Codex:child':null}},hostEdges:{'Codex:child':'Claude:parent'}};
+  ],graph:{revision:1,edges:{'Claude:parent':null,'Codex:child':null}},hostOverlay:{epoch:'e',seq:1,edges:{'Codex:child':'Claude:parent'},titles:{}}};
   const forest=T.buildForest(snapshot);
   assert.equal(forest.roots.length,1);
   assert.equal(forest.rows.find(row=>row.id==='child').canonicalParentKey,null);
@@ -94,15 +94,56 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const html=T.runwayTelemetryHTML(forest.rows.find(row=>row.id==='parent'));
   assert.doesNotMatch(html,/data-action="runway-question"/);
   T.applyLive(snapshot,{generatedAt:ago(0),chats:[]});
-  assert.equal(snapshot.hostEdges['Codex:child'],'Claude:parent','missing overlay keeps the last value');
-  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'child',key:'Codex:child',provider:'Codex',title:'Transcript'}],hostEdges:{}});
+  assert.equal(snapshot.hostOverlay.edges['Codex:child'],'Claude:parent','missing overlay keeps the last value');
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[{id:'child',key:'Codex:child',provider:'Codex',title:'Transcript'}],hostOverlay:{epoch:'e',seq:2,edges:{},titles:{}}});
   assert.equal(snapshot.providers[1].chats[0].title,'Transcript');
   assert.equal(T.buildForest(snapshot).roots.length,2,'empty overlay withdraws the association');
-  const cyclic={...snapshot,hostEdges:{'Codex:child':'Claude:parent','Claude:parent':'Codex:child'}};
+  const cyclic={...snapshot,hostOverlay:{edges:{'Codex:child':'Claude:parent','Claude:parent':'Codex:child'},titles:{}}};
   assert.equal(T.buildForest(cyclic).roots.length,2,'a host cycle drops every edge');
-  const duplicate={...snapshot,hostEdges:{'Codex:child':'Claude:parent'},providers:[
+  const duplicate={...snapshot,hostOverlay:{edges:{'Codex:child':'Claude:parent'},titles:{}},providers:[
     {name:'Claude',chats:[{id:'parent'},{id:'parent'}]},snapshot.providers[1]]};
   assert.equal(T.buildForest(duplicate).roots.length,2,'duplicate endpoint blocks a host association');
+}
+
+// Overlay generations order full and live responses independently of their timestamps.
+{
+  const {T}=boot();
+  const overlay=(epoch,seq,edges={},titles={})=>({epoch,seq,edges,titles});
+  const snapshot={generatedAt:ago(1),providerPolicies:policy,providers:[{name:'Claude',chats:[
+    {id:'parent',title:'Transcript',status:'idle'},{id:'child',title:'Child',status:'needs-input',pendingQuestion:'Question'}]}],
+    graph:{revision:1,edges:{'Claude:parent':null,'Claude:child':null}},
+    hostOverlay:overlay('first',1,{'Claude:child':'Claude:parent'},{'Claude:child':'Override'})};
+  T.applyLive(snapshot,{generatedAt:ago(0),chats:[],hostOverlay:overlay('first',2,{'Claude:child':'Claude:parent'},{'Claude:child':'New title'})});
+  T.state.liveSampleAccepted=true;T.state.liveAcceptedGeneratedAt=fixedNow;T.state.query='New title';
+  assert.equal(T.visibleRoots(T.buildForest(snapshot)).length,1,'client search uses the overlay title');
+  T.state.query='';
+  const late={...snapshot,generatedAt:ago(0),hostOverlay:overlay('first',1,{'Claude:child':'Claude:parent'},{'Claude:child':'Override'})};
+  T.applyLive(late,{generatedAt:ago(0),chats:[]});
+  assert.equal(late.hostOverlay.seq,2,'late full response cannot roll back a newer live overlay');
+  T.applyLive(late,{generatedAt:ago(0),chats:[{id:'child',key:'Claude:child',provider:'Claude',detailPending:true}],hostOverlay:overlay('first',3)});
+  assert.equal(T.buildForest(late).rows.find(row=>row.id==='child').title,'Child','deferred row falls back to transcript title');
+  T.applyLive(late,{generatedAt:ago(0),chats:[],hostOverlay:overlay('second',0)});
+  T.applyLive(late,{generatedAt:ago(0),chats:[],hostOverlay:overlay('first',99,{'Claude:child':'Claude:parent'})});
+  assert.equal(late.hostOverlay.epoch,'second','retired epoch cannot return');
+}
+
+// Hidden host anchors do not hide pinned waiting children; canonical replies remain available.
+{
+  const {T}=boot();
+  T.state.liveSampleAccepted=true;T.state.liveAcceptedGeneratedAt=fixedNow;
+  T.state.hiddenChats.add('Claude:parent');T.state.pins.add('Codex:child');
+  const snapshot={providers:[{name:'Claude',chats:[{id:'parent',title:'Hidden',status:'idle'}]},
+    {name:'Codex',chats:[{id:'child',title:'Waiting',status:'needs-input',pendingQuestion:'Question'}]}],
+    hostOverlay:{epoch:'h',seq:1,edges:{'Codex:child':'Claude:parent'},titles:{}}};
+  const forest=T.buildForest(snapshot);T.state.forest=forest;
+  assert.ok(forest.roots.some(row=>row.key==='Codex:child'));
+  assert.ok(T.visibleRoots(forest).some(row=>row.key==='Codex:child'));
+  assert.equal(T.runwayCounts(forest).waiting,1);
+  const canonical={providers:[{name:'Codex',chats:[{id:'host',status:'idle'}]},
+    {name:'Claude',chats:[{id:'root',status:'idle'},{id:'worker',parentId:'root',status:'needs-input',pendingQuestion:'Question'}]}],
+    hostOverlay:{epoch:'h',seq:2,edges:{'Claude:root':'Codex:host'},titles:{}}};
+  const tree=T.buildForest(canonical);T.state.forest=tree;
+  assert.match(T.runwayTelemetryHTML(tree.rows.find(row=>row.key==='Claude:root'),true),/data-action="runway-question"/);
 }
 
 // Repeated stats failures cannot postpone the graphless first-paint fallback.

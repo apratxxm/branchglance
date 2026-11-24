@@ -5560,12 +5560,12 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     started = time.monotonic()
     policies = POLICIES
     full_collect, _limit_collect = _provider_collection_sets(policies)
-    from .t3_projection import EMPTY as t3_empty, poll as t3_poll
-    _raise_if_snapshot_shutdown()
-    projection = (t3_poll(frozenset(full_collect), live=True, cancelled=lambda: _snapshot_shutdown)
-                  if full_collect else t3_empty)
     visible_full = tuple(name for name in full_collect if policy_for(name, policies).allows("show"))
     policy_payload = public_policies(policies)
+    from .t3_projection import empty as t3_empty, poll as t3_poll
+    _raise_if_snapshot_shutdown()
+    projection = (t3_poll(frozenset(visible_full), generation=policy_payload["generation"], live=True, cancelled=lambda: _snapshot_shutdown)
+                  if visible_full else t3_empty(set(), policy_payload["generation"]))
     policy_generation = policy_payload["generation"]
     # Refresh identity cheaply from the bounded SQLite index before taking the
     # live roster copy. This does no app-server work and never promotes SQLite
@@ -5956,8 +5956,6 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     for chat in chats:
         chat["provider"] = "Codex" if str(chat.get("key") or "").startswith("Codex:") else "Claude"
     from .agent_links import snapshot_graph
-    from .claude_provider import _apply_t3_titles
-    _apply_t3_titles([chat for chat in chats if chat.get("provider") == "Claude"], projection)
     # Full edges, not a delta: the revision is process-wide, so a delta is
     # "changes since anyone's last request" and other pollers would eat it.
     graph = snapshot_graph(chats)
@@ -5967,7 +5965,7 @@ def live_state(budget_seconds: float | None = None) -> dict[str, Any]:
     finally:
         _T3_STAMP_PROJECTION.reset(stamp_token)
     return {"generatedAt": datetime.now(timezone.utc).isoformat(),
-            "structureStamp": structure_stamp, "chats": chats, "hostEdges": dict(projection.edges),
+            "structureStamp": structure_stamp, "chats": chats, "hostOverlay": projection.overlay(),
             "providerPolicies": policy_payload, "graph": graph,
             "complete": pending == 0, "pendingChats": pending}
 
@@ -5998,7 +5996,7 @@ def _display_parents(snapshot: dict[str, Any]) -> dict[str, str | None]:
                 duplicates.add(key)
             rows[key] = (str(provider.get("name")), chat)
     edges = (snapshot.get("graph") or {}).get("edges")
-    hosts = snapshot.get("hostEdges") or {}
+    hosts = (snapshot.get("hostOverlay") or {}).get("edges") or {}
     parents, host_keys = {}, set()
     for key, (name, row) in rows.items():
         native = f"{name}:{row['parentId']}" if row.get("parentId") is not None else None
@@ -6034,14 +6032,19 @@ def trim_chats(snapshot: dict[str, Any], limit: int = 15, pinned: Iterable[str] 
                sort: str = "latest", days: int = 7) -> dict[str, Any]:
     """Return the latest `limit` root chats across providers plus pinned roots, with their agents."""
     pinned = set(pinned)
+    eligible = [provider for provider in snapshot.get("providers") or []
+                if provider_filter == "all" or provider.get("name") == provider_filter]
+    grouping_snapshot = {**snapshot, "providers": eligible}
+    overlay_titles = (snapshot.get("hostOverlay") or {}).get("titles") or {}
+    row_providers = {id(chat): str(provider.get("name")) for provider in eligible for chat in provider.get("chats") or []}
     latest: dict[str, float] = {}
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     roots_by_provider: dict[str, dict[Any, Any]] = {}
     all_keys = {f"{provider.get('name')}:{chat.get('id')}"
-                for provider in snapshot.get("providers") or []
+                for provider in eligible
                 for chat in provider.get("chats") or []}
-    display_parents = _display_parents(snapshot)
-    for provider in snapshot.get("providers") or []:
+    display_parents = _display_parents(grouping_snapshot)
+    for provider in eligible:
         name = str(provider.get("name"))
         chats = provider.get("chats") or []
         roots: dict[Any, Any] = {}
@@ -6075,7 +6078,8 @@ def trim_chats(snapshot: dict[str, Any], limit: int = 15, pinned: Iterable[str] 
         return {"needs-attention": "needs-input", "needs-input": "needs-input", "active": "running",
                 "error": "failed", "inactive": "idle"}.get(value, value)
     def matches(chat):
-        text = " ".join(str(chat.get(k) or "") for k in ("title", "model", "agentName", "reasoningEffort", "workspace", "latestRequest")).casefold()
+        overlay_title = overlay_titles.get(f"{row_providers.get(id(chat))}:{chat.get('id')}")
+        text = " ".join([str(overlay_title or ""), *(str(chat.get(k) or "") for k in ("title", "model", "agentName", "reasoningEffort", "workspace", "latestRequest"))]).casefold()
         state = status(chat)
         return (not query or query in text) and (
             status_filter == "all" or status_filter == "running" and state == "running"
@@ -6195,11 +6199,11 @@ def build_snapshot() -> dict[str, Any]:
     # should not delay the Claude transcript scan (or the reverse).
     # Taken before scanning so a session created during the build still
     # changes the stamp that live polling compares against.
-    from .t3_projection import EMPTY as t3_empty, poll as t3_poll
+    from .t3_projection import empty as t3_empty, poll as t3_poll
     if _snapshot_shutdown:
         raise RuntimeError("provider snapshots are shutting down")
-    projection = (t3_poll(frozenset(full_collect), cancelled=lambda: _snapshot_shutdown)
-                  if full_collect else t3_empty)
+    projection = (t3_poll(frozenset(visible_full), generation=policy_payload["generation"], cancelled=lambda: _snapshot_shutdown)
+                  if visible_full else t3_empty(set(), policy_payload["generation"]))
     stamp_token = _T3_STAMP_PROJECTION.set(projection)
     try:
         structure_stamp = _structure_stamp(visible_full)
@@ -6228,10 +6232,6 @@ def build_snapshot() -> dict[str, Any]:
                       if policy_for(provider.get("name"), policies).allows("show")]
     visible_provider_data = [provider for provider in all_providers
                              if policy_for(provider.get("name"), policies).allows("show")]
-    from .claude_provider import _apply_t3_titles
-    for provider in visible_provider_data:
-        if provider.get("name") == "Claude":
-            _apply_t3_titles(provider.get("chats") or [], projection)
     if "Claude" in full_collect and "Codex" in full_collect:
         try:
             from .agent_links import apply_exact_links
@@ -6298,7 +6298,7 @@ def build_snapshot() -> dict[str, Any]:
         },
         "providers": visible_provider_data,
         "graph": graph,
-        "hostEdges": dict(projection.edges),
+        "hostOverlay": projection.overlay(),
         "activity": [{"date": date, "value": value} for date, value in sorted(activity.items())],
         "activityMeta": {
             "activeDays": len(active_dates),

@@ -353,7 +353,8 @@ def _live_encodings(header: str) -> tuple[bool, bool]:
 class SnapshotCache:
     RETRY_COOLDOWN_SECONDS = 5.0
     REQUEST_TIMEOUT_SECONDS = 10.0
-    PERSISTED_SCHEMA_VERSION = 1
+    # Older snapshots may contain T3 titles embedded in transcript rows.
+    PERSISTED_SCHEMA_VERSION = 2
     PERSISTED_MAX_BYTES = 32 * 1024 * 1024
     PERSISTED_KEY_NAME = "snapshot-cache.key"
     PERSISTED_KEY_BYTES = 32
@@ -542,6 +543,7 @@ class SnapshotCache:
     def _strip_host_overlay(snapshot: dict) -> None:
         """Discard both the current overlay and legacy graph-embedded host links."""
         snapshot.pop("hostEdges", None)
+        snapshot.pop("hostOverlay", None)
         graph = snapshot.get("graph")
         if not isinstance(graph, dict):
             return

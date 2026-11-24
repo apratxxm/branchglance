@@ -100,15 +100,6 @@ _IDENTITY_LOCK = threading.Lock()
 _IDENTITY_MAX = 512
 
 
-def _apply_t3_titles(rows: list[dict[str, Any]], projection: Any) -> None:
-    titles = dict(projection.titles)
-    for row in rows:
-        if not row.get("parentId"):
-            title = public_title(titles.get(row.get("id")))
-            if title:
-                row["title"] = title
-
-
 def _remembered_identity(key: str, title: str | None, model: str | None) -> tuple[str | None, str | None]:
     with _IDENTITY_LOCK:
         known_title, known_model = _IDENTITY.pop(key, (None, None))

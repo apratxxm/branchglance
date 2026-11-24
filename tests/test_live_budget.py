@@ -147,10 +147,10 @@ def test_live_host_link_is_display_only_and_is_removed(claude_live, monkeypatch)
     monkeypatch.setattr(t3_projection, "poll", lambda *args, **kwargs: t3_projection._publish(edges))
     live = providers.live_state()
     assert live["graph"]["edges"]["Claude:child"] is None
-    assert live["hostEdges"]["Claude:child"] == "Claude:parent"
+    assert live["hostOverlay"]["edges"]["Claude:child"] == "Claude:parent"
     assert not providers._LIVE_INDEX["Claude:child"].get("parentId")
     edges.clear()
-    assert providers.live_state()["hostEdges"] == {}
+    assert providers.live_state()["hostOverlay"]["edges"] == {}
 
 
 def test_full_and_live_publish_same_overlay_with_different_rosters(claude_live, monkeypatch):
@@ -166,7 +166,7 @@ def test_full_and_live_publish_same_overlay_with_different_rosters(claude_live, 
     full = providers.build_snapshot()
     claude_live.index([claude_live.add("child", 60)])
     live = providers.live_state()
-    assert full["hostEdges"] == live["hostEdges"] == {"Claude:child": "Claude:parent"}
+    assert full["hostOverlay"]["edges"] == live["hostOverlay"]["edges"] == {"Claude:child": "Claude:parent"}
     assert {row["id"] for row in live["chats"]} == {"child"}
     assert full["graph"]["edges"]["Claude:child"] is None
     assert live["graph"]["edges"]["Claude:child"] is None
@@ -180,8 +180,33 @@ def test_both_off_never_invokes_t3_reader(monkeypatch):
     monkeypatch.setattr(providers, "POLICIES", load_policies({
         "TOKEN_TRACKER_CLAUDE_COLLECT": "false", "TOKEN_TRACKER_CODEX_COLLECT": "false"}))
     monkeypatch.setattr(t3_projection, "poll", lambda *args, **kwargs: pytest.fail("T3 reader invoked"))
-    assert providers.build_snapshot()["hostEdges"] == {}
-    assert providers.live_state()["hostEdges"] == {}
+    assert providers.build_snapshot()["hostOverlay"]["edges"] == {}
+    assert providers.live_state()["hostOverlay"]["edges"] == {}
+
+
+def test_collect_only_provider_is_excluded_from_both_overlays_and_stamp(claude_live, monkeypatch):
+    from token_tracker import t3_projection
+    monkeypatch.setattr(providers, "ENABLED_PROVIDERS", ("Claude", "Codex"))
+    monkeypatch.setattr(providers, "POLICIES", load_policies({
+        "TOKEN_TRACKER_CLAUDE_COLLECT": "true", "TOKEN_TRACKER_CLAUDE_SHOW": "true",
+        "TOKEN_TRACKER_CODEX_COLLECT": "true", "TOKEN_TRACKER_CODEX_SHOW": "false"}))
+    row = claude_live.add("visible", 60, title="Transcript")
+    calls = []
+    def poll(scope, **kwargs):
+        calls.append(scope)
+        edges = [("Codex:hidden", "Claude:visible")] if "Codex" in scope else []
+        return t3_projection._publish(edges, {"visible": "Overlay"}, scope=scope)._replace(epoch="test", seq=1)
+    monkeypatch.setattr(t3_projection, "poll", poll)
+    monkeypatch.setattr(providers, "_provider_snapshot", lambda factory, name, accent, generation: {
+        "name": name, "connected": True, "chats": [dict(row)] if name == "Claude" else [{"id": "hidden"}], "activity": []})
+    full = providers.build_snapshot()
+    live = providers.live_state()
+    assert calls == [frozenset({"Claude"}), frozenset({"Claude"})]
+    assert full["hostOverlay"] == live["hostOverlay"]
+    assert full["hostOverlay"]["edges"] == {}
+    assert full["hostOverlay"]["titles"] == {"Claude:visible": "Overlay"}
+    assert full["providers"][0]["chats"][0]["title"] == "Transcript"
+    assert full["structureStamp"] == live["structureStamp"]
 
 
 def test_unbudgeted_payload_matches_today_apart_from_the_two_new_keys(claude_live):

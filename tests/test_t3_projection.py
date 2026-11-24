@@ -69,6 +69,7 @@ def test_launch_binding_wins_over_current_provider_and_supports_claude_child():
 def test_missing_native_ambiguous_attempt_and_overflow_fail_closed():
     db = fixture_db()
     assert read_v2(db, "2026-11-21", seed_cap=1) is None
+    assert _read_v2(db, "2026-11-21", allowed={"Claude"}, seed_cap=1) is None
     db.execute(f"UPDATE {P}provider_threads SET payload_json='{{}}' WHERE provider_thread_id='child-binding'")
     assert read_v2(db, "2026-11-21")[0] == []
     db = fixture_db()
@@ -115,6 +116,10 @@ def test_titles_prefer_v2_follow_wal_and_clear_on_archive_rebind_and_deletion(tm
         db.execute("CREATE TABLE provider_session_runtime(thread_id TEXT,provider_name TEXT,resume_cursor_json TEXT)")
         db.execute("INSERT INTO projection_threads VALUES ('old','Old title',NULL,NULL)")
         db.execute("INSERT INTO provider_session_runtime VALUES ('old','claudeAgent',?)", (json.dumps({"resume": PARENT}),))
+    old_writer = sqlite3.connect(old)
+    old_writer.execute("PRAGMA journal_mode=WAL")
+    old_writer.execute("UPDATE projection_threads SET title=title")
+    old_writer.commit()
     assert poll()[1] == {PARENT: "Old title"}
     v2 = root / "statev2.sqlite"
     source = fixture_db()
@@ -125,10 +130,12 @@ def test_titles_prefer_v2_follow_wal_and_clear_on_archive_rebind_and_deletion(tm
         source.backup(db)
     db.close()
     source.close()
-    assert poll()[1] == {PARENT: "Renamed"}
     writer = sqlite3.connect(v2)
     try:
         writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+        writer.commit()
+        assert poll()[1] == {PARENT: "Renamed"}
         writer.execute(f"UPDATE {P}threads SET title='WAL title' WHERE thread_id='parent'")
         writer.commit()
         assert poll()[1] == {PARENT: "WAL title"}
@@ -148,6 +155,7 @@ def test_titles_prefer_v2_follow_wal_and_clear_on_archive_rebind_and_deletion(tm
         writer.close()
     v2.unlink()
     assert poll()[1] == {PARENT: "Old title"}
+    old_writer.close()
     old.unlink()
     assert poll()[1] == {}
 
@@ -165,8 +173,11 @@ def test_reparse_source_rejected_and_transient_connection_keeps_title(tmp_path, 
         db.execute("CREATE TABLE provider_session_runtime(thread_id TEXT,provider_name TEXT,resume_cursor_json TEXT)")
         db.execute("INSERT INTO projection_threads VALUES ('a','Title',NULL,NULL)")
         db.execute("INSERT INTO provider_session_runtime VALUES ('a','claudeAgent',?)", (json.dumps({"resume": PARENT}),))
-    assert poll()[1] == {PARENT: "Title"}
     writer = sqlite3.connect(dbpath, timeout=0.1)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("UPDATE projection_threads SET title=title")
+    writer.commit()
+    assert poll()[1] == {PARENT: "Title"}
     try:
         writer.execute("BEGIN EXCLUSIVE")
         assert poll()[1] == {PARENT: "Title"}
@@ -196,6 +207,16 @@ def projection_file(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture
+def running_projection_file(projection_file):
+    writer = sqlite3.connect(projection_file)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+    writer.commit()
+    yield projection_file
+    writer.close()
+
+
 def test_structure_stamp_tracks_projection_not_sqlite_writes(projection_file, monkeypatch):
     from token_tracker import providers
     def stamp():
@@ -208,6 +229,8 @@ def test_structure_stamp_tracks_projection_not_sqlite_writes(projection_file, mo
     writer = sqlite3.connect(projection_file)
     try:
         writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+        writer.commit()
         poll()
         first = stamp()
         writer.execute(f"UPDATE {P}threads SET updated_at=updated_at || ' ' WHERE thread_id='child'")
@@ -259,7 +282,7 @@ def test_sqlite_family_can_change_during_read(projection_file, monkeypatch, chan
         writer.close()
 
 
-def test_unchanged_read_skips_queries_then_refreshes_and_expires(projection_file, monkeypatch):
+def test_unchanged_read_skips_queries_then_refreshes_and_expires(running_projection_file, monkeypatch):
     now = [100.0]
     monkeypatch.setattr(t3.time, "monotonic", lambda: now[0])
     connect = t3._connect
@@ -273,7 +296,7 @@ def test_unchanged_read_skips_queries_then_refreshes_and_expires(projection_file
     assert poll() == first and len(calls) == 1
     now[0] += 4
     assert poll() == first and len(calls) == 2
-    with sqlite3.connect(projection_file) as writer:
+    with sqlite3.connect(running_projection_file) as writer:
         writer.execute(f"DROP INDEX attempts_thread")
     now[0] += 1
     assert poll() == first
@@ -286,7 +309,7 @@ def test_initial_unavailable_read_obeys_poll_floor(projection_file, monkeypatch)
     calls = []
     monkeypatch.setattr(t3.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(t3, "POLL_SECONDS", 1)
-    def unavailable(path):
+    def unavailable(path, **kwargs):
         calls.append(path)
         raise PermissionError("unavailable")
     monkeypatch.setattr(t3, "_checked_files", unavailable)
@@ -325,7 +348,7 @@ def test_recheck_rejects_main_identity_swap_and_redirected_sources(projection_fi
 
 def test_consent_blocks_path_access_and_denied_provider_payloads(monkeypatch):
     monkeypatch.setattr(t3, "database", lambda: pytest.fail("empty consent touched the filesystem"))
-    assert t3.poll(set()) == t3.EMPTY
+    assert not t3.poll(set()).edges and not t3.poll(set()).titles
     db = fixture_db()
     denied = db.execute(f"SELECT payload_json FROM {P}provider_threads WHERE provider_thread_id='launch'").fetchone()[0]
     payload = t3._payload
@@ -338,8 +361,37 @@ def test_consent_blocks_path_access_and_denied_provider_payloads(monkeypatch):
     db.set_trace_callback(statements.append)
     edges, titles = _read_v2(db, "2026-11-21", allowed={"Claude"})
     assert not edges and titles == {PARENT: "Renamed"}
-    assert any("SELECT title FROM" in statement and "'parent'" in statement for statement in statements)
-    assert not any("SELECT title FROM" in statement and "'child'" in statement for statement in statements)
+    assert any("length(title)" in statement and "'parent'" in statement for statement in statements)
+    assert not any("length(title)" in statement and "'child'" in statement for statement in statements)
+
+
+def test_sql_never_returns_denied_bindings_or_oversized_values():
+    db = fixture_db()
+    db.execute(f"UPDATE {P}provider_threads SET provider_thread_id='denied-binding', provider_instance_id='denied-instance' WHERE provider_thread_id='launch'")
+    db.execute(f"UPDATE {P}run_attempts SET provider_thread_id='denied-binding', provider_instance_id='denied-instance'")
+    db.execute(f"UPDATE {P}provider_threads SET payload_json=? WHERE provider_thread_id='child-binding'", ("x" * 70000,))
+    seen = []
+    class Cursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+        def fetchall(self):
+            rows = self.cursor.fetchall()
+            seen.extend(value for row in rows for value in row)
+            return rows
+        def fetchone(self):
+            row = self.cursor.fetchone()
+            if row:
+                seen.extend(row)
+            return row
+    class Traced:
+        def execute(self, sql, args=()):
+            return Cursor(db.execute(sql, args))
+    edges, titles = _read_v2(Traced(), "2026-11-21", allowed={"Codex"})
+    assert not edges and not titles
+    assert "denied-binding" not in seen and "denied-instance" not in seen
+    seen.clear()
+    _read_v2(Traced(), "2026-11-21", allowed=SCOPE)
+    assert not any(isinstance(value, str) and len(value) > 65536 for value in seen)
 
 
 def test_publication_is_immutable_normalized_and_cycle_order_independent():
@@ -354,18 +406,15 @@ def test_publication_is_immutable_normalized_and_cycle_order_independent():
         first.edges = ()
 
 
-def test_stale_title_filter_is_per_caller():
-    from token_tracker.claude_provider import _apply_t3_titles
+def test_overlay_titles_are_immutable_per_caller():
     projection = t3._publish(titles={PARENT: "Parent", CHILD: "Child"})
-    narrow = [{"id": PARENT, "title": "Transcript"}]
-    wide = [{"id": PARENT, "title": "Transcript"}, {"id": CHILD, "title": "Transcript"}]
-    _apply_t3_titles(narrow, projection)
-    _apply_t3_titles(wide, projection)
-    assert [row["title"] for row in wide] == ["Parent", "Child"]
+    narrow = projection.overlay()
+    narrow["titles"].pop(f"Claude:{CHILD}")
+    assert projection.overlay()["titles"][f"Claude:{CHILD}"] == "Child"
     assert len(projection.titles) == 2
 
 
-def test_poll_owner_contention_is_nonblocking_and_scope_isolated(projection_file, monkeypatch):
+def test_poll_owner_contention_is_nonblocking_and_scope_isolated(running_projection_file, monkeypatch):
     monkeypatch.setattr(t3, "POLL_SECONDS", 0)
     ready, release = threading.Event(), threading.Event()
     original = t3._connect
@@ -387,14 +436,15 @@ def test_poll_owner_contention_is_nonblocking_and_scope_isolated(projection_file
     assert not thread.is_alive()
 
 
-def test_immutable_read_never_creates_sidecars(projection_file):
+def test_absent_sidecars_never_create_files_or_read(projection_file, monkeypatch):
+    monkeypatch.setattr(t3, "_connect", lambda *args, **kwargs: pytest.fail("opened without sidecars"))
     assert not Path(str(projection_file) + "-wal").exists()
-    assert t3.poll(SCOPE).edges
+    assert not t3.poll(SCOPE).edges
     assert not Path(str(projection_file) + "-wal").exists()
     assert not Path(str(projection_file) + "-shm").exists()
 
 
-def test_cached_projection_and_digest_are_scoped_to_consent(projection_file):
+def test_cached_projection_and_digest_are_scoped_to_consent(running_projection_file):
     claude = t3.poll({"Claude"})
     codex = t3.poll({"Codex"})
     assert dict(claude.titles) == {PARENT: "Renamed"}
@@ -403,8 +453,98 @@ def test_cached_projection_and_digest_are_scoped_to_consent(projection_file):
     assert claude.digest != codex.digest
 
 
+def test_publication_epoch_and_sequence_follow_scope_policy_and_content(running_projection_file, monkeypatch):
+    monkeypatch.setattr(t3, "MAX_UNCHANGED_SECONDS", 0)
+    first = t3.poll(SCOPE, generation="policy-a")
+    assert first.epoch and first.seq > 0
+    assert t3.poll(SCOPE, generation="policy-a") == first
+    with sqlite3.connect(running_projection_file) as writer:
+        writer.execute(f"UPDATE {P}threads SET title='renamed again' WHERE thread_id='parent'")
+    changed = t3.poll(SCOPE, generation="policy-a")
+    assert changed.epoch == first.epoch and changed.seq == first.seq + 1
+    other = t3.poll(SCOPE, generation="policy-b")
+    assert other.epoch != changed.epoch
+    scoped = t3.poll({"Claude"}, generation="policy-b")
+    assert scoped.epoch != other.epoch
+
+
+def test_deadline_and_cancellation_during_python_parsing_keep_previous(running_projection_file, monkeypatch):
+    monkeypatch.setattr(t3, "MAX_UNCHANGED_SECONDS", 0)
+    first = t3.poll(SCOPE)
+    assert first.edges
+    original = t3._payload
+    def slow(raw):
+        time.sleep(.03)
+        return original(raw)
+    with monkeypatch.context() as m:
+        m.setattr(t3, "_payload", slow)
+        assert t3.poll(SCOPE, live=True) == first
+    calls = [0]
+    def cancelled():
+        calls[0] += 1
+        return calls[0] >= 15
+    assert t3.poll(SCOPE, cancelled=cancelled) == first
+    assert calls[0] >= 15
+
+
+def test_checkpointed_result_survives_absent_sidecars_until_main_changes(projection_file, monkeypatch):
+    writer = sqlite3.connect(projection_file)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+    writer.commit()
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    first = t3.poll(SCOPE)
+    assert first.edges
+    cache = next(iter(t3._CACHE.values()))
+    assert cache["checkpoint"] is not None
+    writer.close()
+    assert not Path(str(projection_file) + "-wal").exists()
+    cache["successful_at"] -= 120
+    monkeypatch.setattr(t3, "_connect", lambda *args, **kwargs: pytest.fail("offline read"))
+    assert t3.poll(SCOPE) == first
+    info = projection_file.stat()
+    os.utime(projection_file, ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+    cleared = t3.poll(SCOPE)
+    assert not cleared.edges and not cleared.titles and cleared.seq == first.seq + 1
+
+
+def test_later_present_sidecars_revoke_checkpoint_retention(projection_file):
+    writer = sqlite3.connect(projection_file)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+    writer.commit()
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    first = t3.poll(SCOPE)
+    assert first.edges and next(iter(t3._CACHE.values()))["checkpoint"] is not None
+    assert t3.poll(SCOPE) == first
+    writer.close()
+    assert not t3.poll(SCOPE).edges
+
+
+def test_one_present_sidecar_revokes_offline_checkpoint(projection_file, monkeypatch):
+    writer = sqlite3.connect(projection_file)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+    writer.commit()
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    first = t3.poll(SCOPE)
+    assert first.edges and next(iter(t3._CACHE.values()))["checkpoint"] is not None
+    writer.close()
+    Path(str(projection_file) + "-shm").touch()
+    monkeypatch.setattr(t3, "_connect", lambda *args, **kwargs: pytest.fail("read with missing WAL"))
+    assert not t3.poll(SCOPE).edges
+
+
+def test_expired_projection_is_cleared_even_when_cancelled(running_projection_file):
+    first = t3.poll(SCOPE)
+    assert first.edges
+    next(iter(t3._CACHE.values()))["successful_at"] -= 61
+    cleared = t3.poll(SCOPE, cancelled=lambda: True)
+    assert not cleared.edges and cleared.seq == first.seq + 1
+
+
 def test_live_connection_uses_short_timeout_and_cancellation(projection_file):
-    db = t3._connect(projection_file, immutable=True, live=True, cancelled=lambda: True)
+    db = t3._connect(projection_file, live=True, cancelled=lambda: True)
     try:
         assert db.execute("PRAGMA busy_timeout").fetchone() == (20,)
         with pytest.raises(sqlite3.OperationalError, match="interrupt"):
@@ -415,7 +555,7 @@ def test_live_connection_uses_short_timeout_and_cancellation(projection_file):
 
 def test_cancelled_poll_does_not_touch_the_source(monkeypatch):
     monkeypatch.setattr(t3, "database", lambda: pytest.fail("cancelled poll accessed T3"))
-    assert t3.poll(SCOPE, cancelled=lambda: True) == t3.EMPTY
+    assert not t3.poll(SCOPE, cancelled=lambda: True).edges
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
@@ -445,14 +585,12 @@ def test_inspection_adds_no_lock_to_the_database_or_its_sidecars(projection_file
         assert_unlocked(projection_file)
         return original(path, **kwargs)
 
-    monkeypatch.setattr(t3, "_connect", checked)
-    assert t3.poll(SCOPE).edges
-    assert_unlocked(projection_file)
-    assert len(checks) == 2
-
     sidecars = [Path(str(projection_file) + suffix) for suffix in ("-wal", "-shm")]
     for sidecar in sidecars:
         sidecar.touch()
+    monkeypatch.setattr(t3, "_connect", checked)
+    assert t3.poll(SCOPE).edges
+    assert_unlocked(projection_file)
     snapshots = t3._checked_files(projection_file)
     for path in (projection_file, *sidecars):
         assert_unlocked(path)
