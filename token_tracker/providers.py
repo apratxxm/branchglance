@@ -3345,7 +3345,8 @@ def _timestamp_epoch(value: Any) -> float | None:
 
 def _fresh_epoch(epoch: float | None, *, now: float | None = None, max_age: int = 150) -> bool:
     current = time.time() if now is None else now
-    return epoch is not None and 0 <= current - epoch <= max_age
+    # datetime.now() rounds to the microsecond, so a stamp can land just after time.time() on the same tick.
+    return epoch is not None and -1e-6 <= current - epoch <= max_age
 
 
 def _costs(totals: dict[str, int], model_totals: dict[str, dict[str, int]], table: dict[str, tuple[float, ...]], claude: bool = False) -> dict[str, Any]:

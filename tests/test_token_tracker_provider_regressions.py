@@ -192,6 +192,16 @@ def test_fresh_epoch_rejects_future_and_expires_after_150_seconds():
     assert not providers._fresh_epoch(now - 150.001, now=now)
 
 
+def test_fresh_epoch_accepts_a_stamp_rounded_up_past_the_same_clock_reading():
+    # 0.6 microseconds into a microsecond: the stamp rounds up, past the clock value it was read from.
+    now = 1795528644.1418656
+    stamp = datetime.fromtimestamp(now, timezone.utc).replace(microsecond=141866).isoformat()
+    epoch = providers._timestamp_epoch(stamp)
+    assert now < epoch < now + 1e-6
+    assert providers._fresh_epoch(epoch, now=now)
+    assert not providers._fresh_epoch(now + 5e-6, now=now)
+
+
 def test_live_index_path_change_keeps_valid_nulls_and_drops_old_epoch(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "_LIVE_INDEX", {})
     old = str(tmp_path / "old.jsonl")
