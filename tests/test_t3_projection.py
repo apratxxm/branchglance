@@ -203,8 +203,9 @@ def projection_file(tmp_path, monkeypatch):
     source.execute(f"UPDATE {P}threads SET updated_at=?", (datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),))
     source.execute(f"UPDATE {P}threads SET active_provider_thread_id='launch' WHERE thread_id='parent'")
     source.commit()
-    with sqlite3.connect(path) as target:
-        source.backup(target)
+    target = sqlite3.connect(path)
+    source.backup(target)
+    target.close()  # an open connection would lock the file this fixture hands out
     source.close()
     return path
 
