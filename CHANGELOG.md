@@ -15,6 +15,7 @@ Planned as 0.2.0.
 - Settings has a Report a bug section that previews a privacy-filtered debug report to copy into a GitHub issue. Nothing is sent automatically. From a source checkout, `--debug-report` writes the same report to a file.
 - A resumed Codex thread shows a ↻N badge after two or more resumes.
 - A separate Claude Code chat started from another Claude chat (for example with `claude -p`) nests under that chat when its process chain proves the parent. Agents started from a Codex thread stay top-level until Codex's per-thread environment can be verified.
+- Chats that T3 Code started from another chat nest under it, across Codex and Claude. The links and T3's Claude titles are display-only: they are never stored, and pins, replies and limits still follow each provider's own chats.
 - Runs whose process is verified to have exited show a muted **Stopped** instead of "Status unknown".
 - Settings opens in its own window.
 - Prices for GPT-6.2 Sol, GPT-6.2 Astra (with its long-context rule) and Claude Fable 5.2. Claude Haiku 5.5 requests over 100K prompt tokens are priced at the long-prompt rate.
@@ -54,6 +55,9 @@ Planned as 0.2.0.
 - A rejected settings change (feature, status-line or greeting request) gets its error response instead of a dropped connection.
 - The widget no longer settles at a stale height when the chat list opens.
 - The usage ledger no longer re-reads growing transcripts from the start on every new line; exact verification runs once a file goes quiet. Cold start reads about half as much data as before.
+- The first build after a start is faster: command and patch text is found by jumping between tokens (19% less time on a 3.4 GB history), and the token pass parses only lines that can matter (a further 10%).
+- Idle ledger passes read their cursors in bulk, and a pass that keeps conflicting falls back to reading each source alone.
+- A busy machine no longer refuses some of a page's requests: the server queues 128 pending connections instead of 5.
 - A locked integrity check no longer quarantines a healthy usage ledger.
 - A slow memory leak in the widget is fixed.
 

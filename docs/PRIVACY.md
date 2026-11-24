@@ -7,6 +7,7 @@ Branchglance runs on your machine. A local loopback HTTP server serves its UI. T
 | Source | When |
 |---|---|
 | Codex session data and the local Codex app server (chats, subagents, limits) | Always, if Codex is installed |
+| T3 Code's local database, opened read-only (which chat started which, and Claude chat titles) | Only while T3 Code is installed, and only for providers you track and show; never stored |
 | Claude Code transcripts and Branchglance's hook events | Only after you turn on Claude tracking |
 | The usage cache Claude Code keeps in `~/.claude.json` | Only after you turn on Claude tracking |
 | Claude Code's OAuth token in `.credentials.json` (see below) | Only when both Claude tracking and live usage are enabled, and only while Claude Code is signed in |
