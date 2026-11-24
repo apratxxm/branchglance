@@ -2425,7 +2425,9 @@ function liveIdentity(item) {
 }
 // Overlay ordering is independent of full/live response completion times.
 let acceptedHostOverlay=null;
-let hostOverlayRequestCounter=0,acceptedHostOverlayRequest=0;
+// A request issued after a server was first seen reaches that server or a later one.
+// Anything issued before may still be answered by the server it replaced.
+let hostOverlayRequestCounter=0,hostOverlayInstanceBarrier=0;
 const nextHostOverlayRequest=()=>++hostOverlayRequestCounter;
 function acceptHostOverlay(incoming,requestOrder) {
   const current=acceptedHostOverlay;
@@ -2434,10 +2436,10 @@ function acceptHostOverlay(incoming,requestOrder) {
      !incoming.edges||typeof incoming.edges!=='object'||Array.isArray(incoming.edges)||!incoming.titles||typeof incoming.titles!=='object'||Array.isArray(incoming.titles))return false;
   if(current&&(incoming.instance===current.instance
     ? incoming.generation<current.generation||(incoming.generation===current.generation&&incoming.seq<current.seq)
-    : requestOrder<=acceptedHostOverlayRequest))return false;
+    : requestOrder<=hostOverlayInstanceBarrier))return false;
   const changed=JSON.stringify(incoming)!==JSON.stringify(current);
   acceptedHostOverlay={instance:incoming.instance,generation:incoming.generation,seq:incoming.seq,edges:{...incoming.edges},titles:{...incoming.titles}};
-  acceptedHostOverlayRequest=requestOrder;
+  if(current?.instance!==incoming.instance)hostOverlayInstanceBarrier=hostOverlayRequestCounter;
   return changed;
 }
 // Overlay seconds-fresh activity/state from /api/live onto the last full snapshot.

@@ -194,6 +194,20 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.equal(forest.rows.find(row=>row.key==='Claude:anchor').treeParentKey,'Claude:grand');
 }
 
+// The order in which requests were issued does not prove which server answered them.
+{
+  const {T}=boot();
+  const old={instance:'old-process',generation:3,seq:8,edges:{},titles:{'Claude:old':'Old title'}};
+  const denial={instance:'new-process',generation:1,seq:0,edges:{},titles:{}};
+  const live=T.nextHostOverlayRequest(),full=T.nextHostOverlayRequest();
+  assert.equal(T.acceptHostOverlay(denial,live),true,'the earlier request reached the new server');
+  assert.equal(T.acceptHostOverlay(old,full),false,'a later request answered by the old server is rejected');
+  assert.equal(T.acceptHostOverlay({...denial,seq:1},full),true,'the accepted server is never blocked');
+  assert.equal(Object.keys(T.getAcceptedHostOverlay().titles).length,0);
+  assert.equal(T.acceptHostOverlay({instance:'third',generation:1,seq:0,edges:{},titles:{}},T.nextHostOverlayRequest()),true);
+  assert.equal(T.acceptHostOverlay(denial,full),false,'a replaced server cannot return');
+}
+
 // Request IDs are assigned when the real full/live fetches start, not when they finish.
 for(const previouslySeen of [false,true]){
   const {T,context}=boot();

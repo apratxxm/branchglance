@@ -135,18 +135,22 @@ def database() -> Path:
     return v2
 
 
+class _SourceRejected(OSError):
+    """The source is conclusively not T3's own database, unlike a transient failure."""
+
+
 def _checked_files(path: Path, *, check=lambda: None) -> list[tuple[Path, Any]]:
     """Match local-source redirection and identity checks; host links are display-only."""
     expected = Path.home() / ".t3" / "userdata"
     if path.parent != expected or path.name not in {"state.sqlite", "statev2.sqlite"}:
-        raise OSError("unexpected T3 database path")
+        raise _SourceRejected("unexpected T3 database path")
     claude_hook_install._validate_path_chain(path)
     directories = []
     for directory in (expected.parent, expected):
         check()
         info = directory.lstat()
         if product.info_is_reparse(info) or not stat.S_ISDIR(info.st_mode):
-            raise OSError("redirected T3 directory")
+            raise _SourceRejected("redirected T3 directory")
         directories.append((directory, info))
     snapshots = directories
     for item in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
@@ -159,7 +163,7 @@ def _checked_files(path: Path, *, check=lambda: None) -> list[tuple[Path, Any]]:
             snapshots.append((item, None))
             continue
         if product.info_is_reparse(before) or not stat.S_ISREG(before.st_mode):
-            raise OSError("redirected T3 file")
+            raise _SourceRejected("redirected T3 file")
         snapshots.append((item, before))
     return snapshots
 
@@ -331,8 +335,13 @@ def poll(allowed: frozenset[str] | set[str], *, generation: str = "", path: Path
     except FileNotFoundError:
         cache.update(identity=None, bindings={}, stamps=None, successful_at=None, checkpoint=None, offline=False)
         output = _set_result(cache, _publish(scope=scope))
-    except (_Deadline, sqlite3.Error, OSError, ValueError, claude_hook_install.HookInstallError):
-        if not cache["offline"] and cache["successful_at"] is not None and time.monotonic() - cache["successful_at"] >= MAX_STALE_SECONDS:
+    except (_Deadline, sqlite3.Error, OSError, ValueError, claude_hook_install.HookInstallError) as exc:
+        # A path-chain error with a cause could not be checked; without one it was refused.
+        if (isinstance(exc, _SourceRejected)
+                or isinstance(exc, claude_hook_install.HookInstallError) and exc.__cause__ is None):
+            cache.update(identity=None, bindings={}, stamps=None, successful_at=None, checkpoint=None, offline=False)
+            output = _set_result(cache, _publish(scope=scope))
+        elif not cache["offline"] and cache["successful_at"] is not None and time.monotonic() - cache["successful_at"] >= MAX_STALE_SECONDS:
             cache.update(bindings={}, stamps=None, successful_at=None, checkpoint=None)
             output = _set_result(cache, _publish(scope=scope))
     finally:

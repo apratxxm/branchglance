@@ -650,3 +650,50 @@ def test_inspection_adds_no_lock_to_the_database_or_its_sidecars(projection_file
     t3._recheck(snapshots)
     for path in (projection_file, *sidecars):
         assert_unlocked(path)
+
+
+def _verified_offline(projection_file):
+    writer = sqlite3.connect(projection_file)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute(f"UPDATE {P}threads SET title=title WHERE thread_id='parent'")
+    writer.commit()
+    writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    first = t3.poll(SCOPE)
+    writer.close()
+    assert first.edges and t3.poll(SCOPE) == first
+    assert next(iter(t3._CACHE.values()))["offline"] is True
+    return first
+
+
+@pytest.mark.parametrize("raises", [
+    lambda: t3._SourceRejected("redirected T3 file"),
+    lambda: t3.claude_hook_install.HookInstallError("settings path contains a symlink or reparse point"),
+])
+def test_owner_drops_an_offline_checkpoint_when_the_source_is_rejected(projection_file, monkeypatch, raises):
+    first = _verified_offline(projection_file)
+    def rejected(*args, **kwargs):
+        raise raises()
+    monkeypatch.setattr(t3, "_checked_files", rejected)
+    cleared = t3.poll(SCOPE)
+    assert not cleared.edges and not cleared.titles and cleared.seq == first.seq + 1
+
+
+def test_owner_keeps_an_offline_checkpoint_on_a_transient_failure(projection_file, monkeypatch):
+    first = _verified_offline(projection_file)
+    next(iter(t3._CACHE.values()))["successful_at"] -= 120
+    def unreadable(*args, **kwargs):
+        raise t3.claude_hook_install.HookInstallError("cannot validate settings path chain") from PermissionError()
+    monkeypatch.setattr(t3, "_checked_files", unreadable)
+    assert t3.poll(SCOPE) == first
+    monkeypatch.setattr(t3, "_checked_files", lambda *a, **k: (_ for _ in ()).throw(PermissionError()))
+    assert t3.poll(SCOPE) == first
+
+
+def test_redirected_database_file_is_rejected_conclusively(projection_file, monkeypatch):
+    _verified_offline(projection_file)
+    real = t3.product.info_is_reparse
+    monkeypatch.setattr(t3.product, "info_is_reparse", lambda info: True)
+    with pytest.raises((t3._SourceRejected, t3.claude_hook_install.HookInstallError)):
+        t3._checked_files(projection_file)
+    assert not t3.poll(SCOPE).edges
+    monkeypatch.setattr(t3.product, "info_is_reparse", real)
