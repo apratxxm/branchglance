@@ -642,8 +642,8 @@ async function selectMonitor(id){
 }
 const safeNumber = value => value == null || value === "" || typeof value === "boolean" ? null : Number.isFinite(Number(value)) ? Number(value) : null;
 const fmt = value => safeNumber(value) == null ? "—" : compact.format(Number(value));
-const money = value => { const n=safeNumber(value); return n==null ? "—" : "$"+(n>=1000 ? compact.format(n) : n>=100 ? Math.round(n) : n.toFixed(n>=10?1:2)); };
-const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[char]);
+const money = value => { const n=safeNumber(value); return n==null ? "—" : "$"+(n>=1000 ? compact.format(n) : n.toFixed(2)); };
+const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
 const stamp = value => typeof value==="number" ? (value<1e12?value*1000:value) : Number.isFinite(Date.parse(value)) ? Date.parse(value) : 0;
 const keyOf = chat => chat.provider + ":" + chat.id;
 const treeParentKey = chat => Object.prototype.hasOwnProperty.call(chat||{},"treeParentKey") ? (typeof chat.treeParentKey==="string"&&chat.treeParentKey?chat.treeParentKey:null) : chat?.parentId!=null ? chat.provider+":"+chat.parentId : null;
@@ -1632,6 +1632,10 @@ function runwayTelemetryHTML(chat,agent=false) {
     const treeAnchor='<span data-runway-slot="tree-anchor" class="runway-name-status runway-refined-tree-anchor t-'+tone+'" aria-hidden="true">'+(status?runwayStatusDot(status,tone):'')+'</span>';
     const elapsedTarget=ownCurrent||chat.retainedRun===true?chat:waitingTarget;
     const elapsed=currentEvidence&&elapsedTarget&&!statusUnavailable?runwayStateElapsed(elapsedTarget):'';
+    // Subagents: the name dot carries the status, so the status column shows the timer in the dot's tone instead of a word.
+    // A waiting subagent's timer stays the control that opens its question.
+    const agentElapsedHTML=elapsed?'<span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed)+'</span>':'';
+    const agentStateContent=status==='Waiting'&&waitingTarget?'<button class="runway-waiting-link runway-status-timer" data-action="runway-question" data-key="'+esc(waitingTarget.key)+'" aria-label="'+esc(waitingLabel)+'" title="'+(isCodexChat(waitingTarget)?'Open this waiting chat':'Show the pending question')+'">'+(agentElapsedHTML||'Waiting')+'</button>':agentElapsedHTML?'<span class="runway-status-timer" title="'+esc(status)+'">'+agentElapsedHTML+'</span>':'';
     const request=chat.lastRequest||chat.latestRequest||{},input=safeNumber(request.input),cached=safeNumber(request.cached);
     const cachePercent=currentEvidence&&!chat.telemetryUnavailable&&!chat.metricsUnavailable&&input>0&&cached!=null?Math.round(cached*100/input):null;
     const workspace=chat.workspace||chat.root?.workspace,workspacePath=runwayWorkspacePath(workspace),workspaceLeaf=runwayWorkspaceLeaf(workspace);
@@ -1644,12 +1648,12 @@ function runwayTelemetryHTML(chat,agent=false) {
     const cleanPath=workspacePath&&leaf?'<span data-runway-slot="workspace" class="runway-workspace" title="'+esc(workspaceTitle)+'" aria-label="'+esc(workspaceLabel)+'"><span class="runway-path-leaf">'+esc(drive&&!runwayScratch(chat,workspacePath)?drive+' ':'')+esc(leaf)+'</span></span>':'';
     const contextValue=context?'<span data-runway-slot="context" class="runway-refined-context">'+context+'</span>':'';
     const cacheValue=cachePercent==null?'':'<span data-runway-slot="cache" class="runway-refined-cache">Cache '+cachePercent+'%</span>';
-    // The status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
-    const visibleActivityHTML=status&&/^(?:Compacting|Waiting for input|Subagents running)$/.test(activityHTML.replace(/<[^>]*>/g,''))?'':activityHTML;
+    // A root's status column already says Compacting / Waiting / Agents running; don't repeat it as activity.
+    const visibleActivityHTML=!agent&&status&&['Compacting','Waiting for input','Subagents running'].some(label=>activityHTML===runwayActivityMarkup(label))?'':activityHTML;
     // Never a silent blank: an active run without a usable sample shows a quiet dash.
     const awaitingSample=!contextValue&&!cacheValue&&ownCurrent&&currentEvidence&&!chat.telemetryUnavailable;
     const tokenPlaceholder=awaitingSample?'<span class="runway-refined-context t-mute" title="No usable context sample yet for this run">—</span>':'';
-     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span><span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span><span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+stateContent+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+(agent?'':cleanPath)+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+tokenPlaceholder+'</span></div>';
+     return '<div class="runway-refined-row" data-runway-slot="row">'+treeAnchor+'<span class="runway-refined-title">'+titleHTML+modelHTML+'</span>'+(agent?'':'<span data-runway-slot="timing" class="runway-refined-timing"><span data-runway-slot="elapsed" class="runway-refined-elapsed">'+esc(elapsed||'')+'</span></span>')+'<span data-runway-slot="status" class="runway-refined-status t-'+tone+'" data-own-waiting="'+runwayWaiting(chat)+'" data-child-waiting="'+childWaiting+'">'+(agent?agentStateContent:stateContent)+'</span><span data-runway-slot="activity-column" class="runway-refined-activity">'+visibleActivityHTML+'</span><span data-runway-slot="path-column" class="runway-refined-path">'+(agent?'':cleanPath)+'</span><span data-runway-slot="tokens" class="runway-refined-tokens">'+contextValue+cacheValue+tokenPlaceholder+'</span></div>';
   }
 }
 

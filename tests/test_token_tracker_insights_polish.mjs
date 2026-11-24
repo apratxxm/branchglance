@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+// Visible text of rendered markup (test helper; drops everything between < and >).
+const visibleText=(html)=>{let out="",depth=0;for(const ch of String(html)){if(ch==="<")depth+=1;else if(ch===">"&&depth)depth-=1;else if(!depth)out+=ch;}return out;};
 
 const root=new URL("../token_tracker/static/",import.meta.url);
 const source=fs.readFileSync(new URL("dashboard.js",root),"utf8");
@@ -391,7 +393,7 @@ assert.match(realScale,/columnheader" title="[^"]+">Other<\/span>/,"the Other ki
 assert.match(realScale,/<span role="rowheader" class="dash-model-name other" title="6 models folded"><i><\/i>Other \(6\)<\/span>/,"O402 keeps the folded By work label short and exposes the folded count in its title");
 assert.match(realScale,/title="603,400,000 tokens"[\s\S]*603M/ ,"real-scale values use three significant digits while exact tokens stay in each title");
 for(const formatted of ["603M","87.1M","1.30B","968M","15.6M","456M","681M"]){assert.match(realScale,new RegExp(`>${formatted}<`),`real-scale value compacts to ${formatted}`);}
-const visibleWorkCells=[...realScale.matchAll(/<span role="cell"[^>]*>([\s\S]*?)<\/span>/g)].map(([,html])=>html.replace(/<span class="sr-only">[\s\S]*/,"").replace(/<[^>]+>/g,"").replace(/[<>]/g,"").trim());
+const visibleWorkCells=[...realScale.matchAll(/<span role="cell"[^>]*>([\s\S]*?)<\/span>/g)].map(([,html])=>visibleText(html.replace(/<span class="sr-only">[\s\S]*/,"")).trim());
 assert.ok(visibleWorkCells.length>0,"real-scale fixture renders work cells");
 assert.ok(visibleWorkCells.every(value=>value.length<=5),`every visible real-scale work-cell figure fits in five characters: ${visibleWorkCells.filter(value=>value.length>5).join(", ")}`);
 assert.match(realScale,/<div class="dash-work-note is-qualified"[^>]*><strong>Partial<\/strong> · 3 gaps<\/div>/,"partial coverage copy stays intact with only Partial bold");

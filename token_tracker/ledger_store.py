@@ -223,6 +223,18 @@ def load_source(conn: sqlite3.Connection, provider: str, path_key: str) -> dict[
     return {"generation": row[0], "byte_offset": row[1], "head_key": row[2], "state": json.loads(row[3])}
 
 
+def load_sources(conn: sqlite3.Connection, providers: list[str],
+                 identities: set[tuple[str, str]]) -> dict[tuple[str, str], dict[str, Any] | None]:
+    if not providers:
+        return {}
+    placeholders = ",".join("?" for _ in providers)
+    rows = conn.execute(f"SELECT provider, path_key, generation, byte_offset, head_key, state FROM sources "
+                        f"WHERE provider IN ({placeholders})", providers)
+    return {(row[0], row[1]): {"generation": row[2], "byte_offset": row[3],
+                               "head_key": row[4], "state": json.loads(row[5])}
+            for row in rows if (row[0], row[1]) in identities}
+
+
 def save_source(conn: sqlite3.Connection, provider: str, path_key: str, *, generation: int, byte_offset: int,
                 head_key: str | None, state: Mapping[str, Any]) -> None:
     conn.execute("INSERT INTO sources(provider, path_key, generation, byte_offset, head_key, state) "

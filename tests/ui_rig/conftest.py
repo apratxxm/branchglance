@@ -24,6 +24,10 @@ def pytest_collection_modifyitems(items):
                 item.add_marker(skip)
 
 
+class RigServer(ThreadingHTTPServer):
+    request_queue_size = 128  # as the application server; the default of 5 refuses connections on a busy runner
+
+
 class RigHandler(Handler):
     def do_GET(self):
         if self.path == "/favicon.ico":
@@ -51,7 +55,7 @@ def server():
         "/api/statusline": {"ok": True, "connected": False},
         "/api/debug-report": {"report": "Fictional debug report"},
     })
-    http = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(RigHandler, responses=responses))
+    http = RigServer(("127.0.0.1", 0), functools.partial(RigHandler, responses=responses))
     thread = threading.Thread(target=http.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{http.server_port}"

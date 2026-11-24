@@ -451,7 +451,7 @@ class _StartupCancelled(Exception):
 HTTP_HOST = "127.0.0.1"
 _INSTANCE_HANDLE = None
 HTTP_PORT = 8765
-CONTROL_PORT = 8766
+CONTROL_PORT = product.CONTROL_PORT
 # A just-closed instance can leave the listening ports unavailable for a moment
 # (TIME_WAIT); retry a bounded number of times, then fail visibly.
 BIND_RETRY_ATTEMPTS = 20
