@@ -1072,6 +1072,21 @@ _STALE_PRE_READ_STAT = object()
 _TOKEN_EVENT_NEEDLES = (b"total_token_usage", b"turn_context", b"session_meta")
 
 
+def _token_line_is_inert(line: bytes) -> bool:
+    """True when a complete line cannot change a token pass.
+
+    Only three record kinds matter there. A unicode escape or invalid UTF-8 (dropped
+    on decode) could hide a key, and a failed check proves nothing: parse those.
+    """
+    if b"\\u" in line or any(needle in line for needle in _TOKEN_EVENT_NEEDLES):
+        return False
+    try:
+        line.decode("utf-8")
+    except (UnicodeDecodeError, MemoryError):
+        return False
+    return True
+
+
 def _incremental_jsonl_reduce_locked(key: tuple[str, str], path: Path, initial_state: Any,
                                      reduce_record: Any, project: Any, fingerprint_extra: Any,
                                      unavailable: Any, before: tuple[int, int, int, int, int],
@@ -4042,15 +4057,8 @@ class CodexProvider:
                         parse_line(line, committed=False)
                         break
                     consumed += len(line)
-                    # Only these record kinds change the result. A \u escape or
-                    # invalid UTF-8 could hide a key, so those lines are parsed.
-                    if b"\\u" not in line and not any(needle in line for needle in _TOKEN_EVENT_NEEDLES):
-                        try:
-                            line.decode("utf-8")
-                        except UnicodeDecodeError:
-                            pass
-                        else:
-                            continue
+                    if _token_line_is_inert(line):
+                        continue
                     model, started = parse_line(line, committed=True)
                     complete_rows = len(events._rows)
                 return model, started, consumed, complete_rows, digest_before(handle, consumed)

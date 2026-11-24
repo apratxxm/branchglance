@@ -123,3 +123,20 @@ def test_resumed_token_read_lands_on_the_same_offsets(tmp_path):
         resumed = providers.CodexProvider._token_events(path)
     point = resumed._checkpoint
     assert (list(resumed), point.offset, point.complete_rows, point.model, point.started, point.digest) == _token_result(path)
+
+
+def test_a_line_that_cannot_be_checked_is_parsed():
+    class Unchecked(bytes):
+        def decode(self, *args, **kwargs):
+            raise MemoryError
+
+    assert providers._token_line_is_inert(b'{"type":"response_item"}\n')
+    assert not providers._token_line_is_inert(Unchecked(b'{"type":"response_item"}\n'))
+
+
+def test_too_deeply_nested_irrelevant_line_does_not_abort_the_read(tmp_path):
+    lines = _adversarial_transcript()
+    path = tmp_path / "rollout.jsonl"
+    path.write_bytes(lines[1] + b"[" * 200_000 + b"\n" + lines[2] + b"\n")
+    events, offset = _token_result(path)[:2]
+    assert len(events) == 1 and offset == path.stat().st_size
