@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+// Visible text of rendered markup (test helper; drops everything between < and >).
+const visibleText=(html)=>{let out="",depth=0;for(const ch of String(html)){if(ch==="<")depth+=1;else if(ch===">"&&depth)depth-=1;else if(!depth)out+=ch;}return out;};
 
 const source=fs.readFileSync(new URL("../token_tracker/static/dashboard.js",import.meta.url),"utf8");
 const settingsCss=fs.readFileSync(new URL("../token_tracker/static/dashboard.css",import.meta.url),"utf8");
@@ -427,7 +429,7 @@ const trusted=dashboard.state.insights;
 context.fetch=async()=>({ok:false});
 await dashboard.loadInsights();
 assert.equal(dashboard.state.insights,trusted);
-assert.match(dashboard.insightsHTML().replace(/<[^>]+>/g,"").replace(/[<>]/g,""),/Update failed\. Use Refresh to retry\./,"full render carries the retry hint when no timestamp is available");assert.match(dashboard.insightsHTML(),/<span class="dash-fail">Update failed<\/span>/,"the failure name is marked for strong neutral error styling");
+assert.match(visibleText(dashboard.insightsHTML()),/Update failed\. Use Refresh to retry\./,"full render carries the retry hint when no timestamp is available");assert.match(dashboard.insightsHTML(),/<span class="dash-fail">Update failed<\/span>/,"the failure name is marked for strong neutral error styling");
 assert.match(dashboard.statusText(),/^Update failed\. Use Refresh to retry\./,"status-line path carries the same retry hint");
 // Initial cached snapshot remains visibly marked as fallback after a failed request.
 dashboard.state.insights=null;dashboard.state.snapshot={providers:[{name:"Cached",tracked31Days:7,activity:[]}]};

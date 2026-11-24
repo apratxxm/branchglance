@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import platform
 import subprocess
 import sys
@@ -98,5 +97,3 @@ def current_host() -> HostInfo:
                     tuple(webview), elevated)
 
 
-def is_windows_reparse(path: Path) -> bool:
-    return bool(path.lstat().st_file_attributes & 0x400)

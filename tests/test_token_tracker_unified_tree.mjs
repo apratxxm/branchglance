@@ -43,8 +43,10 @@ const claudeParent={id:"op",key:"Claude:op",parentKey:null,title:"Branchglance l
   assert.equal(child.key,stopped.key);
   assert.equal(T.runInfo(child).seconds,120);
   const markup=T.runwayTelemetryHTML(child,true);
-  assert.match(markup,/Stopped/);
-  for(const slot of ['timing','path-column','tokens'])assert.ok(markup.includes('data-runway-slot="'+slot+'"'));
+  assert.match(markup,/runway-status-dot[^>]*aria-label="Stopped"/);
+  assert.match(markup,/runway-refined-status t-mute"[^>]*><span class="runway-status-timer" title="Stopped"><span data-runway-slot="elapsed" class="runway-refined-elapsed">2m 00s/,'a retained child shows its stopped duration where the status word was');
+  for(const slot of ['status','elapsed','path-column','tokens'])assert.ok(markup.includes('data-runway-slot="'+slot+'"'),slot);
+  assert.ok(!markup.includes('data-runway-slot="timing"'),'the child name takes the timing column');
 }
 
 {
@@ -133,8 +135,11 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const rendered=[T.state.forest.roots[0],...T.state.forest.roots[0].descendants].map((chat,index)=>index===0?T.rowHTML(chat):T.runwayTelemetryHTML(chat,true));
   const slotOrder=markup=>[...markup.matchAll(/data-runway-slot="(timing|status|activity-column|path-column|tokens)"/g)].map(([,slot])=>slot);
   assert.deepEqual(slotOrder(rendered[0]),['timing','status','activity-column','path-column','tokens']);
-  assert.ok(rendered.slice(1).every(markup=>JSON.stringify(slotOrder(markup))===JSON.stringify(slotOrder(rendered[0]))),
-    'parent and nested child rows share the same information columns');
+  // Children drop only the timing column (their timer sits in the status column, where the name dot's state word was).
+  assert.ok(rendered.slice(1).every(markup=>JSON.stringify(slotOrder(markup))===JSON.stringify(['status','activity-column','path-column','tokens'])),
+    'nested child rows keep the status, activity, path and token columns of their parent');
+  assert.ok(rendered.slice(1).every(markup=>/data-runway-slot="status"[^>]*><span class="runway-status-timer"[^>]*><span data-runway-slot="elapsed"/.test(markup)),'each running child shows its timer in the status column');
+  assert.match(css,/\.ag\.runway-agent \.runway-refined-title\{grid-column:1\/3;\}/,'the child name takes over the freed timing column');
   for(const [index,markup] of rendered.entries()){
     const activity=markup.match(/data-runway-slot="activity-column"[^>]*>([\s\S]*?)<\/span><span data-runway-slot="path-column"/)?.[1]||'';
     const tokens=markup.match(/data-runway-slot="tokens"[^>]*>([\s\S]*?)<\/span><\/div>/)?.[1]||'';
@@ -146,7 +151,12 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
     assert.ok(tokens.indexOf('ctx-tokens')<tokens.indexOf('Cache 98%'),'tokens stay above the muted cache line');
     if(index===0) assert.match(markup,/runway-path-leaf">A: orchestrator/);
     else assert.match(markup,/data-runway-slot="path-column" class="runway-refined-path"><\/span>/);
-    assert.equal(markup.match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1],'Running');
+    if(index===0) assert.equal(markup.match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1],'Running');
+    else {
+      assert.doesNotMatch(markup,/runway-state-word/,`row ${index} shows its state by its dot only`);
+      assert.match(markup,/runway-status-dot[^>]*aria-label="Running"/,`row ${index} keeps an accessible running dot`);
+      assert.match(markup,/runway-refined-status t-live"[^>]*><span class="runway-status-timer" title="Running">/,`row ${index} timer takes the running tone`);
+    }
     assert.equal((markup.match(/data-runway-slot="cache"/g)||[]).length,1);
   }
 
@@ -168,11 +178,12 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   const waiting={...extra[5],status:'needs-input',executionStatus:'waiting',pendingQuestion:'Choose?',pendingQuestionAt:ago(0)};
   entries=entriesFor(extra.map(a=>a.key===waiting.key?waiting:a));
   assert.ok(keys(entries).includes(waiting.key),'waiting sibling past cap remains visible');
-  assert.match(T.runwayTelemetryHTML(waiting,true),/class="runway-state-word runway-waiting-link"[^>]*>Waiting<\/button>/);
+  assert.match(T.runwayTelemetryHTML(waiting,true),/class="runway-waiting-link runway-status-timer" data-action="runway-question"[^>]*><span data-runway-slot="elapsed"[^>]*>[^<]+<\/span><\/button>/,'a waiting child keeps its question control as its timer');
   const failed={...extra[6],status:'failed',executionStatus:'failed',updatedAt:ago(0)};
   entries=entriesFor(extra.map(a=>a.key===failed.key?failed:a));
   assert.ok(keys(entries).includes(failed.key),'failed child remains visible beyond the ordinary cap');
-  assert.equal(T.runwayTelemetryHTML(failed,true).match(/<span class="runway-state-word"[^>]*>([^<]*)<\/span>/)?.[1], 'Failed');
+  assert.match(T.runwayTelemetryHTML(failed,true),/runway-status-dot[^>]*aria-label="Failed"/,'a failed child is labelled by its dot');
+  assert.doesNotMatch(T.runwayTelemetryHTML(failed,true),/runway-state-word/);
   const waitingGrandchild={...waiting,key:'Codex:question',id:'question',parentKey:extra[5].key,treeParentKey:extra[5].key};
   entries=entriesFor([...extra,waitingGrandchild]);
   assert.ok(keys(entries).includes(extra[5].key)&&keys(entries).includes(waitingGrandchild.key),'actionable descendant preserves ancestor path');
@@ -354,7 +365,10 @@ const graph={revision:7,edges:{"Claude:op":null,"Codex:luna":"Claude:op","Codex:
   assert.ok(template,"the inspect row declares shared tracks");
   assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-row:has\(/,'a child row never switches to its own layout; it keeps the parent single-band tracks');
   assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-row\{[^}]*grid-template-(?:columns|rows):/,'children inherit the exact parent columns and rows');
-  assert.doesNotMatch(css,/\.ag\.runway-agent[^{]*\.runway-refined-(?:title|timing|status|activity|tokens)\{[^}]*grid-(?:column|row):/,'child cells sit in the same column and row as the parent cells');
+  assert.doesNotMatch(css,/\.ag\.runway-agent[^{]*\.runway-refined-(?:timing|status|activity|path|tokens)\{[^}]*grid-(?:column|row):/,'child status, activity, path and token cells sit in the same column and row as the parent cells');
+  // The only child-specific placement: a child has no timing cell (its timer is in the status column), so its name spans the title and timing tracks.
+  const childTitleRules=[...css.matchAll(/\.ag\.runway-agent[^{]*\.runway-refined-title\{([^}]*grid-(?:column|row):[^}]*)\}/g)].map(m=>m[1]);
+  assert.deepEqual(childTitleRules,['grid-column:1/3;'],'the child name takes over exactly the freed timing track');
   assert.doesNotMatch(css,/\.ag\.runway-agent \.runway-refined-timing\{grid-column:4/,'child timing stays in the shared timing column');
   const minimums=[120,46,82,70,80,78],gap=8,padLeft=30,centers=[];let x=padLeft;
   for(const width of minimums){centers.push(x+width/2);x+=width+gap;}

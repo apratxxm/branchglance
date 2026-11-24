@@ -7,9 +7,19 @@ import pytest
 import zstandard
 
 from token_tracker.claude_cache import MAX_BODY, _body, _stream, reset_info, usage_info
+from token_tracker import claude_cache, claude_statusline
 
 NOW = 1_789_315_200
 ORG = "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.mark.parametrize("value, expected", [
+    (0, True), (1.5, True), (True, False), ("1", False),
+    (float("nan"), False), (float("inf"), False), (10**400, False),
+])
+def test_shared_number_validation(value, expected):
+    assert claude_cache._number(value) is expected
+    assert claude_statusline._number(value) is expected
 
 
 def iso(t):

@@ -38,10 +38,6 @@ def _same_file(info: os.stat_result, other: os.stat_result) -> bool:
         other.st_dev, other.st_ino, other.st_size, other.st_mtime_ns, _change_stamp(other))
 
 
-def _info_is_reparse(info: os.stat_result) -> bool:
-    return (stat.S_ISLNK(info.st_mode)
-            or bool(getattr(info, "st_file_attributes", 0)
-                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)))
 
 
 def _validate_policy_path(path: Path) -> None:
@@ -61,7 +57,7 @@ def _read_policy_bytes(path: Path) -> bytes | None:
         return None
     except OSError as exc:
         raise ClaudeCollectionError("Policy file could not be inspected.") from exc
-    if _info_is_reparse(before) or not stat.S_ISREG(before.st_mode):
+    if product.info_is_reparse(before) or not stat.S_ISREG(before.st_mode):
         raise ClaudeCollectionError("Policy file is redirected or is not a regular file.")
     if before.st_size > _MAX_POLICY_BYTES:
         raise ClaudeCollectionError("Policy file is too large to edit safely.")
@@ -72,7 +68,7 @@ def _read_policy_bytes(path: Path) -> bytes | None:
         raise ClaudeCollectionError("Policy file could not be opened safely.") from exc
     try:
         opened = os.fstat(fd)
-        if _info_is_reparse(opened) or not stat.S_ISREG(opened.st_mode) or not _same_file(before, opened):
+        if product.info_is_reparse(opened) or not stat.S_ISREG(opened.st_mode) or not _same_file(before, opened):
             raise ClaudeCollectionError("Policy file changed while being opened.")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             raw = stream.read(_MAX_POLICY_BYTES + 1)
@@ -87,7 +83,7 @@ def _read_policy_bytes(path: Path) -> bytes | None:
         after = path.lstat()
     except OSError as exc:
         raise ClaudeCollectionError("Policy file changed while being read.") from exc
-    if _info_is_reparse(after) or not _same_file(opened, after):
+    if product.info_is_reparse(after) or not _same_file(opened, after):
         raise ClaudeCollectionError("Policy file changed while being read.")
     return raw
 

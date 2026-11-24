@@ -15,7 +15,7 @@
   --quiet:#999; --line:#282828; --blue:#425df6; --blue-soft:#171d34;
   --orange:#ffb454; --orange-soft:#211a10; --red:#ff7777; --red-soft:#251313;
   --green:#85d6a8; --source-accent:#425df6; --source-accent-soft:#171d34; --source-hover:#172638; --source-focus:#9bb0ff;
-  --source-muted:#8490ad; --source-glow-primary:#7040ff; --source-glow-secondary:#425df6;
+  --source-muted:#8490ad; --source-glow-primary:var(--codex); --source-glow-secondary:#425df6;
   --focus:var(--source-focus); --gutter:12px; --ease-standard:cubic-bezier(.16,1,.3,1);
   --motion-fast:110ms; --motion-info:160ms; --motion-panel:200ms; --motion-source:240ms;
   --motion-open-list:240ms; --notch-open-delay:91ms; --notch-open-suppression:331ms;
@@ -28,7 +28,7 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--paper
 body{color:var(--ink);font:13px/1.4 var(--sans);font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
 button,input{font:inherit;color:inherit}
 body{transition:--source-accent var(--motion-source) var(--ease-standard),--source-accent-soft var(--motion-source) var(--ease-standard),--source-hover var(--motion-source) var(--ease-standard),--source-focus var(--motion-source) var(--ease-standard),--source-muted var(--motion-source) var(--ease-standard),--source-glow-primary var(--motion-source) var(--ease-standard),--source-glow-secondary var(--motion-source) var(--ease-standard),--source-edge var(--motion-source) var(--ease-standard),--source-edge-strong var(--motion-source) var(--ease-standard),--source-edge-end var(--motion-source) var(--ease-standard),--blue var(--motion-source) var(--ease-standard),--blue-soft var(--motion-source) var(--ease-standard)}
-body[data-source="Claude"]{--source-accent:#e8813f;--source-accent-soft:#301e17;--source-hover:#3a2319;--source-focus:#ffb98c;--source-muted:#ad826f;--source-glow-primary:#ffb14a;--source-glow-secondary:#d64a2f;--blue:var(--source-accent);--blue-soft:var(--source-accent-soft);--focus:var(--source-focus)}
+body[data-source="Claude"]{--source-accent:var(--claude);--source-accent-soft:#301e17;--source-hover:#3a2319;--source-focus:#ffb98c;--source-muted:#ad826f;--source-glow-primary:#ffb14a;--source-glow-secondary:#d64a2f;--blue:var(--source-accent);--blue-soft:var(--source-accent-soft);--focus:var(--source-focus)}
 body:not(.phone) button{cursor:pointer;transition:transform var(--motion-fast) var(--ease-standard),opacity var(--motion-fast) var(--ease-standard),background-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}
 body:not(.phone) .icon-btn:active,body:not(.phone) .sync-age:active,body:not(.phone) .window-controls button:active,body:not(.phone) .greet:active{transform:scale(.97)}
 button:disabled{cursor:default}
@@ -49,7 +49,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-
 .sync-age{font:11px var(--mono);padding:2px 3px}
 #sync-age{min-width:28px;height:24px;display:inline-grid;place-items:center}
 /* Source switch: two segments in the controls band; the dot marks attention in the unselected source. */
-:root{--claude:#e8813f;--source-dot:#ffd24a}
+:root{--claude:#e8813f;--codex:#7040ff;--source-dot:#ffd24a}
 .source-switch{position:relative;display:inline-flex;align-items:center;flex:none;height:22px;margin:0 2px;padding:1px;border-radius:7px;background:var(--source-accent-soft);isolation:isolate}
 .source-switch::before{content:"";position:absolute;z-index:-1;inset:1px auto 1px 1px;width:calc(50% - 1px);border-radius:6px;background:var(--source-accent-soft);transform:translateX(0);transition:transform var(--motion-source) var(--ease-standard),background-color var(--motion-source) var(--ease-standard)}
 body[data-source="Claude"] .source-switch::before{transform:translateX(100%)}.source-dot{position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--source-dot);opacity:0;transform:scale(.6);transition:opacity var(--motion-info) var(--ease-standard),transform var(--motion-info) var(--ease-standard)}.q-plain{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12px}

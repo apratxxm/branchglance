@@ -4,7 +4,7 @@
   const RANGE_NAME={"24h":"24 hours","7d":"7 days","30d":"30 days",all:"31 days"};
   const RANGE_PREVIOUS={"24h":"previous day","7d":"previous week","30d":"previous 30 days",all:"previous period"};
   const state={open:false,opener:null,tab:"insights",source:"Codex",range:"30d",metric:"cost",snapshot:null,statsSnapshot:null,insights:null,version:0,loadToken:0,policy:null,monitors:[],lock:null,keepOpen:null,inspection:null,inspectionMessage:"",placementError:"",manageError:"",resetAction:null,resetActionThreads:[],resetActionError:false,settingsLoaded:false,settingsBusy:false,frame:null,renderKey:"",settingsRenderKey:"",settingsStatus:"",settingsError:false,planError:"",planDraft:{},debugOpener:null,month:null,monthError:false,monthToken:0,resultRange:null,resultValue:null,loading:false,loadError:false,refreshTimer:null,fadeTimer:null,fadeVersion:0,pendingViewChange:null,togglePending:new Set(),toggleErrors:new Set(),focusPlanPrice:false};
-  const esc=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+  const esc=value => String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
   const waitForBridge=(promise,timeoutMs=10000,message="Native action timed out.")=>{if(typeof setTimeout!=="function")return Promise.resolve(promise);let timer,registering=true;const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{if(registering)return;reject(new Error(message));},timeoutMs);});registering=false;return Promise.race([Promise.resolve(promise),timeout]).finally(()=>{if(typeof clearTimeout==="function")clearTimeout(timer);});};
   const finite=value=>typeof value==="number"&&Number.isFinite(value)?value:null;
   const isRange=value=>Object.prototype.hasOwnProperty.call(RANGE_DAYS,value);
@@ -14,7 +14,7 @@
   const storedRange=()=>{let value=readPref("branchglanceInsightsRange","30d");if(value==="all"){value="30d";writePref("branchglanceInsightsRange",value);}return isRange(value)?value:"30d";};
   const reducedMotion=()=>window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches===true;
   const nfmt=new Intl.NumberFormat("en",{notation:"compact",minimumSignificantDigits:3,maximumSignificantDigits:3});
-  const usd=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2});
+  const usd=new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",minimumFractionDigits:2,maximumFractionDigits:2});
   const number=value=>finite(value)==null?"":Math.abs(value)>=1000?nfmt.format(value):new Intl.NumberFormat("en",{maximumFractionDigits:3}).format(value);
   const money=value=>finite(value)==null?"":usd.format(value);
   const localDate=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;

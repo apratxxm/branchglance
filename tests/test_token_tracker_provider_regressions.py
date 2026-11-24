@@ -36,6 +36,13 @@ def _rollout(path, rows):
     return path
 
 
+def _observed_now():
+    # Whole milliseconds, rounded down: isoformat's microsecond rounding can land past time.time() on the same
+    # clock tick, and a supplied future stamp is rejected by design.
+    now = datetime.now(timezone.utc)
+    return now.replace(microsecond=now.microsecond // 1000 * 1000).isoformat()
+
+
 def test_exec_title_tracks_latest_rollout_message(tmp_path):
     path = _rollout(tmp_path / "rollout.jsonl", [
         _record("session_meta", payload={"source": "exec"}),
@@ -198,7 +205,7 @@ def test_live_index_path_change_keeps_valid_nulls_and_drops_old_epoch(tmp_path, 
     new = str(tmp_path / "new.jsonl")
     providers._index_live_paths([{"name": "Codex", "chats": [{
         "id": "thread", "path": old, "status": "running", "statusSource": "app",
-        "statusObservedAt": datetime.now(timezone.utc).isoformat(), "contextTokens": 40,
+        "statusObservedAt": _observed_now(), "contextTokens": 40,
     }]}])
     providers._index_live_paths([{"name": "Codex", "chats": [{
         "id": "thread", "path": new, "status": "idle", "statusSource": "transcript",

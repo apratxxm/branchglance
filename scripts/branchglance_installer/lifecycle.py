@@ -23,7 +23,6 @@ class MutexAdapter(Protocol):
 class Win32MutexAdapter:
     """Named kernel mutex; caller must acquire and release on the same thread."""
     def acquire(self, name: str, timeout: float) -> tuple[object, str]:
-        from ctypes import wintypes
         from token_tracker import product
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         handle = product.create_secured_mutex(name)
