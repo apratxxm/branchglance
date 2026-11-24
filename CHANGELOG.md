@@ -28,6 +28,8 @@ Planned as 0.2.0.
 - A Codex job nests under a Claude chat only when its parent is proven by a receipt or verified process lineage. Unverifiable candidates now stay unresolved instead of being guessed.
 - Subagent rows drop the status word: the dot beside the name carries the state, the timer takes the status column in the dot's colour with the current activity below it, and the name gets the freed width. A waiting subagent's timer opens its question.
 - Insights uses one 30-day window throughout.
+- Claude is drawn in the same orange everywhere.
+- Claude greetings use Claude Haiku 5.5.
 - Claude readings are tied to the account they came from. Switching accounts no longer shows the old account's limits, and a reset armed on one account is not carried to another.
 - Privacy text is exact: Branchglance does read Claude Code's OAuth token, in memory, for live usage. See [Privacy](docs/PRIVACY.md).
 - A resumed Codex thread is one tree row instead of one row per run.
